@@ -1,0 +1,16 @@
+# vixen-core — engine integration glue (Stylo + mozjs + layout + paint).
+# Stub at Phase 0; real integration lands Phase 2+ (docs/PLAN.md).
+[package]
+name = "vixen-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Vixen engine integration glue"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+vixen-api = { path = "../vixen-api" }
+
+[lib]
+path = "src/lib.rs"

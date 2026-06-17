@@ -1,0 +1,17 @@
+# vixen-api — public engine trait surface + DTOs.
+#
+# No concrete engine dependencies live here (docs/ARCHITECTURE.md "Boundary
+# rules"): every engine crate depends *up* on vixen-api, never the reverse.
+# This crate is intentionally dependency-free so the trait shape compiles
+# and tests run with zero build cost (docs/PLAN.md Phase 0 gate).
+[package]
+name = "vixen-api"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Vixen public engine trait surface and DTOs"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+path = "src/lib.rs"

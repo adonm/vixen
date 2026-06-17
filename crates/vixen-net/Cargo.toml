@@ -1,0 +1,32 @@
+# vixen-net — networking + security policy (docs/PLAN.md Phase 1 "crown
+# jewels"). Pure Rust, fail-closed, fully unit-tested.
+[package]
+name = "vixen-net"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Vixen networking and security policy"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+vixen-api = { path = "../vixen-api" }
+url = "2"
+thiserror = "2"
+time = { version = "0.3", default-features = false, features = ["std"] }
+# reqwest client: HTTP/2 + gzip + brotli, TLS via rustls (no native-tls).
+# default-features off keeps OpenSSL out of the dep tree (docs/ACCEPTANCE.md
+# keeps a tight dep budget).
+reqwest = { version = "0.12", default-features = false, features = [
+    "rustls-tls",
+    "gzip",
+    "brotli",
+    "http2",
+] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "time"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "test-util"] }

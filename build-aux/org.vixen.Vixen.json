@@ -1,0 +1,49 @@
+{
+    "app-id": "org.vixen.Vixen",
+    "runtime": "org.gnome.Platform",
+    "runtime-version": "50",
+    "sdk": "org.gnome.Sdk",
+    "command": "vixen",
+    "sdk-extensions": [
+        "org.freedesktop.Sdk.Extension.rust-stable"
+    ],
+    "finish-args": [
+        "--share=ipc",
+        "--device=dri",
+        "--socket=fallback-x11",
+        "--socket=wayland",
+        "--share=network",
+        "--filesystem=xdg-download"
+    ],
+    "cleanup": [
+        "/include",
+        "/lib/pkgconfig",
+        "/man",
+        "/share/doc",
+        "/share/gtk-doc",
+        "*.la"
+    ],
+    "modules": [
+        {
+            "name": "vixen",
+            "buildsystem": "simple",
+            "build-commands": [
+                "source /usr/lib/sdk/rust-stable/enable.sh && cargo build --release --features vixen-shell/gtk-shell",
+                "install -Dm755 target/release/vixen /app/bin/vixen"
+            ],
+            "build-options": {
+                "append-path": "/usr/lib/sdk/rust-stable/bin",
+                "env": {
+                    "CARGO_HOME": "/run/build/vixen/cargo",
+                    "RUSTFLAGS": "--cfg=flatpak"
+                }
+            },
+            "sources": [
+                {
+                    "type": "dir",
+                    "path": "../"
+                }
+            ]
+        }
+    ]
+}

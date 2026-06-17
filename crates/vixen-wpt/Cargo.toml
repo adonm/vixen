@@ -1,0 +1,16 @@
+# vixen-wpt — WPT harness consuming `EngineInspector` only (never engine
+# internals). Stub at Phase 0.
+[package]
+name = "vixen-wpt"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Vixen WPT harness"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+vixen-api = { path = "../vixen-api" }
+
+[lib]
+path = "src/lib.rs"

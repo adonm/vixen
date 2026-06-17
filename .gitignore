@@ -1,0 +1,32 @@
+# Rust / Cargo
+/target
+**/*.rs.bk
+Cargo.lock.bak
+
+# cargo-fuzz build outputs. The harness source lives in fuzz/fuzz_targets/;
+# corpora/artifacts are regenerated per run and are too large to ship.
+/fuzz/target
+/fuzz/corpus
+/fuzz/artifacts
+/fuzz/coverage
+
+# flatpak-builder outputs (build-aux/). The manifest is shipped; these aren't.
+/build-aux/_build
+/build-aux/_repo
+/build-aux/.flatpak-builder
+/build-aux/.cargo
+
+# Reference browser checkouts (docs/REFERENCES.md) — never shipped
+/reference-browsers
+
+# Local profile data created while dogfooding
+/profile/
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Reftest diff output (docs/PLAN.md "Snapshot tests against Firefox reference")
+/target-reftest-diff/

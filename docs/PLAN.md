@@ -34,6 +34,14 @@ stub `lib.rs` so the workspace compiles.
    crates are stubs at this point).
 6. `.gitignore`, `LICENSE` (Apache 2.0), `data/`, `build-aux/` skeleton,
    `fixtures/` (empty), `benches/` (empty).
+7. `.mise.toml` pins the dev toolchain (`rust = latest`, `just`,
+   `cargo-binstall`) so `mise bootstrap --yes` converges a fresh machine.
+   The library MSRV (1.88) is in each crate's `rust-version`; the dev
+   toolchain floats to latest stable. The **GNOME 50 SDK is not installed
+   on the host** — it is managed inside a flatpak-builder container
+   (`just flatpak-update-sdk` / `just flatpak-build`); see
+   [`docs/guidance/gnome-sdk-flatpak-builder.md`](guidance/gnome-sdk-flatpak-builder.md)
+   and [`mise bootstrap`](https://mise.jdx.dev/bootstrap.html).
 
 **Gate:** `cargo check --workspace` passes. `cargo test -p vixen-api`
 passes (the trait shape compiles, basic DTO tests pass). The shell's

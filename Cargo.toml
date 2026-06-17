@@ -1,0 +1,61 @@
+# Vixen workspace + GUI binary crate.
+#
+# Layout per docs/ARCHITECTURE.md. The 7 engine/library crates live under
+# `crates/`; the thin GUI binary lives at `src/main.rs` and delegates to
+# `vixen_shell::run()` (ADR-010).
+#
+# Dependency direction (enforced by `cargo tree` audit in CI, see
+# docs/ARCHITECTURE.md "Boundary rules"):
+#
+#                        vixen-api   (traits + DTOs only, no impl deps)
+#                            ▲
+#           ┌────────────────┼────────────────┐
+#      vixen-net         vixen-store      vixen-core
+#           ▲                                │
+#           └───────────── vixen-core ───────┘
+#                            ▲
+#           ┌────────────────┴────────────────┐
+#     vixen-shell                      vixen-headless
+#
+#     vixen-wpt   →   vixen-api only
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/vixen-api",
+    "crates/vixen-net",
+    "crates/vixen-store",
+    "crates/vixen-core",
+    "crates/vixen-shell",
+    "crates/vixen-wpt",
+    "crates/vixen-headless",
+]
+default-members = ["crates/vixen-api", "crates/vixen-net", "crates/vixen-store"]
+
+# GUI binary (thin; calls vixen_shell::run()).
+[package]
+name = "vixen"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"   # let-chains used in vixen-net per docs/SPEC.md
+description = "A small, GNOME-native web browser built on Firefox-family components"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+vixen-shell = { path = "crates/vixen-shell", default-features = false }
+
+# Carry the optimised release profile forward unchanged
+# (docs/ARCHITECTURE.md "Build profile"). `panic = "abort"` is release-only
+# so the dev/test profile keeps unwinding for assertions.
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+# `lto = "fat"` may be tried as a one-off size experiment; revert if the
+# compile-time cost is unacceptable (docs/ARCHITECTURE.md).
+[profile.release-perf]
+inherits = "release"
+lto = "fat"

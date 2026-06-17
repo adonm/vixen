@@ -1,0 +1,38 @@
+[package]
+name = "vixen-fuzz"
+version = "0.0.0"
+edition = "2024"
+publish = false
+description = "libFuzzer targets for vixen-net's fail-closed parsers (docs/PLAN.md Phase 1 gate)"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+url = "2"
+
+[dependencies.vixen-net]
+path = "../crates/vixen-net"
+
+# Standalone workspace so the main workspace (`cargo build --workspace`) never
+# pulls in libfuzzer-sys / a nightly toolchain.
+[workspace]
+
+[[bin]]
+name = "url_policy_validate"
+path = "fuzz_targets/url_policy_validate.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "csp_parse"
+path = "fuzz_targets/csp_parse.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "cookie_set_cookie"
+path = "fuzz_targets/cookie_set_cookie.rs"
+test = false
+doc = false

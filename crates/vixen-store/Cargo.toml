@@ -1,0 +1,24 @@
+# vixen-store — redb-backed persistence (docs/PLAN.md Phase 1). Pure Rust,
+# no network dependency (docs/ARCHITECTURE.md "Boundary rules": store must
+# not own "anything networked"). The partition key is an opaque `&str` the
+# caller derives from an origin, so this crate never depends on vixen-net.
+[package]
+name = "vixen-store"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Vixen redb-backed persistence layer"
+license = "Apache-2.0"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+redb = "2"
+bincode = "1"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,15 @@
+# vixen-headless — CLI + CDP + EGL surfaceless render path. Stub at Phase 0.
+[package]
+name = "vixen-headless"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Vixen headless CLI and CDP server"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+vixen-api = { path = "../vixen-api" }
+
+[lib]
+path = "src/lib.rs"
