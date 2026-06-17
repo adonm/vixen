@@ -169,6 +169,33 @@ impl Default for JsRuntime {
     }
 }
 
+/// Evaluate `src` as an **inline script** only if `csp` permits it
+/// (docs/SPEC.md "CSP enforcement points", docs/PLAN.md Phase 7 step 1).
+/// This is the trust boundary between untrusted page script and the engine:
+/// CSP is checked *before* `EvaluateScript`. Fail closed: no CSP ⇒ allow
+/// (no restriction); a CSP that doesn't explicitly permit the inline script
+/// (via `'unsafe-inline'`, a matching nonce, or a matching sha256 hash) ⇒
+/// [`EngineError`] with the stable [`codes::SCRIPT_CSP_BLOCKED`] code.
+///
+/// `origin` is the document origin (`'self'` resolves against it).
+pub fn evaluate_inline_script(
+    rt: &mut JsRuntime,
+    csp: Option<&vixen_net::csp::ContentSecurityPolicy>,
+    origin: &vixen_net::Origin,
+    src: &str,
+    nonce: Option<&str>,
+) -> Result<JsValue, EngineError> {
+    if let Some(policy) = csp
+        && !policy.allows_inline_script(origin, Some(src), nonce)
+    {
+        return Err(EngineError::script(
+            codes::SCRIPT_CSP_BLOCKED,
+            "inline script blocked by Content-Security-Policy",
+        ));
+    }
+    rt.evaluate(src)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -210,5 +237,25 @@ mod tests {
         assert_eq!(JsValue::Number(2.5).to_display(), "2.5");
         assert_eq!(JsValue::Number(4.0).to_display(), "4");
         assert_eq!(JsValue::String("x".into()).to_display(), "x");
+
+        // CSP enforcement at the script boundary (Phase 7 step 1).
+        let origin = vixen_net::Origin::from_url(&url::Url::parse("https://example.com").unwrap());
+        // A strict CSP blocks inline scripts (fail closed).
+        let mut strict = vixen_net::csp::ContentSecurityPolicy::new();
+        strict.add_header("default-src 'self'");
+        let err = evaluate_inline_script(&mut rt, Some(&strict), &origin, "1+2", None).unwrap_err();
+        assert_eq!(err.code(), codes::SCRIPT_CSP_BLOCKED);
+        // 'unsafe-inline' permits it.
+        let mut allow = vixen_net::csp::ContentSecurityPolicy::new();
+        allow.add_header("script-src 'unsafe-inline'");
+        assert_eq!(
+            evaluate_inline_script(&mut rt, Some(&allow), &origin, "1+2", None).unwrap(),
+            JsValue::Int32(3)
+        );
+        // No CSP ⇒ no restriction.
+        assert_eq!(
+            evaluate_inline_script(&mut rt, None, &origin, "1+2", None).unwrap(),
+            JsValue::Int32(3)
+        );
     }
 }

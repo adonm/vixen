@@ -1,0 +1,456 @@
+//! The 13 WPT check types (docs/SPEC.md "WPT harness — check types") and the
+//! per-check runner. Checks map to [`HarnessEngine`]'s inspection surface;
+//! `visual-hash`/`ref-equivalent` need the offscreen renderer (Phase 5) and
+//! are skipped until then.
+
+use serde::{Deserialize, Serialize};
+use vixen_api::PageSnapshot;
+
+use crate::harness::HarnessEngine;
+
+/// Default viewport the harness inspects at (matches `vixen-headless`).
+const VW: u32 = 800;
+const VH: u32 = 600;
+
+/// Result of running one check against a fixture.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Outcome {
+    Pass,
+    Fail(String),
+    /// The check could not run (the engine capability isn't wired yet).
+    Skipped(String),
+}
+
+/// One assertion. `#[serde(tag = "type")]` ⇒ `{ "type": "title", "expected": "X" }`.
+/// `type` names are kebab-cased to match the SPEC table exactly.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "type", rename_all = "kebab-case")]
+pub enum Check {
+    Title {
+        expected: String,
+    },
+    SelectorCount {
+        selector: String,
+        expected: usize,
+    },
+    SelectorsExact {
+        selector: String,
+        expected: Vec<String>,
+    },
+    BodyContains {
+        expected: String,
+    },
+    JsEval {
+        expr: String,
+        expected: String,
+    },
+    MinNodes {
+        min: usize,
+    },
+    NoCriticalDiagnostics,
+    VisualHash {
+        expected: String,
+    },
+    SelectorMatch {
+        selector: String,
+        expected: Vec<String>,
+    },
+    ComputedStyle {
+        selector: String,
+        property: String,
+        expected: String,
+    },
+    ElementAttribute {
+        selector: String,
+        attribute: String,
+        expected: String,
+    },
+    DomNodesRange {
+        min: usize,
+        max: usize,
+    },
+    RefEquivalent {
+        reference: String,
+    },
+}
+
+impl Check {
+    /// Run this check against `engine`, returning an [`Outcome`].
+    pub fn run(&self, engine: &dyn HarnessEngine) -> Outcome {
+        match self {
+            Check::Title { expected } => {
+                let snap = engine.snapshot(VW, VH);
+                match snap.title {
+                    Some(t) if t == *expected => Outcome::Pass,
+                    Some(t) => Outcome::Fail(format!("title: expected {expected:?}, got {t:?}")),
+                    None => Outcome::Fail(format!("title: expected {expected:?}, got <none>")),
+                }
+            }
+            Check::BodyContains { expected } => {
+                let snap = engine.snapshot(VW, VH);
+                if snap.text_content.contains(expected) {
+                    Outcome::Pass
+                } else {
+                    Outcome::Fail("body does not contain expected substring".into())
+                }
+            }
+            Check::MinNodes { min } => {
+                let n = engine.snapshot(VW, VH).element_count;
+                if n >= *min {
+                    Outcome::Pass
+                } else {
+                    Outcome::Fail(format!("min-nodes: expected ≥{min}, got {n}"))
+                }
+            }
+            Check::DomNodesRange { min, max } => {
+                let n = engine.snapshot(VW, VH).element_count;
+                if (*min..=*max).contains(&n) {
+                    Outcome::Pass
+                } else {
+                    Outcome::Fail(format!("dom-nodes-range: expected {min}..={max}, got {n}"))
+                }
+            }
+            Check::NoCriticalDiagnostics => {
+                // docs/SPEC.md "Diagnostics shape" has no severity field; until
+                // the Phase 7 taxonomy lands, any diagnostic is treated as
+                // critical (fail-closed).
+                let diags = engine.diagnostics();
+                if diags.is_empty() {
+                    Outcome::Pass
+                } else {
+                    Outcome::Fail(format!("no-critical-diagnostics: {} recorded", diags.len()))
+                }
+            }
+            Check::SelectorCount { selector, expected } => {
+                match engine.query_selector_all(selector) {
+                    Ok(matches) => {
+                        let got = matches.len();
+                        if got == *expected {
+                            Outcome::Pass
+                        } else {
+                            Outcome::Fail(format!("selector-count: expected {expected}, got {got}"))
+                        }
+                    }
+                    Err(e) => Outcome::Fail(format!("selector-count: {e}")),
+                }
+            }
+            Check::SelectorsExact { selector, expected } => {
+                match engine.query_selector_all(selector) {
+                    Ok(matches) => {
+                        let mut got: Vec<String> =
+                            matches.iter().filter_map(|e| e.id.clone()).collect();
+                        got.sort();
+                        let mut exp = expected.clone();
+                        exp.sort();
+                        if got == exp {
+                            Outcome::Pass
+                        } else {
+                            Outcome::Fail(format!("selectors-exact: expected {exp:?}, got {got:?}"))
+                        }
+                    }
+                    Err(e) => Outcome::Fail(format!("selectors-exact: {e}")),
+                }
+            }
+            Check::SelectorMatch { selector, expected } => {
+                // "Per-element selector match details": compare matched element
+                // tags in document order (a stable, inspectable projection).
+                match engine.query_selector_all(selector) {
+                    Ok(matches) => {
+                        let got: Vec<String> = matches.iter().map(|e| e.tag.clone()).collect();
+                        if got == *expected {
+                            Outcome::Pass
+                        } else {
+                            Outcome::Fail(format!(
+                                "selector-match: expected {expected:?}, got {got:?}"
+                            ))
+                        }
+                    }
+                    Err(e) => Outcome::Fail(format!("selector-match: {e}")),
+                }
+            }
+            Check::ComputedStyle {
+                selector,
+                property,
+                expected,
+            } => match first_match(engine, selector) {
+                Some(node_id) => {
+                    let styles = engine.computed_style(node_id);
+                    let got = styles
+                        .iter()
+                        .find(|(k, _)| k == property)
+                        .map(|(_, v)| v.clone());
+                    match got {
+                        Some(v) if v == *expected => Outcome::Pass,
+                        Some(v) => Outcome::Fail(format!(
+                            "computed-style {property}: expected {expected:?}, got {v:?}"
+                        )),
+                        None => Outcome::Fail(format!(
+                            "computed-style: property {property:?} not present"
+                        )),
+                    }
+                }
+                None => Outcome::Fail("computed-style: selector matched nothing".into()),
+            },
+            Check::ElementAttribute {
+                selector,
+                attribute,
+                expected,
+            } => match first_match_info(engine, selector) {
+                Some(info) => {
+                    let got = info
+                        .attributes
+                        .iter()
+                        .find(|(k, _)| k == attribute)
+                        .map(|(_, v)| v.clone());
+                    match got {
+                        Some(v) if v == *expected => Outcome::Pass,
+                        Some(v) => Outcome::Fail(format!(
+                            "element-attribute {attribute}: expected {expected:?}, got {v:?}"
+                        )),
+                        None => Outcome::Fail(format!(
+                            "element-attribute: attribute {attribute:?} not present"
+                        )),
+                    }
+                }
+                None => Outcome::Fail("element-attribute: selector matched nothing".into()),
+            },
+            Check::JsEval { expr, expected } => match engine.eval(expr) {
+                Ok(got) if got == *expected => Outcome::Pass,
+                Ok(got) => Outcome::Fail(format!("js-eval: expected {expected:?}, got {got:?}")),
+                Err(e) => Outcome::Fail(format!("js-eval: {e}")),
+            },
+            Check::VisualHash { .. } => {
+                Outcome::Skipped("needs offscreen renderer (Phase 5)".into())
+            }
+            Check::RefEquivalent { .. } => {
+                Outcome::Skipped("needs offscreen renderer (Phase 5)".into())
+            }
+        }
+    }
+}
+
+/// First match's node id for `selector`, if any.
+fn first_match(engine: &dyn HarnessEngine, selector: &str) -> Option<usize> {
+    engine
+        .query_selector_all(selector)
+        .ok()?
+        .into_iter()
+        .next()
+        .map(|e| e.node_id)
+}
+
+fn first_match_info(engine: &dyn HarnessEngine, selector: &str) -> Option<vixen_api::ElementInfo> {
+    engine.query_selector_all(selector).ok()?.into_iter().next()
+}
+
+// `PageSnapshot` is referenced in trait bounds/docs; keep the import live.
+#[allow(dead_code)]
+fn _snapshot_bound(_: &PageSnapshot) {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::harness::MockEngine;
+    use vixen_api::{ElementInfo, EngineDiagnostic, EngineDiagnosticCategory, PageSnapshot};
+
+    fn snap(title: Option<&str>, text: &str, n: usize) -> PageSnapshot {
+        PageSnapshot {
+            url: "https://example.test/".into(),
+            title: title.map(str::to_owned),
+            viewport: (800, 600),
+            text_content: text.into(),
+            element_count: n,
+        }
+    }
+
+    #[test]
+    fn title_body_minnodes_range() {
+        let e = MockEngine {
+            snapshot: snap(Some("Hi"), "hello world body", 10),
+            ..Default::default()
+        };
+        assert_eq!(
+            Check::Title {
+                expected: "Hi".into()
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+        assert_eq!(
+            Check::Title {
+                expected: "No".into()
+            }
+            .run(&e),
+            Outcome::Fail("title: expected \"No\", got \"Hi\"".into())
+        );
+        assert_eq!(
+            Check::BodyContains {
+                expected: "world".into()
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+        assert!(
+            Check::BodyContains {
+                expected: "missing".into()
+            }
+            .run(&e)
+            .is_fail()
+        );
+        assert_eq!(Check::MinNodes { min: 5 }.run(&e), Outcome::Pass);
+        assert!(Check::MinNodes { min: 50 }.run(&e).is_fail());
+        assert_eq!(
+            Check::DomNodesRange { min: 5, max: 20 }.run(&e),
+            Outcome::Pass
+        );
+        assert!(Check::DomNodesRange { min: 20, max: 30 }.run(&e).is_fail());
+    }
+
+    #[test]
+    fn no_critical_diagnostics() {
+        let e = MockEngine::default();
+        assert_eq!(Check::NoCriticalDiagnostics.run(&e), Outcome::Pass);
+        let mut e = MockEngine::default();
+        e.diagnostics.push(EngineDiagnostic::new(
+            EngineDiagnosticCategory::ScriptRuntime,
+            "script.eval",
+            "boom",
+        ));
+        assert!(Check::NoCriticalDiagnostics.run(&e).is_fail());
+    }
+
+    #[test]
+    fn selector_checks() {
+        let mut e = MockEngine::default();
+        e.matches.insert(
+            "div".into(),
+            vec![
+                ElementInfo {
+                    node_id: 1,
+                    tag: "div".into(),
+                    id: Some("a".into()),
+                    classes: vec![],
+                    attributes: vec![("data-k".into(), "v".into())],
+                    text: "".into(),
+                    bbox: None,
+                },
+                ElementInfo {
+                    node_id: 2,
+                    tag: "div".into(),
+                    id: Some("b".into()),
+                    classes: vec![],
+                    attributes: vec![],
+                    text: "".into(),
+                    bbox: None,
+                },
+            ],
+        );
+        e.styles.insert(1, vec![("color".into(), "red".into())]);
+
+        assert_eq!(
+            Check::SelectorCount {
+                selector: "div".into(),
+                expected: 2
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+        assert_eq!(
+            Check::SelectorsExact {
+                selector: "div".into(),
+                expected: vec!["b".into(), "a".into()]
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+        assert_eq!(
+            Check::SelectorMatch {
+                selector: "div".into(),
+                expected: vec!["div".into(), "div".into()]
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+        assert_eq!(
+            Check::ComputedStyle {
+                selector: "div".into(),
+                property: "color".into(),
+                expected: "red".into()
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+        assert_eq!(
+            Check::ElementAttribute {
+                selector: "div".into(),
+                attribute: "data-k".into(),
+                expected: "v".into()
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+    }
+
+    #[test]
+    fn js_eval_and_render_skips() {
+        let e = MockEngine {
+            eval_result: Some(Ok("3".into())),
+            ..Default::default()
+        };
+        assert_eq!(
+            Check::JsEval {
+                expr: "1+2".into(),
+                expected: "3".into()
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+        assert!(matches!(
+            Check::VisualHash {
+                expected: "x".into()
+            }
+            .run(&e),
+            Outcome::Skipped(_)
+        ));
+        assert!(matches!(
+            Check::RefEquivalent {
+                reference: "r.html".into()
+            }
+            .run(&e),
+            Outcome::Skipped(_)
+        ));
+    }
+
+    #[test]
+    fn check_round_trips_json() {
+        // Manifests are JSON; every variant must (de)serialize with its tag.
+        let cases = [
+            r#"{"type":"title","expected":"T"}"#,
+            r#"{"type":"selector-count","selector":"div","expected":2}"#,
+            r#"{"type":"selectors-exact","selector":"div","expected":["a"]}"#,
+            r#"{"type":"body-contains","expected":"x"}"#,
+            r#"{"type":"js-eval","expr":"1+2","expected":"3"}"#,
+            r#"{"type":"min-nodes","min":3}"#,
+            r#"{"type":"no-critical-diagnostics"}"#,
+            r#"{"type":"visual-hash","expected":"h"}"#,
+            r#"{"type":"selector-match","selector":"div","expected":["div"]}"#,
+            r##"{"type":"computed-style","selector":"#x","property":"color","expected":"red"}"##,
+            r##"{"type":"element-attribute","selector":"#x","attribute":"data-k","expected":"v"}"##,
+            r#"{"type":"dom-nodes-range","min":1,"max":5}"#,
+            r#"{"type":"ref-equivalent","reference":"r.html"}"#,
+        ];
+        for json in cases {
+            let check: Check = serde_json::from_str(json).unwrap_or_else(|e| panic!("{json}: {e}"));
+            let reser = serde_json::to_string(&check).unwrap();
+            let back: Check = serde_json::from_str(&reser).unwrap();
+            assert_eq!(check, back, "round-trip mismatch for {json}");
+        }
+    }
+
+    // small helper on Outcome for assertions
+    impl Outcome {
+        fn is_fail(&self) -> bool {
+            matches!(self, Outcome::Fail(_))
+        }
+    }
+}

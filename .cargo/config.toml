@@ -1,0 +1,16 @@
+# Vixen project-local Cargo configuration.
+#
+# This file is the project-local Cargo config — Cargo discovers it by walking
+# from the working directory up to the root. It is also the CARGO_HOME config:
+# per `.mise.toml` `[env]` we point `CARGO_HOME` at this same directory so the
+# registry cache, git checkouts and installed binaries (cargo-audit, etc.)
+# stay inside the workspace. See `docs/guidance/cargo-home.md`.
+#
+# Only project-pinned settings belong here. Cache state (registry/, git/,
+# bin/, .crates*.toml) is git-ignored — see `.gitignore`.
+
+# Example of a project-pinned setting (uncomment to lock all contributors to
+# the same build profile regardless of their global cargo config):
+#
+# [profile.dev]
+# debug = "line-tables-only"

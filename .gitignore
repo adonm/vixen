@@ -3,6 +3,11 @@
 **/*.rs.bk
 Cargo.lock.bak
 
+# Workspace-local CARGO_HOME (docs/guidance/cargo-home.md). We pin
+# `.cargo/config.toml` (project config); the cache subdirs are build state.
+/.cargo/*
+!/.cargo/config.toml
+
 # cargo-fuzz build outputs. The harness source lives in fuzz/fuzz_targets/;
 # corpora/artifacts are regenerated per run and are too large to ship.
 /fuzz/target

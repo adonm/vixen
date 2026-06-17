@@ -23,6 +23,22 @@ and reference material, plus:
 - **Phase 2** — the SpiderMonkey runtime (`vixen-core::script`) and the
   `vixen-headless` CLI; the gate `vixen-headless --url <file> --eval '1+2'` →
   `3` passes.
+- **Phase 3 (in progress)** — HTML parsing (`vixen-core::doc`,
+  html5ever → RcDom) with `--dump-dom`/`--extract-text`; **selector matching
+  via Stylo** (`vixen-core::style_dom` implementing `selectors::Element` over
+  the RcDom), driving `--extract-selector` and the WPT selector fixtures;
+  and the **WPT harness** (`vixen-wpt`: manifest + runner + all 13 check
+  types). The full Stylo cascade (`TNode`/`TElement`/`TDocument` +
+  `Stylist::update_stylist` + `computed_values_for(node_id)`) is the next
+  slice; Stylo arrives via the crates.io-published `stylo` crate per
+  ADR-011 (no Servo git dep).
+- **Phase 6 prep** — pure form-constraint validation in `vixen-core::forms`
+  (email/URL formats, step arithmetic, range/length flags) ready for the
+  script-layer host hooks.
+- **Phase 8 (partial)** — the CDP WebSocket server (`vixen-headless::cdp`)
+  responds to the six required methods (`Browser.getVersion`,
+  `Target.createTarget`, `Target.attachToTarget`, `Page.navigate`,
+  `Page.loadEventFired`, `Runtime.evaluate`) with stable error codes.
 
 Source for later phases lands per [`docs/PLAN.md`](docs/PLAN.md).
 
@@ -39,6 +55,10 @@ mise bootstrap --yes     # Rust toolchain + just + dev tooling + build check
 just check-all-host      # type-check the workspace
 just test-host           # run host-runnable tests
 ```
+
+`mise bootstrap` also points `CARGO_HOME` at `<workspace>/.cargo` so the
+Cargo registry cache and `cargo-binstall`-ed tooling stay inside the
+workspace (see [`docs/guidance/cargo-home.md`](docs/guidance/cargo-home.md)).
 
 **The GNOME 50 SDK is not installed on the host** — it is managed inside a
 `flatpak-builder` container, so host churn stays at zero and the build is

@@ -1,0 +1,51 @@
+{
+  "fixtures": [
+    {
+      "url": "fixtures/css/selectors.html",
+      "checks": [
+        { "type": "title", "expected": "Selectors — Vixen fixture" },
+        { "type": "selector-count", "selector": "a.nav-link", "expected": 4 },
+        { "type": "selector-count", "selector": "a[href]", "expected": 3 },
+        { "type": "selector-count", "selector": "#hd", "expected": 1 },
+        { "type": "selector-count", "selector": ".page", "expected": 2 },
+        { "type": "selector-count", "selector": "li", "expected": 4 },
+        { "type": "selector-count", "selector": "input:checked", "expected": 1 },
+        { "type": "selector-count", "selector": "input:disabled", "expected": 1 },
+        { "type": "selector-count", "selector": ":disabled", "expected": 2 },
+        { "type": "selector-count", "selector": "input:required", "expected": 1 },
+        { "type": "selector-count", "selector": ":link", "expected": 3 },
+        { "type": "selector-count", "selector": "[data-tag='lead']", "expected": 1 },
+        { "type": "selector-count", "selector": "[lang|='en']", "expected": 2 },
+        { "type": "selector-count", "selector": ":is(a, button)", "expected": 5 },
+        { "type": "selector-match", "selector": "li.mid, li.last", "expected": ["li", "li"] },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/css/combinators.html",
+      "checks": [
+        { "type": "selector-count", "selector": "div.row", "expected": 3 },
+        { "type": "selector-count", "selector": "div > .row", "expected": 3 },
+        { "type": "selector-count", "selector": ".container > .row", "expected": 3 },
+        { "type": "selector-count", "selector": ".row + .row", "expected": 2 },
+        { "type": "selector-count", "selector": ".row ~ .row", "expected": 2 },
+        { "type": "selector-count", "selector": "#section .prose", "expected": 3 },
+        { "type": "selector-count", "selector": "span.inner", "expected": 1 },
+        { "type": "selectors-exact", "selector": "div.row", "expected": ["child-1", "child-2", "child-3"] },
+        { "type": "selector-count", "selector": "footer, header", "expected": 0 },
+        { "type": "element-attribute", "selector": "#child-2", "attribute": "class", "expected": "row" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/basic.html",
+      "checks": [
+        { "type": "title", "expected": "DOM basic — Vixen fixture" },
+        { "type": "selector-count", "selector": "li", "expected": 3 },
+        { "type": "selector-count", "selector": "#title", "expected": 1 },
+        { "type": "selector-count", "selector": "ul > li", "expected": 3 },
+        { "type": "body-contains", "expected": "intro" },
+        { "type": "selectors-exact", "selector": "p", "expected": ["intro", "outro"] }
+      ]
+    }
+  ]
+}

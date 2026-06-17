@@ -10,6 +10,7 @@ pub mod codes {
     pub const SCRIPT_COMPILE: &str = "script.compile";
     pub const SCRIPT_OOM: &str = "script.oom";
     pub const SCRIPT_TIMEOUT: &str = "script.timeout";
+    pub const SCRIPT_CSP_BLOCKED: &str = "script.csp-blocked";
     pub const UNSUPPORTED_SCREENSHOT: &str = "unsupported.screenshot";
     pub const INVALID_SELECTOR: &str = "invalid-selector";
 }

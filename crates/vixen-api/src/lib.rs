@@ -250,7 +250,7 @@ pub struct ElementInfo {
 }
 
 /// Coarse document snapshot returned by `EngineInspector::capture_snapshot`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PageSnapshot {
     pub url: String,
     pub title: Option<String>,

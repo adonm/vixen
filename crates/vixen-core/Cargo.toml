@@ -12,8 +12,25 @@ publish = false
 
 [dependencies]
 vixen-api = { path = "../vixen-api" }
+vixen-net = { path = "../vixen-net" }
 mozjs = "0.16"
 thiserror = "2"
+html5ever = "0.39"
+markup5ever = "0.39"
+markup5ever_rcdom = "0.39"
+tendril = "0.5"
+url = "2"
+
+# Stylo CSS engine (Phase 3, docs/PLAN.md). The `servo` feature selects the
+# non-Gecko config; it brings in the web_atoms/string_cache atom sets and
+# the servo-flavoured `SelectorImpl`. `selectors`, `stylo_atoms` are direct
+# deps because we name them in style_dom.rs.
+stylo = { version = "0.18", default-features = false, features = ["servo"] }
+stylo_atoms = "0.18"
+selectors = "0.38"
 
 [lib]
 path = "src/lib.rs"
+
+[dev-dependencies]
+url = "2"

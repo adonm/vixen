@@ -399,3 +399,55 @@ and `relm4-components` reuse.
 - `reference-browsers/relm4/examples/` and
   `reference-browsers/relm4/relm4-components/` are the primary
   reference for any new shell widget.
+
+---
+
+## ADR-011: Stylo via the crates.io-published `stylo` crate
+
+**Status:** accepted
+
+**Context.** ADR-001 commits to Stylo (`style`) for the CSS cascade.
+When Phase 0–2 landed, `style` was only available as a Servo git
+dependency — a clone of `https://github.com/servo/servo` plus a
+`[patch.crates-io]` table. That made the build non-reproducible from
+crates.io alone and left Phase 3 marked "blocked" in `docs/PLAN.md`.
+
+Since then, the Stylo team split the engine out of the Servo monorepo
+into `https://github.com/servo/stylo` and now publish it on crates.io
+as [`stylo`](https://crates.io/crates/stylo) (lib name `style`). All
+subsystems Vixen needs — cascade, selector matching, rule tree,
+computed values — are in that crate.
+
+**Decision.** Depend on `stylo = "0.18"` (with the `servo` feature for
+the non-Gecko config) directly. Do not pull a Servo git checkout, do
+not patch crates.io, do not vendor the source. Implement
+`selectors::Element` (and, for the cascade, `TNode`/`TElement`/
+`TDocument`) over Vixen's html5ever `RcDom` in
+`crates/vixen-core/src/style_dom.rs`.
+
+**Alternatives considered.**
+
+- *Hand-roll selector matching on top of `selectors` alone, defer the
+  cascade.* Rejected: doubles the selector-matching surface (Vixen's
+  plus Stylo's), and the cascade is the actual reason we wanted Stylo
+  in the first place.
+- *Pin a Servo git revision of `style`.* Rejected: bigger dep surface
+  (the whole `servo` repo at that revision), non-reproducible from
+  crates.io, blocks Phase 3 indefinitely.
+- *Switch CSS engine to `taffy` or another standalone cascade.* Rejected
+  per ACCEPTANCE.md hard gates (no `taffy`); also re-introduces the
+  perpetual trailing-edge compatibility ADR-001 rejects.
+
+**Consequences.**
+
+- Phase 3 unblocks. The selector-matching surface (`vixen-core::
+  style_dom`) is live; the WPT selector fixtures pass end-to-end.
+- The crate ships with its lib name as `style` even though the package
+  is `stylo`; source uses `use style::…` while `Cargo.toml` says
+  `stylo = …`. Documented in `style_dom.rs` to head off confusion.
+- Dep budget: ~45 additional crates (icu, euclid, rayon, etc.). The
+  Phase 9 dep-count gate (≤ 220) remains the release-blocking contract;
+  this is the right trade for getting real Firefox-grade cascade.
+- Future Stylo releases may shift trait shapes (`TElement` etc.). Pin
+  `stylo = "0.18"` and bump deliberately; track upstream
+  `https://github.com/servo/stylo/releases`.

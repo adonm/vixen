@@ -11,7 +11,10 @@
 
 #![deny(unsafe_code)]
 
+pub mod doc;
 pub mod engine_error;
+pub mod forms;
 pub mod script;
+pub mod style_dom;
 
 // Removed once the first post-Phase-0 module landed; kept out of the build.

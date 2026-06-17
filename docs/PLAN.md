@@ -110,25 +110,36 @@ Wire up HTML parsing and CSS cascade.
 
 **Steps:**
 
-1. `html5ever` parse into RcDom. Already a dependency.
-   2. `vixen-core/src/doc.rs`: `Node`/`Element` implementing
-   `style::dom::{TNode, TElement, TDocument, TRestyleSummary}`. Backed
-   by the RcDom. This is the bulk of the integration work — budget 3–4
-   days for trait conformance. Consult
+1. `html5ever` parse into RcDom. Already a dependency. **Done** — see
+   `vixen-core::doc`.
+2. **Selector matching via Stylo (done) — `vixen-core::style_dom`**
+   implements `selectors::Element` over the RcDom (a precomputed
+   `ElementArena` keeps the module `forbid(unsafe_code)`). This powers
+   `--extract-selector`, the WPT selector checks, and the
+   `:valid`/`:invalid`/`:checked` pseudos. Phase 3's gate (WPT CSS
+   fixtures) now passes against the selector surface.
+3. `vixen-core/src/style.rs` (next slice): load `<style>` / `<link
+   rel=stylesheet>` into `Stylesheet` list → `Stylist::update_stylist`
+   → cascade via Stylo's `SharedStyleContext` / traversal. Expose
+   `computed_values_for(NodeId) -> Arc<ComputedValues>`. Requires
+   implementing the full `TNode` / `TElement` / `TDocument` traits;
+   budget 3–4 days for trait conformance. Consult
    `reference-browsers/firefox/servo/components/script/dom/` for DOM
    node patterns and `reference-browsers/firefox/servo/components/style/dom.rs`
    for the trait definitions being implemented.
-   3. `vixen-core/src/style.rs`: load `<style>` / `<link rel=stylesheet>`
-   into `Stylesheet` list → `Stylist::update_stylist` → cascade via
-   Stylo's `SharedStyleContext` / traversal. Expose
-   `computed_values_for(NodeId) -> Arc<ComputedValues>`.
 4. CSS-wide keywords, `@layer`, `@property`, `@import`, `@supports`,
    `@media`, `@keyframes`, custom properties + `var()` all come free
    from Stylo. Verify via WPT fixtures.
 
+**Note on Stylo sourcing.** Stylo is now published on crates.io as
+[`stylo`](https://crates.io/crates/stylo) (lib name `style`); the
+"needs a Servo git dependency" caveat from earlier revisions of this
+plan no longer applies. See ADR-011.
+
 **Gate:** `vixen-headless --url fixtures/css/at-property.html
 --extract-selector '[style]'` returns correctly cascaded styles.
 vixen-wpt runs the CSS fixtures; pass rate recorded as baseline.
+(Selector surface green today; cascade surface pending step 3.)
 
 ---
 

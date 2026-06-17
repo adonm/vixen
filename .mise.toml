@@ -17,6 +17,22 @@
 #
 # Reference: https://mise.jdx.dev/bootstrap.html
 
+# --- Workspace-local Cargo home ---------------------------------------------
+# `CARGO_HOME` points inside the workspace (`.cargo/`) so the registry cache,
+# git checkouts, and `cargo-binstall`-installed tooling (cargo-audit, etc.)
+# all live next to the source — keeping reads and writes inside the workspace
+# and out of the user's `~/.cargo`. See `docs/guidance/cargo-home.md`.
+#
+# `mise` exports these to any mise-active shell; the PATH entry makes the
+# installed binaries reachable from `just audit` / `just fuzz-init`.
+[env]
+CARGO_HOME = "{{ config_root }}/.cargo"
+# `_.path` is mise's dedicated PATH-prepend directive. Each entry is pushed
+# in front of the inherited PATH, so the workspace's binstalled tooling
+# (cargo-audit, cargo-deny, cargo-fuzz — see `setup-dev-tools`) wins over
+# anything the user has in their `~/.cargo/bin`.
+_.path = ["{{ config_root }}/.cargo/bin"]
+
 [tools]
 # Rust MSRV is 1.88 (let-chains are used in vixen-net, docs/SPEC.md); the
 # *library* MSRV is declared in each crate's `rust-version`. The dev toolchain
