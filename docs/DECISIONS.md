@@ -183,7 +183,11 @@ Flatpak manifests can vendor it as a shared module.
 - **Production Flatpak** (`org.vixen.Vixen`): link to a shared libmozjs
   module vendored into the Flatpak manifest. Binary ~10 MiB.
 - **Headless CI / standalone distribution**: static mozjs. Binary ~14 MiB.
-- **Development builds**: static mozjs (simpler, no system dependency).
+- **Development builds**: static mozjs (simpler, no system dependency). In
+  practice the `mozjs`/`mozjs_sys` crate **downloads a prebuilt** static
+  SpiderMonkey from `servo/mozjs` GitHub Releases by default (no from-source
+  build); `MOZJS_ARCHIVE` pins/offline-mirrors it. See
+  [`docs/guidance/mozjs.md`](guidance/mozjs.md).
 
 **Alternatives considered.**
 

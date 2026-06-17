@@ -17,9 +17,14 @@ the upstream crates together.
 ## Status
 
 Pre-v1.0. This repository contains the specification, architecture, plan,
-and reference material, plus the Phase 0 scaffolding and the Phase 1
-networking/security "crown jewels" (`vixen-net`, `vixen-store`). Source for
-later phases lands per [`docs/PLAN.md`](docs/PLAN.md).
+and reference material, plus:
+- **Phase 0** — scaffolding (workspace + 7 crates).
+- **Phase 1** — networking/security "crown jewels" (`vixen-net`, `vixen-store`).
+- **Phase 2** — the SpiderMonkey runtime (`vixen-core::script`) and the
+  `vixen-headless` CLI; the gate `vixen-headless --url <file> --eval '1+2'` →
+  `3` passes.
+
+Source for later phases lands per [`docs/PLAN.md`](docs/PLAN.md).
 
 ---
 
