@@ -131,6 +131,33 @@ Wire up HTML parsing and CSS cascade.
    `@media`, `@keyframes`, custom properties + `var()` all come free
    from Stylo. Verify via WPT fixtures.
 
+**Pure-logic foundation landed (testing-strategy item).**
+`vixen-core::length` implements CSS Values 4 `<length>` parsing + the
+absolute/relative unit conversions the cascade and layout resolves against
+(`px`/`em`/`rem`/`%`/`vh`/`vw`/`vmin`/`vmax`/`ex`/`ch`/`pt`/`pc`/`in`/`cm`/`mm`/`Q`).
+Rust-unit-tested per "Rust tests cover only pure logic (CSS length
+arithmetic, …)".
+
+**The rest of the CSS Values 4 dimension family landed.** `<length>` was
+the first; the family is now complete for v1.0:
+- `vixen-core::color` — CSS Color 4 sRGB family: 3/4/6/8-digit hex,
+  `rgb()/rgba()` (legacy comma + modern space forms), `hsl()/hsla()` with
+  hue normalisation, the 148 named colours, `transparent`/`currentcolor`
+  keywords, premultiplied-alpha arithmetic, and linear-sRGB interpolation
+  (the primitive gradients and transitions reduce to). `oklch/lab/lch/color()`
+  fail closed with `UnsupportedColorSpace` (deferred slice).
+- `vixen-core::angle` — `<angle>` (`deg`/`rad`/`grad`/`turn`) with
+  degree/radian normalisation, `cos_sin()` for transforms and conic gradients.
+- `vixen-core::time` — `<time>` (`s`/`ms`) with millisecond normalisation
+  for transitions/animations.
+- `vixen-core::resolution` — `<resolution>` (`dpi`/`dpcm`/`dppx`/`x`) with
+  dots-per-pixel normalisation for media queries. `x` is the historical
+  alias for `dppx` (CSS Images 4 § 7.3).
+
+Each is `#![forbid(unsafe_code)]`, mirrors the `length` parse/resolve shape,
+and stays Rust-unit-tested (cascade/paint integration lands when Stylo /
+WebRender plug in).
+
 **Note on Stylo sourcing.** Stylo is now published on crates.io as
 [`stylo`](https://crates.io/crates/stylo) (lib name `style`); the
 "needs a Servo git dependency" caveat from earlier revisions of this
@@ -164,6 +191,25 @@ baseline within tolerance. Specifically, nested-flex/grid + padding +
 margins + gaps must produce correct absolute coordinates *without* any
 post-pass coordinate fixup (`layout_2020` doesn't need it).
 
+**Pure-logic foundation landed (Phase 4 prep).**
+`vixen-core::box_model` implements the CSS2 § 10.3.3 block-level
+horizontal-constraint solve (`auto`-width leftover absorption, one/two
+`auto`-margin distribution + centering, `box-sizing: border-box` content
+subtraction) and the four-box nesting (`margin ⊃ border ⊃ padding ⊃
+content`) the layout tree feeds off. Pure given cascade-resolved edges;
+Rust-unit-tested per "Rust tests cover only pure logic".
+
+**Flexbox main-axis resolution landed (Phase 4 prep).**
+`vixen-core::flex_resolve` implements CSS Flexbox 1 § 9.7 "Resolving
+Flexible Lengths" end-to-end: the used-flex-factor selection (grow if items
+under-fill, shrink otherwise), the inflexible-item freeze step, the
+proportional free-space distribution (scaled by `shrink × flex_basis` for
+the shrink case), and the iterative min/max-violation clamping that
+terminates when every item is frozen. Pure given cascade-resolved
+`flex-basis` + `grow`/`shrink` + `min`/`max` per item; cross-axis (alignment
++ line packing) stays in `layout_2020` where it composes against real text
+metrics.
+
 ---
 
 ## Phase 5 — Paint: WebRender + EGL surfaceless (≈ 2 weeks)
@@ -191,6 +237,14 @@ to two `GlContext` implementations.
    z-index sorting, clip stacking (content clipped, borders not),
    opacity group multiplication, visibility skip-paint, background
    clip/origin/attachment.
+
+   **Invariant enforcement landed (pure slice).**
+   `vixen-core::display_list` implements all eight `SPEC.md` "Display-list
+   invariants" as auditable, individually-tested pure functions
+   (`z_tier`, `effective_opacity`, `background_paint_rect`, …) plus a
+   `DisplayListBuilder::build` that emits the pruned, z-sorted
+   `PaintCommand` stream. The WebRender `Renderer` (this step, next slice)
+   consumes that stream; the invariant logic is done and Rust-unit-tested.
 5. `vixen-shell/src/engine_factory.rs`: creates the `gtk4::GLArea`,
    wraps it as `GlAreaSurface` (the shell's `GlContext` impl), and
    returns it as the content widget alongside the tab's `EngineWorker`.
@@ -202,6 +256,50 @@ to two `GlContext` implementations.
 `vixen-headless --screenshot out.png --url fixtures/css/border-rendering.html`
 produces a PNG matching the GUI's render within 1 % pixel diff on 5
 fixtures (both renders going through the same WebRender paint path).
+
+**Paint-geometry pure-logic foundations landed (Phase 5 prep).**
+- `vixen-core::transform` — CSS Transforms 1 § 13 2D affine algebra:
+  `translate`/`scale`/`rotate`/`skew`/`matrix`, `multiply` composition
+  (post-multiply ⇒ rightmost-applied-first, matching Firefox/Servo),
+  `apply_point`/`apply_rect` (AABB), `determinant`/`inverse`, plus a
+  `parse_transform` list parser for the `--computed-style` projection.
+  Consumes `vixen-core::angle` so the full angle unit grammar is shared.
+- `vixen-core::border_radius` — CSS Backgrounds 3 § 5.5 corner shaping:
+  the eight authored radii → four shaped corners with the proportional
+  scale-down when adjacent radii overflow a side. Pure given px radii +
+  px sizes; the cascade resolves percentages first.
+- `vixen-core::gradient` — CSS Images 4 § 4.5 linear-gradient colour
+  sampling: stop-position normalisation (first/last defaults, even
+  auto-distribution between positioned anchors, monotonicity fix-up, unit-
+  interval clamp), linear-sRGB interpolation between stops (via
+  `crate::color::interpolate`), and the `repeating-linear-gradient()` wrap
+  that tiles the colour function. Angle / direction → gradient-line
+  geometry stays in the paint path.
+- `vixen-core::box_shadow` — CSS Backgrounds 3 § 7.2 `box-shadow` geometry:
+  the `<shadow>#` grammar parser (offset / blur / spread / colour /
+  `inset`, the paren-respecting colour-function tokeniser, negative-blur
+  clamping) + the per-shadow paint-rect arithmetic (`outer_paint_rect` for
+  display-list culling; `inset_clip_rect` for the inset "hole" with the
+  spec's spread-sign-flip + blur-shrinks-hole rule). Pure given px values;
+  the cascade resolves percentages / `em` first.
+- `vixen-core::background_position` — CSS Backgrounds 3 § 3.6 +
+  § 4.2 `<position>` resolution: the four-value grammar (1/2/3/4 forms,
+  keyword / length / percentage mix), the keyword-axis swap rule (`top
+  right` ≡ `right top`), and the § 4.2 formula `(container − image) *
+  fraction + offset`. Pure given px sizes; the cascade resolves the
+  `background-origin`-selected container size first.
+- `vixen-core::stacking_context` — CSS 2.1 § 9.9.1 + CSS Positioned Layout
+  3 § 6 + CSS Compositing 1 § 3 stacking-context formation predicate +
+  the seven-layer § App. E.2.1 paint-order classification (`classify_descendant`
+  slots each descendant into one of `ContextBackgroundAndBorders` /
+  `NegativeZChildren` / `InFlowBlockLevel` / `NonPositionedFloats` /
+  `InFlowInlineLevel` / `PositionedZeroZ` / `PositiveZChildren`, in
+  bottom-to-top paint order). Composes with `display_list::z_tier` for the
+  coarse z-bucketing and gives the paint pass the fine-grained in-flow
+  layering the CSS 2.1 appendix specifies.
+
+All six `#![forbid(unsafe_code)]`, Rust-unit-tested, ready for WebRender to
+consume once the display-list builder feeds them in.
 
 ---
 
@@ -228,6 +326,80 @@ Priority order:
 
 Each family lands with its WPT fixtures passing before moving on.
 
+**Pure-logic foundation landed for Events + Forms + Storage (Phase 6 prep).**
+- `vixen-core::event_path` — `composedPath()` (shadow-boundary aware via the
+  `composed` flag) and the focus-transition ordering
+  `focusout → focusin → blur → focus` (bubbling flags per SPEC). The host-hook
+  layer invokes these; the ordering is done and unit-tested.
+- `vixen-core::date_units` — the date/time canonical-unit parser
+  (`forms.rs` "lives in `date_units` until a proper parser lands" → landed):
+  `date`/`time`/`week`/`month`/`datetime-local` → `DateTimeUnit`, so
+  `stepMismatch` is now testable end-to-end over real input strings.
+- `vixen-core::storage_key` — Web Storage key/value validation (non-empty
+  key, no NUL bytes, ≤ `MAX_KEY_LEN`/`MAX_VALUE_LEN`) + the `(origin, kind)`
+  `StoragePartition` key the `vixen-store` redb tables partition under, plus
+  the per-partition `StorageQuota` (5 MiB / 8 192 entries) the host hooks
+  report `QuotaExceededError` against.
+- `vixen-core::form_submission` — the three WHATWG HTML § 4.10.21 form-
+  submission encoders (`application/x-www-form-urlencoded`,
+  `multipart/form-data`, `text/plain`) plus the `FormEntry` / `FormEntryValue`
+  data model + `FormEnctype` selector. The URL-encoder uses the URL Standard's
+  space→`+` + uppercase-hex percent-encoding; the multipart encoder handles
+  RFC 7578 § 4.2 `Content-Disposition` quoting + `filename` + `Content-Type`
+  per part, with CRLF discipline; the boundary generator is RFC 2046-capped.
+- `vixen-core::dataset` — WHATWG HTML § 3.2.6.9 `data-*` attribute ↔ dataset
+  property-name bidirectional mapping (deserialise, serialise, collect),
+  with the anti-collision rule (`-` followed by uppercase ⇒ not exposed).
+- `fixtures/forms/validation.html` — exercises every form pseudo-class
+  `style_dom` resolves today (`:checked`/`:disabled`/`:enabled`/`:required`/
+  `:optional`/`:read-only`/`:read-write`); wired into `fixtures/manifest.json`.
+- `fixtures/dom/dataset.html` — exercises the canonical `data-foo-bar` →
+  `fooBar` surface the host-hook layer will reflect; wired into
+  `fixtures/manifest.json`.
+- `fixtures/forms/submission.html` — fixes the form-DOM input shape the
+  three encoders will walk; wired into `fixtures/manifest.json`.
+
+**Pure-logic foundation landed for the `DOMTokenList` surface (Phase 6 prep).**
+- `vixen-core::class_list` — WHATWG HTML § 4.6.4 `DOMTokenList` + the
+  § 2.7.3 "ordered set of unique space-separated tokens" parser +
+  validator (empty ⇒ `SyntaxError`; ASCII-whitespace-bearing ⇒
+  `InvalidCharacterError`). The full mutating surface (`add` / `remove` /
+  `toggle` with the `force` parameter / `replace` with the
+  drop-old-if-new-already-present edge case / `contains` / `item` /
+  `iter` / `serialize`) with the spec's atomic validate-then-mutate rule
+  (any invalid token in a multi-token `add`/`remove` aborts the whole
+  call without partial mutation). The optional `SupportedTokens` set is
+  the surface `<link>.relList.supports(token)` consults (the only
+  `DOMTokenList` with a supported-tokens set per WHATWG § 4.6.5).
+- `fixtures/dom/class-list.html` — exercises the canonical classList
+  patterns the host-hook layer reflects (duplicate-token collapse,
+  whitespace-run collapse, the case-sensitive `Foo`/`foo`/`FOO`
+  distinction, the multi-value `<link rel>` form); wired into
+  `fixtures/manifest.json`.
+
+**Pure-logic foundation landed for Network host hooks (Phase 6 prep).**
+- `vixen-core::url_search_params` — WHATWG URL Standard `URLSearchParams`
+  (§ 5.2 parse + § 5.3 serialize) plus the full mutating surface
+  (`get`/`getAll`/`has`/`has_pair`/`append`/`set`/`delete`/`delete_pair`/
+  `sort`/`entries`/`keys`/`values`) the `new URLSearchParams()` JS host hook
+  reflects. The parser handles leading-`?` stripping, `+`→SPACE,
+  percent-decode with U+FFFD on ill-formed UTF-8, and empty-tuple dropping;
+  the serializer shares the `application/x-www-form-urlencoded` byte set with
+  `form_submission::encode_urlencoded` (kept separate because the specs are).
+- `vixen-core::mime` — WHATWG MIME Sniffing § 2.1 `MimeType::parse` + § 2.2
+  `serialize` + the `essence()` accessor. Tolerant whitespace + case handling,
+  quoted-string parameter values (RFC 9110 § 3.2.6 backslash-pair escaping),
+  first-occurrence-wins on duplicate parameter names. Every network layer
+  (`Content-Type`), `fetch()`/`XHR` (`.type`/`overrideMimeType`), and
+  `<object>`/`<embed>` plugin negotiation consults this one parser.
+- `vixen-core::text_codec` — WHATWG Encoding API (`TextEncoder` +
+  `TextDecoder`). `encode_into` reports UTF-16-code-unit `read` + byte
+  `written` without splitting a scalar value; `decode` does the BOM sniff
+  (`ignoreBOM` opt-out), the `fatal`-flag UTF-8 validation, the WHATWG § 4.6
+  one-U+FFFD-per-maximal-subpart replacement (via `from_utf8_lossy`, which
+  agrees with the WHATWG count), and the § 7.1 `CRLF`/lone-`CR` → `LF` line-
+  break normalisation. v1 ships UTF-8 only; unknown labels fail closed.
+
 **Gate:** `fixtures/dom/`, `fixtures/events/`, `fixtures/forms/`,
 `fixtures/storage/`, `fixtures/network/` all pass.
 
@@ -250,6 +422,59 @@ Wire every trust boundary from `docs/ARCHITECTURE.md`.
 6. `cargo audit` clean. `cargo deny` checks pass.
 7. Fuzz targets: `url_policy`, `csp::parse`, `html5ever` parse, the
    cookie parser. Each runs 1 M iterations without panic.
+
+**Pure-logic foundation landed (Phase 7 prep).**
+- `vixen-net::referrer_policy` — Fetch § 3.4 `Referrer-Policy` parser
+  (last-known directive wins) + § 4.3.7 `resolve_referrer` covering every
+  policy branch (downgrade suppression, same-origin gating, origin-only,
+  strict-origin-when-cross-origin default) + the `is_potentially_trustworthy`
+  test the downgrade rules reduce to. The network layer attaches the resolved
+  `Referer` once wired.
+- `vixen-net::strict_transport_security` — RFC 6795 § 6.1 HSTS header
+  parser (case-insensitive directives, tolerant whitespace, header ignored
+  without valid `max-age`, `max-age=0` cache-deletion signal) + § 8.2
+  `HstsEntry::matches` (exact host or, with `includeSubDomains`, a dot-prefixed
+  subdomain — the superdomain rule is one-way).
+- `vixen-net::cors` — Fetch § 3.2.1 `Access-Control-*` response-header
+  parser (case-insensitive names, lowercased + de-duplicated lists, repeated
+  origin header first-wins), § 4.1.5 `cors_check` (wildcard + credentials
+  forbidden, specific-origin string equality, `null`-origin echo), and
+  § 4.1.6 `cors_filtered_headers` (safelist of 7 response headers + named
+  exposes, with `Set-Cookie`/`Set-Cookie2` always stripped). The script→fetch
+  host hook consults this at every cross-origin response.
+- `vixen-net::mixed_content` — W3C Mixed Content L1 § 3 verdict
+  (`NotMixed`/`Block`/`Upgrade`) the fetch layer applies at every subresource
+  fetch out of a secure context. [`ResourceType`] collapses the fetch
+  destination to the three modal categories (active=block, passive=upgrade,
+  navigation=allow); `block-all-mixed-content` CSP overrides upgrades.
+  Reuses `referrer_policy::is_potentially_trustworthy` for the request-URL
+  secure-transport test.
+- `fixtures/security/cors-headers.html` — exercises the HTML surface
+  (`crossorigin`, `integrity`, `nonce`) the host-hook layer dispatches on
+  when constructing the cross-origin fetch; wired into `fixtures/manifest.json`.
+- `fixtures/network/mixed-content.html` — exercises every mixed-content
+  surface (http:// scripts/stylesheets/iframe/object vs. images/audio/video
+  vs. top-level navigation, plus https:// counterparts); wired into
+  `fixtures/manifest.json`.
+
+**Pure-logic foundation landed for `<iframe sandbox>` (Phase 7 prep).**
+- `vixen-net::sandboxing` — WHATWG HTML § 4.8.5 sandbox-flag parser (the
+  full `allow-*` keyword set: forms / modals / orientation-lock /
+  pointer-lock / popups / popups-to-escape-sandbox / presentation /
+  same-origin / scripts / top-navigation + the user-activation +
+  custom-protocols variants / downloads / storage-access /
+  unsafe-downloads). Tokenised on ASCII whitespace, case-insensitive,
+  unknown flags ignored, empty value ⇒ most-restrictive. The derived
+  security predicates the script/navigation/storage layers consult:
+  `implies_unique_origin` (the § 4.8.5 opaque-origin rule), and
+  `is_dangerous_scripts_plus_same_origin` (the famous "if both
+  `allow-scripts` and `allow-same-origin` are present, the sandbox is
+  escapable" warning the spec mandates).
+- `fixtures/security/sandbox.html` — exercises every `sandbox` variant
+  the parser handles (empty / scripts-only / scripts+same-origin
+  dangerous combination / top-nav family / popups family / mixed legacy
+  flags / unknown-token tolerance / case-insensitivity); wired into
+  `fixtures/manifest.json`.
 
 **Gate:** Every security test in `vixen-net` and `vixen-core` green.
 Zero `cargo audit` advisories. Fuzz targets stable.

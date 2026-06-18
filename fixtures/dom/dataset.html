@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>HTMLElement.dataset — Vixen fixture</title>
+  <!--
+    Exercises the `data-*` ↔ `dataset` mapping vixen-core::dataset resolves
+    today (Phase 6 DOM prep). The HTML parser lowercases attribute names, so
+    every attribute below is in the canonical `data-foo-bar` form and
+    deserialises to a camelCase property. Structural checks confirm the
+    attribute surface the host-hook layer will reflect once Phase 6 wires
+    DOMStringMap to the script compartment.
+  -->
+</head>
+<body>
+  <article id="card"
+           data-id="42"
+           data-author-name="ada"
+           data-publish-date="1843-07-10"
+           data-tags="analytical-engine,notes">
+    <h2>Notes on the Analytical Engine</h2>
+  </article>
+
+  <section id="state"
+           data-loading="false"
+           data-counter="0"
+           data-api-base="/api/v1">
+    <p>Live state container.</p>
+  </section>
+
+  <!-- Edge cases the host hook layer must round-trip per WHATWG HTML § 3.2.6.9. -->
+  <div id="edge"
+       data-x="simple"
+       data-foo-bar-baz="multi-word"
+       data-trailing-hyphen="kept"
+       data--leading-hyphen="kept-too"></div>
+</body>
+</html>

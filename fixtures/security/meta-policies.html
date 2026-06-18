@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Meta security policies — Vixen fixture</title>
+  <!--
+    Carries the <meta> forms of the security headers vixen-net parses today
+    (Phase 7 prep): CSP (docs/SPEC.md "CSP enforcement points") and the
+    Referrer-Policy (Fetch § 3.4). The header forms are tested in Rust
+    (vixen-net::referrer_policy / ::csp); this fixture documents the meta-tag
+    wiring surface so the Phase 7 host hook layer has a stable structural
+    target, and so the no-critical-diagnostics check exercises the meta parser
+    path once wired.
+  -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'nonce-abcd';">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+</head>
+<body>
+  <main id="root">
+    <!-- Links that, under the policy above, would carry a stripped Referer
+         cross-origin. Structural today; resolved by the network layer later. -->
+    <a id="same" href="/inner">same-origin link</a>
+    <a id="cross" href="https://other.test/path">cross-origin link</a>
+    <a id="downgrade" href="http://other.test/insecure">downgrade link</a>
+
+    <!-- A nonce-gated inline script: allowed by script-src 'nonce-abcd'. -->
+    <script nonce="abcd">
+      // document.title is unchanged; the script's mere execution is the test
+      // (Phase 7 step 1 already enforces CSP at the script boundary).
+      // Intentionally no-op so the fixture is parse-stable today.
+    </script>
+  </main>
+</body>
+</html>

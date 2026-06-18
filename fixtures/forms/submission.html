@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Form submission — Vixen fixture</title>
+  <!--
+    Exercises the form-DOM surface vixen-core::form_submission will walk when
+    building the entry list (Phase 6 Forms prep, docs/PLAN.md step 3). Every
+    field type the three encoders handle is represented; structural checks
+    confirm the names, types, and `enctype` carrier the host-hook layer will
+    dispatch on. The actual encoders (application/x-www-form-urlencoded,
+    multipart/form-data, text/plain) live as Rust unit tests; this fixture
+    fixes the input shape they'll see.
+  -->
+</head>
+<body>
+  <form id="contact" action="/submit" method="post"
+        enctype="application/x-www-form-urlencoded">
+    <fieldset id="identity">
+      <legend>Identity</legend>
+      <input type="text" id="name" name="name" value="Ada" required>
+      <input type="email" id="email" name="email" value="ada@analytical.example" required>
+      <input type="hidden" id="csrf" name="csrf" value="abcd1234">
+    </fieldset>
+
+    <fieldset id="message">
+      <legend>Message</legend>
+      <textarea id="body" name="body">Hello, world!</textarea>
+      <select id="urgency" name="urgency">
+        <option value="low">Low</option>
+        <option value="normal" selected>Normal</option>
+        <option value="high">High</option>
+      </select>
+    </fieldset>
+
+    <fieldset id="preferences">
+      <legend>Preferences</legend>
+      <label><input type="checkbox" id="newsletter" name="newsletter" value="yes" checked> Newsletter</label>
+      <label><input type="radio" id="format-html" name="format" value="html" checked> HTML</label>
+      <label><input type="radio" id="format-text" name="format" value="text"> Plain text</label>
+    </fieldset>
+
+    <!-- A disabled field is excluded from the entry list per HTML5 § 4.10.21.4. -->
+    <input type="text" id="disabled" name="disabled" value="hidden" disabled>
+
+    <button type="submit" id="submit">Send</button>
+    <button type="reset" id="reset">Reset</button>
+  </form>
+
+  <!-- A file-upload form exercises the multipart/form-data encoder. -->
+  <form id="upload" action="/upload" method="post" enctype="multipart/form-data">
+    <input type="file" id="attachment" name="attachment" accept="image/png,image/jpeg">
+    <button type="submit" id="upload-submit">Upload</button>
+  </form>
+</body>
+</html>

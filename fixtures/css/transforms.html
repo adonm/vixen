@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CSS transforms — Vixen fixture</title>
+  <style>
+    /* The 2D transform functions vixen-core::transform resolves today
+       (translate / scale / rotate / skew). Stylo owns the computed-value
+       surface; this <style> block is carried so the fixture is ready for the
+       Phase 5 visual-hash check. Today's checks run against the parsed DOM +
+       the data-transform attribute, which mirrors the authored value so the
+       matrix-algebra tests have a stable input. */
+    .t { transform-origin: 0 0; }
+  </style>
+</head>
+<body>
+  <!-- Each tile carries its authored transform both as an inline style (for the
+       cascade to consume once Stylo wiring lands) and as a data-transform
+       attribute (so today's WPT element-attribute checks can assert against it
+       without a computed-style projection). -->
+  <main id="root">
+    <div id="translate" class="t" style="transform: translate(10px, 20px)"
+         data-transform="translate(10px, 20px)">translate</div>
+    <div id="scale" class="t" style="transform: scale(2)"
+         data-transform="scale(2)">scale</div>
+    <div id="rotate" class="t" style="transform: rotate(45deg)"
+         data-transform="rotate(45deg)">rotate</div>
+    <div id="skew" class="t" style="transform: skew(10deg, 5deg)"
+         data-transform="skew(10deg, 5deg)">skew</div>
+    <div id="list" class="t" style="transform: translate(10px, 0) rotate(45deg)"
+         data-transform="translate(10px, 0) rotate(45deg)">list</div>
+    <!-- The no-transform baseline: identity. -->
+    <div id="identity" class="t">identity</div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CORS surface — Vixen fixture</title>
+  <!--
+    Exercises the HTML surface that triggers cross-origin fetches vixen-net::cors
+    will gate (Phase 7 prep, docs/SPEC.md "Security"). The cors module parses
+    the response headers; this fixture documents the request-side attributes
+    (`crossorigin`, `integrity`, `nonce`) the host-hook layer will consult
+    when constructing fetch requests. Structural checks confirm every variant
+    of the crossorigin attribute is present and stable for inspection.
+  -->
+  <link id="style-default"
+        rel="stylesheet"
+        href="https://cdn.example/styles.css">
+  <link id="style-anonymous"
+        rel="stylesheet"
+        crossorigin="anonymous"
+        href="https://cdn.example/secure.css">
+  <link id="style-use-credentials"
+        rel="stylesheet"
+        crossorigin="use-credentials"
+        href="https://cdn.example/personalised.css">
+</head>
+<body>
+  <main id="content">
+    <!-- crossorigin missing ⇒ same-origin credentials mode -->
+    <img id="img-default" src="https://cdn.example/banner.png" alt="banner">
+
+    <!-- crossorigin="anonymous" ⇒ credentials omitted, the CORS check
+         accepts Access-Control-Allow-Origin: * -->
+    <img id="img-anonymous"
+         crossorigin="anonymous"
+         src="https://cdn.example/photo.png"
+         alt="photo">
+
+    <!-- Subresource Integrity: the host hook computes the hash and the
+         network layer refuses a non-matching response. -->
+    <script id="sri-script"
+            crossorigin="anonymous"
+            integrity="sha256-abcdef0123456789"
+            src="https://cdn.example/bundle.js"></script>
+
+    <!-- nonce-gated inline script (CSP enforcement, not CORS, but lives at
+         the same trust boundary). -->
+    <script id="nonce-script" nonce="vixen-nonce-123">
+      // no-op today; the host hook layer is the structural target here.
+    </script>
+
+    <!-- A fetch-shaped anchor carrying the crossorigin attribute. -->
+    <a id="api-link"
+       crossorigin="anonymous"
+       href="https://api.example/data.json">View data</a>
+  </main>
+</body>
+</html>

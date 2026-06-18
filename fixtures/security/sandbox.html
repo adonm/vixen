@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>iframe sandbox — Vixen fixture</title>
+  <!--
+    Exercises the HTML attribute surface vixen-net::sandboxing parses today
+    (Phase 7 security prep). The sandbox parser (WHATWG HTML § 4.8.5)
+    tokenises on ASCII whitespace, matches case-insensitively against the
+    allow-* keyword set, and an empty attribute ⇒ the most-restrictive form.
+    Structural checks confirm every variant the script/navigation/storage
+    layers will consult once Phase 7 wires the sandbox-flag enforcement.
+
+    Key cases:
+    - Empty/missing sandbox value ⇒ every capability revoked.
+    - allow-scripts alone ⇒ scripts re-enabled, origin stays opaque.
+    - allow-scripts + allow-same-origin ⇒ the "dangerous" combination
+      (the framed page can escape the sandbox).
+    - Top-navigation family: allow-top-navigation,
+      allow-top-navigation-by-user-activation.
+    - Popups: allow-popups, allow-popups-to-escape-sandbox.
+    - Mixed/legacy flags: allow-forms, allow-modals, allow-pointer-lock.
+  -->
+</head>
+<body>
+  <main id="content">
+    <!-- Empty sandbox attribute ⇒ most-restrictive form. -->
+    <iframe id="sandbox-empty"
+            sandbox=""
+            src="https://example.com/embedded"></iframe>
+
+    <!-- No sandbox attribute at all (the unrestricted case). -->
+    <iframe id="sandbox-absent"
+            src="https://example.com/embedded"></iframe>
+
+    <!-- Minimal sandbox: scripts only (origin stays opaque). -->
+    <iframe id="sandbox-scripts"
+            sandbox="allow-scripts"
+            src="https://example.com/widget"></iframe>
+
+    <!-- The YouTube-style "dangerous" combination. -->
+    <iframe id="sandbox-scripts-same-origin"
+            sandbox="allow-scripts allow-same-origin"
+            src="https://example.com/player"></iframe>
+
+    <!-- Top-navigation family. -->
+    <iframe id="sandbox-top-nav"
+            sandbox="allow-scripts allow-top-navigation"
+            src="https://example.com/app"></iframe>
+    <iframe id="sandbox-top-nav-user-activation"
+            sandbox="allow-scripts allow-top-navigation-by-user-activation"
+            src="https://example.com/app"></iframe>
+
+    <!-- Popup family. -->
+    <iframe id="sandbox-popups"
+            sandbox="allow-scripts allow-popups"
+            src="https://example.com/app"></iframe>
+    <iframe id="sandbox-popups-escape"
+            sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox"
+            src="https://example.com/app"></iframe>
+
+    <!-- Mixed/legacy flag set. -->
+    <iframe id="sandbox-legacy"
+            sandbox="allow-forms allow-modals allow-pointer-lock allow-presentation"
+            src="https://example.com/app"></iframe>
+
+    <!-- Unknown tokens are ignored (no parse error). -->
+    <iframe id="sandbox-unknown"
+            sandbox="allow-scripts made-up-flag"
+            src="https://example.com/app"></iframe>
+
+    <!-- Mixed-case (case-insensitive parsing). -->
+    <iframe id="sandbox-mixed-case"
+            sandbox="Allow-Scripts ALLOW-FORMS"
+            src="https://example.com/app"></iframe>
+  </main>
+</body>
+</html>

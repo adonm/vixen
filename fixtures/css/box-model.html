@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Box model + border-radius — Vixen fixture</title>
+  <style>
+    /* Exercises the vixen-core::box_model CSS2 § 10.3 auto-resolution +
+       vixen-core::border_radius § 5.5 corner-shaping. Carried so the fixture
+       is ready for the Phase 4/5 visual-hash check; today's checks run against
+       the parsed DOM + data attributes. */
+    .box { width: 200px; height: 100px; }
+    .content-box { box-sizing: content-box; }
+    .border-box { box-sizing: border-box; padding: 10px; border: 5px solid black; }
+  </style>
+</head>
+<body>
+  <!--
+    Pairs authored box-model + border-radius values with data attributes that
+    mirror them, so the WPT element-attribute checks can assert the resolved
+    shape without a computed-style projection. When Stylo wiring lands
+    (Phase 3 step 3), the visual-hash check will verify the § 5.5 corner
+    scaling (uniform 60 on an 80-wide box → 40) and the box-sizing subtraction.
+  -->
+  <main id="root">
+    <div id="plain" class="box">plain</div>
+
+    <!-- box-sizing: border-box — declared 200 covers border+padding. -->
+    <div id="bb" class="box border-box"
+         style="box-sizing: border-box; padding: 10px; border: 5px solid black;"
+         data-box-sizing="border-box"
+         data-padding="10"
+         data-border="5">border-box</div>
+
+    <!-- box-sizing: content-box (default) — content is the declared 200. -->
+    <div id="cb" class="box content-box"
+         style="box-sizing: content-box;"
+         data-box-sizing="content-box">content-box</div>
+
+    <!-- auto-margins center this fixed-width block. -->
+    <div id="centered" class="box"
+         style="width: 100px; margin: 0 auto;"
+         data-margin-left="auto"
+         data-margin-right="auto">centered</div>
+
+    <!-- Uniform border-radius that overflows the box (§ 5.5 scaling). -->
+    <div id="round-overflow" class="box"
+         style="border-radius: 60px;"
+         data-radius="60">round-overflow</div>
+
+    <!-- border-radius: 50% (circle-in-square / ellipse). -->
+    <div id="round-half" class="box"
+         style="border-radius: 50%;"
+         data-radius="50%">round-half</div>
+
+    <!-- Elliptical corner that fits (no scaling). -->
+    <div id="round-ellipse" class="box"
+         style="border-radius: 30px 10px;"
+         data-radius="30px 10px">round-ellipse</div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Mixed content surface — Vixen fixture</title>
+  <!--
+    Exercises the HTML surface that triggers mixed-content classification
+    (Phase 7 prep, docs/SPEC.md "Security"). `vixen-net::mixed_content` runs
+    the W3C MC § 3 verdict on every subresource fetch out of a secure context;
+    this fixture documents the request-side URLs + element categories the
+    host-hook layer will consult when constructing fetches. Structural checks
+    confirm every variant (active vs. passive vs. navigation, http: vs https:)
+    is present and stable for inspection.
+
+    Active mixed content (W3C MC § 3.2 — blocked):
+      script, stylesheet, iframe, object, font, fetch-shaped endpoints.
+    Passive mixed content (§ 3.3 — auto-upgraded to https):
+      img, audio, video.
+    Navigation (§ 3 — never blocked as mixed content):
+      top-level <a href> navigation.
+  -->
+
+  <!-- Active mixed content: scripts + stylesheets on http:// -->
+  <script id="http-script"
+          src="http://legacy-analytics.example/tracker.js"></script>
+  <link id="http-stylesheet"
+        rel="stylesheet"
+        href="http://legacy-cdn.example/old.css">
+
+  <!-- Secure counterparts: identical resource categories over https:// -->
+  <script id="https-script"
+          src="https://cdn.example/bundle.js"></script>
+  <link id="https-stylesheet"
+        rel="stylesheet"
+        href="https://cdn.example/style.css">
+</head>
+<body>
+  <main id="content">
+    <!-- Passive mixed content: image, audio, video on http:// (upgraded) -->
+    <img id="http-image"
+         src="http://cdn.example/hero.png"
+         alt="hero">
+    <audio id="http-audio" src="http://cdn.example/clip.mp3"></audio>
+    <video id="http-video" src="http://cdn.example/clip.mp4"></video>
+
+    <!-- Secure counterparts. -->
+    <img id="https-image" src="https://cdn.example/hero.png" alt="hero-secure">
+
+    <!-- Active mixed content: iframe + object/embed -->
+    <iframe id="http-iframe" src="http://legacy.example/frame.html"></iframe>
+    <object id="http-object" data="http://legacy.example/widget.swf"></object>
+
+    <!-- Navigation: a top-level link to an http:// page. Never blocked as
+         mixed content per W3C MC § 3 (the UA's HTTPS-First mode is a
+         separate upgrade path). -->
+    <a id="http-link" href="http://legacy.example/page">Legacy page</a>
+
+    <!-- A link to an https:// page, for contrast. -->
+    <a id="https-link" href="https://example.com/page">Secure page</a>
+  </main>
+</body>
+</html>

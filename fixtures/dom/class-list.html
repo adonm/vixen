@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>DOMTokenList (classList, relList) — Vixen fixture</title>
+  <!--
+    Exercises the HTML attribute surface vixen-core::class_list parses today
+    (Phase 6 DOM prep). The DOMTokenList algorithm (WHATWG HTML § 4.6.4 +
+    § 2.7.3) splits on ASCII whitespace, drops duplicates preserving
+    first-occurrence order, and is case-sensitive. Structural checks confirm
+    every variant the host-hook layer will reflect once Phase 6 wires
+    DOMTokenList to the script compartment.
+
+    Specifically tests the easy-to-get-wrong parts:
+    - Duplicate tokens collapse (class="a b a" ⇒ ["a", "b"]).
+    - Whitespace runs collapse (tab/newline-separated tokens parse cleanly).
+    - Tokens are case-sensitive (class="Foo foo FOO" ⇒ 3 distinct tokens).
+    - Multiple <link> rel values use the same DOMTokenList surface.
+  -->
+  <link id="link-preload"
+        rel="preload"
+        as="style"
+        href="/css/critical.css">
+  <link id="link-multi-rel"
+        rel="stylesheet alternate"
+        href="/css/theme.css">
+</head>
+<body>
+  <!-- Duplicate tokens: "a b a" ⇒ DOMTokenList(["a", "b"]) (length 2). -->
+  <div id="duplicates" class="a b a c b">duplicates</div>
+
+  <!-- Whitespace variants: tab/newline/CR all separate, runs collapse. -->
+  <div id="whitespace"
+       class="	tab
+	crlf">whitespace</div>
+
+  <!-- Case-sensitive: 3 distinct tokens (class selectors are case-sensitive). -->
+  <div id="case-sensitive" class="Foo foo FOO">case-sensitive</div>
+
+  <!-- The canonical authoring pattern: simple, ordered, unique. -->
+  <div id="typical" class="btn btn-primary active">typical</div>
+
+  <!-- Single token, no leading/trailing whitespace. -->
+  <div id="single" class="solo">single</div>
+
+  <!-- Empty class attribute: DOMTokenList of length 0. -->
+  <div id="empty" class="">empty</div>
+
+  <!-- No class attribute at all (distinct from empty). -->
+  <div id="absent">absent</div>
+</body>
+</html>

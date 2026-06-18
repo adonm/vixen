@@ -32,9 +32,65 @@ and reference material, plus:
   `Stylist::update_stylist` + `computed_values_for(node_id)`) is the next
   slice; Stylo arrives via the crates.io-published `stylo` crate per
   ADR-011 (no Servo git dep).
+- **Phase 4 prep** — `vixen-core::box_model` implements the CSS2 § 10.3.3
+  block-level horizontal-constraint solve (`auto`-width leftover absorption,
+  one/two `auto`-margin centering, `box-sizing: border-box` content
+  subtraction) and the four-box nesting. `vixen-core::flex_resolve`
+  implements CSS Flexbox 1 § 9.7 main-axis distribution (grow/shrink factor
+  selection, inflexible-item freezing, min/max violation clamping, iterative
+  free-space distribution). Both ready for `layout_2020` to feed off.
+- **Phase 5 prep** — `vixen-core::display_list` (all eight `SPEC.md`
+  display-list invariants) + the paint-geometry family it will consume:
+  `vixen-core::transform` (CSS Transforms 1 § 13 2D affine algebra +
+  list parser), `vixen-core::border_radius` (CSS Backgrounds 3 § 5.5
+  corner shaping), `vixen-core::gradient` (CSS Images 4 § 4.5
+  linear-gradient colour-stop resolution + linear-sRGB sampling, with the
+  `repeating-linear-gradient()` wrap), `vixen-core::box_shadow` (CSS
+  Backgrounds 3 § 7.2 outer/inset shadow geometry + the `<shadow>#`
+  parser), `vixen-core::background_position` (CSS Backgrounds 3 § 3.6 +
+  § 4.2 `<position>` resolution: keyword/length/percentage mix, the 1–4
+  value forms, the keyword-axis swap rule), and `vixen-core::stacking_context`
+  (CSS 2.1 § 9.9.1 + Positioned Layout 3 § 6 stacking-context formation +
+  the seven-layer § App. E.2.1 paint-order classification). All
+  `#![forbid(unsafe_code)]` and Rust-unit-tested.
 - **Phase 6 prep** — pure form-constraint validation in `vixen-core::forms`
   (email/URL formats, step arithmetic, range/length flags) ready for the
-  script-layer host hooks.
+  script-layer host hooks; `vixen-core::form_submission` (the three WHATWG
+  HTML § 4.10.21 encoders: `application/x-www-form-urlencoded`,
+  `multipart/form-data`, `text/plain`); `vixen-core::dataset` (WHATWG HTML
+  § 3.2.6.9 `data-*` ↔ `dataset` property-name bidirectional mapping, with
+  the anti-collision rule); `vixen-core::storage_key` (Web Storage key/value
+  validation + origin-partitioned redb keys + the 5 MiB quota); the network
+  host-hook family: `vixen-core::url_search_params` (WHATWG URL Standard
+  `URLSearchParams` parse/serialize + the full mutating surface),
+  `vixen-core::mime` (WHATWG MIME Sniffing § 2.1/§ 2.2 parse/serialize +
+  `essence()`), and   `vixen-core::text_codec` (WHATWG Encoding API
+  `TextEncoder`/`TextDecoder` with the `fatal` flag, BOM sniff, and § 7.1
+  line-break normalisation). The `vixen-core::class_list` (WHATWG HTML
+  § 4.6.4 `DOMTokenList` + § 2.7.3 ordered-set parser: `add`/`remove`/
+  `toggle`/`replace`/`contains` with the spec's atomic validate-then-mutate
+  rule, the supported-tokens surface for `<link>.relList`) backs every
+  `element.classList` / `relList` / `sandbox` host-hook reflection. The CSS
+  Values 4 dimension family (`length`,
+  `color`, `angle`, `time`, `resolution`) — the value primitives the
+  cascade/layout/paint resolves against — is now complete for v1.0; pure
+  sRGB colour arithmetic + interpolation, premultiplied alpha, hue/unit
+  normalisation, and dots-per-pixel conversion are all Rust-unit-tested and
+  ready for the cascade + WebRender to consume.
+- **Phase 7 prep** — CSP enforcement at the script execution boundary
+  (`vixen-core::script`); `vixen-net::referrer_policy` (Fetch § 3.4/§ 4.3.7
+  `Referrer-Policy` parsing + `Referer` resolution); `vixen-net::strict_transport_security`
+  (RFC 6795 HSTS parsing + § 8.2 host match); `vixen-net::cors` (Fetch
+  § 3.2.1 `Access-Control-*` response-header parsing + § 4.1.5 CORS check
+  with credentials-mode tightening + § 4.1.6 CORS-filtered response with
+  the `Set-Cookie`/`Set-Cookie2` forbidden headers);
+  `vixen-net::mixed_content` (W3C Mixed Content L1 § 3 verdict —
+  `NotMixed`/`Block`/`Upgrade` — the fetch layer consults at every
+  subresource out of a secure context); and `vixen-net::sandboxing`
+  (WHATWG HTML § 4.8.5 `<iframe sandbox>` flag parser + the
+  `implies_unique_origin` / `is_dangerous_scripts_plus_same_origin`
+  predicates the script/navigation/storage layers consult when loading
+  framed content), ready for the network layer to consult at every fetch.
 - **Phase 8 (partial)** — the CDP WebSocket server (`vixen-headless::cdp`)
   responds to the six required methods (`Browser.getVersion`,
   `Target.createTarget`, `Target.attachToTarget`, `Page.navigate`,

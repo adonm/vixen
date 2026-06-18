@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Forms validation — Vixen fixture</title>
+</head>
+<body>
+  <!--
+    Exercises the form pseudo-classes that vixen-core::style_dom resolves from
+    attributes today (:checked / :disabled / :enabled / :required / :optional /
+    :read-only / :read-write). :valid / :invalid fail closed until the forms
+    module is wired into the selector host (Phase 6) — see docs/PLAN.md.
+  -->
+  <form id="login">
+    <label>Email <input type="email" id="email" name="email" required></label>
+    <label>Password <input type="password" id="pw" name="pw" required minlength="8"></label>
+
+    <fieldset id="prefs">
+      <legend>Prefs</legend>
+      <label><input type="checkbox" id="news" name="news" checked> Newsletter</label>
+      <label><input type="checkbox" id="alerts" name="alerts"> Alerts</label>
+
+      <label>Plan
+        <select id="plan" name="plan" required>
+          <option value="">pick…</option>
+          <option value="free">Free</option>
+          <option value="pro" selected>Pro</option>
+        </select>
+      </label>
+
+      <label>Color
+        <input type="color" id="color" name="color" value="#3366ff" disabled>
+      </label>
+
+      <label>Notes
+        <textarea id="notes" name="notes" readonly>pre-filled</textarea>
+      </label>
+    </fieldset>
+
+    <button type="submit" id="submit" disabled>Sign in</button>
+    <button type="reset" id="reset">Reset</button>
+  </form>
+</body>
+</html>

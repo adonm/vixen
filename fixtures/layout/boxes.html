@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Layout boxes — Vixen fixture</title>
+  <style>
+    /* Stylo cascade wiring lands with Phase 3 step 3; this <style> block is
+       carried so the fixture is ready for the visual-hash check (Phase 5).
+       Today's checks run against the parsed DOM only. */
+    .row { display: flex; }
+    .box { width: 100px; height: 100px; }
+  </style>
+</head>
+<body>
+  <!-- A nested flex/grid shape that exercises the cascade + layout + paint
+       pipeline once Phase 4/5 land. Coordinates asserted via the WPT
+       `visual-hash` check (Phase 5); structural assertions run today. -->
+  <main id="root" class="container">
+    <div id="row-1" class="row">
+      <div id="a" class="box" data-z="0">A</div>
+      <div id="b" class="box" data-z="-1">B (negative z)</div>
+      <div id="c" class="box" data-z="2" hidden>C (hidden)</div>
+    </div>
+    <div id="row-2" class="row">
+      <div id="d" class="box" data-z="1">D</div>
+      <span id="e" class="box">E (inline-block-ish span)</span>
+    </div>
+    <p id="caption">Nested flex/grid + padding + margins + gaps.</p>
+  </main>
+</body>
+</html>

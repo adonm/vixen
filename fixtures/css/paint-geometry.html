@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Paint geometry — Vixen fixture</title>
+  <!--
+    Exercises the HTML/CSS surface vixen-core::{box_shadow,
+    background_position, stacking_context} resolve today (Phase 5 paint prep).
+    The three pure-logic modules compute the geometry the display-list
+    builder feeds WebRender; this fixture documents the authored CSS the
+    cascade will resolve into those modules' inputs. Structural checks
+    confirm every variant is present and stable for inspection:
+
+    box-shadow (CSS Backgrounds 3 § 7.2):
+      outer (offset/blur/spread), inset, multi-shadow list, negative spread.
+    background-position (§ 3.6 / § 4.2):
+      keyword, length, percentage, 1/2/3/4-value forms, swap rule.
+    stacking-context (CSS 2.1 § 9.9.1 + Positioned Layout 3 § 6):
+      opacity/transform/filter/isolation formation; z-index layering.
+  -->
+  <style>
+    /* box-shadow outer + spread. */
+    #shadow-outer { box-shadow: 5px 5px 10px 2px #000; }
+    /* box-shadow inset (positive spread shrinks the hole). */
+    #shadow-inset { box-shadow: inset 0 0 8px 4px #3366ff; }
+    /* box-shadow multi-layer list (first painted on top). */
+    #shadow-list  { box-shadow: 1px 1px red, 2px 2px 4px blue; }
+    /* box-shadow negative spread (collapses outer ring). */
+    #shadow-neg   { box-shadow: 0 0 8px -4px black; }
+
+    /* background-position keyword + length + percentage variants. */
+    #pos-left-top    { background-position: left top; }
+    #pos-percent     { background-position: 25% 75%; }
+    #pos-four-value  { background-position: right 10px bottom 5px; }
+    #pos-center      { background-position: center; }
+
+    /* stacking-context formation via opacity. */
+    #sc-opacity { opacity: 0.5; }
+    /* stacking-context formation via transform. */
+    #sc-transform { transform: translate(10px, 0); }
+    /* stacking-context formation via isolation. */
+    #sc-isolation { isolation: isolate; }
+    /* z-index on a positioned element (negative layer). */
+    #z-negative { position: absolute; z-index: -1; }
+    /* z-index on a positioned element (positive layer). */
+    #z-positive { position: absolute; z-index: 5; }
+    /* positioned auto-z (layer 6, not stacking-context forming). */
+    #z-auto { position: absolute; }
+  </style>
+</head>
+<body>
+  <main id="content">
+    <div id="shadow-outer">shadow outer</div>
+    <div id="shadow-inset">shadow inset</div>
+    <div id="shadow-list">shadow list</div>
+    <div id="shadow-neg">shadow neg</div>
+
+    <div id="pos-left-top">pos left top</div>
+    <div id="pos-percent">pos percent</div>
+    <div id="pos-four-value">pos four value</div>
+    <div id="pos-center">pos center</div>
+
+    <div id="sc-opacity">sc opacity</div>
+    <div id="sc-transform">sc transform</div>
+    <div id="sc-isolation">sc isolation</div>
+    <div id="z-negative">z negative</div>
+    <div id="z-positive">z positive</div>
+    <div id="z-auto">z auto</div>
+  </main>
+</body>
+</html>

@@ -11,10 +11,33 @@
 
 #![deny(unsafe_code)]
 
+pub mod angle;
+pub mod background_position;
+pub mod border_radius;
+pub mod box_model;
+pub mod box_shadow;
+pub mod class_list;
+pub mod color;
+pub mod dataset;
+pub mod date_units;
+pub mod display_list;
 pub mod doc;
 pub mod engine_error;
+pub mod event_path;
+pub mod flex_resolve;
+pub mod form_submission;
 pub mod forms;
+pub mod gradient;
+pub mod length;
+pub mod mime;
+pub mod resolution;
 pub mod script;
+pub mod stacking_context;
+pub mod storage_key;
 pub mod style_dom;
+pub mod text_codec;
+pub mod time;
+pub mod transform;
+pub mod url_search_params;
 
 // Removed once the first post-Phase-0 module landed; kept out of the build.
