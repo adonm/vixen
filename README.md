@@ -76,7 +76,16 @@ and reference material, plus:
   cascade/layout/paint resolves against — is now complete for v1.0; pure
   sRGB colour arithmetic + interpolation, premultiplied alpha, hue/unit
   normalisation, and dots-per-pixel conversion are all Rust-unit-tested and
-  ready for the cascade + WebRender to consume.
+  ready for the cascade + WebRender to consume. The responsive-image
+  selection family (`media_query`, `source_size`, `responsive_select`)
+  completes the WHATWG § 4.8.4.6–§ 4.8.4.8 pipeline end-to-end: CSS Media
+  Queries 4 condition evaluation against a `Viewport`, the `<img sizes>`
+  source-size-list parser, and the § 4.8.4.8 density-based source selection
+  (incl. the `<picture>`/`<source media>` art-direction walk). The
+  value-resolution primitives `calc` (CSS Values 4 § 10 `calc()`/`min()`/
+  `max()`/`clamp()` with full § 10.7 dimension type-checking) and `easing`
+  (CSS Easing 1 `cubic-bezier`/`steps`/`linear` timing functions) cover the
+  cascade's `calc()` reduction and the transition/animation driver surface.
 - **Phase 7 prep** — CSP enforcement at the script execution boundary
   (`vixen-core::script`); `vixen-net::referrer_policy` (Fetch § 3.4/§ 4.3.7
   `Referrer-Policy` parsing + `Referer` resolution); `vixen-net::strict_transport_security`
@@ -90,7 +99,12 @@ and reference material, plus:
   (WHATWG HTML § 4.8.5 `<iframe sandbox>` flag parser + the
   `implies_unique_origin` / `is_dangerous_scripts_plus_same_origin`
   predicates the script/navigation/storage layers consult when loading
-  framed content), ready for the network layer to consult at every fetch.
+  framed content); `vixen-net::sec_fetch` (Fetch § 3.1 `Sec-Fetch-*`
+  request-metadata parsing + the § 3.2.4 site classifier); and
+  `vixen-net::permissions_policy` (Permissions Policy 1 § 3.3
+  `Permissions-Policy` header + `<iframe allow>` parser + the § 4
+  per-feature allowlist evaluation) — ready for the network layer to
+  consult at every fetch.
 - **Phase 8 (partial)** — the CDP WebSocket server (`vixen-headless::cdp`)
   responds to the six required methods (`Browser.getVersion`,
   `Target.createTarget`, `Target.attachToTarget`, `Page.navigate`,

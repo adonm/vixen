@@ -251,6 +251,26 @@
       ]
     },
     {
+      "url": "fixtures/dom/srcset.html",
+      "checks": [
+        { "type": "title", "expected": "img srcset — Vixen fixture" },
+        { "type": "selector-count", "selector": "img", "expected": 4 },
+        { "type": "selector-count", "selector": "picture", "expected": 1 },
+        { "type": "selector-count", "selector": "source", "expected": 2 },
+        { "type": "selector-count", "selector": "[srcset]", "expected": 5 },
+        { "type": "selector-count", "selector": "img[srcset]", "expected": 3 },
+        { "type": "selector-count", "selector": "source[srcset]", "expected": 2 },
+        { "type": "selectors-exact", "selector": "img[srcset]", "expected": ["widths", "densities", "bare"] },
+        { "type": "selectors-exact", "selector": "source[srcset]", "expected": ["wide", "narrow"] },
+        { "type": "element-attribute", "selector": "#widths", "attribute": "srcset", "expected": "small.jpg 480w, medium.jpg 800w, large.jpg 1200w" },
+        { "type": "element-attribute", "selector": "#densities", "attribute": "srcset", "expected": "one.png 1x, two.png 2x" },
+        { "type": "element-attribute", "selector": "#bare", "attribute": "srcset", "expected": "fallback.png" },
+        { "type": "element-attribute", "selector": "#wide", "attribute": "srcset", "expected": "wide.jpg 1x, wide-2x.jpg 2x" },
+        { "type": "element-attribute", "selector": "#narrow", "attribute": "srcset", "expected": "narrow.jpg" },
+        { "type": "body-contains", "expected": "Responsive images" }
+      ]
+    },
+    {
       "url": "fixtures/css/paint-geometry.html",
       "checks": [
         { "type": "title", "expected": "Paint geometry — Vixen fixture" },
@@ -286,6 +306,50 @@
         { "type": "element-attribute", "selector": "#sandbox-scripts-same-origin", "attribute": "sandbox", "expected": "allow-scripts allow-same-origin" },
         { "type": "element-attribute", "selector": "#sandbox-mixed-case", "attribute": "sandbox", "expected": "Allow-Scripts ALLOW-FORMS" },
         { "type": "body-contains", "expected": "iframe sandbox" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/sizes.html",
+      "checks": [
+        { "type": "title", "expected": "img sizes + responsive selection — Vixen fixture" },
+        { "type": "selector-count", "selector": "img", "expected": 9 },
+        { "type": "selector-count", "selector": "picture", "expected": 3 },
+        { "type": "selector-count", "selector": "source", "expected": 5 },
+        { "type": "selector-count", "selector": "[sizes]", "expected": 6 },
+        { "type": "selector-count", "selector": "[srcset]", "expected": 11 },
+        { "type": "selector-count", "selector": "source[media]", "expected": 5 },
+        { "type": "selector-count", "selector": "img[sizes]", "expected": 5 },
+        { "type": "selectors-exact", "selector": "img[sizes]", "expected": ["mobile-first", "three-tier", "density", "bare-length", "em-based"] },
+        { "type": "selectors-exact", "selector": "source[media]", "expected": ["wide-source", "narrow-source", "tablet-source", "portrait-source", "landscape-source"] },
+        { "type": "element-attribute", "selector": "#mobile-first", "attribute": "sizes", "expected": "(max-width: 600px) 100vw, 50vw" },
+        { "type": "element-attribute", "selector": "#three-tier", "attribute": "sizes", "expected": "(max-width: 480px) 100vw, (max-width: 1024px) 75vw, 1200px" },
+        { "type": "element-attribute", "selector": "#bare-length", "attribute": "sizes", "expected": "300px" },
+        { "type": "element-attribute", "selector": "#em-based", "attribute": "sizes", "expected": "(min-width: 40em) 40em, 100vw" },
+        { "type": "element-attribute", "selector": "#wide-source", "attribute": "media", "expected": "(min-width: 800px)" },
+        { "type": "element-attribute", "selector": "#narrow-source", "attribute": "media", "expected": "(max-width: 799px)" },
+        { "type": "element-attribute", "selector": "#portrait-source", "attribute": "media", "expected": "(orientation: portrait)" },
+        { "type": "element-attribute", "selector": "#landscape-source", "attribute": "media", "expected": "(orientation: landscape)" },
+        { "type": "selector-count", "selector": "#no-sizes:not([sizes])", "expected": 1 },
+        { "type": "body-contains", "expected": "Responsive image selection" }
+      ]
+    },
+    {
+      "url": "fixtures/security/permissions-policy.html",
+      "checks": [
+        { "type": "title", "expected": "Permissions Policy + Sec-Fetch surface — Vixen fixture" },
+        { "type": "selector-count", "selector": "iframe", "expected": 9 },
+        { "type": "selector-count", "selector": "[allow]", "expected": 8 },
+        { "type": "selector-count", "selector": "#no-allow:not([allow])", "expected": 1 },
+        { "type": "selectors-exact", "selector": "iframe[allow]", "expected": ["bare-geolocation", "multi-bare", "self-only", "src-only", "origin-list", "deny-all", "mixed", "kitchen-sink"] },
+        { "type": "element-attribute", "selector": "#bare-geolocation", "attribute": "allow", "expected": "geolocation" },
+        { "type": "element-attribute", "selector": "#multi-bare", "attribute": "allow", "expected": "geolocation; microphone; fullscreen" },
+        { "type": "element-attribute", "selector": "#self-only", "attribute": "allow", "expected": "camera 'self'" },
+        { "type": "element-attribute", "selector": "#src-only", "attribute": "allow", "expected": "camera 'src'" },
+        { "type": "element-attribute", "selector": "#origin-list", "attribute": "allow", "expected": "geolocation; camera (self 'https://partner.test')" },
+        { "type": "element-attribute", "selector": "#deny-all", "attribute": "allow", "expected": "microphone ()" },
+        { "type": "element-attribute", "selector": "#mixed", "attribute": "allow", "expected": "autoplay; fullscreen 'self'; camera (self 'https://trusted.test')" },
+        { "type": "element-attribute", "selector": "#kitchen-sink", "attribute": "allow", "expected": "geolocation; microphone; camera; fullscreen; autoplay; encrypted-media; picture-in-picture; web-share" },
+        { "type": "body-contains", "expected": "Permissions Policy delegation" }
       ]
     }
   ]

@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>img sizes + responsive selection — Vixen fixture</title>
+  <!--
+    Exercises the `<img sizes>` / `<source media>` attribute surface that
+    `vixen-core::source_size::SourceSizeList::parse` and
+    `vixen-core::responsive_select::select_source` resolve today (Phase 6 DOM
+    prep, WHATWG HTML 4.8.4.7 + 4.8.4.8). The HTML parser retains each
+    attribute value verbatim; these structural + attribute checks pin the
+    canonical responsive-image authoring forms (conditional sizes, the default
+    fallback, width-vs-density srcset, the <picture>/<source> art-direction
+    combination with media queries) the host-hook layer will hand the parser +
+    selector once Phase 6 wires the HTMLImageElement reflection.
+  -->
+</head>
+<body>
+  <h1>Responsive image selection</h1>
+
+  <!-- Classic mobile-first sizes: 100vw on phones, 50vw on larger screens. -->
+  <img id="mobile-first"
+       src="default.jpg"
+       srcset="small.jpg 480w, medium.jpg 800w, large.jpg 1200w"
+       sizes="(max-width: 600px) 100vw, 50vw"
+       alt="mobile-first sizes">
+
+  <!-- Three-tier sizes: phone / tablet / desktop. -->
+  <img id="three-tier"
+       srcset="320.jpg 320w, 768.jpg 768w, 1280.jpg 1280w, 1920.jpg 1920w"
+       sizes="(max-width: 480px) 100vw, (max-width: 1024px) 75vw, 1200px"
+       alt="three-tier sizes">
+
+  <!-- Density descriptors + sizes: the `x` form ignores sizes for selection
+       but the attribute is still valid HTML. -->
+  <img id="density"
+       srcset="one.png 1x, two.png 2x, three.png 3x"
+       sizes="(min-width: 800px) 50vw, 100vw"
+       alt="density srcset">
+
+  <!-- Bare 100vw default (implicit): no `sizes` attribute at all. -->
+  <img id="no-sizes"
+       src="fallback.jpg"
+       srcset="a.jpg 480w, b.jpg 800w"
+       alt="no sizes">
+
+  <!-- A single bare length in sizes (the default-only form). -->
+  <img id="bare-length"
+       srcset="fixed.jpg 800w"
+       sizes="300px"
+       alt="bare length">
+
+  <!-- Em-based sizes: resolves against the default 16px font. -->
+  <img id="em-based"
+       srcset="em.jpg 640w"
+       sizes="(min-width: 40em) 40em, 100vw"
+       alt="em sizes">
+
+  <!-- <picture> + <source media>: the art-direction surface. Each <source>
+       carries its own srcset + a media query the selector evaluates in
+       document order; the first matching source wins. -->
+  <picture id="picture">
+    <source id="wide-source"
+            media="(min-width: 800px)"
+            srcset="wide.jpg 1x, wide-2x.jpg 2x">
+    <source id="narrow-source"
+            media="(max-width: 799px)"
+            srcset="narrow.jpg">
+    <img id="picture-img"
+         src="default.jpg"
+         alt="art-directed">
+  </picture>
+
+  <!-- <picture> with sizes on the <source>. -->
+  <picture id="picture-sized">
+    <source id="tablet-source"
+            media="(min-width: 768px)"
+            srcset="t-small.jpg 600w, t-medium.jpg 900w"
+            sizes="50vw">
+    <img src="mobile.jpg"
+         alt="tablet-sized">
+  </picture>
+
+  <!-- Orientation art-direction: portrait vs landscape. -->
+  <picture id="picture-orientation">
+    <source id="portrait-source"
+            media="(orientation: portrait)"
+            srcset="tall.jpg">
+    <source id="landscape-source"
+            media="(orientation: landscape)"
+            srcset="wide.jpg">
+    <img src="square.jpg" alt="orientation-aware">
+  </picture>
+</body>
+</html>

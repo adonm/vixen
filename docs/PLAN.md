@@ -153,6 +153,12 @@ the first; the family is now complete for v1.0:
 - `vixen-core::resolution` — `<resolution>` (`dpi`/`dpcm`/`dppx`/`x`) with
   dots-per-pixel normalisation for media queries. `x` is the historical
   alias for `dppx` (CSS Images 4 § 7.3).
+- `vixen-core::ratio` — CSS Values 4 § 4.4 `<ratio>`
+  (`number | number / number`): the numerator/denominator pair with the
+  quotient the `aspect-ratio` property and the `aspect-ratio` /
+  `device-aspect-ratio` media features reduce to. A zero denominator is the
+  § 4.4 "infinite ratio" encoding; the single-number shorthand means `N/1`;
+  the legacy Media-Queries-4 integer `width/height` form folds in unchanged.
 
 Each is `#![forbid(unsafe_code)]`, mirrors the `length` parse/resolve shape,
 and stays Rust-unit-tested (cascade/paint integration lands when Stylo /
@@ -400,6 +406,109 @@ Each family lands with its WPT fixtures passing before moving on.
   agrees with the WHATWG count), and the § 7.1 `CRLF`/lone-`CR` → `LF` line-
   break normalisation. v1 ships UTF-8 only; unknown labels fail closed.
 
+**Pure-logic foundation landed for HTML attribute microsyntaxes + `data:`/`srcset` URLs (Phase 6 prep).**
+- `vixen-core::microsyntax` — the WHATWG HTML § 2.4 "common parser idioms"
+  every attribute-value reflection reduces to: `parse_signed_integer`
+  (§ 2.4.4) and `parse_non_negative_integer` (§ 2.4.3) with saturating
+  overflow so `colspan`/`rowspan`/`tabindex`/`cols`/`maxlength` never panic;
+  `parse_float` (§ 2.4.5) — the lenient leading-numeric-prefix extractor
+  (`"100px"` → `100.0`, `"3e999"` → `+∞`) that `<input type=number>` and the
+  `value sanitization algorithm` build on; `parse_dimension_value` (§ 2.4.6)
+  — the legacy `<td width>` / `<img width>` surface producing either a pixel
+  length or a percentage; and `parse_list_of_integers` for `<area coords>`.
+  Every HTML attribute-value parser here is deliberately lenient (leading
+  whitespace skipped, trailing content ignored for the float surface) per
+  the spec's documented browser contract; the stricter value-sanitisation
+  layers a trailing-garbage check *on top* of these primitives.
+- `vixen-core::srcset` — WHATWG HTML § 4.8.4.6 "Parsing a srcset attribute":
+  the comma-separated image-candidate-string splitter + the § 4.8.4.7
+  `Nw`/`Nx` descriptor validator (`Descriptor::Width`/`Density`). Candidates
+  carrying ≥ 3 whitespace-separated tokens (a URL can't hold two
+  descriptors) and candidates with an unparseable descriptor are dropped per
+  spec; survivors keep document order (the § 4.8.4.8 selection algorithm
+  prefers the first match on ties). The responsive-image selection step
+  itself (composing candidates with the viewport DPR + `<img sizes>`) lands
+  with the resource-fetch layer in Phase 1/6.
+- `vixen-core::data_url` — RFC 2397 `data:` URL parsing: the
+  case-insensitive scheme check, the `;base64` flag (final-parameter form),
+  the mediatype defaulting rules (omitted ⇒ `text/plain;charset=US-ASCII`;
+  parameters-only ⇒ `text/plain` + authored parameters), and the payload
+  decode (standard-alphabet base64 with ASCII-whitespace skipping + missing-
+  padding tolerance, or RFC 3986 § 2.1 percent-decode). The Fetch standard
+  does *not* MIME-sniff `data:` URLs, so the declared mediatype is exposed
+  verbatim. The base64 + percent decoders are hand-rolled so no new crate
+  dependency is added.
+- `fixtures/dom/srcset.html` — exercises every `<img srcset>` / `<source
+  srcset>` authoring form the parser handles (width descriptors, density
+  descriptors, the bare-URL form, the `<picture>`/`<source>` art-direction
+  combination); wired into `fixtures/manifest.json`.
+
+**Pure-logic foundation landed for responsive-image selection (Phase 6 prep).**
+The `srcset` parser left the § 4.8.4.8 selection step itself as a TODO; the
+family is now complete end-to-end.
+- `vixen-core::media_query` — CSS Media Queries 4 condition evaluation: a
+  recursive-descent parser for the `<media-condition>` tree (§ 3) over
+  parenthesised `<media-feature>`s (§ 4) with `and`/`or`/`not` combinators,
+  the `<media-type>` prefix (`screen`/`print`/`all` with `not`/`only`), and
+  the `min-`/`max-` prefix decode into a `Range` constraint (`min-width` ≡
+  `width >=`). `MediaQuery::matches` evaluates against a `Viewport` (CSS-px
+  width/height, DPR, derived orientation, colour depth, hover/pointer,
+  `prefers-color-scheme`, `prefers-reduced-motion`). The § 4 features
+  implemented: `width`/`height`/`aspect-ratio`/`orientation`/`resolution`/
+  `color`/`hover`/`pointer`/`prefers-color-scheme`/`prefers-reduced-motion`,
+  with the § 4.3 boolean form (`(hover)`, `(color)`) and the
+  `<general-enclosed>` fail-closed rule (unknown ⇒ `false`).
+- `vixen-core::source_size` — WHATWG HTML § 4.8.4.7 "Parsing a sizes
+  attribute": the `<source-size-list>` splitter + per-entry validator. The
+  final comma-separated entry is the unconditional default (§ 4.8.4.8: the
+  last entry always provides a fallback when reached); a non-last entry
+  without a media-condition is a parse error and the whole list falls back to
+  the spec's `100vw` default. `resolve_px(&Viewport)` walks the entries in
+  document order and returns the first match's length in CSS px.
+- `vixen-core::responsive_select` — WHATWG HTML § 4.8.4.8 "Selecting an image
+  source": composes a parsed `srcset` with a resolved source size + the
+  viewport DPR. Computes per-candidate pixel density (width ÷ source-size for
+  `Nw`, the `x` value for density, implicit `1x` for bare), rejects mixed
+  width/density lists (§ 4.8.4.6 parse error), keeps candidates with
+  `density ≥ DPR` (falling back to all if that empties the list), and picks
+  the smallest surviving density (ties → document order). The `select_source`
+  helper walks the `<picture>`/`<source media>` art-direction list: the first
+  `<source>` whose media query matches the viewport wins, else the `<img>`
+  srcset selects.
+- `fixtures/dom/sizes.html` — exercises every `<img sizes>` / `<source media>`
+  authoring form (mobile-first + three-tier conditional lists, the bare-length
+  default, em-based sizes, the `<picture>` art-direction surface with
+  min/max-width and orientation media queries); wired into
+  `fixtures/manifest.json`.
+
+**Pure-logic foundation landed for CSS value-resolution + easing (Phase 3/6 prep).**
+The calculation + timing-function primitives the cascade (`calc()` reduction,
+`var()` substitution, custom-property resolution) and the transition/animation
+drivers (`animation-timing-function`) reduce to.
+- `vixen-core::calc` — CSS Values 4 § 10 `calc()` / `min()` / `max()` /
+  `clamp()` arithmetic tree + evaluator. A recursive-descent parser produces
+  a `CalcNode` AST (`Number` / `Length` / `Percent` / `Add`/`Sub`/`Mul`/`Div` /
+  the § 10.1 `Min`/`Max`/`Clamp` math functions); `evaluate` runs the § 10.7
+  "argument resolution" pass with full dimension type-checking (`+`/`-`
+  require homogeneous operands; `*` requires a number operand; `/` requires a
+  number divisor; violations are hard errors). Lengths and percentages mix in
+  the classic `calc(50% + 10px)` form, resolving to `(px, percent)` against a
+  `LengthContext`. Operator precedence (`*`/`/` over `+`/`-`) and nested
+  parenthesised grouping enforced; bare expressions (no `calc()` wrapper) parse
+  too, so the `--computed-style` projection re-resolves the unwrapped form.
+- `vixen-core::easing` — CSS Easing 1 § 2-4: the timing-function family that
+  maps an input progress (`0..1`) to an output progress. `Easing::parse`
+  covers the keyword aliases (`linear`/`ease`/`ease-in`/`ease-out`/`ease-in-out`
+  /`step-start`/`step-end`) and the function forms (`cubic-bezier()`,
+  `steps()`, `linear()`); `Easing::evaluate` projects cubic-bezier control
+  points via Newton-Raphson (8 iterations) with a bisection fallback so it
+  converges on every valid curve (incl. overshoot spring curves where the
+  y-coordinates exceed `[0, 1]`), implements the § 4.1 step jump-position
+  rules (`jump-start`/`jump-end`/`jump-none`/`jump-both` with the
+  `jump-none`-requires-`n ≥ 2` validation), and piecewise-linearly
+  interpolates the `linear()` multi-stop function (explicit percentage
+  positions + the § 3.1 implicit even-distribution rule).
+
 **Gate:** `fixtures/dom/`, `fixtures/events/`, `fixtures/forms/`,
 `fixtures/storage/`, `fixtures/network/` all pass.
 
@@ -475,6 +584,44 @@ Wire every trust boundary from `docs/ARCHITECTURE.md`.
   dangerous combination / top-nav family / popups family / mixed legacy
   flags / unknown-token tolerance / case-insensitivity); wired into
   `fixtures/manifest.json`.
+
+**Pure-logic foundation landed for `Sec-Fetch-*` + Permissions Policy (Phase 7 prep).**
+- `vixen-net::sec_fetch` — Fetch § 3.1 `Sec-Fetch-*` request-metadata parsing:
+  [`SecFetchSite`] / [`SecFetchMode`] / [`SecFetchDest`] / [`SecFetchUser`]
+  typed enums (case-sensitive token parse, fail-closed to [`Default`] on
+  unknown values) + a bundled [`SecFetchHeaders::parse`] over a `(name,
+  value)` iterator (case-insensitive names, last-wins combine). The § 3.2.4
+  [`classify_site`] classifier resolves the embedder↔target relationship
+  (`same-origin` / `same-site` / `cross-site` / `none`) the fetch layer
+  attaches and that servers consult for the § 3.2 Cross-Origin gates; the
+  `same-site` registrable-domain comparison uses the last-two-labels
+  heuristic (documented limitation; the PSL lands when the cookie `domain`
+  matcher needs it too). `SecFetchDest::is_navigation` / `is_embed` predicate
+  the § 4.4 navigation and § 3.2 COEP checks.
+- `vixen-net::permissions_policy` — Permissions Policy 1 § 3.3
+  `Permissions-Policy` response-header parser + the § 5.2 `<iframe allow>`
+  attribute parser. The [`Allowlist`] enum covers every § 3.3 source-list
+  form (`Everyone *` / `Self_ self` / `Src src` / `Origins(list)` /
+  `None ()`-deny-all); [`PermissionsPolicy::allows`] is the § 4 evaluation
+  the host hooks consult before exposing `navigator.geolocation`/`camera`/
+  &c. (features not in the policy default to embedder-only per § 3.3). The
+  structured-field parser is paren/quote-aware (handles
+  `geolocation=(self "https://partner.test")` and the iframe shorthand
+  `camera 'self'`), tolerant of whitespace, and drops malformed items per
+  the spec's "parse error ⇒ item dropped" rule.
+- `fixtures/security/permissions-policy.html` — exercises every `<iframe
+  allow>` authoring form (bare feature names, the `self`/`src` keywords,
+  explicit origin lists, the empty `()` deny-all, the camera/geolocation/
+  microphone/fullscreen/autoplay family); wired into `fixtures/manifest.json`.
+
+[`SecFetchSite`]: ../../crates/vixen-net/src/sec_fetch.rs
+[`SecFetchMode`]: ../../crates/vixen-net/src/sec_fetch.rs
+[`SecFetchDest`]: ../../crates/vixen-net/src/sec_fetch.rs
+[`SecFetchUser`]: ../../crates/vixen-net/src/sec_fetch.rs
+[`classify_site`]: ../../crates/vixen-net/src/sec_fetch.rs
+[`SecFetchHeaders::parse`]: ../../crates/vixen-net/src/sec_fetch.rs
+[`Allowlist`]: ../../crates/vixen-net/src/permissions_policy.rs
+[`PermissionsPolicy::allows`]: ../../crates/vixen-net/src/permissions_policy.rs
 
 **Gate:** Every security test in `vixen-net` and `vixen-core` green.
 Zero `cargo audit` advisories. Fuzz targets stable.

@@ -25,6 +25,13 @@
 //! - [`sandboxing::parse_sandbox`] — WHATWG HTML § 4.8.5 `<iframe sandbox>`
 //!   flag parser the script/navigation/storage layers consult when loading
 //!   framed content (Phase 7 prep).
+//! - [`sec_fetch::classify_site`] + [`sec_fetch::SecFetchHeaders`] — Fetch
+//!   § 3.1 `Sec-Fetch-*` request-metadata parsing + the § 3.2.4 site
+//!   relationship classifier the fetch layer consults for the Cross-Origin
+//!   gates (Phase 7 prep).
+//! - [`permissions_policy::parse_permissions_policy`] — Permissions Policy 1
+//!   § 3.3 `Permissions-Policy` header + `<iframe allow>` parser the host
+//!   hooks consult before exposing `navigator.geolocation` &c. (Phase 7 prep).
 
 #![forbid(unsafe_code)]
 
@@ -37,8 +44,10 @@ pub mod mixed_content;
 pub mod network;
 pub mod origin;
 pub mod permissions;
+pub mod permissions_policy;
 pub mod referrer_policy;
 pub mod sandboxing;
+pub mod sec_fetch;
 pub mod strict_transport_security;
 pub mod url_policy;
 
@@ -55,7 +64,13 @@ pub use network::{
 };
 pub use origin::Origin;
 pub use permissions::{PermissionKind, PermissionState, PermissionStore};
+pub use permissions_policy::{
+    Allowlist, PermissionsPolicy, parse_allow_attribute, parse_permissions_policy,
+};
 pub use referrer_policy::{ReferrerPolicy, ReferrerValue, parse_referrer_policy, resolve_referrer};
 pub use sandboxing::{SandboxFlags, parse_sandbox};
+pub use sec_fetch::{
+    SecFetchDest, SecFetchHeaders, SecFetchMode, SecFetchSite, SecFetchUser, classify_site,
+};
 pub use strict_transport_security::{HstsDirective, HstsEntry, parse_strict_transport_security};
 pub use url_policy::{UrlPolicyError, is_private_host, validate_http_url};

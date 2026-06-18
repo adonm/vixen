@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>img srcset — Vixen fixture</title>
+  <!--
+    Exercises the `<img srcset>` / `<source srcset>` attribute surface that
+    `vixen-core::srcset::parse_srcset` resolves today (Phase 6 DOM prep,
+    WHATWG HTML § 4.8.4.6). The HTML parser retains each attribute value
+    verbatim; these structural + attribute checks pin the canonical
+    responsive-image authoring forms (width descriptors, density descriptors,
+    the bare-URL form, the picture/source combination) the host-hook layer
+    will hand the parser once Phase 6 wires the HTMLImageElement reflection.
+  -->
+</head>
+<body>
+  <h1>Responsive images</h1>
+
+  <!-- Width descriptors: the classic 1x/2x/3x ↔ small/medium/large form. -->
+  <img id="widths"
+       src="small.jpg"
+       srcset="small.jpg 480w, medium.jpg 800w, large.jpg 1200w"
+       alt="width descriptors"
+       sizes="100vw">
+
+  <!-- Pixel-density descriptors. -->
+  <img id="densities"
+       src="one.png"
+       srcset="one.png 1x, two.png 2x"
+       alt="density descriptors">
+
+  <!-- Bare URL (implicit 1x) — the minimal srcset form. -->
+  <img id="bare"
+       srcset="fallback.png"
+       alt="bare candidate">
+
+  <!-- <picture> + <source srcset>: the art-direction surface. -->
+  <picture id="picture">
+    <source id="wide" media="(min-width: 800px)"
+            srcset="wide.jpg 1x, wide-2x.jpg 2x">
+    <source id="narrow" media="(max-width: 799px)"
+            srcset="narrow.jpg">
+    <img src="default.jpg" alt="art-directed">
+  </picture>
+</body>
+</html>

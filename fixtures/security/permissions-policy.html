@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Permissions Policy + Sec-Fetch surface — Vixen fixture</title>
+  <!--
+    Exercises the `<iframe allow>` attribute surface that
+    `vixen-net::permissions_policy::parse_allow_attribute` resolves today
+    (Phase 7 security prep, W3C Permissions Policy 1 § 3.3 + § 5.2). The HTML
+    parser retains each attribute value verbatim; these structural + attribute
+    checks pin the canonical permission-delegation authoring forms (bare
+    feature names, the `self`/`src` keywords, explicit origin lists, the
+    empty `()` deny-all, the camera/geolocation/microphone/fullscreen/
+    autoplay family). The companion `Permissions-Policy` HTTP header parser
+    shares the same grammar but has no HTML surface — it's tested via the
+    Rust unit suite against the same fixture scenarios.
+  -->
+</head>
+<body>
+  <h1>Permissions Policy delegation</h1>
+
+  <!-- Bare feature names: each `allow="feature"` enables that feature for
+       everyone (§ 5.2 shorthand for `feature=*`). -->
+  <iframe id="bare-geolocation"
+          src="https://embedder.test/frame"
+          allow="geolocation"></iframe>
+
+  <!-- Semicolon-separated feature list. -->
+  <iframe id="multi-bare"
+          src="https://embedder.test/frame"
+          allow="geolocation; microphone; fullscreen"></iframe>
+
+  <!-- The `self` keyword (single-source shorthand). -->
+  <iframe id="self-only"
+          src="https://embedder.test/frame"
+          allow="camera 'self'"></iframe>
+
+  <!-- The `src` keyword: feature enabled for the frame's own origin. -->
+  <iframe id="src-only"
+          src="https://partner.test/widget"
+          allow="camera 'src'"></iframe>
+
+  <!-- Explicit origin list with parens. -->
+  <iframe id="origin-list"
+          src="https://embedder.test/frame"
+          allow="geolocation; camera (self 'https://partner.test')"></iframe>
+
+  <!-- The empty `()` deny-all form. -->
+  <iframe id="deny-all"
+          src="https://embedder.test/frame"
+          allow="microphone ()"></iframe>
+
+  <!-- Mixed: some features with allowlists, some bare. -->
+  <iframe id="mixed"
+          src="https://embedder.test/frame"
+          allow="autoplay; fullscreen 'self'; camera (self 'https://trusted.test')"></iframe>
+
+  <!-- No `allow` attribute at all: the iframe inherits nothing (default
+       deny for everything except the embedder's own § 3.3 defaults). -->
+  <iframe id="no-allow"
+          src="https://embedder.test/frame"></iframe>
+
+  <!-- The full feature set Vixen recognises as canonical tokens. -->
+  <iframe id="kitchen-sink"
+          src="https://embedder.test/frame"
+          allow="geolocation; microphone; camera; fullscreen; autoplay; encrypted-media; picture-in-picture; web-share"></iframe>
+</body>
+</html>
