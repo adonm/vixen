@@ -5,19 +5,22 @@
 # `vixen_shell::run()` (ADR-010).
 #
 # Dependency direction (enforced by `cargo tree` audit in CI, see
-# docs/ARCHITECTURE.md "Boundary rules"):
+# docs/ARCHITECTURE.md "Boundary rules"). `▲` points from a consumer up to
+# its dependency:
 #
-#                        vixen-api   (traits + DTOs only, no impl deps)
-#                            ▲
-#           ┌────────────────┼────────────────┐
-#      vixen-net         vixen-store      vixen-core
-#           ▲                                │
-#           └───────────── vixen-core ───────┘
-#                            ▲
-#           ┌────────────────┴────────────────┐
-#     vixen-shell                      vixen-headless
+#                          vixen-api   (traits + DTOs only, no impl deps)
+#                              ▲
+#    ┌─────────────────────────┼───────────────────┬──────────────────┐
+#    │                         │                   │                  │
+# vixen-shell              vixen-engine          vixen-wpt         vixen-headless
+#                              │                                   (dev-dep:
+#                              ▼                                    vixen-wpt)
+#                          vixen-net   (leaf — HTTP, cookies, CSP,
+#                                       URL policy, permissions)
 #
-#     vixen-wpt   →   vixen-api only
+# vixen-store — standalone leaf (redb persistence; no vixen-crate deps today)
+# The only edge into vixen-net is vixen-engine → vixen-net (fetch + cookie
+# delegation; URL policy / CSP re-applied at every fetch from script.rs).
 
 [workspace]
 resolver = "2"
@@ -25,7 +28,7 @@ members = [
     "crates/vixen-api",
     "crates/vixen-net",
     "crates/vixen-store",
-    "crates/vixen-core",
+    "crates/vixen-engine",
     "crates/vixen-shell",
     "crates/vixen-wpt",
     "crates/vixen-headless",

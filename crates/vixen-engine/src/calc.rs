@@ -621,8 +621,8 @@ impl<'a> Parser<'a> {
 /// form).
 ///
 /// ```
-/// # use vixen_core::calc::{parse_calc, CalcError};
-/// # use vixen_core::length::LengthContext;
+/// # use vixen_engine::calc::{parse_calc, CalcError};
+/// # use vixen_engine::length::LengthContext;
 /// let node = parse_calc("calc(10px + 20px)")?;
 /// let ctx = LengthContext::default();
 /// assert!((node.resolve_length(&ctx)? - 30.0).abs() < 1e-9);

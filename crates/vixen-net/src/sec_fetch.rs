@@ -367,9 +367,23 @@ impl SecFetchHeaders {
 /// The general algorithm needs the Public Suffix List. v1.0 uses a pragmatic
 /// approximation: two origins are same-site if their hosts share the **last
 /// two DNS labels** (`a.example.com` ≡ `b.example.com`) *and* their schemes
-/// match. This is correct for the common cases (`example.com`, `co.uk`-style
-/// excepted) and fails closed (toward `cross-site`) for edge cases; the PSL
-/// lands when the cookie module's `domain` matching needs it too.
+/// match. This is correct for ordinary two-label registrable domains
+/// (`example.com`), but **fails OPEN (toward `same-site`)** for multi-label
+/// public suffixes like `co.uk`, `github.io`, or `com.au`: `a.co.uk` and
+/// `b.co.uk` both reduce to the suffix `co.uk`, so two genuinely cross-site
+/// origins are classified as [`SecFetchSite::SameSite`] instead of
+/// [`SecFetchSite::CrossSite`]. Any consumer that treats `same-site` more
+/// permissively than `cross-site` (e.g. a CORP policy that allows
+/// `same-site` but denies `cross-site`) therefore gets a permissive answer
+/// for `*.co.uk`-style domains.
+///
+/// TODO(public-suffix-list): the [`is_same_site`] / [`classify_site`]
+/// outputs — and any caller that distinguishes [`SecFetchSite::SameSite`]
+/// from [`SecFetchSite::CrossSite`] — MUST NOT be trusted for security
+/// decisions (CORP/CORS gating) until this module adopts the Public Suffix
+/// List. The PSL lands alongside the cookie module's `domain` matcher
+/// (see `docs/PLAN.md`); until then the heuristic is permissive, not
+/// restrictive. It under-reports cross-site, the opposite of fail-closed.
 pub fn classify_site(embedder: Option<&Origin>, target: &Origin) -> SecFetchSite {
     let Some(embedder) = embedder else {
         return SecFetchSite::None;
@@ -432,6 +446,12 @@ fn scheme_compatible_for_same_site(a: &str, b: &str) -> bool {
 /// The last two labels of a host (`a.example.com` → `example.com`); a
 /// single-label host (`localhost`) returns itself. The v1.0 registrable-
 /// domain heuristic.
+///
+/// Permissive for multi-label public suffixes: `a.co.uk` and `b.co.uk` both
+/// yield `co.uk`, so two unrelated sites collapse to the same suffix and are
+/// reported as same-site (i.e. the heuristic fails OPEN, not closed). See
+/// the `same-site registrable-domain heuristic` note on [`classify_site`]
+/// and the `TODO(public-suffix-list)` there.
 fn registrable_suffix(host: &str) -> Option<String> {
     let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
     match labels.len() {
@@ -672,5 +692,28 @@ mod tests {
         let a = origin("http://localhost/");
         let b = origin("https://example.com/");
         assert_eq!(classify_site(Some(&a), &b), SecFetchSite::CrossSite);
+    }
+
+    #[test]
+    fn multi_label_public_suffix_is_known_permissive() {
+        // KNOWN PERMISSIVE — remove / flip when the Public Suffix List lands.
+        //
+        // `a.co.uk` and `b.co.uk` are genuinely cross-site (their registrable
+        // domains are `a.co.uk` and `b.co.uk` respectively once the PSL
+        // treats `co.uk` as a public suffix). The v1.0 last-two-labels
+        // heuristic collapses both to `co.uk`, so it classifies them as
+        // `same-site` instead of `cross-site` — i.e. it fails OPEN (toward
+        // same-site), not closed. Any CORP/CORS policy that treats
+        // `same-site` more permissively than `cross-site` therefore gets a
+        // permissive answer. This test pins the current behaviour so a
+        // future PSL fix has to flip it deliberately; see the
+        // `TODO(public-suffix-list)` on `classify_site`.
+        let a = origin("https://a.co.uk/");
+        let b = origin("https://b.co.uk/");
+        assert_eq!(registrable_suffix("a.co.uk").as_deref(), Some("co.uk"));
+        assert_eq!(registrable_suffix("b.co.uk").as_deref(), Some("co.uk"));
+        // Current (incorrect) classification: same-site. With the PSL this
+        // should flip to `CrossSite`.
+        assert_eq!(classify_site(Some(&a), &b), SecFetchSite::SameSite);
     }
 }

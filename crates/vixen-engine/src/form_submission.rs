@@ -157,7 +157,7 @@ impl FormEnctype {
 ///   byte becomes `%XX` with uppercase hex digits.
 ///
 /// ```
-/// # use vixen_core::form_submission::{encode_urlencoded, FormEntry};
+/// # use vixen_engine::form_submission::{encode_urlencoded, FormEntry};
 /// let entries = vec![
 ///     FormEntry::text("name", "Ada Lovelace"),
 ///     FormEntry::text("email", "a@b.example"),
@@ -217,7 +217,7 @@ fn push_upper_hex(b: u8, out: &mut String) {
 /// The final entry has a trailing CRLF, matching the WHATWG algorithm.
 ///
 /// ```
-/// # use vixen_core::form_submission::{encode_text_plain, FormEntry};
+/// # use vixen_engine::form_submission::{encode_text_plain, FormEntry};
 /// let entries = vec![
 ///     FormEntry::text("name", "Ada"),
 ///     FormEntry::text("msg", "hello, world"),
@@ -254,7 +254,7 @@ pub fn encode_text_plain(entries: &[FormEntry]) -> String {
 /// is `multipart/form-data; boundary=<boundary>` — see [`multipart_content_type`].
 ///
 /// ```
-/// # use vixen_core::form_submission::{encode_multipart, FormEntry};
+/// # use vixen_engine::form_submission::{encode_multipart, FormEntry};
 /// let entries = vec![FormEntry::text("field", "value")];
 /// let body = encode_multipart(&entries, "----vixen");
 /// let s = std::str::from_utf8(&body).unwrap();

@@ -25,7 +25,7 @@ vixen/                                  # workspace root
 │   │       └── http_helpers.rs
 │   ├── vixen-store/                     # persistence (redb)
 │   │   └── src/lib.rs
-│   ├── vixen-core/                      # engine integration glue
+│   ├── vixen-engine/                      # engine integration glue
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── engine.rs                # Engine: load lifecycle, history
@@ -83,36 +83,34 @@ vixen/                                  # workspace root
 ## Dependency graph (allowed direction)
 
 ```
-                       vixen-api
-        traits + DTOs only — Engine, EngineDelegate,
-        EngineInspector, EngineProfile, GlContext
-        (no concrete deps)
-                           ▲
-          ┌────────────────┼────────────────┐
-          │                │                │
-     vixen-net         vixen-store      vixen-core        ← each depends on vixen-api
-          ▲                                │
-          │                                │ Stylo, mozjs, webrender,
-          │                                │ html5ever, Servo layout_2020
-          └───────────── vixen-core ───────┘   (vixen-core → vixen-net:
-              depends on            fetch + cookie delegation;
-                                    URL policy / CSP re-applied
-                                    at every fetch from script.rs)
-                           ▲
-          ┌────────────────┴────────────────┐
-          │                                 │
-    vixen-shell                      vixen-headless
-    (GTK4 + Relm4; owns             (CLI + CDP; EGL surfaceless
-     gtk4::GLArea wrapped as         SurfacelessSurface)
-     GlAreaSurface, the GlContext
-     impl; EngineWorker per tab)
+                      vixen-api
+   traits + DTOs only — Engine, EngineDelegate,
+   EngineInspector, EngineProfile, GlContext
+   (no concrete deps)
+                          ▲
+   ┌──────────────────────┼────────────────┬──────────────────┐
+   │                      │                │                  │
+vixen-shell           vixen-engine        vixen-wpt       vixen-headless
+(GTK4 + Relm4; owns   (Stylo, mozjs,    (manifest +     (CLI + CDP; EGL
+ gtk4::GLArea as       webrender,        runner;          surfaceless
+ GlAreaSurface;        html5ever,        consumes         SurfacelessSurface;
+ EngineWorker/tab)     Servo layout)     EngineInspector  dev-dep: vixen-wpt)
+                          │
+                          ▼
+                       vixen-net   (leaf — HTTP, cookies, CSP,
+                                    URL policy, permissions;
+                                    no vixen-crate deps)
 
-    vixen-wpt   →   vixen-api only (consumes EngineInspector; never engine internals)
+vixen-store — standalone leaf (redb persistence; not yet wired into the
+              build, no vixen-crate dependencies today)
 ```
 
-The one non-tree edge is `vixen-core → vixen-net`: the script host hooks
-delegate `fetch`/`document.cookie` into `vixen-net`, and URL policy / CSP
-are re-applied at every fetch. Everything else points up to `vixen-api`.
+The only edge into `vixen-net` is `vixen-engine → vixen-net`: the script host
+hooks delegate `fetch`/`document.cookie` into `vixen-net`, and URL policy /
+CSP are re-applied at every fetch from `script.rs`. The four engine
+consumers — `vixen-shell`, `vixen-engine`, `vixen-wpt`, `vixen-headless` — all
+depend on `vixen-api`; `vixen-net` and `vixen-store` are leaf crates with no
+dependencies on other vixen crates.
 
 **Boundary rules** (enforced by `cargo tree` audit in CI):
 
@@ -121,7 +119,7 @@ are re-applied at every fetch. Everything else points up to `vixen-api`.
 | `vixen-api`          | `Engine` trait, DTOs, diagnostics shape      | Any concrete engine dep                |
 | `vixen-net`          | HTTP, cookies, CSP, URL policy, permissions   | GTK, JS engine, DOM, layout            |
 | `vixen-store`        | redb-backed persistence                       | Anything networked                     |
-| `vixen-core`         | Stylo + mozjs + layout + paint glue           | GTK, EGL, CLI arg parsing (GL comes in via the `GlContext` trait) |
+| `vixen-engine`         | Stylo + mozjs + layout + paint glue           | GTK, EGL, CLI arg parsing (GL comes in via the `GlContext` trait) |
 | `vixen-shell`        | Browser chrome, Relm4/libadwaita, `GlAreaSurface` (`GlContext` impl) | Engine internals (only via `Engine`) |
 | `vixen-headless`     | CLI args, screenshot/dump/CDP entry points, `SurfacelessSurface` (`GlContext` impl) | GTK, libadwaita                        |
 | `vixen-wpt`          | WPT manifest + runner + check types           | Engine internals                       |
@@ -140,19 +138,19 @@ vixen-net::Network::get_text_with_cookies       (reqwest + rustls + URL/CSP poli
 html5ever::parse_document                        (HTML5 parser)
  │  → RcDom
  ▼
-vixen-core::doc::Document::from_dom              (Stylo-compatible DOM)
+vixen-engine::doc::Document::from_dom              (Stylo-compatible DOM)
  │  → impls style::dom::TNode / TElement
  ▼
-vixen-core::style::cascade                       (Stylo traversal)
+vixen-engine::style::cascade                       (Stylo traversal)
  │  → per-element ComputedValues
  ▼
-vixen-core::layout::layout                       (Servo layout_2020)
+vixen-engine::layout::layout                       (Servo layout_2020)
  │  → positioned box tree
  ▼
-vixen-core::paint::build_display_list            (single display list)
+vixen-engine::paint::build_display_list            (single display list)
  │  → webrender::DisplayListBuilder
  ▼
-vixen-core::paint::Renderer                      (single WebRender paint path)
+vixen-engine::paint::Renderer                      (single WebRender paint path)
  │  → GL framebuffer, via &dyn GlContext
  ▼
 GUI:  GlAreaSurface (wraps gtk4::GLArea)   OR   Headless: SurfacelessSurface (EGL surfaceless) → glReadPixels → PNG
@@ -160,7 +158,7 @@ GUI:  GlAreaSurface (wraps gtk4::GLArea)   OR   Headless: SurfacelessSurface (EG
 
 One paint path. Two `GlContext` implementations: `GlAreaSurface`
 (wrapping `gtk4::GLArea`) in the GUI window, `SurfacelessSurface`
-(wrapping an EGL surfaceless context) in headless mode. `vixen-core`
+(wrapping an EGL surfaceless context) in headless mode. `vixen-engine`
 consumes the `GlContext` trait and never sees GTK or EGL types. Headless
 never needs a display server; EGL_MESA_platform_surfaceless (or
 EGL_KHR_surfaceless with a pbuffer fallback) provides a GPU context
@@ -179,9 +177,9 @@ Web content is untrusted. Validation lives at:
 | Network fetch entry                   | `vixen-net::url_policy::validate_http_url` | SSRF / private-IP / reserved-TLD block (see `SPEC.md` "URL policy")        |
 | HTTP response → cookie jar            | `vixen-net::cookie::CookieJar::set_cookie` | RFC 6265 rules (see `SPEC.md` "Cookie contract")                           |
 | HTTP response → CSP                   | `vixen-net::csp::Enforcer::from_headers`   | Parse + store CSP for the document                                         |
-| Script execution                      | `vixen-core::script::evaluate`             | CSP gating before `EvaluateScript`; compartment per origin                 |
+| Script execution                      | `vixen-engine::script::evaluate`             | CSP gating before `EvaluateScript`; compartment per origin                 |
 | JS → document.cookie                  | `vixen-net::cookie::set_document_cookie`   | HttpOnly rejected; domain/secure/samesite rules enforced                   |
-| JS → fetch / XHR                      | `vixen-core::script` → `vixen-net`         | CSP `connect-src` enforcement; URL policy re-applied                       |
+| JS → fetch / XHR                      | `vixen-engine::script` → `vixen-net`         | CSP `connect-src` enforcement; URL policy re-applied                       |
 | JS → localStorage/sessionStorage      | `vixen-store`                              | Per-origin partitioning; size limits enforced                              |
 | Persistence                           | `vixen-store`                              | Per-origin partitioning; never persist untrusted script output             |
 
@@ -240,7 +238,7 @@ pub trait Engine {
 The shell implements this to receive engine callbacks. In practice the
 shell-side implementation posts these into the Relm4 message stream for
 the relevant tab component; the trait itself stays GUI-agnostic so
-`vixen-core` does not depend on `relm4`.
+`vixen-engine` does not depend on `relm4`.
 
 ```rust
 pub trait EngineDelegate: Send {
@@ -291,7 +289,7 @@ pub struct EngineProfile {
 
 ### `GlContext` (in `vixen-api`)
 
-Minimal graphics-context abstraction so `vixen-core` can drive WebRender
+Minimal graphics-context abstraction so `vixen-engine` can drive WebRender
 without taking a GTK or EGL dependency. Following the GTK4/Relm4 idiom,
 the shell owns the widget and connects to `gtk4::GLArea::render`; inside
 that callback GTK has already made the `gdk::GLContext` current. The
@@ -310,7 +308,7 @@ pub trait GlContext {
 }
 ```
 
-`vixen-core::paint` builds its single WebRender `Renderer` against a
+`vixen-engine::paint` builds its single WebRender `Renderer` against a
 `&dyn GlContext`; per ADR-006 there is one paint path and no `PaintBackend`
 trait — the `GlContext` implementations are the only thing that varies
 between GUI and headless.

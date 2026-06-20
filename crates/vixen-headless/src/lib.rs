@@ -2,7 +2,7 @@
 //!
 //! Phase 2 implements the CLI flag surface (docs/SPEC.md "Headless CLI
 //! surface") and wires `--url`/`--eval` to the SpiderMonkey runtime
-//! (`vixen-core::script`). The Phase 2 gate is
+//! (`vixen-engine::script`). The Phase 2 gate is
 //! `vixen-headless --url <file> --eval '1+2'` → `3`. Render/DOM/CDP flags are
 //! accepted and dispatched with the **stable error codes** preserved exactly
 //! (`unsupported.screenshot`, `invalid-selector`); their full implementation
@@ -15,9 +15,9 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use vixen_core::doc::Document;
-use vixen_core::engine_error::codes;
-use vixen_core::script::JsRuntime;
+use vixen_engine::doc::Document;
+use vixen_engine::engine_error::codes;
+use vixen_engine::script::JsRuntime;
 
 pub mod cdp;
 
@@ -203,9 +203,9 @@ fn run_cdp_server(port: u16) -> ExitCode {
 /// `--extract-selector <css>`: parse the URL's HTML, walk the DOM, and
 /// print every element matching `css` as a JSON object (one per line).
 /// Returns the stable `invalid-selector` code on malformed selectors
-/// (docs/SPEC.md). Selector matching uses Stylo via `vixen_core::style_dom`.
+/// (docs/SPEC.md). Selector matching uses Stylo via `vixen_engine::style_dom`.
 fn run_extract_selector(url: &str, sel: &str) -> ExitCode {
-    use vixen_core::style_dom::Selector;
+    use vixen_engine::style_dom::Selector;
 
     let parsed = match Selector::parse(sel) {
         Ok(s) => s,
@@ -336,7 +336,7 @@ fn validate_url(url: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use clap::Parser;
-    use vixen_core::script::JsValue;
+    use vixen_engine::script::JsValue;
 
     fn parse(args: &[&str]) -> Cli {
         let mut all = vec!["vixen-headless"];

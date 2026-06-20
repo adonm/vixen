@@ -213,11 +213,11 @@ text/glyph rasterizer), each duplicating the draw-command dispatch
 logic. Even a "two backend" design (WebRender + a software fallback)
 duplicates the dispatch contract.
 
-**Decision.** Vixen has one `DisplayList` type defined in `vixen-core`
+**Decision.** Vixen has one `DisplayList` type defined in `vixen-engine`
 and exactly one paint path (WebRender). There is no `PaintBackend`
 trait — a single-impl trait would be dead abstraction. WebRender
 consumes a small `GlContext` trait (defined in `vixen-api`, so
-`vixen-core` stays GTK- and EGL-free) with two implementations:
+`vixen-engine` stays GTK- and EGL-free) with two implementations:
 
 - `GlAreaSurface` (in `vixen-shell`) — wraps `gtk4::GLArea`, used by GUI.
   GL work runs inside the `GLArea::render` signal, where GTK has already
@@ -247,8 +247,8 @@ difference is the `GlContext` implementation behind it.
 - The display list is a stable internal API; changes ripple
   predictably.
 - The GL↔WebRender seam is the `GlContext` trait in `vixen-api`, not a
-  vixen-core type — keeping GL details out of engine internals and GTK
-  out of vixen-core.
+  vixen-engine type — keeping GL details out of engine internals and GTK
+  out of vixen-engine.
 - CI must provide a GPU device (Mesa `llvmpipe` is sufficient).
 
 ---
@@ -423,7 +423,7 @@ the non-Gecko config) directly. Do not pull a Servo git checkout, do
 not patch crates.io, do not vendor the source. Implement
 `selectors::Element` (and, for the cascade, `TNode`/`TElement`/
 `TDocument`) over Vixen's html5ever `RcDom` in
-`crates/vixen-core/src/style_dom.rs`.
+`crates/vixen-engine/src/style_dom.rs`.
 
 **Alternatives considered.**
 
@@ -440,7 +440,7 @@ not patch crates.io, do not vendor the source. Implement
 
 **Consequences.**
 
-- Phase 3 unblocks. The selector-matching surface (`vixen-core::
+- Phase 3 unblocks. The selector-matching surface (`vixen-engine::
   style_dom`) is live; the WPT selector fixtures pass end-to-end.
 - The crate ships with its lib name as `style` even though the package
   is `stylo`; source uses `use style::…` while `Cargo.toml` says

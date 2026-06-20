@@ -52,7 +52,7 @@ pub const DATA_PREFIX: &str = "data-";
 /// every other character (including other hyphens) passes through verbatim.
 ///
 /// ```
-/// # use vixen_core::dataset::attribute_to_property;
+/// # use vixen_engine::dataset::attribute_to_property;
 /// assert_eq!(attribute_to_property("data-foo-bar"), Some("fooBar".to_owned()));
 /// assert_eq!(attribute_to_property("data-x"),       Some("x".to_owned()));
 /// assert_eq!(attribute_to_property("data-foo--bar"),Some("foo-Bar".to_owned()));
@@ -111,7 +111,7 @@ pub fn attribute_to_property(name: &str) -> Option<String> {
 /// authoring error).
 ///
 /// ```
-/// # use vixen_core::dataset::property_to_attribute;
+/// # use vixen_engine::dataset::property_to_attribute;
 /// assert_eq!(property_to_attribute("fooBar").unwrap(),    "data-foo-bar");
 /// assert_eq!(property_to_attribute("foo-bar").unwrap(),   "data-foo-bar");
 /// assert_eq!(property_to_attribute("x").unwrap(),         "data-x");

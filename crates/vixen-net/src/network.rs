@@ -220,6 +220,12 @@ impl Network {
                 });
             }
 
+            // TODO(Phase 7): route through vixen_engine::text_codec::TextDecoder
+            // (or a future `decode(headers, bytes)` helper) once the charset
+            // pipeline is wired. Today `text_codec` only supports UTF-8 (no
+            // legacy-encoding codecs), and this lossy decode ignores the
+            // Content-Type `charset` parameter entirely, so non-UTF-8 response
+            // bodies are silently mangled to U+FFFD.
             let body = String::from_utf8_lossy(&bytes).into_owned();
 
             return Ok(TextResponse {

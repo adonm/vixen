@@ -1,5 +1,5 @@
 //! End-to-end WPT runner — drives `fixtures/manifest.json` through
-//! [`vixen_wpt`] against a parsed [`vixen_core::doc::Document`] wrapped as a
+//! [`vixen_wpt`] against a parsed [`vixen_engine::doc::Document`] wrapped as a
 //! [`HarnessEngine`]. This is the Phase 3 gate (docs/PLAN.md "vixen-wpt runs
 //! the CSS fixtures; pass rate recorded as baseline").
 //!
@@ -9,8 +9,8 @@
 //! graph, so the engine-side adapter lives here at the integration seam.
 
 use vixen_api::{ElementInfo, EngineDiagnostic, PageSnapshot};
-use vixen_core::doc::Document;
-use vixen_core::style_dom::Selector;
+use vixen_engine::doc::Document;
+use vixen_engine::style_dom::Selector;
 use vixen_wpt::harness::HarnessEngine;
 use vixen_wpt::manifest::Manifest;
 

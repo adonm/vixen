@@ -34,7 +34,7 @@
 //! The check runs *after* the response arrives from the network but *before*
 //! script sees any of its data; on failure, the response is replaced with a
 //! network error and the only visible headers are the safelisted ones. Vixen
-//! enforces this at the script→fetch host hook (`vixen-core::script`), per
+//! enforces this at the script→fetch host hook (`vixen-engine::script`), per
 //! `docs/ARCHITECTURE.md` "Trust boundaries".
 //!
 //! References:

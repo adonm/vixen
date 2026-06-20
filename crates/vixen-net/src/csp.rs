@@ -19,6 +19,8 @@
 
 use std::collections::BTreeMap;
 
+use base64::{Engine, engine::general_purpose::STANDARD};
+use sha2::{Digest, Sha256, Sha384, Sha512};
 use url::Url;
 
 use crate::origin::Origin;
@@ -277,18 +279,26 @@ fn host_source_matches(h: &HostSource, url: &Url, _doc_origin: &Origin) -> bool 
     true
 }
 
-/// Compare a CSP `'hash-...'` source against `content`. SHA-256 is
-/// implemented here (compact, dependency-free); SHA-384/512 are wired to a
-/// system SHA-2 at the Phase 7 script-execution boundary, where hashing
-/// actually runs on script bytes. Until then 384/512 sources fail closed.
+/// Compare a CSP `'hash-...'` source against `content`. All three
+/// algorithms (SHA-256/384/512) are computed via the vetted `sha2` crate
+/// and compared in constant time against the base64-decoded expected bytes.
+/// A mismatched expected-length (e.g. a truncated digest) is rejected by
+/// `constant_time_eq`'s length check.
 fn hash_matches(alg: HashAlg, expected: &str, content: &str) -> bool {
     let expected_bytes = base64_decode_or_empty(expected);
     match alg {
-        HashAlg::Sha256 => {
-            let d = sha256(content);
-            constant_time_eq(&d, &expected_bytes)
-        }
-        HashAlg::Sha384 | HashAlg::Sha512 => false,
+        HashAlg::Sha256 => constant_time_eq(
+            Sha256::digest(content.as_bytes()).as_slice(),
+            &expected_bytes,
+        ),
+        HashAlg::Sha384 => constant_time_eq(
+            Sha384::digest(content.as_bytes()).as_slice(),
+            &expected_bytes,
+        ),
+        HashAlg::Sha512 => constant_time_eq(
+            Sha512::digest(content.as_bytes()).as_slice(),
+            &expected_bytes,
+        ),
     }
 }
 
@@ -384,30 +394,20 @@ fn parse_host_source(tok: &str) -> HostSource {
     }
 }
 
-// --- minimal SHA-256 + base64 (so csp sha256 hash matching is real) ---------
-// Compact, dependency-free SHA-256 used only to verify CSP `'sha256-'` hash
-// sources. The script-execution boundary (Phase 7) reuses it on real bytes.
+// --- base64 decode + constant-time compare for `'hash-...'` sources --------
+// SHA-2 itself is provided by the vetted `sha2` crate above; the helpers
+// below only decode the base64 source-value and compare digests in
+// constant time.
 
+/// Decode the base64 source-value of a `'hash-...'` source via the vetted
+/// `base64` crate using the strict STANDARD engine (RFC 4648 § 4 standard
+/// alphabet `A-Za-z0-9+/`). The STANDARD engine errors on non-alphabet bytes
+/// *and* on ASCII whitespace — matching the historical CSP strictness, since
+/// a garbage/whitespace-laced hash source is meaningless. Any decode error
+/// maps to empty so `hash_matches`'s constant-time compare fails the length
+/// check and never matches a real digest.
 fn base64_decode_or_empty(s: &str) -> Vec<u8> {
-    const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = Vec::with_capacity(s.len() * 3 / 4);
-    let mut buf: u32 = 0;
-    let mut bits = 0;
-    for &c in s.as_bytes() {
-        if c == b'=' {
-            break;
-        }
-        let Some(idx) = TABLE.iter().position(|&t| t == c) else {
-            return Vec::new();
-        };
-        buf = (buf << 6) | idx as u32;
-        bits += 6;
-        if bits >= 8 {
-            bits -= 8;
-            out.push((buf >> bits) as u8);
-        }
-    }
-    out
+    STANDARD.decode(s).unwrap_or_default()
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
@@ -421,115 +421,101 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     diff == 0
 }
 
-/// FIPS 180-4 SHA-256 over the UTF-8 bytes of `msg`.
-fn sha256(msg: &str) -> [u8; 32] {
-    const K: [u32; 64] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
-        0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
-        0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
-        0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
-        0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
-        0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-        0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
-        0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
-        0xc67178f2,
-    ];
-    let mut h: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
-        0x5be0cd19,
-    ];
-
-    let bytes = msg.as_bytes();
-    let bit_len = (bytes.len() as u64) * 8;
-    let mut padded = bytes.to_vec();
-    padded.push(0x80);
-    while padded.len() % 64 != 56 {
-        padded.push(0);
-    }
-    padded.extend_from_slice(&bit_len.to_be_bytes());
-
-    let mut w = [0u32; 64];
-    for chunk in padded.chunks(64) {
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                chunk[i * 4],
-                chunk[i * 4 + 1],
-                chunk[i * 4 + 2],
-                chunk[i * 4 + 3],
-            ]);
-        }
-        for i in 16..64 {
-            let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);
-            let s1 = w[i - 2].rotate_right(17) ^ w[i - 2].rotate_right(19) ^ (w[i - 2] >> 10);
-            w[i] = w[i - 16]
-                .wrapping_add(s0)
-                .wrapping_add(w[i - 7])
-                .wrapping_add(s1);
-        }
-        let (mut a, mut b, mut c, mut d, mut e, mut f, mut g, mut hh) =
-            (h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7]);
-        for i in 0..64 {
-            let s1 = e.rotate_right(6) ^ e.rotate_right(11) ^ e.rotate_right(25);
-            let ch = (e & f) ^ ((!e) & g);
-            let t1 = hh
-                .wrapping_add(s1)
-                .wrapping_add(ch)
-                .wrapping_add(K[i])
-                .wrapping_add(w[i]);
-            let s0 = a.rotate_right(2) ^ a.rotate_right(13) ^ a.rotate_right(22);
-            let maj = (a & b) ^ (a & c) ^ (b & c);
-            let t2 = s0.wrapping_add(maj);
-            hh = g;
-            g = f;
-            f = e;
-            e = d.wrapping_add(t1);
-            d = c;
-            c = b;
-            b = a;
-            a = t1.wrapping_add(t2);
-        }
-        h[0] = h[0].wrapping_add(a);
-        h[1] = h[1].wrapping_add(b);
-        h[2] = h[2].wrapping_add(c);
-        h[3] = h[3].wrapping_add(d);
-        h[4] = h[4].wrapping_add(e);
-        h[5] = h[5].wrapping_add(f);
-        h[6] = h[6].wrapping_add(g);
-        h[7] = h[7].wrapping_add(hh);
-    }
-
-    let mut out = [0u8; 32];
-    for (i, word) in h.iter().enumerate() {
-        out[i * 4..i * 4 + 4].copy_from_slice(&word.to_be_bytes());
-    }
-    out
-}
-
 #[cfg(test)]
-mod sha256_known_answers {
-    use super::sha256;
+mod hash_known_answers {
+    //! KATs for `hash_matches` against FIPS 180-4 known-answer vectors for
+    //! SHA-256/384/512, covering both `""` and `"abc"`. The SHA-384 and
+    //! SHA-512 cases would have been silently denied before the `sha2`
+    //! rewrite (the old arms returned `false` unconditionally).
+    use super::*;
+
+    fn hex_to_base64(hex: &str) -> String {
+        let bytes = (0..hex.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+            .collect::<Vec<_>>();
+        super::tests::base64_encode(&bytes)
+    }
+
+    // FIPS 180-4 / NIST known-answer vectors.
+    // SHA-256
+    const SHA256_EMPTY: &str =
+        "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const SHA256_ABC: &str =
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+    // SHA-384
+    const SHA384_EMPTY: &str =
+        "38b060a751ac96384cd9327eb1b1e36a21fdb71114be07434c0cc7bf63f6e1da274edebfe76f65fbd51ad2f14898b95b";
+    const SHA384_ABC: &str =
+        "cb00753f45a35e8bb5a03d699ac65007272c32ab0eded1631a8b605a43ff5bed8086072ba1e7cc2358baeca134c825a7";
+    // SHA-512
+    const SHA512_EMPTY: &str =
+        "cf83e1357eefb8bdf1542850d66d8007d620e4050b5715dc83f4a921d36ce9ce47d0d13c5d85f2b0ff8318d2877eec2f63b931bd47417a81a538327af927da3e";
+    const SHA512_ABC: &str =
+        "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f";
 
     #[test]
-    fn empty_string() {
-        // sha256("") = e3b0c44298fc1c149afbf4c8996fb924...
-        let d = sha256("");
-        let hex: String = d.iter().map(|b| format!("{:02x}", b)).collect();
-        assert_eq!(
-            hex,
-            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-        );
+    fn sha256_empty() {
+        let b64 = hex_to_base64(SHA256_EMPTY);
+        assert!(hash_matches(HashAlg::Sha256, &b64, ""));
+        // Wrong content must NOT match.
+        assert!(!hash_matches(HashAlg::Sha256, &b64, "abc"));
     }
 
     #[test]
-    fn abc() {
-        // sha256("abc") = ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad
-        let d = sha256("abc");
-        let hex: String = d.iter().map(|b| format!("{:02x}", b)).collect();
-        assert_eq!(
-            hex,
-            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-        );
+    fn sha256_abc() {
+        let b64 = hex_to_base64(SHA256_ABC);
+        assert!(hash_matches(HashAlg::Sha256, &b64, "abc"));
+        assert!(!hash_matches(HashAlg::Sha256, &b64, ""));
+    }
+
+    #[test]
+    fn sha384_empty() {
+        let b64 = hex_to_base64(SHA384_EMPTY);
+        // Previously this returned `false` unconditionally.
+        assert!(hash_matches(HashAlg::Sha384, &b64, ""));
+        assert!(!hash_matches(HashAlg::Sha384, &b64, "abc"));
+    }
+
+    #[test]
+    fn sha384_abc() {
+        let b64 = hex_to_base64(SHA384_ABC);
+        assert!(hash_matches(HashAlg::Sha384, &b64, "abc"));
+        assert!(!hash_matches(HashAlg::Sha384, &b64, ""));
+    }
+
+    #[test]
+    fn sha512_empty() {
+        let b64 = hex_to_base64(SHA512_EMPTY);
+        // Previously this returned `false` unconditionally.
+        assert!(hash_matches(HashAlg::Sha512, &b64, ""));
+        assert!(!hash_matches(HashAlg::Sha512, &b64, "abc"));
+    }
+
+    #[test]
+    fn sha512_abc() {
+        let b64 = hex_to_base64(SHA512_ABC);
+        assert!(hash_matches(HashAlg::Sha512, &b64, "abc"));
+        assert!(!hash_matches(HashAlg::Sha512, &b64, ""));
+    }
+
+    #[test]
+    fn mismatched_length_rejected() {
+        // SHA-256 digest is 32 bytes; feeding a SHA-384 (48-byte) expected
+        // value to a SHA-256 source must fail the length check, not match.
+        let b64_384 = hex_to_base64(SHA384_ABC);
+        assert!(!hash_matches(HashAlg::Sha256, &b64_384, "abc"));
+        // And vice versa.
+        let b64_256 = hex_to_base64(SHA256_ABC);
+        assert!(!hash_matches(HashAlg::Sha384, &b64_256, "abc"));
+    }
+
+    #[test]
+    fn malformed_base64_rejected() {
+        // Non-base64 garbage decodes to empty → never matches any digest.
+        assert!(!hash_matches(HashAlg::Sha256, "!!!not-base64!!!", "abc"));
+        assert!(!hash_matches(HashAlg::Sha384, "!!!not-base64!!!", "abc"));
+        assert!(!hash_matches(HashAlg::Sha512, "!!!not-base64!!!", "abc"));
     }
 }
 
@@ -582,11 +568,39 @@ mod tests {
 
     #[test]
     fn inline_allowed_with_matching_sha256_hash() {
-        // sha256("alert(1)") base64 — computed below.
+        // sha256("alert(1)") base64 — computed via `sha2` below.
         let content = "alert(1)";
-        let digest = sha256(content);
+        let digest = Sha256::digest(content.as_bytes());
         let b64 = base64_encode(&digest);
         let policy = format!("script-src 'sha256-{b64}'");
+        let mut csp = ContentSecurityPolicy::new();
+        csp.add_header(&policy);
+        assert!(csp.allows_inline_script(&doc_origin(), Some(content), None));
+        assert!(!csp.allows_inline_script(&doc_origin(), Some("other"), None));
+    }
+
+    #[test]
+    fn inline_allowed_with_matching_sha384_hash() {
+        // sha384("alert(1)") — previously this was ALWAYS denied because
+        // `hash_matches` returned `false` for the Sha384 arm.
+        let content = "alert(1)";
+        let digest = Sha384::digest(content.as_bytes());
+        let b64 = base64_encode(&digest);
+        let policy = format!("script-src 'sha384-{b64}'");
+        let mut csp = ContentSecurityPolicy::new();
+        csp.add_header(&policy);
+        assert!(csp.allows_inline_script(&doc_origin(), Some(content), None));
+        assert!(!csp.allows_inline_script(&doc_origin(), Some("other"), None));
+    }
+
+    #[test]
+    fn inline_allowed_with_matching_sha512_hash() {
+        // sha512("alert(1)") — previously this was ALWAYS denied because
+        // `hash_matches` returned `false` for the Sha512 arm.
+        let content = "alert(1)";
+        let digest = Sha512::digest(content.as_bytes());
+        let b64 = base64_encode(&digest);
+        let policy = format!("script-src 'sha512-{b64}'");
         let mut csp = ContentSecurityPolicy::new();
         csp.add_header(&policy);
         assert!(csp.allows_inline_script(&doc_origin(), Some(content), None));
@@ -716,7 +730,7 @@ mod tests {
         assert_eq!(csp.policies.len(), 1);
     }
 
-    fn base64_encode(bytes: &[u8]) -> String {
+    pub(super) fn base64_encode(bytes: &[u8]) -> String {
         const TABLE: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
         let mut out = String::new();
         let mut buf: u32 = 0;

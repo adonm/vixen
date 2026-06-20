@@ -136,7 +136,7 @@ impl ImageCandidate {
 /// input ⇒ empty list.
 ///
 /// ```
-/// # use vixen_core::srcset::{parse_srcset, Descriptor, ImageCandidate};
+/// # use vixen_engine::srcset::{parse_srcset, Descriptor, ImageCandidate};
 /// let c = parse_srcset("a.png 1x, b.png 2x");
 /// assert_eq!(c.len(), 2);
 /// assert_eq!(c[0].url, "a.png");

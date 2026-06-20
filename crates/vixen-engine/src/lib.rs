@@ -1,4 +1,4 @@
-//! vixen-core — engine integration glue.
+//! vixen-engine — engine integration glue.
 //!
 //! Phase 2 stands up the SpiderMonkey runtime here (`script.rs`). Phase 3
 //! adds HTML parse + Stylo cascade, Phase 4 layout, Phase 5 the single
@@ -11,6 +11,7 @@
 
 #![deny(unsafe_code)]
 
+pub mod abort;
 pub mod angle;
 pub mod background_position;
 pub mod border_radius;
@@ -19,6 +20,7 @@ pub mod box_shadow;
 pub mod calc;
 pub mod class_list;
 pub mod color;
+pub mod counter;
 pub mod data_url;
 pub mod dataset;
 pub mod date_units;
@@ -31,7 +33,10 @@ pub mod flex_resolve;
 pub mod form_submission;
 pub mod forms;
 pub mod gradient;
+pub mod headers;
+pub mod high_res_time;
 pub mod length;
+pub mod list_marker;
 pub mod media_query;
 pub mod microsyntax;
 pub mod mime;
@@ -47,6 +52,8 @@ pub mod style_dom;
 pub mod text_codec;
 pub mod time;
 pub mod transform;
+pub mod url_pattern;
 pub mod url_search_params;
+pub mod viewport_meta;
 
 // Removed once the first post-Phase-0 module landed; kept out of the build.

@@ -8,8 +8,8 @@
 //! owns its own `JsRuntime` lifecycle.
 
 use serde_json::{Value, json};
-use vixen_core::engine_error::codes;
-use vixen_core::script::JsRuntime;
+use vixen_engine::engine_error::codes;
+use vixen_engine::script::JsRuntime;
 use vixen_headless::cdp::CdpState;
 
 fn dispatch_one(state: &mut CdpState, method: &str, params: Value) -> Value {

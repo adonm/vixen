@@ -29,7 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
-use vixen_core::script::{JsRuntime, JsValue};
+use vixen_engine::script::{JsRuntime, JsValue};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -372,7 +372,7 @@ fn now_ms() -> u64 {
 // ---------------------------------------------------------------------------
 // Stable error code export — the CLI surfaces these verbatim. Kept as a
 // documentation anchor for the stable-code contract that Runtime.evaluate
-// failures carry (one of the codes from vixen_core::engine_error::codes).
+// failures carry (one of the codes from vixen_engine::engine_error::codes).
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]

@@ -27,7 +27,7 @@ stub `lib.rs` so the workspace compiles.
    `FactoryVecDeque<TabModel>` and a placeholder window. Establish the
    Relm4 worker/factory patterns early per ADR-010 — the shell's
    idioms should be set in Phase 0, not retrofitted later.
-4. `vixen-net`, `vixen-store`, `vixen-wpt`, `vixen-headless`, `vixen-core`
+4. `vixen-net`, `vixen-store`, `vixen-wpt`, `vixen-headless`, `vixen-engine`
    all empty with `pub mod placeholder;` stubs.
 5. `justfile` adapted: `check-all-host` builds the workspace; `test-host`
    runs `vixen-api` tests (the only crate with logic yet — the other
@@ -86,10 +86,10 @@ Stand up the JS engine.
 
 **Steps:**
 
-1. Add `mozjs` to `vixen-core/Cargo.toml`. Per ADR-005, default to
+1. Add `mozjs` to `vixen-engine/Cargo.toml`. Per ADR-005, default to
    static link for development; system-link in the production Flatpak
    manifest.
-2. `vixen-core/src/script.rs`: `JsRuntime` owning a
+2. `vixen-engine/src/script.rs`: `JsRuntime` owning a
    `mozjs::rust::Runtime`, with `compartment_for_origin(&Origin)` and
    `evaluate(&mut self, origin, src) -> Result<JsValue>`.
    3. Host hook registration, minimum viable: `console.log`, `fetch`
@@ -99,7 +99,7 @@ Stand up the JS engine.
    `mozjs::rust::RootedGuard`. No naked handles.
 
 **Gate:** `vixen-headless --url file:///.../hello.html --eval '1+2'`
-returns `3`. `cargo test -p vixen-core` green (basic eval tests).
+returns `3`. `cargo test -p vixen-engine` green (basic eval tests).
 Binary size recorded.
 
 ---
@@ -111,14 +111,14 @@ Wire up HTML parsing and CSS cascade.
 **Steps:**
 
 1. `html5ever` parse into RcDom. Already a dependency. **Done** — see
-   `vixen-core::doc`.
-2. **Selector matching via Stylo (done) — `vixen-core::style_dom`**
+   `vixen-engine::doc`.
+2. **Selector matching via Stylo (done) — `vixen-engine::style_dom`**
    implements `selectors::Element` over the RcDom (a precomputed
    `ElementArena` keeps the module `forbid(unsafe_code)`). This powers
    `--extract-selector`, the WPT selector checks, and the
    `:valid`/`:invalid`/`:checked` pseudos. Phase 3's gate (WPT CSS
    fixtures) now passes against the selector surface.
-3. `vixen-core/src/style.rs` (next slice): load `<style>` / `<link
+3. `vixen-engine/src/style.rs` (next slice): load `<style>` / `<link
    rel=stylesheet>` into `Stylesheet` list → `Stylist::update_stylist`
    → cascade via Stylo's `SharedStyleContext` / traversal. Expose
    `computed_values_for(NodeId) -> Arc<ComputedValues>`. Requires
@@ -132,7 +132,7 @@ Wire up HTML parsing and CSS cascade.
    from Stylo. Verify via WPT fixtures.
 
 **Pure-logic foundation landed (testing-strategy item).**
-`vixen-core::length` implements CSS Values 4 `<length>` parsing + the
+`vixen-engine::length` implements CSS Values 4 `<length>` parsing + the
 absolute/relative unit conversions the cascade and layout resolves against
 (`px`/`em`/`rem`/`%`/`vh`/`vw`/`vmin`/`vmax`/`ex`/`ch`/`pt`/`pc`/`in`/`cm`/`mm`/`Q`).
 Rust-unit-tested per "Rust tests cover only pure logic (CSS length
@@ -140,20 +140,20 @@ arithmetic, …)".
 
 **The rest of the CSS Values 4 dimension family landed.** `<length>` was
 the first; the family is now complete for v1.0:
-- `vixen-core::color` — CSS Color 4 sRGB family: 3/4/6/8-digit hex,
+- `vixen-engine::color` — CSS Color 4 sRGB family: 3/4/6/8-digit hex,
   `rgb()/rgba()` (legacy comma + modern space forms), `hsl()/hsla()` with
   hue normalisation, the 148 named colours, `transparent`/`currentcolor`
   keywords, premultiplied-alpha arithmetic, and linear-sRGB interpolation
   (the primitive gradients and transitions reduce to). `oklch/lab/lch/color()`
   fail closed with `UnsupportedColorSpace` (deferred slice).
-- `vixen-core::angle` — `<angle>` (`deg`/`rad`/`grad`/`turn`) with
+- `vixen-engine::angle` — `<angle>` (`deg`/`rad`/`grad`/`turn`) with
   degree/radian normalisation, `cos_sin()` for transforms and conic gradients.
-- `vixen-core::time` — `<time>` (`s`/`ms`) with millisecond normalisation
+- `vixen-engine::time` — `<time>` (`s`/`ms`) with millisecond normalisation
   for transitions/animations.
-- `vixen-core::resolution` — `<resolution>` (`dpi`/`dpcm`/`dppx`/`x`) with
+- `vixen-engine::resolution` — `<resolution>` (`dpi`/`dpcm`/`dppx`/`x`) with
   dots-per-pixel normalisation for media queries. `x` is the historical
   alias for `dppx` (CSS Images 4 § 7.3).
-- `vixen-core::ratio` — CSS Values 4 § 4.4 `<ratio>`
+- `vixen-engine::ratio` — CSS Values 4 § 4.4 `<ratio>`
   (`number | number / number`): the numerator/denominator pair with the
   quotient the `aspect-ratio` property and the `aspect-ratio` /
   `device-aspect-ratio` media features reduce to. A zero denominator is the
@@ -182,12 +182,12 @@ Turn cascade output into a positioned box tree.
 
 **Steps:**
 
-1. Add Servo `layout_2020` crate to `vixen-core` (per ADR-001 and
+1. Add Servo `layout_2020` crate to `vixen-engine` (per ADR-001 and
    `docs/REFERENCES.md`). Confirm dependency closure is workable; if
    `layout_2020` coverage proves too sparse for real sites, narrow the
    v1.0 layout scope and document the gap in `docs/COMPAT.md` rather
    than swapping crates.
-2. `vixen-core/src/layout.rs`: feed the cascade output + DOM into the
+2. `vixen-engine/src/layout.rs`: feed the cascade output + DOM into the
    layout engine, produce a positioned box tree.
 3. CSS Grid, Flexbox, block layout, all `position` values, scroll
    containers — all from the upstream `layout_2020` crate.
@@ -198,7 +198,7 @@ margins + gaps must produce correct absolute coordinates *without* any
 post-pass coordinate fixup (`layout_2020` doesn't need it).
 
 **Pure-logic foundation landed (Phase 4 prep).**
-`vixen-core::box_model` implements the CSS2 § 10.3.3 block-level
+`vixen-engine::box_model` implements the CSS2 § 10.3.3 block-level
 horizontal-constraint solve (`auto`-width leftover absorption, one/two
 `auto`-margin distribution + centering, `box-sizing: border-box` content
 subtraction) and the four-box nesting (`margin ⊃ border ⊃ padding ⊃
@@ -206,7 +206,7 @@ content`) the layout tree feeds off. Pure given cascade-resolved edges;
 Rust-unit-tested per "Rust tests cover only pure logic".
 
 **Flexbox main-axis resolution landed (Phase 4 prep).**
-`vixen-core::flex_resolve` implements CSS Flexbox 1 § 9.7 "Resolving
+`vixen-engine::flex_resolve` implements CSS Flexbox 1 § 9.7 "Resolving
 Flexible Lengths" end-to-end: the used-flex-factor selection (grow if items
 under-fill, shrink otherwise), the inflexible-item freeze step, the
 proportional free-space distribution (scaled by `shrink × flex_basis` for
@@ -225,7 +225,7 @@ to two `GlContext` implementations.
 
 **Steps:**
 
-1. `vixen-core/src/paint.rs`: single `DisplayList` type + a WebRender
+1. `vixen-engine/src/paint.rs`: single `DisplayList` type + a WebRender
    `Renderer` that consumes a `&dyn GlContext` (trait defined in
    `vixen-api`, see ADR-006). One paint path; the two `GlContext`
    implementations are the only thing that varies between GUI and
@@ -245,7 +245,7 @@ to two `GlContext` implementations.
    clip/origin/attachment.
 
    **Invariant enforcement landed (pure slice).**
-   `vixen-core::display_list` implements all eight `SPEC.md` "Display-list
+   `vixen-engine::display_list` implements all eight `SPEC.md` "Display-list
    invariants" as auditable, individually-tested pure functions
    (`z_tier`, `effective_opacity`, `background_paint_rect`, …) plus a
    `DisplayListBuilder::build` that emits the pruned, z-sorted
@@ -264,37 +264,37 @@ produces a PNG matching the GUI's render within 1 % pixel diff on 5
 fixtures (both renders going through the same WebRender paint path).
 
 **Paint-geometry pure-logic foundations landed (Phase 5 prep).**
-- `vixen-core::transform` — CSS Transforms 1 § 13 2D affine algebra:
+- `vixen-engine::transform` — CSS Transforms 1 § 13 2D affine algebra:
   `translate`/`scale`/`rotate`/`skew`/`matrix`, `multiply` composition
   (post-multiply ⇒ rightmost-applied-first, matching Firefox/Servo),
   `apply_point`/`apply_rect` (AABB), `determinant`/`inverse`, plus a
   `parse_transform` list parser for the `--computed-style` projection.
-  Consumes `vixen-core::angle` so the full angle unit grammar is shared.
-- `vixen-core::border_radius` — CSS Backgrounds 3 § 5.5 corner shaping:
+  Consumes `vixen-engine::angle` so the full angle unit grammar is shared.
+- `vixen-engine::border_radius` — CSS Backgrounds 3 § 5.5 corner shaping:
   the eight authored radii → four shaped corners with the proportional
   scale-down when adjacent radii overflow a side. Pure given px radii +
   px sizes; the cascade resolves percentages first.
-- `vixen-core::gradient` — CSS Images 4 § 4.5 linear-gradient colour
+- `vixen-engine::gradient` — CSS Images 4 § 4.5 linear-gradient colour
   sampling: stop-position normalisation (first/last defaults, even
   auto-distribution between positioned anchors, monotonicity fix-up, unit-
   interval clamp), linear-sRGB interpolation between stops (via
   `crate::color::interpolate`), and the `repeating-linear-gradient()` wrap
   that tiles the colour function. Angle / direction → gradient-line
   geometry stays in the paint path.
-- `vixen-core::box_shadow` — CSS Backgrounds 3 § 7.2 `box-shadow` geometry:
+- `vixen-engine::box_shadow` — CSS Backgrounds 3 § 7.2 `box-shadow` geometry:
   the `<shadow>#` grammar parser (offset / blur / spread / colour /
   `inset`, the paren-respecting colour-function tokeniser, negative-blur
   clamping) + the per-shadow paint-rect arithmetic (`outer_paint_rect` for
   display-list culling; `inset_clip_rect` for the inset "hole" with the
   spec's spread-sign-flip + blur-shrinks-hole rule). Pure given px values;
   the cascade resolves percentages / `em` first.
-- `vixen-core::background_position` — CSS Backgrounds 3 § 3.6 +
+- `vixen-engine::background_position` — CSS Backgrounds 3 § 3.6 +
   § 4.2 `<position>` resolution: the four-value grammar (1/2/3/4 forms,
   keyword / length / percentage mix), the keyword-axis swap rule (`top
   right` ≡ `right top`), and the § 4.2 formula `(container − image) *
   fraction + offset`. Pure given px sizes; the cascade resolves the
   `background-origin`-selected container size first.
-- `vixen-core::stacking_context` — CSS 2.1 § 9.9.1 + CSS Positioned Layout
+- `vixen-engine::stacking_context` — CSS 2.1 § 9.9.1 + CSS Positioned Layout
   3 § 6 + CSS Compositing 1 § 3 stacking-context formation predicate +
   the seven-layer § App. E.2.1 paint-order classification (`classify_descendant`
   slots each descendant into one of `ContextBackgroundAndBorders` /
@@ -333,27 +333,27 @@ Priority order:
 Each family lands with its WPT fixtures passing before moving on.
 
 **Pure-logic foundation landed for Events + Forms + Storage (Phase 6 prep).**
-- `vixen-core::event_path` — `composedPath()` (shadow-boundary aware via the
+- `vixen-engine::event_path` — `composedPath()` (shadow-boundary aware via the
   `composed` flag) and the focus-transition ordering
   `focusout → focusin → blur → focus` (bubbling flags per SPEC). The host-hook
   layer invokes these; the ordering is done and unit-tested.
-- `vixen-core::date_units` — the date/time canonical-unit parser
+- `vixen-engine::date_units` — the date/time canonical-unit parser
   (`forms.rs` "lives in `date_units` until a proper parser lands" → landed):
   `date`/`time`/`week`/`month`/`datetime-local` → `DateTimeUnit`, so
   `stepMismatch` is now testable end-to-end over real input strings.
-- `vixen-core::storage_key` — Web Storage key/value validation (non-empty
+- `vixen-engine::storage_key` — Web Storage key/value validation (non-empty
   key, no NUL bytes, ≤ `MAX_KEY_LEN`/`MAX_VALUE_LEN`) + the `(origin, kind)`
   `StoragePartition` key the `vixen-store` redb tables partition under, plus
   the per-partition `StorageQuota` (5 MiB / 8 192 entries) the host hooks
   report `QuotaExceededError` against.
-- `vixen-core::form_submission` — the three WHATWG HTML § 4.10.21 form-
+- `vixen-engine::form_submission` — the three WHATWG HTML § 4.10.21 form-
   submission encoders (`application/x-www-form-urlencoded`,
   `multipart/form-data`, `text/plain`) plus the `FormEntry` / `FormEntryValue`
   data model + `FormEnctype` selector. The URL-encoder uses the URL Standard's
   space→`+` + uppercase-hex percent-encoding; the multipart encoder handles
   RFC 7578 § 4.2 `Content-Disposition` quoting + `filename` + `Content-Type`
   per part, with CRLF discipline; the boundary generator is RFC 2046-capped.
-- `vixen-core::dataset` — WHATWG HTML § 3.2.6.9 `data-*` attribute ↔ dataset
+- `vixen-engine::dataset` — WHATWG HTML § 3.2.6.9 `data-*` attribute ↔ dataset
   property-name bidirectional mapping (deserialise, serialise, collect),
   with the anti-collision rule (`-` followed by uppercase ⇒ not exposed).
 - `fixtures/forms/validation.html` — exercises every form pseudo-class
@@ -366,7 +366,7 @@ Each family lands with its WPT fixtures passing before moving on.
   three encoders will walk; wired into `fixtures/manifest.json`.
 
 **Pure-logic foundation landed for the `DOMTokenList` surface (Phase 6 prep).**
-- `vixen-core::class_list` — WHATWG HTML § 4.6.4 `DOMTokenList` + the
+- `vixen-engine::class_list` — WHATWG HTML § 4.6.4 `DOMTokenList` + the
   § 2.7.3 "ordered set of unique space-separated tokens" parser +
   validator (empty ⇒ `SyntaxError`; ASCII-whitespace-bearing ⇒
   `InvalidCharacterError`). The full mutating surface (`add` / `remove` /
@@ -384,7 +384,7 @@ Each family lands with its WPT fixtures passing before moving on.
   `fixtures/manifest.json`.
 
 **Pure-logic foundation landed for Network host hooks (Phase 6 prep).**
-- `vixen-core::url_search_params` — WHATWG URL Standard `URLSearchParams`
+- `vixen-engine::url_search_params` — WHATWG URL Standard `URLSearchParams`
   (§ 5.2 parse + § 5.3 serialize) plus the full mutating surface
   (`get`/`getAll`/`has`/`has_pair`/`append`/`set`/`delete`/`delete_pair`/
   `sort`/`entries`/`keys`/`values`) the `new URLSearchParams()` JS host hook
@@ -392,13 +392,13 @@ Each family lands with its WPT fixtures passing before moving on.
   percent-decode with U+FFFD on ill-formed UTF-8, and empty-tuple dropping;
   the serializer shares the `application/x-www-form-urlencoded` byte set with
   `form_submission::encode_urlencoded` (kept separate because the specs are).
-- `vixen-core::mime` — WHATWG MIME Sniffing § 2.1 `MimeType::parse` + § 2.2
+- `vixen-engine::mime` — WHATWG MIME Sniffing § 2.1 `MimeType::parse` + § 2.2
   `serialize` + the `essence()` accessor. Tolerant whitespace + case handling,
   quoted-string parameter values (RFC 9110 § 3.2.6 backslash-pair escaping),
   first-occurrence-wins on duplicate parameter names. Every network layer
   (`Content-Type`), `fetch()`/`XHR` (`.type`/`overrideMimeType`), and
   `<object>`/`<embed>` plugin negotiation consults this one parser.
-- `vixen-core::text_codec` — WHATWG Encoding API (`TextEncoder` +
+- `vixen-engine::text_codec` — WHATWG Encoding API (`TextEncoder` +
   `TextDecoder`). `encode_into` reports UTF-16-code-unit `read` + byte
   `written` without splitting a scalar value; `decode` does the BOM sniff
   (`ignoreBOM` opt-out), the `fatal`-flag UTF-8 validation, the WHATWG § 4.6
@@ -406,8 +406,85 @@ Each family lands with its WPT fixtures passing before moving on.
   agrees with the WHATWG count), and the § 7.1 `CRLF`/lone-`CR` → `LF` line-
   break normalisation. v1 ships UTF-8 only; unknown labels fail closed.
 
+**Pure-logic foundation landed for the fetch host-hook data model (Phase 6 prep).**
+The `Headers` object + `AbortController`/`AbortSignal` primitives the
+`fetch()` / `XMLHttpRequest` / streaming host hooks reduce to. Both
+`#![forbid(unsafe_code)]`, Rust-unit-tested.
+- `vixen-engine::headers` — Fetch § 3.2.2 `Headers` object data model:
+  [`validate_header_name`] (RFC 9110 § 5.5 `token` + lowercasing) +
+  [`validate_header_value`] (OWS trim, NUL/CRLF rejection, code-point-`≤ U+00FF`
+  gating); the § 3.2.2 forbidden predicates [`is_forbidden_request_header`]
+  (the exact 21-name list + the `proxy-`/`sec-` prefix rules the Request
+  constructor strips) + [`is_forbidden_response_header_name`]
+  (`set-cookie`/`set-cookie2`); the § 3.2.1.2 CORS-safelist predicate
+  [`is_cors_safelisted_request_header`] (the `Accept`/`Accept-Language`/
+  `Content-Language`/`Content-Type`(+`Range`) family with the value-byte cap,
+  the CORS-unsafe-byte gate, and the MIME-essence + `Range` grammar checks);
+  and the normalised [`Headers`] store (append/set/get/getAll/delete/has +
+  comma-combine on read + byte-order + insertion-order iteration).
+- `vixen-engine::abort` — DOM § 8.1 `AbortController`/`AbortSignal`: the
+  `aborted` + `reason` value model (default reason = `"AbortError"`
+  `DOMException`), [`AbortController::abort`] (idempotent, first-reason-wins),
+  [`abort_any`] (§ 8.1.3.2 `AbortSignal.any()` snapshot — aborted iff any input
+  is, taking the first-aborted input's reason; reactive propagation is the
+  host-hook event-loop layer's job), and [`TimeoutSignal`] (§ 8.1.3.2
+  `AbortSignal.timeout(ms)` request record with the zero-delay-aborts-
+  synchronously rule).
+
+[`validate_header_name`]: ../../crates/vixen-engine/src/headers.rs
+[`validate_header_value`]: ../../crates/vixen-engine/src/headers.rs
+[`is_forbidden_request_header`]: ../../crates/vixen-engine/src/headers.rs
+[`is_forbidden_response_header_name`]: ../../crates/vixen-engine/src/headers.rs
+[`is_cors_safelisted_request_header`]: ../../crates/vixen-engine/src/headers.rs
+[`Headers`]: ../../crates/vixen-engine/src/headers.rs
+[`AbortController::abort`]: ../../crates/vixen-engine/src/abort.rs
+[`abort_any`]: ../../crates/vixen-engine/src/abort.rs
+[`TimeoutSignal`]: ../../crates/vixen-engine/src/abort.rs
+
+**Pure-logic foundation landed for the Performance API + viewport adaptation (Phase 6 prep).**
+The `performance.now()` monotonic-clock + `<meta name=viewport>` primitives
+the timing host hooks and the mobile layout layer reduce to. Both
+`#![forbid(unsafe_code)]`, Rust-unit-tested.
+- `vixen-engine::high_res_time` — High Resolution Time § 4:
+  [`DOMHighResTimeStamp`] (`f64` ms), the per-global [`TimeOrigin`] (ms since
+  Unix epoch that `performance.now()` is relative to), the § 4.4
+  [`MonotonicClock`] (non-decreasing across calls + clamped to `≥ 0`), the
+  § 4.4 [`coarsen`] effective-time-value coarsening (floor to `100µs` unless
+  cross-origin isolated), and the `performance.now()` → Unix-epoch conversion
+  (`timeOrigin + now`) the legacy `PerformanceTiming` surface reduces to.
+- `vixen-engine::viewport_meta` — WHATWG HTML § 9.3 `<meta name="viewport">`
+  `content` parser: the comma-separated `<name>=<value>` declaration set
+  (`width`/`height` device-keyword or CSS-px number, `initial-scale`/
+  `minimum-scale`/`maximum-scale` clamped to `[0.1, 10]`, `user-scalable`
+  yes/no, `viewport-fit` auto/contain/cover). Names ASCII-case-insensitive,
+  values use the lenient leading-numeric-prefix extraction, unknown properties
+  ignored. The CSS Device Adaptation 1 § 10 defaulting (width=980, &c.) stays
+  in the layout layer; this module captures the authored declaration set.
+
+[`DOMHighResTimeStamp`]: ../../crates/vixen-engine/src/high_res_time.rs
+[`TimeOrigin`]: ../../crates/vixen-engine/src/high_res_time.rs
+[`MonotonicClock`]: ../../crates/vixen-engine/src/high_res_time.rs
+[`coarsen`]: ../../crates/vixen-engine/src/high_res_time.rs
+
+**Pure-logic foundation landed for URLPattern (Phase 6 prep).**
+- `vixen-engine::url_pattern` — URLPattern API § 2 pathname pattern compile +
+  match: the routing primitive client-side routers, service-worker
+  `FetchEvent` routing, and the `new URLPattern()` host hook reduce to.
+  [`URLPattern::compile`] parses the pathname-grammar subset (literal
+  segments, `:name` named captures with the `[A-Za-z_][A-Za-z0-9_]*` name
+  rule, `*` rest-of-path wildcard) with duplicate-name detection + the
+  wildcard-must-be-trailing rule; [`URLPattern::match_pathname`] is a
+  full-match (segment-based, empty-segment-collapsing so `/posts` ≡
+  `/posts/`, `:name` captures one non-empty segment, `*` captures the rest
+  joined by `/`). The `protocol`/`hostname`/`port`/`search`/`hash` components
+  + full-regex custom params (`:name(\\d+)`) land with the host hook; the
+  named/`*` subset covers real routing.
+
+[`URLPattern::compile`]: ../../crates/vixen-engine/src/url_pattern.rs
+[`URLPattern::match_pathname`]: ../../crates/vixen-engine/src/url_pattern.rs
+
 **Pure-logic foundation landed for HTML attribute microsyntaxes + `data:`/`srcset` URLs (Phase 6 prep).**
-- `vixen-core::microsyntax` — the WHATWG HTML § 2.4 "common parser idioms"
+- `vixen-engine::microsyntax` — the WHATWG HTML § 2.4 "common parser idioms"
   every attribute-value reflection reduces to: `parse_signed_integer`
   (§ 2.4.4) and `parse_non_negative_integer` (§ 2.4.3) with saturating
   overflow so `colspan`/`rowspan`/`tabindex`/`cols`/`maxlength` never panic;
@@ -420,7 +497,7 @@ Each family lands with its WPT fixtures passing before moving on.
   whitespace skipped, trailing content ignored for the float surface) per
   the spec's documented browser contract; the stricter value-sanitisation
   layers a trailing-garbage check *on top* of these primitives.
-- `vixen-core::srcset` — WHATWG HTML § 4.8.4.6 "Parsing a srcset attribute":
+- `vixen-engine::srcset` — WHATWG HTML § 4.8.4.6 "Parsing a srcset attribute":
   the comma-separated image-candidate-string splitter + the § 4.8.4.7
   `Nw`/`Nx` descriptor validator (`Descriptor::Width`/`Density`). Candidates
   carrying ≥ 3 whitespace-separated tokens (a URL can't hold two
@@ -429,15 +506,16 @@ Each family lands with its WPT fixtures passing before moving on.
   prefers the first match on ties). The responsive-image selection step
   itself (composing candidates with the viewport DPR + `<img sizes>`) lands
   with the resource-fetch layer in Phase 1/6.
-- `vixen-core::data_url` — RFC 2397 `data:` URL parsing: the
+- `vixen-engine::data_url` — RFC 2397 `data:` URL parsing: the
   case-insensitive scheme check, the `;base64` flag (final-parameter form),
   the mediatype defaulting rules (omitted ⇒ `text/plain;charset=US-ASCII`;
   parameters-only ⇒ `text/plain` + authored parameters), and the payload
   decode (standard-alphabet base64 with ASCII-whitespace skipping + missing-
   padding tolerance, or RFC 3986 § 2.1 percent-decode). The Fetch standard
   does *not* MIME-sniff `data:` URLs, so the declared mediatype is exposed
-  verbatim. The base64 + percent decoders are hand-rolled so no new crate
-  dependency is added.
+  verbatim. Base64 decoding uses the vetted `base64` crate (pure-Rust,
+  `unsafe`-free), shared by `vixen-engine` (data URLs) and `vixen-net` (CSP
+  hash sources); the percent decoder is hand-rolled.
 - `fixtures/dom/srcset.html` — exercises every `<img srcset>` / `<source
   srcset>` authoring form the parser handles (width descriptors, density
   descriptors, the bare-URL form, the `<picture>`/`<source>` art-direction
@@ -446,7 +524,7 @@ Each family lands with its WPT fixtures passing before moving on.
 **Pure-logic foundation landed for responsive-image selection (Phase 6 prep).**
 The `srcset` parser left the § 4.8.4.8 selection step itself as a TODO; the
 family is now complete end-to-end.
-- `vixen-core::media_query` — CSS Media Queries 4 condition evaluation: a
+- `vixen-engine::media_query` — CSS Media Queries 4 condition evaluation: a
   recursive-descent parser for the `<media-condition>` tree (§ 3) over
   parenthesised `<media-feature>`s (§ 4) with `and`/`or`/`not` combinators,
   the `<media-type>` prefix (`screen`/`print`/`all` with `not`/`only`), and
@@ -458,14 +536,14 @@ family is now complete end-to-end.
   `color`/`hover`/`pointer`/`prefers-color-scheme`/`prefers-reduced-motion`,
   with the § 4.3 boolean form (`(hover)`, `(color)`) and the
   `<general-enclosed>` fail-closed rule (unknown ⇒ `false`).
-- `vixen-core::source_size` — WHATWG HTML § 4.8.4.7 "Parsing a sizes
+- `vixen-engine::source_size` — WHATWG HTML § 4.8.4.7 "Parsing a sizes
   attribute": the `<source-size-list>` splitter + per-entry validator. The
   final comma-separated entry is the unconditional default (§ 4.8.4.8: the
   last entry always provides a fallback when reached); a non-last entry
   without a media-condition is a parse error and the whole list falls back to
   the spec's `100vw` default. `resolve_px(&Viewport)` walks the entries in
   document order and returns the first match's length in CSS px.
-- `vixen-core::responsive_select` — WHATWG HTML § 4.8.4.8 "Selecting an image
+- `vixen-engine::responsive_select` — WHATWG HTML § 4.8.4.8 "Selecting an image
   source": composes a parsed `srcset` with a resolved source size + the
   viewport DPR. Computes per-candidate pixel density (width ÷ source-size for
   `Nw`, the `x` value for density, implicit `1x` for bare), rejects mixed
@@ -485,7 +563,7 @@ family is now complete end-to-end.
 The calculation + timing-function primitives the cascade (`calc()` reduction,
 `var()` substitution, custom-property resolution) and the transition/animation
 drivers (`animation-timing-function`) reduce to.
-- `vixen-core::calc` — CSS Values 4 § 10 `calc()` / `min()` / `max()` /
+- `vixen-engine::calc` — CSS Values 4 § 10 `calc()` / `min()` / `max()` /
   `clamp()` arithmetic tree + evaluator. A recursive-descent parser produces
   a `CalcNode` AST (`Number` / `Length` / `Percent` / `Add`/`Sub`/`Mul`/`Div` /
   the § 10.1 `Min`/`Max`/`Clamp` math functions); `evaluate` runs the § 10.7
@@ -496,7 +574,7 @@ drivers (`animation-timing-function`) reduce to.
   `LengthContext`. Operator precedence (`*`/`/` over `+`/`-`) and nested
   parenthesised grouping enforced; bare expressions (no `calc()` wrapper) parse
   too, so the `--computed-style` projection re-resolves the unwrapped form.
-- `vixen-core::easing` — CSS Easing 1 § 2-4: the timing-function family that
+- `vixen-engine::easing` — CSS Easing 1 § 2-4: the timing-function family that
   maps an input progress (`0..1`) to an output progress. `Easing::parse`
   covers the keyword aliases (`linear`/`ease`/`ease-in`/`ease-out`/`ease-in-out`
   /`step-start`/`step-end`) and the function forms (`cubic-bezier()`,
@@ -508,6 +586,40 @@ drivers (`animation-timing-function`) reduce to.
   `jump-none`-requires-`n ≥ 2` validation), and piecewise-linearly
   interpolates the `linear()` multi-stop function (explicit percentage
   positions + the § 3.1 implicit even-distribution rule).
+
+**Pure-logic foundation landed for CSS generated content (Phase 5/6 prep).**
+The counter-scope + marker-text primitives the `content` property
+(`counter()`/`counters()`), `list-style-type`, and the `::marker` box reduce
+to. Both `#![forbid(unsafe_code)]`, Rust-unit-tested.
+- `vixen-engine::list_marker` — CSS Lists 3 § 6.1 `<list-style-type>` marker
+  text: the predefined counter-style family (`disc`/`circle`/`square` bullet
+  glyphs, `decimal`/`decimal-leading-zero` numeric, the `lower-alpha`/
+  `upper-alpha` (+ `lower-latin`/`upper-latin` aliases) bijective base-26
+  alphabetic, `lower-roman`/`upper-roman` additive, `lower-greek` over the
+  24-letter alphabet, `none`). [`ListStyleType::render`] is the `value → text`
+  projection per the § 6.1 algorithm table; the § 6.1 fallback rule (out-of-range
+  additive/alphabetic values fall back to `decimal`, the default fallback) is
+  enforced so a counter value never fails to produce a marker. Aliases
+  normalise to the canonical name at parse so the round-trip is canonical.
+- `vixen-engine::counter` — CSS2 § 12.4 counter scoping (reset/increment/set,
+  with the per-kind default value — `0` for reset/set, `1` for increment) +
+  CSS Lists 3 § 5 `counter()` / `counters()` resolution. [`parse_counter_ops`]
+  tokenises the `counter-*` declaration value (ASCII-whitespace-separated
+  `<custom-ident>` optionally followed by one `<integer>`, the `none` no-op,
+  saturating integer overflow, the `--foo` CSS-variable reservation rejected);
+  [`resolve_counter`] reads the innermost in-scope value (or `None` → empty
+  marker per § 5); [`resolve_counters`] joins every in-scope value
+  outermost→innermost with the delimiter string (`"1.1"`, `"1.3.2"`). The DOM
+  traversal that pushes/pops scopes + applies the ops in document order stays
+  in the Phase 4 layout layer; this module is the pure resolution primitive
+  given the already-walked scope stack, and composes with `list_marker` via
+  [`render_counter`].
+
+[`ListStyleType::render`]: ../../crates/vixen-engine/src/list_marker.rs
+[`parse_counter_ops`]: ../../crates/vixen-engine/src/counter.rs
+[`resolve_counter`]: ../../crates/vixen-engine/src/counter.rs
+[`resolve_counters`]: ../../crates/vixen-engine/src/counter.rs
+[`render_counter`]: ../../crates/vixen-engine/src/counter.rs
 
 **Gate:** `fixtures/dom/`, `fixtures/events/`, `fixtures/forms/`,
 `fixtures/storage/`, `fixtures/network/` all pass.
@@ -623,7 +735,28 @@ Wire every trust boundary from `docs/ARCHITECTURE.md`.
 [`Allowlist`]: ../../crates/vixen-net/src/permissions_policy.rs
 [`PermissionsPolicy::allows`]: ../../crates/vixen-net/src/permissions_policy.rs
 
-**Gate:** Every security test in `vixen-net` and `vixen-core` green.
+**Pure-logic foundation landed for the WebSocket protocol boundary (Phase 6/7 prep).**
+- `vixen-net::websocket` — RFC 6455 pure-logic boundary: [`compute_accept`] (§ 4.2.2
+  `Sec-WebSocket-Accept` = `base64(SHA1(key + GUID))`, via the `sha1` crate —
+  already transitively present), [`validate_client_handshake`] (§ 4.1 the
+  server-side `Upgrade`/`Connection`/`Sec-WebSocket-Version: 13`/16-byte-key
+  enforcement) + [`validate_server_response`] (§ 4.2.2 the client-side
+  `101` + Accept-matches-sent-key check), [`parse_frame_header`] (§ 5.2 the
+  2–14-byte frame decoder — FIN/RSV/opcode/mask/length, with the § 5.2
+  reserved-RSV/opcode rejection + the non-canonical-length rule + the § 5.5
+  control-frame `≤ 125` bytes + FIN-set invariants), [`apply_mask`] (§ 5.3 the
+  XOR demask) + [`validate_close_code`] (§ 7.4 the status-code range + reserved-
+  band rule). The framed TCP+TLS transport + the `WebSocket` JS host hook sit
+  on top; `permessage-deflate` is deferred.
+
+[`compute_accept`]: ../../crates/vixen-net/src/websocket.rs
+[`validate_client_handshake`]: ../../crates/vixen-net/src/websocket.rs
+[`validate_server_response`]: ../../crates/vixen-net/src/websocket.rs
+[`parse_frame_header`]: ../../crates/vixen-net/src/websocket.rs
+[`apply_mask`]: ../../crates/vixen-net/src/websocket.rs
+[`validate_close_code`]: ../../crates/vixen-net/src/websocket.rs
+
+**Gate:** Every security test in `vixen-net` and `vixen-engine` green.
 Zero `cargo audit` advisories. Fuzz targets stable.
 
 ---
@@ -635,7 +768,7 @@ Implement the full headless tool surface.
 **Steps:**
 
 1. Implement CDP server (tokio + tokio-tungstenite) in `vixen-headless`.
-   Command handlers call into `vixen-core` via the `EngineInspector`
+   Command handlers call into `vixen-engine` via the `EngineInspector`
    trait.
 2. Implement every CLI flag from `docs/SPEC.md` "Headless CLI surface".
    Stable error codes preserved exactly.

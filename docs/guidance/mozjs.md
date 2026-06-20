@@ -25,7 +25,7 @@ For `x86_64-unknown-linux-gnu` with the default `jit,intl,libz-sys`
 features, a prebuilt exists and is fetched in well under a second. Only if
 the download fails does it fall back to a from-source SpiderMonkey build.
 
-So adding `mozjs` to `vixen-core` does **not** compile SpiderMonkey — it
+So adding `mozjs` to `vixen-engine` does **not** compile SpiderMonkey — it
 downloads it. The notable first-build cost (~tens of seconds) is the Rust
 dependency tree (ICU, etc.) and linking the large static lib, not
 SpiderMonkey compilation. `ccache` (if present) further speeds any fallback

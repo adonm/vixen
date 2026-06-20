@@ -15,8 +15,8 @@ url = "2"
 [dependencies.vixen-net]
 path = "../crates/vixen-net"
 
-[dependencies.vixen-core]
-path = "../crates/vixen-core"
+[dependencies.vixen-engine]
+path = "../crates/vixen-engine"
 
 # Standalone workspace so the main workspace (`cargo build --workspace`) never
 # pulls in libfuzzer-sys / a nightly toolchain.

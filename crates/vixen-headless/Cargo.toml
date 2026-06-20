@@ -1,5 +1,5 @@
 # vixen-headless — CLI + CDP + EGL surfaceless render path.
-# Phase 2 wires `--url`/`--eval` to the SpiderMonkey runtime (vixen-core).
+# Phase 2 wires `--url`/`--eval` to the SpiderMonkey runtime (vixen-engine).
 [package]
 name = "vixen-headless"
 version = "0.1.0"
@@ -11,7 +11,7 @@ publish = false
 
 [dependencies]
 vixen-api = { path = "../vixen-api" }
-vixen-core = { path = "../vixen-core" }
+vixen-engine = { path = "../vixen-engine" }
 clap = { version = "4", features = ["derive"] }
 url = "2"
 serde = { version = "1", features = ["derive"] }

@@ -60,7 +60,7 @@ impl UrlSearchParams {
     /// if present; `&`-separated tuples each split on the first `=`.
     ///
     /// ```
-    /// # use vixen_core::url_search_params::UrlSearchParams;
+    /// # use vixen_engine::url_search_params::UrlSearchParams;
     /// let p = UrlSearchParams::parse("?a=1&b=two");
     /// assert_eq!(p.get("a"), Some("1".to_string()));
     /// assert_eq!(p.get("b"), Some("two".to_string()));
@@ -165,7 +165,7 @@ impl UrlSearchParams {
     /// URL Standard § 5.3.4 (`URLSearchParams.prototype.toString`).
     ///
     /// ```
-    /// # use vixen_core::url_search_params::UrlSearchParams;
+    /// # use vixen_engine::url_search_params::UrlSearchParams;
     /// let mut p = UrlSearchParams::parse("a=1&b=two");
     /// p.set("b", "three");
     /// assert_eq!(p.serialize(), "a=1&b=three");
@@ -227,9 +227,11 @@ pub fn parse(input: &str) -> Vec<(String, String)> {
 }
 
 /// Percent-decode a byte slice as UTF-8 (URL Standard's "percent-decode" +
-/// "UTF-8 decode without BOM"). `+` → SPACE is the caller's job (the parser
-/// does it implicitly because the URL form-urlencoded byte parser replaces
-/// `+` before decoding); here we only undo `%XX`.
+/// "UTF-8 decode without BOM"), applying the form-urlencoded parser's
+/// `+` → SPACE rule to the RAW input bytes — before decoding — so an encoded
+/// plus `%2B` (byte `0x2B` produced by the decode loop) survives untouched.
+/// Doing the replacement after decoding would corrupt `%2B` into a space;
+/// URL Standard § 5.2.4 specifies the swap happens while scanning the input.
 ///
 /// Ill-formed `%XX` runs and non-UTF-8 bytes produce U+FFFD, matching the
 /// WHATWG "UTF-8 decode" replacement rules (one U+FFFD per maximal ill-formed
@@ -249,16 +251,12 @@ fn percent_decode_tf8(input: &str) -> String {
                 continue;
             }
         }
-        decoded.push(b);
+        // URL Standard § 5.2.4: a literal `+` in the RAW input becomes SPACE.
+        // Done here — on the un-decoded byte — so `%2B` decoded above is left
+        // alone. (A post-decode sweep would wrongly turn that `0x2B` into a
+        // space and break `?k=a%2Bb` → `"a+b"`.)
+        decoded.push(if b == b'+' { b' ' } else { b });
         i += 1;
-    }
-    // `+` → SPACE happens at the byte level before decode (URL Standard
-    // § 5.2.4 replaces `+` with ` ` when extracting the tuple). We do it here
-    // so the output is the canonical decoded form the host hook reflects.
-    for b in decoded.iter_mut() {
-        if *b == b'+' {
-            *b = b' ';
-        }
     }
     String::from_utf8_lossy(&decoded).into_owned()
 }
@@ -382,6 +380,27 @@ mod tests {
     #[test]
     fn parse_plus_becomes_space() {
         assert_eq!(parse("q=hello+world")[0].1, "hello world");
+    }
+
+    #[test]
+    fn parse_encoded_plus_survives_literal_plus_becomes_space() {
+        // Regression: URL Standard § 5.2.4 applies `+` → SPACE to the RAW
+        // input bytes BEFORE percent-decoding. So `%2B` (encoded plus) must
+        // decode to `+` and survive, while a literal `+` becomes a space.
+        assert_eq!(parse("k=%2B")[0].1, "+"); // encoded plus survives
+        assert_eq!(parse("k=a+b")[0].1, "a b"); // literal plus → space
+    }
+
+    #[test]
+    fn parse_encoded_plus_round_trips_through_serialize() {
+        // `serialize` emits `%2B` for a `+`; re-parsing must yield `+` back,
+        // not a space (the round-trip property that motivated the fix).
+        let p = UrlSearchParams::parse("k=%2B");
+        assert_eq!(p.serialize(), "k=%2B");
+        assert_eq!(
+            UrlSearchParams::parse(&p.serialize()).get("k"),
+            Some("+".to_string())
+        );
     }
 
     #[test]

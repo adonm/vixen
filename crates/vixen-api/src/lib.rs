@@ -1,6 +1,6 @@
 //! Vixen public engine trait surface and DTOs.
 //!
-//! This crate defines the seams between the engine (`vixen-core`) and its
+//! This crate defines the seams between the engine (`vixen-engine`) and its
 //! consumers (`vixen-shell` GUI, `vixen-headless` CLI, `vixen-wpt` harness).
 //! It owns **no concrete engine dependencies** — only traits and data types
 //! — so the trait shape compiles and tests run at zero build cost
@@ -61,7 +61,7 @@ impl EngineDiagnostic {
 /// A single `Box<dyn EngineDelegate>` replaces N `Box<dyn Fn>` callbacks
 /// (docs/ARCHITECTURE.md). The shell implements this; its implementation
 /// posts each callback into the Relm4 message stream for the relevant tab
-/// component (ADR-010). The trait stays GUI-agnostic so `vixen-core` does
+/// component (ADR-010). The trait stays GUI-agnostic so `vixen-engine` does
 /// not depend on `relm4`.
 pub trait EngineDelegate: Send {
     fn uri_changed(&mut self, uri: &str);
@@ -135,7 +135,7 @@ pub trait Engine {
 // Graphics context seam (docs/ARCHITECTURE.md "GlContext", ADR-006)
 // ---------------------------------------------------------------------------
 
-/// Minimal graphics-context abstraction so `vixen-core` can drive WebRender
+/// Minimal graphics-context abstraction so `vixen-engine` can drive WebRender
 /// without taking a GTK or EGL dependency. Exactly two implementations
 /// exist: `GlAreaSurface` (wrapping `gtk4::GLArea`, in `vixen-shell`) and
 /// `SurfacelessSurface` (wrapping an EGL surfaceless context, in
@@ -262,12 +262,36 @@ pub struct PageSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
 
     /// Phase 0 gate (docs/PLAN.md): "the trait shape compiles, basic DTO
     /// tests pass". This proves a concrete Engine/Delegate/Inspector
-    /// implementation satisfies the traits.
-    struct NullEngine;
-    impl Engine for NullEngine {
+    /// implementation satisfies the traits. Unlike a true null sink, it
+    /// actually stores the registered delegate and forwards dispatcher
+    /// calls to it, so the engine→delegate wiring is exercised end-to-end
+    /// (not just the trait shape).
+    struct ForwardingEngine {
+        delegate: Option<Box<dyn EngineDelegate>>,
+    }
+
+    impl ForwardingEngine {
+        fn new() -> Self {
+            Self { delegate: None }
+        }
+
+        /// Test helper: drives the engine→delegate dispatch path for a
+        /// title-change event. If a delegate is registered, it receives
+        /// the callback through the same `&mut dyn EngineDelegate` seam a
+        /// production engine would use — i.e. this is the dispatch path
+        /// the test asserts on, not a bypass.
+        fn emit_title_change(&mut self, title: &str) {
+            if let Some(d) = self.delegate.as_mut() {
+                d.title_changed(title);
+            }
+        }
+    }
+
+    impl Engine for ForwardingEngine {
         fn load_uri(&mut self, _uri: &str) {}
         fn reload(&mut self) {}
         fn stop(&mut self) {}
@@ -300,7 +324,9 @@ mod tests {
         }
         fn set_zoom_level(&mut self, _z: f64) {}
         fn execute_javascript(&mut self, _src: &str) {}
-        fn set_delegate(&mut self, _delegate: Box<dyn EngineDelegate>) {}
+        fn set_delegate(&mut self, delegate: Box<dyn EngineDelegate>) {
+            self.delegate = Some(delegate);
+        }
         fn inspector(&self) -> Option<&dyn EngineInspector> {
             None
         }
@@ -309,14 +335,21 @@ mod tests {
         }
     }
 
-    #[derive(Default)]
+    /// Records `title_changed` callbacks. Because `Engine::set_delegate`
+    /// consumes the delegate via `Box<dyn EngineDelegate>` and the trait
+    /// has no accessor, the test cannot inspect the registered instance
+    /// after handoff. The recorded titles are therefore held behind an
+    /// `Arc<Mutex<...>>` so the test can clone the handle before
+    /// registering and observe what the engine actually forwarded
+    /// (`EngineDelegate: Send` rules out `Rc<RefCell<>>`).
+    #[derive(Default, Clone)]
     struct SinkDelegate {
-        titles: Vec<String>,
+        titles: Arc<Mutex<Vec<String>>>,
     }
     impl EngineDelegate for SinkDelegate {
         fn uri_changed(&mut self, _uri: &str) {}
         fn title_changed(&mut self, title: &str) {
-            self.titles.push(title.to_owned());
+            self.titles.lock().unwrap().push(title.to_owned());
         }
         fn load_progress(&mut self, _progress: f64) {}
         fn load_finished(&mut self) {}
@@ -326,13 +359,24 @@ mod tests {
         fn context_menu(&mut self, _context: &str) {}
     }
 
+    /// Phase 0 gate: prove the trait shape compiles AND that the
+    /// engine→delegate dispatch path actually delivers a callback to the
+    /// registered sink. The sink is registered once with the engine; the
+    /// assertion reads what `emit_title_change` forwarded through the
+    /// engine — there is no direct call into `sink` bypassing the engine.
     #[test]
     fn trait_shape_compiles_and_dispatches() {
-        let mut engine = NullEngine;
-        let mut sink = SinkDelegate::default();
-        engine.set_delegate(Box::new(SinkDelegate::default()));
-        sink.title_changed("Vixen");
-        assert_eq!(sink.titles, vec!["Vixen".to_owned()]);
+        let mut engine = ForwardingEngine::new();
+        let observer = SinkDelegate::default();
+        let recorder = observer.clone();
+
+        engine.set_delegate(Box::new(recorder));
+        engine.emit_title_change("Vixen");
+
+        assert_eq!(
+            observer.titles.lock().unwrap().clone(),
+            vec!["Vixen".to_owned()]
+        );
         assert_eq!(engine.diagnostics(), Vec::<EngineDiagnostic>::new());
     }
 

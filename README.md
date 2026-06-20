@@ -20,53 +20,53 @@ Pre-v1.0. This repository contains the specification, architecture, plan,
 and reference material, plus:
 - **Phase 0** — scaffolding (workspace + 7 crates).
 - **Phase 1** — networking/security "crown jewels" (`vixen-net`, `vixen-store`).
-- **Phase 2** — the SpiderMonkey runtime (`vixen-core::script`) and the
+- **Phase 2** — the SpiderMonkey runtime (`vixen-engine::script`) and the
   `vixen-headless` CLI; the gate `vixen-headless --url <file> --eval '1+2'` →
   `3` passes.
-- **Phase 3 (in progress)** — HTML parsing (`vixen-core::doc`,
+- **Phase 3 (in progress)** — HTML parsing (`vixen-engine::doc`,
   html5ever → RcDom) with `--dump-dom`/`--extract-text`; **selector matching
-  via Stylo** (`vixen-core::style_dom` implementing `selectors::Element` over
+  via Stylo** (`vixen-engine::style_dom` implementing `selectors::Element` over
   the RcDom), driving `--extract-selector` and the WPT selector fixtures;
   and the **WPT harness** (`vixen-wpt`: manifest + runner + all 13 check
   types). The full Stylo cascade (`TNode`/`TElement`/`TDocument` +
   `Stylist::update_stylist` + `computed_values_for(node_id)`) is the next
   slice; Stylo arrives via the crates.io-published `stylo` crate per
   ADR-011 (no Servo git dep).
-- **Phase 4 prep** — `vixen-core::box_model` implements the CSS2 § 10.3.3
+- **Phase 4 prep** — `vixen-engine::box_model` implements the CSS2 § 10.3.3
   block-level horizontal-constraint solve (`auto`-width leftover absorption,
   one/two `auto`-margin centering, `box-sizing: border-box` content
-  subtraction) and the four-box nesting. `vixen-core::flex_resolve`
+  subtraction) and the four-box nesting. `vixen-engine::flex_resolve`
   implements CSS Flexbox 1 § 9.7 main-axis distribution (grow/shrink factor
   selection, inflexible-item freezing, min/max violation clamping, iterative
   free-space distribution). Both ready for `layout_2020` to feed off.
-- **Phase 5 prep** — `vixen-core::display_list` (all eight `SPEC.md`
+- **Phase 5 prep** — `vixen-engine::display_list` (all eight `SPEC.md`
   display-list invariants) + the paint-geometry family it will consume:
-  `vixen-core::transform` (CSS Transforms 1 § 13 2D affine algebra +
-  list parser), `vixen-core::border_radius` (CSS Backgrounds 3 § 5.5
-  corner shaping), `vixen-core::gradient` (CSS Images 4 § 4.5
+  `vixen-engine::transform` (CSS Transforms 1 § 13 2D affine algebra +
+  list parser), `vixen-engine::border_radius` (CSS Backgrounds 3 § 5.5
+  corner shaping), `vixen-engine::gradient` (CSS Images 4 § 4.5
   linear-gradient colour-stop resolution + linear-sRGB sampling, with the
-  `repeating-linear-gradient()` wrap), `vixen-core::box_shadow` (CSS
+  `repeating-linear-gradient()` wrap), `vixen-engine::box_shadow` (CSS
   Backgrounds 3 § 7.2 outer/inset shadow geometry + the `<shadow>#`
-  parser), `vixen-core::background_position` (CSS Backgrounds 3 § 3.6 +
+  parser), `vixen-engine::background_position` (CSS Backgrounds 3 § 3.6 +
   § 4.2 `<position>` resolution: keyword/length/percentage mix, the 1–4
-  value forms, the keyword-axis swap rule), and `vixen-core::stacking_context`
+  value forms, the keyword-axis swap rule), and `vixen-engine::stacking_context`
   (CSS 2.1 § 9.9.1 + Positioned Layout 3 § 6 stacking-context formation +
   the seven-layer § App. E.2.1 paint-order classification). All
   `#![forbid(unsafe_code)]` and Rust-unit-tested.
-- **Phase 6 prep** — pure form-constraint validation in `vixen-core::forms`
+- **Phase 6 prep** — pure form-constraint validation in `vixen-engine::forms`
   (email/URL formats, step arithmetic, range/length flags) ready for the
-  script-layer host hooks; `vixen-core::form_submission` (the three WHATWG
+  script-layer host hooks; `vixen-engine::form_submission` (the three WHATWG
   HTML § 4.10.21 encoders: `application/x-www-form-urlencoded`,
-  `multipart/form-data`, `text/plain`); `vixen-core::dataset` (WHATWG HTML
+  `multipart/form-data`, `text/plain`); `vixen-engine::dataset` (WHATWG HTML
   § 3.2.6.9 `data-*` ↔ `dataset` property-name bidirectional mapping, with
-  the anti-collision rule); `vixen-core::storage_key` (Web Storage key/value
+  the anti-collision rule); `vixen-engine::storage_key` (Web Storage key/value
   validation + origin-partitioned redb keys + the 5 MiB quota); the network
-  host-hook family: `vixen-core::url_search_params` (WHATWG URL Standard
+  host-hook family: `vixen-engine::url_search_params` (WHATWG URL Standard
   `URLSearchParams` parse/serialize + the full mutating surface),
-  `vixen-core::mime` (WHATWG MIME Sniffing § 2.1/§ 2.2 parse/serialize +
-  `essence()`), and   `vixen-core::text_codec` (WHATWG Encoding API
+  `vixen-engine::mime` (WHATWG MIME Sniffing § 2.1/§ 2.2 parse/serialize +
+  `essence()`), and   `vixen-engine::text_codec` (WHATWG Encoding API
   `TextEncoder`/`TextDecoder` with the `fatal` flag, BOM sniff, and § 7.1
-  line-break normalisation). The `vixen-core::class_list` (WHATWG HTML
+  line-break normalisation). The `vixen-engine::class_list` (WHATWG HTML
   § 4.6.4 `DOMTokenList` + § 2.7.3 ordered-set parser: `add`/`remove`/
   `toggle`/`replace`/`contains` with the spec's atomic validate-then-mutate
   rule, the supported-tokens surface for `<link>.relList`) backs every
@@ -87,7 +87,7 @@ and reference material, plus:
   (CSS Easing 1 `cubic-bezier`/`steps`/`linear` timing functions) cover the
   cascade's `calc()` reduction and the transition/animation driver surface.
 - **Phase 7 prep** — CSP enforcement at the script execution boundary
-  (`vixen-core::script`); `vixen-net::referrer_policy` (Fetch § 3.4/§ 4.3.7
+  (`vixen-engine::script`); `vixen-net::referrer_policy` (Fetch § 3.4/§ 4.3.7
   `Referrer-Policy` parsing + `Referer` resolution); `vixen-net::strict_transport_security`
   (RFC 6795 HSTS parsing + § 8.2 host match); `vixen-net::cors` (Fetch
   § 3.2.1 `Access-Control-*` response-header parsing + § 4.1.5 CORS check

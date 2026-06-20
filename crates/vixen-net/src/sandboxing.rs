@@ -23,7 +23,7 @@
 //! What does *not* live here:
 //! - The actual sandbox enforcement (the script-layer CSP gating, the
 //!   navigation guard, the opaque-origin injection — those consult this
-//!   module's predicates and live in `vixen-core::script` / the navigation
+//!   module's predicates and live in `vixen-engine::script` / the navigation
 //!   pipeline).
 //! - The `allowpopups` ↔ `target=_blank` plumbing (a runtime decision the
 //!   navigation layer makes given [`SandboxFlags::allows_popups`]).
@@ -246,53 +246,70 @@ impl SandboxFlags {
 /// (`<iframe sandbox>`) is serialised by the HTML parser as the empty string,
 /// which [`parse_sandbox`] handles correctly (`empty()` ⇒ most restrictive).
 pub fn parse_sandbox(attribute_value: &str) -> SandboxFlags {
+    // Lookup table: each recognized WHATWG § 4.8.5 token → its flag bit.
+    // Tokens are matched ASCII case-insensitively; unknown tokens are
+    // ignored per spec (same observable behavior as the prior 15-arm match).
+    const TABLE: &[(&str, SandboxFlags)] = &[
+        ("allow-forms", SandboxFlags(SandboxFlags::ALLOW_FORMS)),
+        ("allow-modals", SandboxFlags(SandboxFlags::ALLOW_MODALS)),
+        (
+            "allow-orientation-lock",
+            SandboxFlags(SandboxFlags::ALLOW_ORIENTATION_LOCK),
+        ),
+        (
+            "allow-pointer-lock",
+            SandboxFlags(SandboxFlags::ALLOW_POINTER_LOCK),
+        ),
+        ("allow-popups", SandboxFlags(SandboxFlags::ALLOW_POPUPS)),
+        (
+            "allow-popups-to-escape-sandbox",
+            SandboxFlags(SandboxFlags::ALLOW_POPUPS_TO_ESCAPE_SANDBOX),
+        ),
+        (
+            "allow-presentation",
+            SandboxFlags(SandboxFlags::ALLOW_PRESENTATION),
+        ),
+        (
+            "allow-same-origin",
+            SandboxFlags(SandboxFlags::ALLOW_SAME_ORIGIN),
+        ),
+        ("allow-scripts", SandboxFlags(SandboxFlags::ALLOW_SCRIPTS)),
+        (
+            "allow-top-navigation",
+            SandboxFlags(SandboxFlags::ALLOW_TOP_NAVIGATION),
+        ),
+        (
+            "allow-top-navigation-by-user-activation",
+            SandboxFlags(SandboxFlags::ALLOW_TOP_NAVIGATION_BY_USER_ACTIVATION),
+        ),
+        (
+            "allow-top-navigation-to-custom-protocols",
+            SandboxFlags(SandboxFlags::ALLOW_TOP_NAVIGATION_TO_CUSTOM_PROTOCOLS),
+        ),
+        ("allow-downloads", SandboxFlags(SandboxFlags::ALLOW_DOWNLOADS)),
+        (
+            "allow-storage-access-by-user-activation",
+            SandboxFlags(SandboxFlags::ALLOW_STORAGE_ACCESS_BY_USER_ACTIVATION),
+        ),
+        (
+            "allow-unsafe-downloads",
+            SandboxFlags(SandboxFlags::ALLOW_UNSAFE_DOWNLOADS),
+        ),
+    ];
+
     let mut flags = SandboxFlags::empty();
     for token in attribute_value.split_ascii_whitespace() {
         // The WHATWG parsing rule: ASCII case-insensitive match.
-        match token.to_ascii_lowercase().as_str() {
-            "allow-forms" => flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_FORMS)),
-            "allow-modals" => flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_MODALS)),
-            "allow-orientation-lock" => {
-                flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_ORIENTATION_LOCK))
+        // `eq_ignore_ascii_case` is exactly `to_ascii_lowercase(a) ==
+        // to_ascii_lowercase(b)` without allocating, so behavior (which tokens
+        // are recognized, how case folds) is unchanged from the prior match.
+        for &(name, bit) in TABLE {
+            if name.eq_ignore_ascii_case(token) {
+                flags = flags.union(bit);
+                break; // tokens are unique; first match wins
             }
-            "allow-pointer-lock" => {
-                flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_POINTER_LOCK))
-            }
-            "allow-popups" => flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_POPUPS)),
-            "allow-popups-to-escape-sandbox" => {
-                flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_POPUPS_TO_ESCAPE_SANDBOX))
-            }
-            "allow-presentation" => {
-                flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_PRESENTATION))
-            }
-            "allow-same-origin" => {
-                flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_SAME_ORIGIN))
-            }
-            "allow-scripts" => flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_SCRIPTS)),
-            "allow-top-navigation" => {
-                flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_TOP_NAVIGATION))
-            }
-            "allow-top-navigation-by-user-activation" => {
-                flags = flags.union(SandboxFlags(
-                    SandboxFlags::ALLOW_TOP_NAVIGATION_BY_USER_ACTIVATION,
-                ))
-            }
-            "allow-top-navigation-to-custom-protocols" => {
-                flags = flags.union(SandboxFlags(
-                    SandboxFlags::ALLOW_TOP_NAVIGATION_TO_CUSTOM_PROTOCOLS,
-                ))
-            }
-            "allow-downloads" => flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_DOWNLOADS)),
-            "allow-storage-access-by-user-activation" => {
-                flags = flags.union(SandboxFlags(
-                    SandboxFlags::ALLOW_STORAGE_ACCESS_BY_USER_ACTIVATION,
-                ))
-            }
-            "allow-unsafe-downloads" => {
-                flags = flags.union(SandboxFlags(SandboxFlags::ALLOW_UNSAFE_DOWNLOADS))
-            }
-            _ => {} // unknown tokens ignored per WHATWG.
         }
+        // Unknown tokens ignored per WHATWG.
     }
     flags
 }

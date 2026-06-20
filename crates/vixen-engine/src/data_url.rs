@@ -37,6 +37,14 @@
 
 #![forbid(unsafe_code)]
 
+use base64::{
+    alphabet,
+    engine::{
+        DecodePaddingMode, Engine,
+        general_purpose::{GeneralPurpose, GeneralPurposeConfig},
+    },
+};
+
 use crate::mime::MimeType;
 
 /// A decoded RFC 2397 `data:` URL: the authoritative MIME type (the Fetch
@@ -74,7 +82,7 @@ pub enum DataUrlError {
 /// docs for the defaulting + `;base64` rules.
 ///
 /// ```
-/// # use vixen_core::data_url::parse_data_url;
+/// # use vixen_engine::data_url::parse_data_url;
 /// let d = parse_data_url("data:text/plain;base64,SGVsbG8=").unwrap();
 /// assert_eq!(d.mime_type.essence(), "text/plain");
 /// assert_eq!(d.data, b"Hello");
@@ -181,98 +189,34 @@ fn hex_digit(b: u8) -> Option<u8> {
 // base64 decoding (base64 data: payloads)
 // ---------------------------------------------------------------------------
 
+/// Lenient base64 engine for `data:` URL payloads: standard RFC 4648 § 4
+/// alphabet (`A-Za-z0-9+/`, matching the historical `b64_val` table), with
+/// padding optional (`Indifferent` mode) so the common missing-trailing-`=`
+/// data: URL form decodes. ASCII whitespace is pre-stripped by
+/// [`decode_base64_lenient`] before handing the input to this engine (the
+/// `base64` crate rejects whitespace).
+const LENIENT_BASE64: GeneralPurpose = GeneralPurpose::new(
+    &alphabet::STANDARD,
+    GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+);
+
 /// Decode a base64 payload leniently: ASCII whitespace is skipped, a single
 /// non-alphabet / non-padding code point fails closed. Standard alphabet
 /// `A-Za-z0-9+/` with `=` padding; missing trailing padding is tolerated
 /// (data URLs commonly omit it).
 fn decode_base64_lenient(input: &str) -> Option<Vec<u8>> {
-    // Step 1: gather the significant characters, validating as we go.
-    let mut chars: Vec<u8> = Vec::with_capacity(input.len());
+    // Pre-strip the WHATWG forgiving-decode ASCII whitespace set
+    // (`\t\n\f\r ` = 0x09/0x0A/0x0C/0x0D/0x20). The `base64` crate errors on
+    // any whitespace, so we sanitise first to preserve data: URL leniency.
+    // Non-alphabet bytes are left untouched for the engine to reject.
+    let mut filtered: Vec<u8> = Vec::with_capacity(input.len());
     for &b in input.as_bytes() {
         match b {
-            // ASCII whitespace (the WHATWG forgiving-decode set) is skipped.
             b' ' | b'\t' | b'\n' | b'\r' | b'\x0c' => continue,
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'+' | b'/' | b'=' => chars.push(b),
-            _ => return None, // any other byte is invalid
+            _ => filtered.push(b),
         }
     }
-
-    // Step 2: walk 4-char groups, enforcing standard padding placement
-    // ('=' only in positions 2/3 of the final group).
-    let mut out = Vec::with_capacity(chars.len() * 3 / 4);
-    let n = chars.len();
-    let mut i = 0;
-    while i + 4 <= n {
-        let g = [chars[i], chars[i + 1], chars[i + 2], chars[i + 3]];
-        let pad = g.iter().filter(|&&b| b == b'=').count();
-        if pad > 0 {
-            // Padding must be in the last group, at positions 2/3 only, and
-            // contiguous from the end (a single '=' sits at position 3).
-            let well_placed = match pad {
-                1 => g[3] == b'=' && g[2] != b'=',
-                2 => g[2] == b'=' && g[3] == b'=',
-                _ => false,
-            };
-            if !well_placed || i + 4 != n {
-                return None;
-            }
-        }
-        decode_group(&g, &mut out)?;
-        i += 4;
-        if pad > 0 {
-            break; // padded group terminates the stream
-        }
-    }
-
-    // Step 3: leftover tail (missing trailing padding, common in data: URLs).
-    match n - i {
-        0 => {}
-        2 => {
-            let v0 = b64_val(chars[i])?;
-            let v1 = b64_val(chars[i + 1])?;
-            out.push((v0 << 2) | (v1 >> 4));
-        }
-        3 => {
-            let v0 = b64_val(chars[i])?;
-            let v1 = b64_val(chars[i + 1])?;
-            let v2 = b64_val(chars[i + 2])?;
-            out.push((v0 << 2) | (v1 >> 4));
-            out.push((v1 << 4) | (v2 >> 2));
-        }
-        _ => return None, // 1 leftover char can't produce a byte
-    }
-    Some(out)
-}
-
-/// Decode one 4-character group into up to 3 bytes, pushing them to `out`.
-/// Caller guarantees padding placement (only positions 2/3, final group).
-fn decode_group(group: &[u8; 4], out: &mut Vec<u8>) -> Option<()> {
-    let pad = group.iter().filter(|&&b| b == b'=').count();
-    let v0 = b64_val(group[0])?;
-    let v1 = b64_val(group[1])?;
-    out.push((v0 << 2) | (v1 >> 4));
-    if pad < 2 {
-        let v2 = b64_val(group[2])?;
-        out.push((v1 << 4) | (v2 >> 2));
-        if pad < 1 {
-            let v3 = b64_val(group[3])?;
-            out.push((v2 << 6) | v3);
-        }
-    }
-    Some(())
-}
-
-/// Map a base64 alphabet byte to its 6-bit value. Returns `None` for padding
-/// or any non-alphabet byte (the caller has already separated padding).
-fn b64_val(b: u8) -> Option<u8> {
-    Some(match b {
-        b'A'..=b'Z' => b - b'A',
-        b'a'..=b'z' => b - b'a' + 26,
-        b'0'..=b'9' => b - b'0' + 52,
-        b'+' => 62,
-        b'/' => 63,
-        _ => return None,
-    })
+    LENIENT_BASE64.decode(&filtered).ok()
 }
 
 #[cfg(test)]

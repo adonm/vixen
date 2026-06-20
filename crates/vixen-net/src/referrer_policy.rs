@@ -182,7 +182,9 @@ fn origin_string(url: &Url) -> ReferrerValue {
 }
 
 /// Serialize a URL for the `Referer` header: strip credentials + fragment
-/// (Fetch § 4.3.7 step 6).
+/// (Fetch § 4.3.7 step 6). The path is otherwise preserved verbatim — the
+/// spec does not call for trailing-slash trimming, so `https://a.test/p/`
+/// serializes as `https://a.test/p/`.
 fn full_url(url: &Url) -> ReferrerValue {
     let mut u = url.clone();
     u.set_fragment(None);
@@ -190,7 +192,7 @@ fn full_url(url: &Url) -> ReferrerValue {
     // `set_password(None)` removes the password; ignore the result (it errors
     // only on cannot-have-a-host URLs, which we don't encounter here).
     u.set_password(None).ok();
-    ReferrerValue::FullUrl(u.as_str().trim_end_matches('/').to_owned())
+    ReferrerValue::FullUrl(u.as_str().to_owned())
 }
 
 #[cfg(test)]
@@ -434,5 +436,20 @@ mod tests {
         assert!(!s.contains("pass"), "{s}");
         assert!(!s.contains('#'), "{s}");
         assert!(s.contains("/p?q=1"), "{s}");
+    }
+
+    #[test]
+    fn full_url_preserves_trailing_path_slash() {
+        // Fetch § 4.3.7 step 6 strips only credentials + fragment; it does
+        // not trim the path. So a directory URL keeps its trailing slash.
+        let r = resolve_referrer(
+            ReferrerPolicy::UnsafeUrl,
+            &url("https://a.test/p/"),
+            &url("https://b.test/"),
+        );
+        assert_eq!(
+            r,
+            ReferrerValue::FullUrl("https://a.test/p/".to_owned())
+        );
     }
 }

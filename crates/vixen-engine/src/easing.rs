@@ -95,7 +95,7 @@ impl Easing {
     /// `linear()`). Surrounding whitespace is trimmed.
     ///
     /// ```
-    /// # use vixen_core::easing::{Easing, StepPosition};
+    /// # use vixen_engine::easing::{Easing, StepPosition};
     /// let e = Easing::parse("cubic-bezier(0.42, 0, 0.58, 1)").unwrap();
     /// assert!((e.evaluate(0.5) - 0.5).abs() < 1e-3);
     /// let s = Easing::parse("steps(3, start)").unwrap();

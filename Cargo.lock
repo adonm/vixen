@@ -2797,6 +2797,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha2"
+version = "0.10.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+dependencies = [
+ "cfg-if",
+ "cpufeatures",
+ "digest",
+]
+
+[[package]]
 name = "shlex"
 version = "1.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3586,9 +3597,10 @@ name = "vixen-api"
 version = "0.1.0"
 
 [[package]]
-name = "vixen-core"
+name = "vixen-engine"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "html5ever",
  "markup5ever",
  "markup5ever_rcdom",
@@ -3616,7 +3628,7 @@ dependencies = [
  "tokio-tungstenite",
  "url",
  "vixen-api",
- "vixen-core",
+ "vixen-engine",
  "vixen-wpt",
 ]
 
@@ -3624,12 +3636,14 @@ dependencies = [
 name = "vixen-net"
 version = "0.1.0"
 dependencies = [
+ "base64",
  "reqwest",
+ "sha1",
+ "sha2",
  "thiserror",
  "time",
  "tokio",
  "url",
- "vixen-api",
 ]
 
 [[package]]

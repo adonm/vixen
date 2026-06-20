@@ -1,8 +1,8 @@
-# vixen-core — engine integration glue (Stylo + mozjs + layout + paint).
+# vixen-engine — engine integration glue (Stylo + mozjs + layout + paint).
 # Phase 2 adds the SpiderMonkey runtime (mozjs). mozjs downloads a prebuilt
 # static SpiderMonkey by default — see docs/guidance/mozjs.md.
 [package]
-name = "vixen-core"
+name = "vixen-engine"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
@@ -20,6 +20,9 @@ markup5ever = "0.39"
 markup5ever_rcdom = "0.39"
 tendril = "0.5"
 url = "2"
+# Base64 (RFC 4648 § 4) decoding of `data:` URL base64 payloads in `data_url`.
+# Pure-Rust, `unsafe`-free, compatible with `#![forbid(unsafe_code)]`.
+base64 = "0.22"
 
 # Stylo CSS engine (Phase 3, docs/PLAN.md). The `servo` feature selects the
 # non-Gecko config; it brings in the web_atoms/string_cache atom sets and

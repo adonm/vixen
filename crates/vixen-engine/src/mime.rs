@@ -64,7 +64,7 @@ impl MimeType {
     /// point in either, or has no `/` separator.
     ///
     /// ```
-    /// # use vixen_core::mime::MimeType;
+    /// # use vixen_engine::mime::MimeType;
     /// let m = MimeType::parse("text/html; charset=utf-8").unwrap();
     /// assert_eq!(m.essence(), "text/html");
     /// assert_eq!(m.parameters.get("charset").map(|s| s.as_str()), Some("utf-8"));
@@ -183,7 +183,7 @@ impl MimeType {
     /// HTTP token chars.
     ///
     /// ```
-    /// # use vixen_core::mime::MimeType;
+    /// # use vixen_engine::mime::MimeType;
     /// let m = MimeType::parse("text/html; charset=utf-8").unwrap();
     /// assert_eq!(m.serialize(), "text/html;charset=utf-8");
     /// ```

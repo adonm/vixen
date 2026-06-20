@@ -13,9 +13,23 @@ publish = false
 path = "src/lib.rs"
 
 [dependencies]
-vixen-api = { path = "../vixen-api" }
+# vixen-net deliberately depends on NO other vixen crate. It is a leaf
+# consumed by vixen-engine (see docs/ARCHITECTURE.md "Boundary rules" and the
+# `cargo tree` CI audit). Types that mirror the `vixen-api` surface (e.g.
+# `PermissionKind`) are duplicated here on purpose so this crate stays
+# self-contained.
 url = "2"
 thiserror = "2"
+# SHA-2 (SHA-256/384/512) for CSP `'hash-...'` source matching in `csp`.
+# Pure-Rust, `unsafe`-free, compatible with `#![forbid(unsafe_code)]`.
+sha2 = "0.10"
+# SHA-1 (RFC 3174) for the WebSocket `Sec-WebSocket-Accept` handshake value in
+# `websocket` (RFC 6455 § 4.2.2: base64(SHA1(key + GUID))). Pure-Rust,
+# `unsafe`-free. Already transitively present; direct dep keeps it explicit.
+sha1 = "0.10"
+# Base64 (RFC 4648 § 4) decoding of CSP `'hash-...'` source values in `csp`.
+# Pure-Rust, `unsafe`-free, compatible with `#![forbid(unsafe_code)]`.
+base64 = "0.22"
 time = { version = "0.3", default-features = false, features = ["std"] }
 # reqwest client: HTTP/2 + gzip + brotli, TLS via rustls (no native-tls).
 # default-features off keeps OpenSSL out of the dep tree (docs/ACCEPTANCE.md

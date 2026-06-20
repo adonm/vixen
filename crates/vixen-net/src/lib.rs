@@ -50,6 +50,7 @@ pub mod sandboxing;
 pub mod sec_fetch;
 pub mod strict_transport_security;
 pub mod url_policy;
+pub mod websocket;
 
 pub use cookie::{Cookie, CookieError, CookieJar, MAX_COOKIES, SameSite};
 pub use cors::{

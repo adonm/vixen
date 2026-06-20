@@ -61,7 +61,7 @@ const ASCII_WHITESPACE: &[char] = &[' ', '\t', '\n', '\r', '\x0c'];
 /// is first-occurrence; duplicates are dropped.
 ///
 /// ```
-/// # use vixen_core::class_list::parse_token_set;
+/// # use vixen_engine::class_list::parse_token_set;
 /// assert_eq!(parse_token_set("a b a c"), vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]);
 /// assert_eq!(parse_token_set("  \ta\rb\n c "), vec!["a".to_owned(), "b".to_owned(), "c".to_owned()]);
 /// assert!(parse_token_set("").is_empty());
