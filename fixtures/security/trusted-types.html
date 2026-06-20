@@ -1,0 +1,104 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Trusted Types + CSP — Vixen fixture</title>
+  <!--
+    Exercises the W3C Trusted Types surface the vixen-net::trusted_types
+    host-hook layer resolves (Phase 7 security prep). The pure-logic module
+    parses the `trusted-types` CSP directive (the allowed policy-name set +
+    the allow-duplicates flag) + the `require-trusted-types-for 'script'`
+    directive, gates `trustedTypes.createPolicy(name)`, and decides the
+    injection-sink outcome (a Trusted* value ⇒ Allow; a string at a
+    TT-requiring sink ⇒ ApplyDefaultPolicy if a `default` policy exists
+    else Block; a string at a non-TT sink ⇒ Allow). The JS TrustedTypePolicy
+    factory + the createHTML/createScript/createScriptURL sanitisers stay in
+    the host hook.
+
+    This fixture documents the HTML surface the DOM injection-sink host
+    hooks consult:
+    - The require-trusted-types-for + trusted-types CSP directives
+      (server-set; the fixture documents the client-visible sink surface).
+    - The injection sinks (.innerHTML, eval, document.write, script.src).
+    - The TrustedTypePolicy creation + the default policy.
+    - The TrustedHTML / TrustedScript / TrustedScriptURL value kinds.
+  -->
+  <!-- The CSP directives a server would set (documented client-side). -->
+  <meta id="csp-require"
+        http-equiv="Content-Security-Policy"
+        content="require-trusted-types-for 'script'; trusted-types myPolicy default 'allow-duplicates'">
+</head>
+<body>
+  <main id="content">
+    <h1>Trusted Types + CSP surface</h1>
+    <p>The <code>require-trusted-types-for</code> + <code>trusted-types</code>
+       CSP directive boundary the DOM injection-sink host hooks consult.</p>
+
+    <!-- The HTML injection sinks (TrustedHTML). -->
+    <div id="html-sink"
+         data-sink="html"
+         data-kind="TrustedHTML">
+      innerHTML target
+    </div>
+    <button id="set-innerhtml-string"
+            onclick="document.getElementById('html-sink').innerHTML = '&lt;img src=x onerror=alert(1)&gt;';">
+      setinnerHTML(string) — blocked
+    </button>
+    <button id="set-innerhtml-trusted"
+            onclick="document.getElementById('html-sink').innerHTML = policy.createHTML('&lt;p&gt;safe&lt;/p&gt;');">
+      setinnerHTML(TrustedHTML) — allowed
+    </button>
+
+    <!-- The script injection sinks (TrustedScript). -->
+    <button id="eval-string"
+            onclick="eval('alert(1)');">
+      eval(string) — blocked
+    </button>
+    <button id="eval-trusted"
+            onclick="eval(policy.createScript('alert(1)'));">
+      eval(TrustedScript) — allowed
+    </button>
+
+    <!-- The script-URL injection sinks (TrustedScriptURL). -->
+    <button id="set-script-src-string"
+            onclick="const s = document.createElement('script'); s.src = 'https://evil.test/x.js';">
+      script.src(string) — blocked
+    </button>
+    <button id="set-script-src-trusted"
+            onclick="const s = document.createElement('script'); s.src = policy.createScriptURL('https://safe.test/x.js');">
+      script.src(TrustedScriptURL) — allowed
+    </button>
+
+    <!-- The TrustedTypePolicy creation surface. -->
+    <button id="create-policy"
+            onclick="const p = window.trustedTypes.createPolicy('myPolicy', {createHTML: s => s});">
+      createPolicy('myPolicy')
+    </button>
+    <button id="create-default-policy"
+            onclick="const d = window.trustedTypes.createPolicy('default', {createHTML: s => s});">
+      createPolicy('default')
+    </button>
+    <button id="create-duplicate-policy"
+            onclick="window.trustedTypes.createPolicy('myPolicy', {});">
+      createPolicy('myPolicy') duplicate
+    </button>
+
+    <!-- The TrustedTypeKind surface the host hook tags values with. -->
+    <p id="kind-html" data-kind="TrustedHTML">TrustedHTML kind</p>
+    <p id="kind-script" data-kind="TrustedScript">TrustedScript kind</p>
+    <p id="kind-script-url" data-kind="TrustedScriptURL">TrustedScriptURL kind</p>
+
+    <script id="policy-setup">
+      // The host hook exposes window.trustedTypes.createPolicy; the policy
+      // factory + the createHTML/createScript/createScriptURL sanitisers
+      // are the host hook's JS surface (this module is the pure policy
+      // boundary).
+      const policy = window.trustedTypes.createPolicy('myPolicy', {
+        createHTML: s => s,
+        createScript: s => s,
+        createScriptURL: s => s,
+      });
+    </script>
+  </main>
+</body>
+</html>

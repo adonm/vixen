@@ -240,6 +240,96 @@ contribution into the track `base` before calling).
 [`GridTrack::length`]: ../../crates/vixen-engine/src/grid_resolve.rs
 [`resolve_tracks`]: ../../crates/vixen-engine/src/grid_resolve.rs
 
+**Pure-logic foundation landed for CSS Writing Modes + logical properties (Phase 4 prep).**
+The `writing-mode` / `direction` → block + inline axis + the logical →
+physical side mapping the box model, the logical insets, the logical-size →
+width/height swap, and the flex/grid main-axis selection resolve against.
+`#![forbid(unsafe_code)]`, Rust-unit-tested.
+- `vixen-engine::writing_modes` — CSS Writing Modes 3 § 3 + CSS Logical
+  Properties 1. [`WritingMode`] is the five § 3.1 values (`horizontal-tb` /
+  `vertical-rl` / `vertical-lr` + the CSS WM 4 `sideways-rl` / `sideways-lr`);
+  [`Direction`] is the § 2.1 `ltr` / `rtl` inline-base direction. [`Flow`]
+  bundles the pair and projects the derived geometry: [`Flow::block_axis`] /
+  [`Flow::inline_axis`] (which physical axis each logical axis runs along) +
+  [`Flow::block_start`] / [`Flow::block_end`] / [`Flow::inline_start`] /
+  [`Flow::inline_end`] → [`PhysicalSide`] (the § 7 side mapping table, with
+  the `sideways-*` reusing the `vertical-*` axis mapping per § 3.1).
+  [`LogicalSize::to_physical`] swaps `inline`/`block` → `width`/`height` for
+  vertical modes; [`LogicalInsets::to_physical`] resolves the four logical
+  edges to `(top, right, bottom, left)`; [`LogicalRect::to_physical`]
+  resolves a layout-produced logical rect to a physical `(x, y, w, h)` rect
+  given the containing block (the rtl / vertical-rl inline-start flip from
+  the right/bottom edge folded in). The `unicode-bidi` algorithm + the
+  `text-orientation` glyph rotation stay in the text-shaping / paint path;
+  this module is the pure axis + side mapping.
+
+[`WritingMode`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`Direction`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`Flow`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`Flow::block_axis`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`Flow::inline_axis`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`Flow::block_start`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`Flow::block_end`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`Flow::inline_start`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`Flow::inline_end`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`PhysicalSide`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`LogicalSize::to_physical`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`LogicalInsets::to_physical`]: ../../crates/vixen-engine/src/writing_modes.rs
+[`LogicalRect::to_physical`]: ../../crates/vixen-engine/src/writing_modes.rs
+
+**Pure-logic foundation landed for CSS Multi-column resolution (Phase 4 prep).**
+The `column-width` / `column-count` / `column-gap` § 3.4 resolution the
+layout layer's column-row distribution reduces to. `#![forbid(unsafe_code)]`,
+Rust-unit-tested.
+- `vixen-engine::multicol` — CSS Multi-column Layout 1 § 3. [`ColumnWidth`]
+  (`auto` or px) + [`ColumnCount`] (`auto` or ≥ 1) + the [`ColumnSpec`]
+  `(column-width, column-count, gap)` triple. [`ColumnSpec::resolve`] runs
+  the § 3.4 pseudo-algorithm end-to-end: the four branches (both auto ⇒
+  single column; count set + width auto ⇒ even distribution; width set +
+  count auto ⇒ `⌊(avail+gap)/(width+gap)⌋` count; both set ⇒
+  `min(count, fit)` + the § 3.4 (11)–(12) single-column-authored-wider-
+  than-available clamp), with a final `max(0, width)` guard so a too-large
+  count never produces a negative column. [`ResolvedColumns::column_x`] is
+  the `i * (column_width + gap)` stride the box model feeds off;
+  [`ResolvedColumns::total_width`] + [`ResolvedColumns::overflows`] report
+  the row geometry (the gaps-alone-overflow case). The `column-gap: normal`
+  → `1em` length resolution, the § 8 `column-fill: balance` height
+  balancing, the `column-rule` paint, and `column-span: all` stay in
+  `layout_2020` / the paint path (they compose against real text metrics).
+
+[`ColumnWidth`]: ../../crates/vixen-engine/src/multicol.rs
+[`ColumnCount`]: ../../crates/vixen-engine/src/multicol.rs
+[`ColumnSpec`]: ../../crates/vixen-engine/src/multicol.rs
+[`ColumnSpec::resolve`]: ../../crates/vixen-engine/src/multicol.rs
+[`ResolvedColumns::column_x`]: ../../crates/vixen-engine/src/multicol.rs
+[`ResolvedColumns::total_width`]: ../../crates/vixen-engine/src/multicol.rs
+[`ResolvedColumns::overflows`]: ../../crates/vixen-engine/src/multicol.rs
+
+**Pure-logic foundation landed for CSS Scroll Snap (Phase 4 prep).**
+The § 5 snap-position computation + the `scroll-snap-type` axis/strictness
+model the scroll container's snap targeting reduces to.
+`#![forbid(unsafe_code)]`, Rust-unit-tested.
+- `vixen-engine::scroll_snap` — CSS Scroll Snap 1 § 5. [`ScrollSnapType`]
+  (`none` or `(axis, strictness)`; axis `x`/`y`/`block`/`inline`/`both`,
+  strictness `proximity`/`mandatory`, parsed in either order per the § 5.1
+  grammar) + [`SnapAlign`] (`none`/`start`/`end`/`center`, the 1–2 value
+  `(block, inline)` form) + [`SnapStop`] (`normal`/`always`).
+  [`compute_axis`] is the § 5 snap position for one axis: the
+  `start ⇒ O`, `end ⇒ O + A − S`, `center ⇒ O + A/2 − S/2` formula clamped
+  to `[0, max(0, overflow − S)]`. [`compute_snap`] produces the `(x, y)`
+  pair (the block/inline → x/y mapping via the writing-mode flow flag);
+  [`should_snap`] is the strictness policy (mandatory always; proximity iff
+  within a threshold). The scrollable-overflow computation, the scroll
+  animation, the `scroll-padding`/`scroll-margin` insets, and the
+  content-change resnap (§ 5.4) stay in the layout/input layers.
+
+[`ScrollSnapType`]: ../../crates/vixen-engine/src/scroll_snap.rs
+[`SnapAlign`]: ../../crates/vixen-engine/src/scroll_snap.rs
+[`SnapStop`]: ../../crates/vixen-engine/src/scroll_snap.rs
+[`compute_axis`]: ../../crates/vixen-engine/src/scroll_snap.rs
+[`compute_snap`]: ../../crates/vixen-engine/src/scroll_snap.rs
+[`should_snap`]: ../../crates/vixen-engine/src/scroll_snap.rs
+
 ---
 
 ## Phase 5 — Paint: WebRender + EGL surfaceless (≈ 2 weeks)
@@ -427,6 +517,44 @@ Rust-unit-tested, consuming [`crate::border_radius`] + [`crate::blend`].
 [`parse_mask`]: ../../crates/vixen-engine/src/mask.rs
 [`crate::border_radius`]: ../../crates/vixen-engine/src/border_radius.rs
 [`crate::blend`]: ../../crates/vixen-engine/src/blend.rs
+
+**Pure-logic foundation landed for the Web Animations timing model (Phase 5 prep).**
+The § 5 timing-model pipeline the CSS `transition` / `animation` drivers +
+the `Animation` / `KeyframeEffect` host hooks reduce to.
+`#![forbid(unsafe_code)]`, Rust-unit-tested, consuming [`crate::easing`].
+- `vixen-engine::animation` — Web Animations § 5. [`EffectTiming`] carries
+  the § 5.4 timing properties (`delay` / `end_delay` / `fill` /
+  `iteration_start` / `iterations` / `duration` / `direction`); [`Fill`] is
+  the `none`/`forwards`/`backwards`/`both` fill mode; [`PlaybackDirection`]
+  is the `normal`/`reverse`/`alternate`/`alternate-reverse` direction.
+  [`active_duration`] + [`end_time`] are the § 5.3 derived times;
+  [`phase`] is the § 5.5 `before`/`active`/`after` classification;
+  [`simple_iteration_progress`] + [`current_iteration`] are the § 5.5
+  iteration progress + index (the after-phase `iterations = 0` and
+  integer-boundary `progress = 1` rules folded in); [`directed_progress`]
+  is the § 5.6 direction-aware progress; [`apply_easing`] is the § 5.7
+  transformed progress (consumes [`crate::easing::Easing`]);
+  [`compute_timing`] ties the pipeline together into a [`ComputedTiming`]
+  with the fill-mode before/after resolution (backwards/both ⇒ the
+  iteration-0 start in before; forwards/both ⇒ the end state in after; else
+  `None`). The keyframe value interpolation + the animation-frame
+  scheduling + the `auto` duration resolution stay in the paint /
+  event-loop layer (this module produces the `progress` they sample at).
+
+[`EffectTiming`]: ../../crates/vixen-engine/src/animation.rs
+[`Fill`]: ../../crates/vixen-engine/src/animation.rs
+[`PlaybackDirection`]: ../../crates/vixen-engine/src/animation.rs
+[`active_duration`]: ../../crates/vixen-engine/src/animation.rs
+[`end_time`]: ../../crates/vixen-engine/src/animation.rs
+[`phase`]: ../../crates/vixen-engine/src/animation.rs
+[`simple_iteration_progress`]: ../../crates/vixen-engine/src/animation.rs
+[`current_iteration`]: ../../crates/vixen-engine/src/animation.rs
+[`directed_progress`]: ../../crates/vixen-engine/src/animation.rs
+[`apply_easing`]: ../../crates/vixen-engine/src/animation.rs
+[`compute_timing`]: ../../crates/vixen-engine/src/animation.rs
+[`ComputedTiming`]: ../../crates/vixen-engine/src/animation.rs
+[`crate::easing`]: ../../crates/vixen-engine/src/easing.rs
+[`crate::easing::Easing`]: ../../crates/vixen-engine/src/easing.rs
 
 ---
 
@@ -835,6 +963,120 @@ reduce to. `#![forbid(unsafe_code)]`, Rust-unit-tested.
 [`Selection`]: ../../crates/vixen-engine/src/range.rs
 [`SelectionDirection`]: ../../crates/vixen-engine/src/range.rs
 
+**Pure-logic foundation landed for session history + pushState (Phase 6 prep).**
+The HTML § 7.1 session-history entry-stack + the `history.pushState` /
+`replaceState` / `back` / `forward` / `go` surface the `History` host hook
++ the navigation layer reduce to. `#![forbid(unsafe_code)]`,
+Rust-unit-tested.
+- `vixen-engine::history` — HTML § 7.1. [`ScrollRestoration`] is the
+  `auto`/`manual` `history.scrollRestoration` mode; [`HistoryEntry`] is one
+  session-history entry (URL string + opaque structured-clone `state` blob
+  + the `scrollRestoration` mode + the optional title). [`SessionHistory`]
+  is the entry stack + the current-entry cursor with the § 7.1 surface:
+  `push` (truncates the forward branch per the § 7.1 "remove all entries
+  after the current one" rule, appends, advances the cursor), `replace`
+  (swaps the current entry, length unchanged), `back`/`forward`/`go(delta)`
+  (cursor movement with out-of-range ⇒ no-op), `length`/`index`/`url`/
+  `state`/`scroll_restoration`, and the `with_entries` escape hatch for the
+  host hook that restores a persisted session history. The document
+  load/unload for a traversal (the § 7.5 "traverse the history" algorithm),
+  the same-origin URL check for `pushState`/`replaceState`, and the
+  structured-clone serialisation of the `state` value stay in the
+  navigation layer / host hook (the host hook serialises via
+  [`crate::structured_clone`] before calling `pushState`).
+
+[`ScrollRestoration`]: ../../crates/vixen-engine/src/history.rs
+[`HistoryEntry`]: ../../crates/vixen-engine/src/history.rs
+[`SessionHistory`]: ../../crates/vixen-engine/src/history.rs
+[`crate::structured_clone`]: ../../crates/vixen-engine/src/structured_clone.rs
+
+**Pure-logic foundation landed for MutationObserver (Phase 6 prep).**
+The DOM § 4.3 mutation-queue + the § 4.3.1 match predicate the
+`MutationObserver` host hook + the microtask-delivery step reduce to.
+`#![forbid(unsafe_code)]`, Rust-unit-tested.
+- `vixen-engine::mutation_observer` — DOM § 4.3. [`MutationType`] is the
+  three `childList`/`attributes`/`characterData` record types; [`MutationRecord`]
+  is one record (target + added/removed nodes + siblings for `childList` +
+  attribute name/namespace + `oldValue`); [`MutationObserverInit`] is the
+  § 4.3.1 `observe()` options (`childList`/`attributes`/`attributeFilter`/
+  `attributeOldValue`/`characterData`/`characterDataOldValue`/`subtree`).
+  [`Relation`] (`Target`/`Descendant`) + [`should_observe`] is the § 4.3.1
+  match predicate (the options vs the mutation type + the target/subtree
+  relation + the attribute filter). [`MutationObserver`] carries the
+  record queue + the registrations + `observe` (re-observing replaces per
+  § 4.3.1, invalid options rejected) / `disconnect` (clears registrations,
+  keeps pending records) / `takeRecords` / `drain_for_delivery` (the
+  microtask-checkpoint batch). The live-DOM-tree relation classification +
+  the microtask checkpoint scheduling + the callback invocation stay in the
+  host hook / event-loop layer.
+
+[`MutationType`]: ../../crates/vixen-engine/src/mutation_observer.rs
+[`MutationRecord`]: ../../crates/vixen-engine/src/mutation_observer.rs
+[`MutationObserverInit`]: ../../crates/vixen-engine/src/mutation_observer.rs
+[`Relation`]: ../../crates/vixen-engine/src/mutation_observer.rs
+[`should_observe`]: ../../crates/vixen-engine/src/mutation_observer.rs
+[`MutationObserver`]: ../../crates/vixen-engine/src/mutation_observer.rs
+
+**Pure-logic foundation landed for TreeWalker + NodeIterator (Phase 6 prep).**
+The DOM § 6 filtered traversal model the two `NodeFilter`-based iterators
+reduce to. `#![forbid(unsafe_code)]`, Rust-unit-tested, over a [`Tree`]
+trait the host hook implements on the real DOM.
+- `vixen-engine::traversal` — DOM § 6. [`NodeType`] (the DOM `nodeType`
+  codes) + [`WhatToShow`] (the § 6.1 `whatToShow` bitmask, `SHOW_*`
+  constants + `SHOW_ALL`) + [`FilterResult`] (`FILTER_ACCEPT`/
+  `FILTER_REJECT`/`FILTER_SKIP`) + the [`NodeFilter`] trait (the JS callback
+  the host hook implements) + the [`Tree`] trait (the host hook's tree
+  access). [`TreeWalker`] is the § 6.2 rooted stateful walker with the
+  seven methods (`parent_node`/`first_child`/`last_child`/`next_sibling`/
+  `previous_sibling`/`next_node`/`previous_node`); `FILTER_REJECT` skips
+  the rejected node's subtree, `FILTER_SKIP` traverses into it. [`NodeIterator`]
+  is the § 6.3 flat preorder iterator (`next_node`/`previous_node`) where
+  `REJECT` == `SKIP` (the flat cursor has no subtree state), plus the
+  `adjust_for_removal` step the host hook consults when a node is removed
+  from the tree (the reference moves to the removed subtree's previous
+  sibling's last descendant, else the parent). The real-DOM tree walk +
+  the JS `NodeFilter` callback invocation stay in the host hook.
+
+[`NodeType`]: ../../crates/vixen-engine/src/traversal.rs
+[`WhatToShow`]: ../../crates/vixen-engine/src/traversal.rs
+[`FilterResult`]: ../../crates/vixen-engine/src/traversal.rs
+[`NodeFilter`]: ../../crates/vixen-engine/src/traversal.rs
+[`Tree`]: ../../crates/vixen-engine/src/traversal.rs
+[`TreeWalker`]: ../../crates/vixen-engine/src/traversal.rs
+[`NodeIterator`]: ../../crates/vixen-engine/src/traversal.rs
+
+**Pure-logic foundation landed for the WHATWG URL parser (Phase 6 prep).**
+The URL Standard § 4 parse + serialize + relative-resolution model the
+fetch / navigation / `new URL()` host hooks consult. `#![forbid(unsafe_code)]`,
+Rust-unit-tested.
+- `vixen-engine::whatwg_url` — WHATWG URL Standard. [`Url`] carries the
+  parsed components (scheme / username / password / host / port / path /
+  query / fragment); [`is_special_scheme`] + [`default_port`] encode the
+  § 3.1 special-scheme family (`http`/`https`/`ws`/`wss`/`file`).
+  [`parse`] parses an absolute URL; [`parse_with_base`] is the § 4.6
+  relative-resolution parser (absolute-path / relative-segment merge /
+  query-only / fragment-only / scheme-relative against a base [`Url`]).
+  [`Url::serialize`] is the § 4.1 canonical serialiser (the default port
+  omitted, IPv6 re-wrapped in `[...]`, the opaque-path no-slash form for
+  non-special schemes); [`Url::origin`] is the § 4.5 `(scheme, host, port)`
+  tuple the fetch / storage layers partition on. [`percent_encode`] + the
+  [`EncodeSet`]s (C0 control / fragment / query / path / userinfo) cover
+  the § 4.2 percent-encoding family. IDNA, full IPv6, and the opaque-path
+  long tail are the deferred slices (non-ASCII hosts fail closed; the IPv6
+  literal is captured verbatim). The module is named `whatwg_url` (not
+  `url`) so it doesn't shadow the extern `url` crate the rest of the
+  engine consumes.
+
+[`Url`]: ../../crates/vixen-engine/src/whatwg_url.rs
+[`is_special_scheme`]: ../../crates/vixen-engine/src/whatwg_url.rs
+[`default_port`]: ../../crates/vixen-engine/src/whatwg_url.rs
+[`parse`]: ../../crates/vixen-engine/src/whatwg_url.rs
+[`parse_with_base`]: ../../crates/vixen-engine/src/whatwg_url.rs
+[`Url::serialize`]: ../../crates/vixen-engine/src/whatwg_url.rs
+[`Url::origin`]: ../../crates/vixen-engine/src/whatwg_url.rs
+[`percent_encode`]: ../../crates/vixen-engine/src/whatwg_url.rs
+[`EncodeSet`]: ../../crates/vixen-engine/src/whatwg_url.rs
+
 **Gate:** `fixtures/dom/`, `fixtures/events/`, `fixtures/forms/`,
 `fixtures/storage/`, `fixtures/network/` all pass.
 
@@ -1035,6 +1277,65 @@ Rust-unit-tested.
 [`Destination`]: ../../crates/vixen-net/src/nosniff.rs
 [`enforce`]: ../../crates/vixen-net/src/nosniff.rs
 [`NosniffOutcome`]: ../../crates/vixen-net/src/nosniff.rs
+
+**Pure-logic foundation landed for Cross-Origin-Resource-Policy (Phase 7 prep).**
+The Fetch § 4.5.3 CORP header + the combined COEP + CORP gate the fetch
+layer consults before applying a no-cors subresource response into a
+COEP-hardened document. `#![forbid(unsafe_code)]`, Rust-unit-tested,
+reusing [`crate::coep::Coep`] + [`crate::origin::Origin`].
+- `vixen-net::corp` — Fetch § 4.5.3. [`Corp`] is the `same-origin` /
+  `same-site` / `cross-origin` value ([`parse_corp`] case-insensitive,
+  `None` for an absent / unparseable header). [`is_same_site`] is the
+  § 4.5.3 same-site predicate (same scheme + matching registrable domain;
+  the last-two-labels eTLD+1 heuristic the PSL refines later);
+  [`check_corp`] is the § 4.5.3 check (`Allow` / `Block`, opaque origins
+  fail closed). [`coep_corp_gate`] is the combined gate: `unsafe-none` ⇒
+  allow; CORS ⇒ allow (the alternative opt-in); `require-corp` ⇒
+  same-origin allow, cross-origin no-CORP block, cross-origin-with-CORP
+  `check_corp`; `credentialless` ⇒ same-origin allow, cross-origin
+  `AllowWithoutCredentials`. The CORS check itself + the COEP parse stay
+  in [`crate::cors`] / [`crate::coep`].
+
+[`Corp`]: ../../crates/vixen-net/src/corp.rs
+[`parse_corp`]: ../../crates/vixen-net/src/corp.rs
+[`is_same_site`]: ../../crates/vixen-net/src/corp.rs
+[`check_corp`]: ../../crates/vixen-net/src/corp.rs
+[`coep_corp_gate`]: ../../crates/vixen-net/src/corp.rs
+[`crate::coep::Coep`]: ../../crates/vixen-net/src/coep.rs
+[`crate::origin::Origin`]: ../../crates/vixen-net/src/origin.rs
+[`crate::cors`]: ../../crates/vixen-net/src/cors.rs
+[`crate::coep`]: ../../crates/vixen-net/src/coep.rs
+
+**Pure-logic foundation landed for Trusted Types (Phase 7 prep).**
+The W3C Trusted Types `trusted-types` + `require-trusted-types-for` CSP
+directive boundary the DOM injection-sink host hooks (`.innerHTML`,
+`eval()`, `document.write()`, `script.src = …`, &c.) consult before
+accepting a string. `#![forbid(unsafe_code)]`, Rust-unit-tested.
+- `vixen-net::trusted_types` — W3C TT. [`TrustedTypeKind`] is the three
+  `TrustedHTML`/`TrustedScript`/`TrustedScriptURL` value kinds;
+  [`AllowedNames`] is the `trusted-types` directive's policy-name set
+  (`None`/`Explicit(list)`/`Wildcard`); [`TrustedTypesPolicyNames`] carries
+  the set + the `allow-duplicates` flag; [`RequireFor`] is the
+  `require-trusted-types-for 'script'` flag (the only sink-group in v1,
+  covering every TT sink). [`parse_trusted_types`] +
+  [`parse_require_trusted_types_for`] parse the two directives;
+  [`policy_creation_allowed`] is the § 3.2.3 `createPolicy(name)` gate (the
+  allowed-name match + the duplicate-name block); [`evaluate_sink`] is the
+  § 3.3.5 injection-sink decision (a Trusted\* value ⇒ `Allow`; a string at
+  a TT-requiring sink ⇒ `ApplyDefaultPolicy` if a `default` policy exists
+  else `Block`; a string at a non-TT sink ⇒ `Allow`). The JS
+  `TrustedTypePolicy` factory + the `createHTML`/`createScript`/
+  `createScriptURL` sanitisers + the violation-reporting surface stay in
+  the host hook.
+
+[`TrustedTypeKind`]: ../../crates/vixen-net/src/trusted_types.rs
+[`AllowedNames`]: ../../crates/vixen-net/src/trusted_types.rs
+[`TrustedTypesPolicyNames`]: ../../crates/vixen-net/src/trusted_types.rs
+[`RequireFor`]: ../../crates/vixen-net/src/trusted_types.rs
+[`parse_trusted_types`]: ../../crates/vixen-net/src/trusted_types.rs
+[`parse_require_trusted_types_for`]: ../../crates/vixen-net/src/trusted_types.rs
+[`policy_creation_allowed`]: ../../crates/vixen-net/src/trusted_types.rs
+[`evaluate_sink`]: ../../crates/vixen-net/src/trusted_types.rs
 
 **Gate:** Every security test in `vixen-net` and `vixen-engine` green.
 Zero `cargo audit` advisories. Fuzz targets stable.

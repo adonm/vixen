@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>MutationObserver + MutationRecord — Vixen fixture</title>
+  <!--
+    Exercises the DOM § 4.3 MutationObserver surface the
+    vixen-engine::mutation_observer host-hook layer resolves (Phase 6 DOM
+    prep). The pure-logic module models the record queue + the observation
+    registrations + the § 4.3.1 match predicate (the options vs the
+    mutation type + the target/subtree relation + the attribute filter) +
+    the microtask-delivery batch; the live DOM tree walk that classifies a
+    mutation's relation to each observed root + the microtask checkpoint
+    scheduling stay in the host hook / event-loop layer.
+
+    This fixture documents the HTML surface the MutationObserver host hook
+    reflects:
+    - new MutationObserver(callback) + observe(target, options).
+    - The options family (childList / attributes / attributeFilter /
+      attributeOldValue / characterData / characterDataOldValue / subtree).
+    - disconnect() + takeRecords().
+    - The three record types (childList / attributes / characterData).
+  -->
+</head>
+<body>
+  <main id="content">
+    <h1>MutationObserver + MutationRecord surface</h1>
+    <p>The § 4.3 mutation-queue + the § 4.3.1 match predicate the
+       MutationObserver host hook reduces to.</p>
+
+    <!-- The observed targets. -->
+    <div id="list-target">
+      <span id="child-a">a</span>
+      <span id="child-b">b</span>
+    </div>
+
+    <div id="attr-target" class="row" data-state="initial">attr target</div>
+
+    <p id="text-target">some text content</p>
+
+    <!-- The observer-creation buttons (the host hook wires the callback). -->
+    <button id="observe-childlist"
+            onclick="observer.observe(document.getElementById('list-target'),
+                                      {childList: true});">
+      observe childList
+    </button>
+    <button id="observe-subtree"
+            onclick="observer.observe(document.getElementById('list-target'),
+                                      {childList: true, subtree: true});">
+      observe subtree
+    </button>
+    <button id="observe-attributes"
+            onclick="observer.observe(document.getElementById('attr-target'),
+                                      {attributes: true, attributeFilter: ['class', 'data-state'],
+                                       attributeOldValue: true});">
+      observe attributes (filtered)
+    </button>
+    <button id="observe-characterdata"
+            onclick="observer.observe(document.getElementById('text-target'),
+                                      {characterData: true, characterDataOldValue: true});">
+      observe characterData
+    </button>
+
+    <!-- The disconnect + takeRecords surface. -->
+    <button id="disconnect-btn"
+            onclick="observer.disconnect();">
+      disconnect
+    </button>
+    <button id="take-records-btn"
+            onclick="const r = observer.takeRecords();">
+      takeRecords
+    </button>
+
+    <!-- The mutation-trigger buttons. -->
+    <button id="add-child"
+            onclick="const s = document.createElement('span'); s.id='child-c';
+                     document.getElementById('list-target').appendChild(s);">
+      add child
+    </button>
+    <button id="remove-child"
+            onclick="document.getElementById('child-a').remove();">
+      remove child
+    </button>
+    <button id="set-attr"
+            onclick="document.getElementById('attr-target').setAttribute('class','col');">
+      set class
+    </button>
+    <button id="set-data-state"
+            onclick="document.getElementById('attr-target').setAttribute('data-state','updated');">
+      set data-state
+    </button>
+
+    <!-- The record-log surface (the callback appends a record summary). -->
+    <ol id="record-log"></ol>
+
+    <script id="observer-setup">
+      const observer = new MutationObserver((records) => {
+        const log = document.getElementById('record-log');
+        for (const r of records) {
+          const li = document.createElement('li');
+          li.textContent = r.type;
+          log.appendChild(li);
+        }
+      });
+    </script>
+  </main>
+</body>
+</html>

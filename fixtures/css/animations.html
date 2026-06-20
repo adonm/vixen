@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Animations + Web Animations timing — Vixen fixture</title>
+  <!--
+    Exercises the Web Animations § 5 timing-model surface the
+    vixen-engine::animation host-hook layer resolves (Phase 5 paint prep).
+    The pure-logic module computes the § 5.5 phase (before/active/after),
+    the simple iteration progress + current iteration, the § 5.6 directed
+    progress (the normal/reverse/alternate/alternate-reverse direction), the
+    § 5.7 transformed progress (the easing, via vixen-engine::easing), and
+    the fill-mode before/after resolution. The keyframe value interpolation
+    + the animation-frame scheduling stay in the paint / event-loop layer.
+
+    This fixture documents the authored CSS surface:
+    - @keyframes + the animation shorthand (duration/delay/iteration-count/
+      direction/fill/timing-function).
+    - transition (the single-iteration case).
+    - The animation-fill-mode family (none/forwards/backwards/both).
+    - The animation-direction family.
+  -->
+  <style>
+    @keyframes slide {
+      from { transform: translateX(0); }
+      to   { transform: translateX(100px); }
+    }
+    @keyframes pulse {
+      0%   { opacity: 1; }
+      50%  { opacity: 0.5; }
+      100% { opacity: 1; }
+    }
+    .anim {
+      animation-name: slide;
+      animation-duration: 2s;
+    }
+  </style>
+</head>
+<body>
+  <main id="content">
+    <h1>Animations + Web Animations timing surface</h1>
+    <p>The § 5 timing-model pipeline the transition/animation drivers
+       reduce to.</p>
+
+    <!-- The animation shorthand: duration / timing / delay / iteration /
+         direction / fill. -->
+    <div id="shorthand"
+         class="anim"
+         data-timing="2s ease-in 0s 3 alternate forwards"
+         style="animation: 2s ease-in 0s 3 alternate forwards slide;">
+      shorthand animation
+    </div>
+
+    <!-- The longhand form. -->
+    <div id="longhand"
+         data-timing="duration:2s,iterations:infinite,direction:alternate"
+         style="animation-name: pulse;
+                animation-duration: 2s;
+                animation-iteration-count: infinite;
+                animation-direction: alternate;
+                animation-timing-function: ease-in-out;">
+      longhand animation
+    </div>
+
+    <!-- animation-fill-mode: backwards (applies the start value in before). -->
+    <div id="fill-backwards"
+         data-timing="fill:backwards,delay:1s"
+         style="animation: slide 2s 1s backwards;">
+      backwards fill
+    </div>
+
+    <!-- animation-fill-mode: both. -->
+    <div id="fill-both"
+         data-timing="fill:both"
+         style="animation: slide 2s both;">
+      both fill
+    </div>
+
+    <!-- A reverse-direction animation. -->
+    <div id="reverse"
+         data-timing="direction:reverse"
+         style="animation: slide 2s reverse;">
+      reverse direction
+    </div>
+
+    <!-- A transition (the single-iteration, fill-none case). -->
+    <div id="transition"
+         data-timing="transition:200ms"
+         style="transition: opacity 200ms ease-out;">
+      transition target
+    </div>
+
+    <!-- animation-iteration-count: 0 (the effect jumps to after). -->
+    <div id="zero-iterations"
+         data-timing="iterations:0"
+         style="animation: slide 2s 0;">
+      zero iterations
+    </div>
+
+    <!-- The steps() timing function (the § 5.7 easing surface). -->
+    <div id="steps-easing"
+         data-timing="easing:steps(4,jump-start)"
+         style="animation: slide 2s steps(4, jump-start);">
+      steps easing
+    </div>
+  </main>
+</body>
+</html>

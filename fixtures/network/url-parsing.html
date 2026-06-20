@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>WHATWG URL parsing — Vixen fixture</title>
+  <!--
+    Exercises the WHATWG URL Standard parse + serialize + relative-resolution
+    surface the vixen-engine::whatwg_url host-hook layer resolves (Phase 6
+    network prep). The pure-logic module parses an absolute URL into its
+    components (scheme / userinfo / host / port / path / query / fragment),
+    resolves a relative reference against a base, serialises the canonical
+    form, and exposes the § 4.5 origin tuple the fetch / storage layers
+    partition on. IDNA, full IPv6, and the opaque-path long tail are the
+    deferred slices.
+
+    This fixture documents the HTML surface the `new URL()` host hook
+    reflects:
+    - new URL(input, base?) + the URL components (origin / pathname / search / hash).
+    - The special-scheme family (http / https / ws / wss / file).
+    - The userinfo / port / IPv6 host forms.
+    - Relative resolution against a <base> element.
+    - The URLSearchParams composition (url.searchParams).
+  -->
+  <base href="https://example.com/app/page">
+</head>
+<body>
+  <main id="content">
+    <h1>WHATWG URL parsing surface</h1>
+    <p>The § 4 parse / serialize / relative-resolution model the
+       <code>new URL()</code> host hook + the fetch / navigation layers
+       reduce to.</p>
+
+    <!-- The <base> element the relative-resolution host hook seeds from. -->
+    <p id="base-origin"
+       data-base="https://example.com/app/page">base element</p>
+
+    <!-- The URL construction + component buttons. -->
+    <button id="abs-https"
+            onclick="const u = new URL('https://example.com:8443/path?q=1#frag');">
+      absolute https
+    </button>
+    <button id="abs-file"
+            onclick="const u = new URL('file:///etc/hosts');">
+      absolute file
+    </button>
+    <button id="abs-mailto"
+            onclick="const u = new URL('mailto:foo@example.com');">
+      opaque mailto
+    </button>
+    <button id="rel-absolute-path"
+            onclick="const u = new URL('/other', document.baseURI);">
+      relative /absolute-path
+    </button>
+    <button id="rel-segment"
+            onclick="const u = new URL('sibling', document.baseURI);">
+      relative segment
+    </button>
+    <button id="rel-query"
+            onclick="const u = new URL('?new=1', document.baseURI);">
+      relative ?query
+    </button>
+    <button id="rel-fragment"
+            onclick="const u = new URL('#anchor', document.baseURI);">
+      relative #fragment
+    </button>
+    <button id="rel-scheme"
+            onclick="const u = new URL('//cdn.test/asset', document.baseURI);">
+      scheme-relative
+    </button>
+
+    <!-- The component surfaces the host hook reflects. -->
+    <dl id="component-list">
+      <dt id="dt-origin">origin</dt>
+      <dd id="dd-origin">https://example.com</dd>
+      <dt id="dt-pathname">pathname</dt>
+      <dd id="dd-pathname">/app/page</dd>
+      <dt id="dt-search">search</dt>
+      <dd id="dd-search">?q=1</dd>
+      <dt id="dt-hash">hash</dt>
+      <dd id="dd-hash">#frag</dd>
+    </dl>
+
+    <!-- The IPv6 + userinfo + explicit-port form. -->
+    <a id="ipv6-link" href="http://[::1]:8080/">ipv6 host</a>
+    <a id="userinfo-link" href="https://user:pass@example.com/">userinfo</a>
+
+    <!-- The URLSearchParams composition. -->
+    <p id="search-params" data-pairs="q=1&r=2">search params</p>
+  </main>
+</body>
+</html>

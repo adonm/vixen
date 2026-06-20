@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CSS Multi-column — Vixen fixture</title>
+  <!--
+    Exercises the CSS Multi-column Layout 1 § 3 column-width / column-count /
+    column-gap surface the vixen-engine::multicol host-hook layer resolves
+    (Phase 4 layout prep). The pure-logic module runs the § 3.4
+    pseudo-algorithm to produce the used column-count + column-width + gap
+    the column-row geometry feeds off; the column-box height balancing
+    (§ 8 column-fill: balance) + the column-rule paint stay in layout_2020
+    / the paint path.
+
+    This fixture documents the authored surface:
+    - column-count only (auto width derived).
+    - column-width only (auto count derived).
+    - both set (the minimum-of rule).
+    - column-gap (normal + a px length).
+    - column-rule (the between-column border paint slot).
+    - column-span: all (the spanning-element out-of-flow carve).
+  -->
+</head>
+<body>
+  <main id="content">
+    <h1>CSS Multi-column surface</h1>
+    <p>The § 3.4 column-width / column-count / column-gap resolution the
+       layout layer's column-row distribution reduces to.</p>
+
+    <!-- column-count only: 3 columns, width auto-derived. -->
+    <div id="count-only"
+         class="multicol"
+         data-spec="count:3"
+         style="column-count: 3;">
+      first column second column third column of content laid out across
+      three balanced columns.
+    </div>
+
+    <!-- column-width only: 12em columns, count auto-derived. -->
+    <div id="width-only"
+         class="multicol"
+         data-spec="width:12em"
+         style="column-width: 12em;">
+      content flowing into as many 12em columns as the available width fits.
+    </div>
+
+    <!-- both set: column-count: 5 + column-width: 10em (the minimum-of rule). -->
+    <div id="both-set"
+         class="multicol"
+         data-spec="count:5,width:10em"
+         style="column-count: 5; column-width: 10em;">
+      content with both a column-count and a column-width authored.
+    </div>
+
+    <!-- column-gap: a px length between columns. -->
+    <div id="with-gap"
+         class="multicol"
+         data-spec="count:3,gap:2em"
+         style="column-count: 3; column-gap: 2em;">
+      three columns with a 2em gap between them.
+    </div>
+
+    <!-- column-gap: normal (the 1em default). -->
+    <div id="normal-gap"
+         class="multicol"
+         data-spec="count:2,gap:normal"
+         style="column-count: 2; column-gap: normal;">
+      two columns with the normal (1em) gap.
+    </div>
+
+    <!-- column-rule: the between-column border paint slot. -->
+    <div id="with-rule"
+         class="multicol"
+         data-spec="count:3,rule"
+         style="column-count: 3;
+                column-rule: 2px solid #888;
+                column-gap: 1em;">
+      three columns separated by a 2px solid rule.
+    </div>
+
+    <!-- column-span: all (the spanning element out-of-flow carve). -->
+    <div id="spanning"
+         class="multicol"
+         data-spec="count:3,span"
+         style="column-count: 3;">
+      <h2 id="span-all" style="column-span: all;">spanning heading</h2>
+      content above and below the spanning heading, in three columns.
+    </div>
+
+    <!-- single column (column-count: 1). -->
+    <div id="single"
+         class="multicol"
+         data-spec="count:1"
+         style="column-count: 1;">
+      a single column — the § 3.4 (01)–(02) baseline.
+    </div>
+  </main>
+</body>
+</html>

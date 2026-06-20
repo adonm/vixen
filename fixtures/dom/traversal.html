@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>TreeWalker + NodeIterator — Vixen fixture</title>
+  <!--
+    Exercises the DOM § 6 TreeWalker + NodeIterator surface the
+    vixen-engine::traversal host-hook layer resolves (Phase 6 DOM prep).
+    The pure-logic module implements the filtered preorder traversal over a
+    Tree trait the host hook implements on the real DOM: the seven
+    TreeWalker methods (parentNode / firstChild / lastChild / nextSibling /
+    previousSibling / nextNode / previousNode) with FILTER_REJECT skipping a
+    subtree and FILTER_SKIP traversing into it, + the NodeIterator
+    nextNode / previousNode flat cursor (REJECT == SKIP) + the
+    node-removal reference adjustment.
+
+    The real-DOM tree walk + the JS NodeFilter callback invocation stay in
+    the host hook; this fixture documents the HTML surface:
+    - document.createTreeWalker(root, whatToShow, filter).
+    - document.createNodeIterator(root, whatToShow, filter).
+    - The whatToShow family (NodeFilter.SHOW_ELEMENT / SHOW_TEXT / …).
+    - The FILTER_ACCEPT / FILTER_REJECT / FILTER_SKIP callback results.
+  -->
+</head>
+<body>
+  <main id="content">
+    <h1>TreeWalker + NodeIterator surface</h1>
+    <p>The § 6 filtered preorder traversal the two NodeFilter-based
+       iterators reduce to.</p>
+
+    <!-- The traversal root + the node tree the iterators walk. -->
+    <div id="walk-root">
+      <article id="art-1">
+        <h2 id="heading">Heading</h2>
+        <p id="para-1">first paragraph</p>
+        <p id="para-2">second paragraph</p>
+      </article>
+      <aside id="aside-1">
+        <span id="aside-span">aside content</span>
+      </aside>
+    </div>
+
+    <!-- The TreeWalker creation buttons. -->
+    <button id="tw-elements"
+            onclick="const w = document.createTreeWalker(
+                       document.getElementById('walk-root'),
+                       NodeFilter.SHOW_ELEMENT);">
+      TreeWalker SHOW_ELEMENT
+    </button>
+    <button id="tw-text"
+            onclick="const w = document.createTreeWalker(
+                       document.getElementById('walk-root'),
+                       NodeFilter.SHOW_TEXT);">
+      TreeWalker SHOW_TEXT
+    </button>
+    <button id="tw-filtered"
+            onclick="const w = document.createTreeWalker(
+                       document.getElementById('walk-root'),
+                       NodeFilter.SHOW_ELEMENT,
+                       (n) => n.tagName === 'P'
+                         ? NodeFilter.FILTER_ACCEPT
+                         : NodeFilter.FILTER_SKIP);">
+      TreeWalker (P-only filter)
+    </button>
+    <button id="tw-reject-subtree"
+            onclick="const w = document.createTreeWalker(
+                       document.getElementById('walk-root'),
+                       NodeFilter.SHOW_ELEMENT,
+                       (n) => n.id === 'aside-1'
+                         ? NodeFilter.FILTER_REJECT
+                         : NodeFilter.FILTER_ACCEPT);">
+      TreeWalker (reject aside subtree)
+    </button>
+
+    <!-- The NodeIterator creation buttons. -->
+    <button id="ni-elements"
+            onclick="const it = document.createNodeIterator(
+                       document.getElementById('walk-root'),
+                       NodeFilter.SHOW_ELEMENT);">
+      NodeIterator SHOW_ELEMENT
+    </button>
+    <button id="ni-comments"
+            onclick="const it = document.createNodeIterator(
+                       document.getElementById('walk-root'),
+                       NodeFilter.SHOW_COMMENT);">
+      NodeIterator SHOW_COMMENT
+    </button>
+
+    <!-- The traversal-driver buttons. -->
+    <button id="next-node-btn" onclick="w.nextNode();">nextNode</button>
+    <button id="parent-node-btn" onclick="w.parentNode();">parentNode</button>
+    <button id="first-child-btn" onclick="w.firstChild();">firstChild</button>
+
+    <!-- The NodeFilter constants the host hook reflects. -->
+    <p id="filter-constants"
+       data-accept="1"
+       data-reject="2"
+       data-skip="3">
+      NodeFilter constants
+    </p>
+  </main>
+</body>
+</html>

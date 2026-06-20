@@ -38,10 +38,23 @@ and reference material, plus:
   subtraction) and the four-box nesting. `vixen-engine::flex_resolve`
   implements CSS Flexbox 1 § 9.7 main-axis distribution (grow/shrink factor
   selection, inflexible-item freezing, min/max violation clamping, iterative
-  free-space distribution). `vixen-engine::grid_resolve` implements CSS Grid
+  free-space distribution).   `vixen-engine::grid_resolve` implements CSS Grid
   1 § 12.5 fr-factor distribution + § 11.7 track maximization (the natural
   complement to `flex_resolve` for grid columns/rows, with the iterative
-  growth-limit clamp-and-redistribute pattern). All three ready for
+  growth-limit clamp-and-redistribute pattern). `vixen-engine::writing_modes`
+  implements CSS Writing Modes 3 § 3 + CSS Logical Properties 1 — the
+  `writing-mode` / `direction` → block + inline axis + the logical → physical
+  side mapping (`block/inline-start/end` → `top/right/bottom/left`, the
+  `inline-size`/`block-size` → `width`/`height` swap for vertical modes) the
+  box model, the logical insets, and the flex/grid main-axis selection
+  resolve against. `vixen-engine::multicol` implements CSS Multi-column
+  Layout 1 § 3 — the `column-width` / `column-count` / `column-gap` § 3.4
+  resolution (the four-branch pseudo-algorithm + the single-column overflow
+  clamp) the column-row distribution reduces to. `vixen-engine::scroll_snap`
+  implements CSS Scroll Snap 1 § 5 — the snap-position computation
+  (`start`/`end`/`center` per axis, clamped to the scrollable range) + the
+  `scroll-snap-type` axis/strictness + `scroll-snap-align`/`scroll-snap-stop`
+  model the scroll layer's snap targeting reduces to. All six ready for
   `layout_2020` to feed off.
 - **Phase 5 prep** — `vixen-engine::display_list` (all eight `SPEC.md`
   display-list invariants) + the paint-geometry family it will consume:
@@ -70,7 +83,12 @@ and reference material, plus:
   per-pixel point-in-shape test + the polygon nonzero/evenodd winding
   rules) + `vixen-engine::mask` (CSS Masking 1 § 6 `mask` shorthand
   per-layer model — `mask-mode`/`mask-repeat`/`mask-clip`/`mask-origin` +
-  the paren-aware comma-separated layer parse). All
+  the paren-aware comma-separated layer parse). The animation timing model:
+  `vixen-engine::animation` (Web Animations § 5 — the phase classification,
+  the simple iteration progress + current iteration, the `direction`-aware
+  directed progress, the easing-transformed progress via `easing::Easing`,
+  and the `fill`-mode before/after resolution the transition/animation
+  drivers reduce to). All
   `#![forbid(unsafe_code)]` and Rust-unit-tested.
 - **Phase 6 prep** — pure form-constraint validation in `vixen-engine::forms`
   (email/URL formats, step arithmetic, range/length flags) ready for the
@@ -110,10 +128,26 @@ and reference material, plus:
   § 9.5.2 entangled port pair `postMessage()` / `new MessageChannel()` /
   worker messaging reduce to, with the transfer-list validation
   (duplicate/ unreachable/detached rejection) and the `SharedArrayBuffer`
-  cross-origin-isolation gate. The Range/Selection family (`range`)
+  cross-origin-isolation gate.   The Range/Selection family (`range`)
   models the DOM § 5.2 boundary-point pair + § 5.4 direction-aware
   selection (`add_range`/`collapse_to`/`extend_to`, the forward/backward
   direction) the editing commands and user-selection reflection reduce to.
+  The session-history family (`history`) models the HTML § 7.1 entry-stack
+  + the `history.pushState`/`replaceState`/`back`/`forward`/`go` surface +
+  the `scrollRestoration` mode the `History` host hook + the navigation
+  layer reduce to.   The MutationObserver family (`mutation_observer`)
+  models the DOM § 4.3 mutation-queue + the § 4.3.1 match predicate
+  (childList/attributes/characterData + the subtree/attributeFilter
+  options) + the microtask-delivery batch the `MutationObserver` host
+  hook reduces to.   The traversal family (`traversal`) models the DOM § 6
+  `TreeWalker` + `NodeIterator` filtered preorder traversal (`whatToShow`
+  bitmask + the `FILTER_ACCEPT`/`REJECT`/`SKIP` distinction — REJECT skips a
+  subtree for TreeWalker, REJECT == SKIP for NodeIterator) + the
+  node-removal reference adjustment, over a `Tree` trait the host hook
+  implements on the real DOM. The WHATWG URL parser (`whatwg_url`) models
+  the URL Standard § 4 parse + serialize + relative-resolution + the
+  § 4.5 origin tuple the `new URL()` host hook + the fetch / navigation /
+  storage layers consult.
 - **Phase 7 prep** — CSP enforcement at the script execution boundary
   (`vixen-engine::script`); `vixen-net::referrer_policy` (Fetch § 3.4/§ 4.3.7
   `Referrer-Policy` parsing + `Referer` resolution); `vixen-net::strict_transport_security`
@@ -137,12 +171,24 @@ and reference material, plus:
   the opener-isolation predicate) + `vixen-net::coep` (Fetch § 3.2
   `Cross-Origin-Embedder-Policy` parser + the combined
   `is_cross_origin_isolated` gate the `performance.now()` coarsening and
-  `SharedArrayBuffer` exposure consult). The SRI + nosniff response-header
+  `SharedArrayBuffer` exposure consult).   The SRI + nosniff response-header
   family: `vixen-net::integrity` (W3C SRI `<script integrity>`/`<link
   integrity>` metadata parse + the constant-time hash verify, SHA-2 family
   only, any-match-passes) + `vixen-net::nosniff` (Fetch § 2
   `X-Content-Type-Options: nosniff` enforcement — the script/style MIME
   block) — ready for the fetch layer to consult at every subresource fetch.
+  The CORP family: `vixen-net::corp` (Fetch § 4.5.3
+  `Cross-Origin-Resource-Policy` parse + the combined COEP + CORP gate —
+  `require-corp` cross-origin no-CORP block, `credentialless`
+  cross-origin no-credentials allow, CORS the alternative opt-in) — ready
+  for the fetch layer to consult before applying a no-cors subresource
+  into a COEP-hardened document. The Trusted Types family:
+  `vixen-net::trusted_types` (W3C Trusted Types `trusted-types` +
+  `require-trusted-types-for` CSP directive parse + the
+  `createPolicy(name)` gate + the injection-sink decision — a Trusted\*
+  value ⇒ Allow, a string at a TT-requiring sink ⇒ `default`-policy or
+  Block) — ready for the DOM injection-sink host hooks to consult before
+  accepting a string.
 - **Phase 8 (partial)** — the CDP WebSocket server (`vixen-headless::cdp`)
   responds to the six required methods (`Browser.getVersion`,
   `Target.createTarget`, `Target.attachToTarget`, `Page.navigate`,

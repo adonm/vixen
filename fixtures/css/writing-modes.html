@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Writing Modes + logical properties — Vixen fixture</title>
+  <!--
+    Exercises the CSS Writing Modes 3 § 3 writing-mode + § 2.1 direction
+    surface the vixen-engine::writing_modes host-hook layer resolves
+    (Phase 4 layout prep). The pure-logic module maps the (writing-mode,
+    direction) pair to the block + inline axes + the logical → physical
+    side mapping (block-start/end, inline-start/end → top/right/bottom/left)
+    the box model, the logical insets, and the logical-size → width/height
+    swap feed off.
+
+    The unicode-bidi algorithm + the text-orientation glyph rotation are the
+    text-shaping / paint path; this fixture documents the authored surface:
+    - The horizontal-tb baseline (ltr + rtl).
+    - The vertical-rl / vertical-lr CJK + Mongolian forms.
+    - The sideways-* CSS WM 4 forms.
+    - The logical-property family (margin-inline-start, inset-block-end,
+      inline-size, block-size) the cascade resolves against the flow.
+  -->
+  <style>
+    [dir="rtl"] { text-align: start; }
+  </style>
+</head>
+<body>
+  <main id="content">
+    <h1>Writing Modes + logical properties surface</h1>
+    <p>The (writing-mode, direction) → axis + side mapping the layout
+       resolves against.</p>
+
+    <!-- The horizontal-tb baseline: ltr. -->
+    <section id="h-tb-ltr"
+             data-flow="horizontal-tb ltr"
+             style="writing-mode: horizontal-tb; direction: ltr;">
+      horizontal-tb ltr
+    </section>
+
+    <!-- The horizontal-tb baseline: rtl (inline-start is the right edge). -->
+    <section id="h-tb-rtl"
+             data-flow="horizontal-tb rtl"
+             style="writing-mode: horizontal-tb; direction: rtl;">
+      horizontal-tb rtl
+    </section>
+
+    <!-- vertical-rl: CJK vertical text, block flow right-to-left. -->
+    <section id="v-rl-ltr"
+             data-flow="vertical-rl ltr"
+             style="writing-mode: vertical-rl; direction: ltr;">
+      vertical-rl ltr
+    </section>
+
+    <!-- vertical-lr: Mongolian-style, block flow left-to-right. -->
+    <section id="v-lr-ltr"
+             data-flow="vertical-lr ltr"
+             style="writing-mode: vertical-lr; direction: ltr;">
+      vertical-lr ltr
+    </section>
+
+    <!-- sideways-rl (CSS WM 4): as vertical-rl for the axis mapping. -->
+    <section id="sw-rl"
+             data-flow="sideways-rl ltr"
+             style="writing-mode: sideways-rl;">
+      sideways-rl
+    </section>
+
+    <!-- sideways-lr (CSS WM 4): as vertical-lr for the axis mapping. -->
+    <section id="sw-lr"
+             data-flow="sideways-lr ltr"
+             style="writing-mode: sideways-lr;">
+      sideways-lr
+    </section>
+
+    <!-- The logical-property family the cascade resolves against the flow. -->
+    <div id="logical-box"
+         style="margin-inline-start: 10px;
+                margin-inline-end: 20px;
+                inset-block-start: 30px;
+                inset-block-end: 40px;
+                inline-size: 100px;
+                block-size: 50px;">
+      logical properties
+    </div>
+
+    <!-- text-align: start / end resolve against the inline direction. -->
+    <p id="align-start" style="text-align: start;">start-aligned</p>
+    <p id="align-end" style="text-align: end;">end-aligned</p>
+
+    <!-- The dir attribute seeds the host hook's direction resolution. -->
+    <p id="bidi-auto" dir="auto">بِسْمِ</p>
+  </main>
+</body>
+</html>

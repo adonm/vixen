@@ -13,6 +13,7 @@
 
 pub mod abort;
 pub mod angle;
+pub mod animation;
 pub mod background_position;
 pub mod blend;
 pub mod border_image;
@@ -40,6 +41,7 @@ pub mod gradient;
 pub mod grid_resolve;
 pub mod headers;
 pub mod high_res_time;
+pub mod history;
 pub mod length;
 pub mod list_marker;
 pub mod mask;
@@ -47,11 +49,14 @@ pub mod media_query;
 pub mod message_port;
 pub mod microsyntax;
 pub mod mime;
+pub mod multicol;
+pub mod mutation_observer;
 pub mod range;
 pub mod ratio;
 pub mod resolution;
 pub mod responsive_select;
 pub mod script;
+pub mod scroll_snap;
 pub mod source_size;
 pub mod srcset;
 pub mod stacking_context;
@@ -61,8 +66,11 @@ pub mod style_dom;
 pub mod text_codec;
 pub mod time;
 pub mod transform;
+pub mod traversal;
 pub mod url_pattern;
 pub mod url_search_params;
 pub mod viewport_meta;
+pub mod whatwg_url;
+pub mod writing_modes;
 
 // Removed once the first post-Phase-0 module landed; kept out of the build.

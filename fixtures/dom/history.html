@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Session history + pushState — Vixen fixture</title>
+  <!--
+    Exercises the HTML § 7.1 session-history surface the
+    vixen-engine::history host-hook layer resolves (Phase 6 DOM prep). The
+    pure-logic module models the entry stack + the current-entry cursor +
+    the pushState / replaceState / back / forward / go surface + the
+    scrollRestoration mode; the document load/unload for a traversal is
+    the navigation layer's job.
+
+    This fixture documents the HTML surface the History host hook reflects:
+    - history.pushState(state, title, url) — same-document entry push.
+    - history.replaceState(state, title, url) — current-entry swap.
+    - history.back / forward / go(delta) — cursor movement.
+    - history.length / state / scrollRestoration accessors.
+    - The popstate event surface the host hook fires on traversal.
+    - The same-origin URL constraint the host hook enforces on pushState.
+  -->
+</head>
+<body>
+  <main id="content">
+    <h1>Session history + pushState surface</h1>
+    <p>The § 7.1 entry-stack + cursor model the History host hook
+       reduces to.</p>
+
+    <!-- The pushState trigger buttons. -->
+    <button id="push-one"
+            onclick="history.pushState({step:1}, '', '#one');">
+      push #one
+    </button>
+    <button id="push-two"
+            onclick="history.pushState({step:2}, '', '#two');">
+      push #two
+    </button>
+    <button id="push-three"
+            onclick="history.pushState({step:3}, '', '#three');">
+      push #three
+    </button>
+
+    <!-- The replaceState trigger. -->
+    <button id="replace-current"
+            onclick="history.replaceState({replaced:true}, '', '#replaced');">
+      replace current
+    </button>
+
+    <!-- The navigation trigger buttons. -->
+    <button id="back-btn"
+            onclick="history.back();">
+      back
+    </button>
+    <button id="forward-btn"
+            onclick="history.forward();">
+      forward
+    </button>
+    <button id="go-back-two"
+            onclick="history.go(-2);">
+      go(-2)
+    </button>
+
+    <!-- The scroll-restoration surface. -->
+    <button id="scroll-manual"
+            onclick="history.scrollRestoration = 'manual';">
+      scroll: manual
+    </button>
+    <button id="scroll-auto"
+            onclick="history.scrollRestoration = 'auto';">
+      scroll: auto
+    </button>
+
+    <!-- The popstate event surface. -->
+    <div id="popstate-target">popstate region</div>
+    <script id="popstate-handler">
+      window.addEventListener('popstate', (event) => {
+        document.getElementById('popstate-target').textContent =
+          'state: ' + JSON.stringify(event.state);
+      });
+    </script>
+
+    <!-- A cross-document navigation link (the entry the navigation layer
+         creates, distinct from a same-document pushState entry). -->
+    <a id="cross-doc-link" href="/other.html">cross-document link</a>
+
+    <!-- A hashchange-only link (the same-document navigation case). -->
+    <a id="hash-link" href="#anchor">hash navigation</a>
+  </main>
+</body>
+</html>

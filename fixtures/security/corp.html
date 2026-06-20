@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Cross-Origin-Resource-Policy + COEP — Vixen fixture</title>
+  <!--
+    Exercises the Fetch § 4.5.3 Cross-Origin-Resource-Policy surface the
+    vixen-net::corp host-hook layer resolves (Phase 7 security prep). The
+    pure-logic module parses the CORP header (same-origin / same-site /
+    cross-origin) + runs the § 4.5.3 check, and combines it with the COEP
+    mode via coep_corp_gate: unsafe-none ⇒ allow; require-corp ⇒ block a
+    cross-origin no-cors response without a CORP opt-in (same-origin ⇒ the
+    opt-in, CORS ⇒ the alternative opt-in); credentialless ⇒ allow a
+    cross-origin no-cors response without credentials. The CORS check
+    itself + the COEP parse stay in vixen-net::cors / vixen-net::coep.
+
+    This fixture documents the HTML surface the fetch layer consults:
+    - The COEP-hardened document (the Cross-Origin-Embedder-Policy header
+      is set by the server; the fixture documents the client surface).
+    - The CORP-bearing cross-origin subresources (img / script / link /
+      fetch).
+    - The CORS alternative opt-in (crossorigin attributes).
+    - The same-origin vs cross-origin vs same-site resource families.
+  -->
+</head>
+<body>
+  <main id="content">
+    <h1>Cross-Origin-Resource-Policy + COEP surface</h1>
+    <p>The § 4.5.3 CORP check + the combined COEP gate the fetch layer
+       consults for every no-cors subresource out of a COEP-hardened
+       document.</p>
+
+    <!-- A same-origin subresource (the opt-in case; no CORP needed). -->
+    <img id="same-origin-img"
+         data-corp="same-origin-resource"
+         src="/assets/logo.svg"
+         alt="same-origin">
+
+    <!-- A cross-origin subresource carrying CORP: cross-origin. -->
+    <img id="corp-cross-origin"
+         data-corp="cross-origin"
+         src="https://cdn.test/asset.png"
+         alt="corp cross-origin">
+
+    <!-- A cross-origin subresource carrying CORP: same-origin (blocked). -->
+    <img id="corp-same-origin-blocked"
+         data-corp="same-origin"
+         src="https://other.test/blocked.png"
+         alt="corp same-origin block">
+
+    <!-- A cross-origin subresource carrying CORP: same-site (allowed
+         within the registrable domain). -->
+    <img id="corp-same-site"
+         data-corp="same-site"
+         src="https://sibling.example.com/asset.png"
+         alt="corp same-site">
+
+    <!-- A cross-origin subresource with no CORP header (blocked under
+         require-corp; allowed-without-credentials under credentialless). -->
+    <img id="no-corp-header"
+         data-corp="none"
+         src="https://third.test/no-corp.png"
+         alt="no corp header">
+
+    <!-- The CORS alternative opt-in (bypasses CORP). -->
+    <script id="cors-script"
+            crossorigin="anonymous"
+            data-corp="cors-opt-in"
+            src="https://cdn.test/cors.js"></script>
+
+    <link id="cors-style"
+          rel="stylesheet"
+          crossorigin="use-credentials"
+          data-corp="cors-opt-in"
+          href="https://cdn.test/style.css">
+
+    <!-- The fetch() surface (the host hook's no-cors vs cors mode). -->
+    <button id="fetch-nocors"
+            onclick="fetch('https://other.test/data', {mode: 'no-cors'});">
+      fetch no-cors
+    </button>
+    <button id="fetch-cors"
+            onclick="fetch('https://other.test/data', {mode: 'cors'});">
+      fetch cors
+    </button>
+
+    <!-- The COEP mode the document carries (server-set; the fixture
+         documents the client-visible surface). -->
+    <meta id="coep-require-corp"
+          name="x-coep"
+          content="require-corp">
+    <meta id="coep-credentialless"
+          name="x-coep"
+          content="credentialless">
+  </main>
+</body>
+</html>

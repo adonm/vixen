@@ -485,6 +485,181 @@
         { "type": "body-contains", "expected": "lazy dog" },
         { "type": "body-contains", "expected": "extract me" }
       ]
+    },
+    {
+      "url": "fixtures/css/writing-modes.html",
+      "checks": [
+        { "type": "title", "expected": "Writing Modes + logical properties — Vixen fixture" },
+        { "type": "selector-count", "selector": "[data-flow]", "expected": 6 },
+        { "type": "selectors-exact", "selector": "[data-flow]", "expected": ["h-tb-ltr", "h-tb-rtl", "v-rl-ltr", "v-lr-ltr", "sw-rl", "sw-lr"] },
+        { "type": "element-attribute", "selector": "#h-tb-ltr", "attribute": "data-flow", "expected": "horizontal-tb ltr" },
+        { "type": "element-attribute", "selector": "#h-tb-rtl", "attribute": "data-flow", "expected": "horizontal-tb rtl" },
+        { "type": "element-attribute", "selector": "#v-rl-ltr", "attribute": "data-flow", "expected": "vertical-rl ltr" },
+        { "type": "element-attribute", "selector": "#v-lr-ltr", "attribute": "data-flow", "expected": "vertical-lr ltr" },
+        { "type": "element-attribute", "selector": "#sw-rl", "attribute": "data-flow", "expected": "sideways-rl ltr" },
+        { "type": "element-attribute", "selector": "#sw-lr", "attribute": "data-flow", "expected": "sideways-lr ltr" },
+        { "type": "selector-count", "selector": "section", "expected": 6 },
+        { "type": "selector-count", "selector": "[style*='writing-mode']", "expected": 6 },
+        { "type": "selector-count", "selector": "[dir='auto']", "expected": 1 },
+        { "type": "body-contains", "expected": "logical properties" }
+      ]
+    },
+    {
+      "url": "fixtures/css/multicol.html",
+      "checks": [
+        { "type": "title", "expected": "CSS Multi-column — Vixen fixture" },
+        { "type": "selector-count", "selector": ".multicol", "expected": 8 },
+        { "type": "selectors-exact", "selector": ".multicol", "expected": ["count-only", "width-only", "both-set", "with-gap", "normal-gap", "with-rule", "spanning", "single"] },
+        { "type": "selector-count", "selector": "[data-spec]", "expected": 8 },
+        { "type": "element-attribute", "selector": "#count-only", "attribute": "data-spec", "expected": "count:3" },
+        { "type": "element-attribute", "selector": "#width-only", "attribute": "data-spec", "expected": "width:12em" },
+        { "type": "element-attribute", "selector": "#both-set", "attribute": "data-spec", "expected": "count:5,width:10em" },
+        { "type": "element-attribute", "selector": "#with-gap", "attribute": "data-spec", "expected": "count:3,gap:2em" },
+        { "type": "element-attribute", "selector": "#normal-gap", "attribute": "data-spec", "expected": "count:2,gap:normal" },
+        { "type": "element-attribute", "selector": "#with-rule", "attribute": "data-spec", "expected": "count:3,rule" },
+        { "type": "selector-count", "selector": "[style*='column-span']", "expected": 1 },
+        { "type": "selector-count", "selector": "#span-all", "expected": 1 },
+        { "type": "body-contains", "expected": "spanning heading" }
+      ]
+    },
+    {
+      "url": "fixtures/css/scroll-snap.html",
+      "checks": [
+        { "type": "title", "expected": "Scroll Snap — Vixen fixture" },
+        { "type": "selector-count", "selector": "[data-snap]", "expected": 6 },
+        { "type": "selectors-exact", "selector": "[data-snap]", "expected": ["h-mandatory", "v-proximity", "both-axes", "disabled", "stop-always", "block-axis"] },
+        { "type": "element-attribute", "selector": "#h-mandatory", "attribute": "data-snap", "expected": "x mandatory" },
+        { "type": "element-attribute", "selector": "#v-proximity", "attribute": "data-snap", "expected": "y proximity" },
+        { "type": "element-attribute", "selector": "#both-axes", "attribute": "data-snap", "expected": "both mandatory" },
+        { "type": "element-attribute", "selector": "#disabled", "attribute": "data-snap", "expected": "none" },
+        { "type": "selector-count", "selector": "[style*='scroll-snap-align']", "expected": 6 },
+        { "type": "selector-count", "selector": "[style*='scroll-snap-stop']", "expected": 1 },
+        { "type": "element-attribute", "selector": "#v-item-2", "attribute": "style", "expected": "scroll-snap-align: center;" },
+        { "type": "selector-count", "selector": "#h-mandatory span", "expected": 3 },
+        { "type": "selectors-exact", "selector": "#h-mandatory span", "expected": ["h-item-1", "h-item-2", "h-item-3"] },
+        { "type": "body-contains", "expected": "unskippable" }
+      ]
+    },
+    {
+      "url": "fixtures/css/animations.html",
+      "checks": [
+        { "type": "title", "expected": "Animations + Web Animations timing — Vixen fixture" },
+        { "type": "selector-count", "selector": "[data-timing]", "expected": 8 },
+        { "type": "selectors-exact", "selector": "[data-timing]", "expected": ["shorthand", "longhand", "fill-backwards", "fill-both", "reverse", "transition", "zero-iterations", "steps-easing"] },
+        { "type": "element-attribute", "selector": "#shorthand", "attribute": "data-timing", "expected": "2s ease-in 0s 3 alternate forwards" },
+        { "type": "element-attribute", "selector": "#longhand", "attribute": "data-timing", "expected": "duration:2s,iterations:infinite,direction:alternate" },
+        { "type": "element-attribute", "selector": "#fill-backwards", "attribute": "data-timing", "expected": "fill:backwards,delay:1s" },
+        { "type": "element-attribute", "selector": "#fill-both", "attribute": "data-timing", "expected": "fill:both" },
+        { "type": "element-attribute", "selector": "#reverse", "attribute": "data-timing", "expected": "direction:reverse" },
+        { "type": "element-attribute", "selector": "#zero-iterations", "attribute": "data-timing", "expected": "iterations:0" },
+        { "type": "element-attribute", "selector": "#steps-easing", "attribute": "data-timing", "expected": "easing:steps(4,jump-start)" },
+        { "type": "selector-count", "selector": "[style*='animation']", "expected": 7 },
+        { "type": "selector-count", "selector": "[style*='transition']", "expected": 1 },
+        { "type": "body-contains", "expected": "shorthand animation" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/history.html",
+      "checks": [
+        { "type": "title", "expected": "Session history + pushState — Vixen fixture" },
+        { "type": "selector-count", "selector": "button", "expected": 9 },
+        { "type": "selectors-exact", "selector": "button", "expected": ["push-one", "push-two", "push-three", "replace-current", "back-btn", "forward-btn", "go-back-two", "scroll-manual", "scroll-auto"] },
+        { "type": "selector-count", "selector": "[onclick*='pushState']", "expected": 3 },
+        { "type": "selector-count", "selector": "[onclick*='replaceState']", "expected": 1 },
+        { "type": "selector-count", "selector": "[onclick*='history.back']", "expected": 1 },
+        { "type": "selector-count", "selector": "[onclick*='history.forward']", "expected": 1 },
+        { "type": "selector-count", "selector": "[onclick*='history.go']", "expected": 1 },
+        { "type": "selector-count", "selector": "[onclick*='scrollRestoration']", "expected": 2 },
+        { "type": "element-attribute", "selector": "#go-back-two", "attribute": "onclick", "expected": "history.go(-2);" },
+        { "type": "selector-count", "selector": "#popstate-handler", "expected": 1 },
+        { "type": "selector-count", "selector": "a[href]", "expected": 2 },
+        { "type": "body-contains", "expected": "popstate region" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/mutation-observer.html",
+      "checks": [
+        { "type": "title", "expected": "MutationObserver + MutationRecord — Vixen fixture" },
+        { "type": "selector-count", "selector": "button", "expected": 10 },
+        { "type": "selectors-exact", "selector": "button", "expected": ["observe-childlist", "observe-subtree", "observe-attributes", "observe-characterdata", "disconnect-btn", "take-records-btn", "add-child", "remove-child", "set-attr", "set-data-state"] },
+        { "type": "selector-count", "selector": "[onclick*='observer.observe']", "expected": 4 },
+        { "type": "selector-count", "selector": "[onclick*='disconnect']", "expected": 1 },
+        { "type": "selector-count", "selector": "[onclick*='takeRecords']", "expected": 1 },
+        { "type": "selector-count", "selector": "[onclick*='setAttribute']", "expected": 2 },
+        { "type": "selector-count", "selector": "#list-target span", "expected": 2 },
+        { "type": "selectors-exact", "selector": "#list-target span", "expected": ["child-a", "child-b"] },
+        { "type": "element-attribute", "selector": "#attr-target", "attribute": "data-state", "expected": "initial" },
+        { "type": "selector-count", "selector": "#record-log", "expected": 1 },
+        { "type": "body-contains", "expected": "some text content" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/traversal.html",
+      "checks": [
+        { "type": "title", "expected": "TreeWalker + NodeIterator — Vixen fixture" },
+        { "type": "selector-count", "selector": "#walk-root *", "expected": 6 },
+        { "type": "selectors-exact", "selector": "#walk-root [id]", "expected": ["art-1", "heading", "para-1", "para-2", "aside-1", "aside-span"] },
+        { "type": "selector-count", "selector": "button", "expected": 9 },
+        { "type": "selectors-exact", "selector": "button", "expected": ["tw-elements", "tw-text", "tw-filtered", "tw-reject-subtree", "ni-elements", "ni-comments", "next-node-btn", "parent-node-btn", "first-child-btn"] },
+        { "type": "selector-count", "selector": "[onclick*='createTreeWalker']", "expected": 4 },
+        { "type": "selector-count", "selector": "[onclick*='createNodeIterator']", "expected": 2 },
+        { "type": "selector-count", "selector": "[onclick*='SHOW_ELEMENT']", "expected": 4 },
+        { "type": "selector-count", "selector": "[onclick*='FILTER_REJECT']", "expected": 1 },
+        { "type": "selector-count", "selector": "[onclick*='FILTER_ACCEPT']", "expected": 2 },
+        { "type": "element-attribute", "selector": "#filter-constants", "attribute": "data-reject", "expected": "2" },
+        { "type": "body-contains", "expected": "first paragraph" }
+      ]
+    },
+    {
+      "url": "fixtures/network/url-parsing.html",
+      "checks": [
+        { "type": "title", "expected": "WHATWG URL parsing — Vixen fixture" },
+        { "type": "selector-count", "selector": "base", "expected": 1 },
+        { "type": "element-attribute", "selector": "base", "attribute": "href", "expected": "https://example.com/app/page" },
+        { "type": "selector-count", "selector": "button", "expected": 8 },
+        { "type": "selectors-exact", "selector": "button", "expected": ["abs-https", "abs-file", "abs-mailto", "rel-absolute-path", "rel-segment", "rel-query", "rel-fragment", "rel-scheme"] },
+        { "type": "selector-count", "selector": "[onclick*='new URL']", "expected": 8 },
+        { "type": "selector-count", "selector": "#component-list dt", "expected": 4 },
+        { "type": "selectors-exact", "selector": "#component-list dt", "expected": ["dt-origin", "dt-pathname", "dt-search", "dt-hash"] },
+        { "type": "element-attribute", "selector": "#ipv6-link", "attribute": "href", "expected": "http://[::1]:8080/" },
+        { "type": "element-attribute", "selector": "#userinfo-link", "attribute": "href", "expected": "https://user:pass@example.com/" },
+        { "type": "selector-count", "selector": "a[href]", "expected": 2 },
+        { "type": "body-contains", "expected": "search params" }
+      ]
+    },
+    {
+      "url": "fixtures/security/corp.html",
+      "checks": [
+        { "type": "title", "expected": "Cross-Origin-Resource-Policy + COEP — Vixen fixture" },
+        { "type": "selector-count", "selector": "[data-corp]", "expected": 7 },
+        { "type": "selectors-exact", "selector": "[data-corp]", "expected": ["same-origin-img", "corp-cross-origin", "corp-same-origin-blocked", "corp-same-site", "no-corp-header", "cors-script", "cors-style"] },
+        { "type": "element-attribute", "selector": "#corp-cross-origin", "attribute": "data-corp", "expected": "cross-origin" },
+        { "type": "element-attribute", "selector": "#corp-same-origin-blocked", "attribute": "data-corp", "expected": "same-origin" },
+        { "type": "element-attribute", "selector": "#corp-same-site", "attribute": "data-corp", "expected": "same-site" },
+        { "type": "element-attribute", "selector": "#no-corp-header", "attribute": "data-corp", "expected": "none" },
+        { "type": "selector-count", "selector": "[crossorigin]", "expected": 2 },
+        { "type": "element-attribute", "selector": "#cors-style", "attribute": "crossorigin", "expected": "use-credentials" },
+        { "type": "selector-count", "selector": "[onclick*='mode']", "expected": 2 },
+        { "type": "selector-count", "selector": "meta[name='x-coep']", "expected": 2 },
+        { "type": "body-contains", "expected": "Cross-Origin-Resource-Policy" }
+      ]
+    },
+    {
+      "url": "fixtures/security/trusted-types.html",
+      "checks": [
+        { "type": "title", "expected": "Trusted Types + CSP — Vixen fixture" },
+        { "type": "selector-count", "selector": "[data-sink]", "expected": 1 },
+        { "type": "element-attribute", "selector": "#html-sink", "attribute": "data-sink", "expected": "html" },
+        { "type": "selector-count", "selector": "[data-kind]", "expected": 4 },
+        { "type": "selectors-exact", "selector": "[data-kind]", "expected": ["html-sink", "kind-html", "kind-script", "kind-script-url"] },
+        { "type": "element-attribute", "selector": "#kind-script-url", "attribute": "data-kind", "expected": "TrustedScriptURL" },
+        { "type": "selector-count", "selector": "[onclick*='innerHTML']", "expected": 2 },
+        { "type": "selector-count", "selector": "[onclick*='eval']", "expected": 2 },
+        { "type": "selector-count", "selector": "[onclick*='.src']", "expected": 2 },
+        { "type": "selector-count", "selector": "[onclick*='createPolicy']", "expected": 3 },
+        { "type": "element-attribute", "selector": "#csp-require", "attribute": "http-equiv", "expected": "Content-Security-Policy" },
+        { "type": "body-contains", "expected": "TrustedHTML kind" }
+      ]
     }
   ]
 }

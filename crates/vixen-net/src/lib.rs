@@ -46,12 +46,23 @@
 //! - [`nosniff::enforce`] — Fetch § 2 `X-Content-Type-Options: nosniff`
 //!   enforcement (the script / style MIME block) the fetch layer consults
 //!   before executing a script or applying a stylesheet (Phase 7 prep).
+//! - [`corp::parse_corp`] + [`corp::coep_corp_gate`] — Fetch § 4.5.3
+//!   `Cross-Origin-Resource-Policy` parse + the combined COEP + CORP gate
+//!   the fetch layer consults before applying a no-cors subresource
+//!   response into a COEP-hardened document (Phase 7 prep).
+//! - [`trusted_types::parse_trusted_types`] +
+//!   [`trusted_types::parse_require_trusted_types_for`] +
+//!   [`trusted_types::evaluate_sink`] — W3C Trusted Types `trusted-types` +
+//!   `require-trusted-types-for` CSP directive parse + the injection-sink
+//!   decision the DOM sink host hooks (`.innerHTML`, `eval`, &c.) consult
+//!   before accepting a string (Phase 7 prep).
 
 #![forbid(unsafe_code)]
 
 pub mod coep;
 pub mod cookie;
 pub mod coop;
+pub mod corp;
 pub mod cors;
 pub mod csp;
 pub mod fetch_types;
@@ -67,12 +78,16 @@ pub mod referrer_policy;
 pub mod sandboxing;
 pub mod sec_fetch;
 pub mod strict_transport_security;
+pub mod trusted_types;
 pub mod url_policy;
 pub mod websocket;
 
 pub use coep::{Coep, is_cross_origin_isolated, parse_coep};
 pub use cookie::{Cookie, CookieError, CookieJar, MAX_COOKIES, SameSite};
 pub use coop::{Coop, parse_coop};
+pub use corp::{
+    CoepCorpOutcome, Corp, CorpOutcome, check_corp, coep_corp_gate, is_same_site, parse_corp,
+};
 pub use cors::{
     CORS_FORBIDDEN_RESPONSE_HEADERS, CORS_SAFELISTED_RESPONSE_HEADERS, CorsCheckOutcome,
     CorsCredentialsMode, CorsError, CorsResponseHeaders, cors_check, cors_filtered_headers,
@@ -98,4 +113,8 @@ pub use sec_fetch::{
     SecFetchDest, SecFetchHeaders, SecFetchMode, SecFetchSite, SecFetchUser, classify_site,
 };
 pub use strict_transport_security::{HstsDirective, HstsEntry, parse_strict_transport_security};
+pub use trusted_types::{
+    AllowedNames, RequireFor, TrustedTypeKind, TrustedTypesOutcome, TrustedTypesPolicyNames,
+    evaluate_sink, parse_require_trusted_types_for, parse_trusted_types, policy_creation_allowed,
+};
 pub use url_policy::{UrlPolicyError, is_private_host, validate_http_url};

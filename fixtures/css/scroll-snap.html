@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Scroll Snap — Vixen fixture</title>
+  <!--
+    Exercises the CSS Scroll Snap 1 § 5 surface the vixen-engine::scroll_snap
+    host-hook layer resolves (Phase 4 layout prep). The pure-logic module
+    computes the § 5 snap position for a snap target given the scrollport +
+    the scrollable overflow + the scroll-snap-align (start/end/center per
+    axis), clamps to the scrollable range, and carries the
+    scroll-snap-type axis/strictness + scroll-snap-stop flags the scroll
+    layer consults.
+
+    The scrollable-overflow computation, the scroll animation, and the
+    scroll-padding/scroll-margin insets stay in the layout/input layers;
+    this fixture documents the authored surface:
+    - scroll-snap-type (none / x / y / both + proximity / mandatory).
+    - scroll-snap-align (start / end / center, the 1–2 value form).
+    - scroll-snap-stop (normal / always).
+    - Horizontal + vertical snap containers.
+  -->
+  <style>
+    .snap-x {
+      display: flex;
+      overflow-x: auto;
+      scroll-snap-type: x mandatory;
+    }
+    .snap-x > * {
+      scroll-snap-align: start;
+      flex: 0 0 auto;
+    }
+  </style>
+</head>
+<body>
+  <main id="content">
+    <h1>Scroll Snap surface</h1>
+    <p>The § 5 snap-position computation + the axis/strictness model the
+       scroll layer's snap targeting reduces to.</p>
+
+    <!-- A horizontal mandatory snap container. -->
+    <div id="h-mandatory"
+         class="snap-x"
+         data-snap="x mandatory"
+         style="scroll-snap-type: x mandatory;">
+      <span id="h-item-1">one</span>
+      <span id="h-item-2">two</span>
+      <span id="h-item-3">three</span>
+    </div>
+
+    <!-- A vertical proximity snap container. -->
+    <div id="v-proximity"
+         data-snap="y proximity"
+         style="scroll-snap-type: y proximity;
+                height: 200px;
+                overflow-y: auto;">
+      <p id="v-item-1" style="scroll-snap-align: start;">first</p>
+      <p id="v-item-2" style="scroll-snap-align: center;">second</p>
+      <p id="v-item-3" style="scroll-snap-align: end;">third</p>
+    </div>
+
+    <!-- A both-axes snap container. -->
+    <div id="both-axes"
+         data-snap="both mandatory"
+         style="scroll-snap-type: both mandatory;
+                width: 300px;
+                height: 300px;
+                overflow: auto;">
+      <p id="grid-item" style="scroll-snap-align: start end;">grid item</p>
+    </div>
+
+    <!-- scroll-snap-type: none (snapping disabled). -->
+    <div id="disabled"
+         data-snap="none"
+         style="scroll-snap-type: none; overflow: auto;">
+      <p>no snapping here</p>
+    </div>
+
+    <!-- scroll-snap-stop: always (can't skip past). -->
+    <div id="stop-always"
+         data-snap="y mandatory"
+         style="scroll-snap-type: y mandatory; overflow-y: auto;">
+      <p id="stop-item" style="scroll-snap-align: start; scroll-snap-stop: always;">unskippable</p>
+    </div>
+
+    <!-- A block-axis snap container (writing-mode-relative). -->
+    <div id="block-axis"
+         data-snap="block proximity"
+         style="scroll-snap-type: block proximity; overflow: auto;">
+      <p id="block-item" style="scroll-snap-align: center;">block-centred</p>
+    </div>
+  </main>
+</body>
+</html>
