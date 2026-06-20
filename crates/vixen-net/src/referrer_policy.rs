@@ -447,9 +447,6 @@ mod tests {
             &url("https://a.test/p/"),
             &url("https://b.test/"),
         );
-        assert_eq!(
-            r,
-            ReferrerValue::FullUrl("https://a.test/p/".to_owned())
-        );
+        assert_eq!(r, ReferrerValue::FullUrl("https://a.test/p/".to_owned()));
     }
 }

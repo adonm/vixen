@@ -38,7 +38,11 @@ and reference material, plus:
   subtraction) and the four-box nesting. `vixen-engine::flex_resolve`
   implements CSS Flexbox 1 § 9.7 main-axis distribution (grow/shrink factor
   selection, inflexible-item freezing, min/max violation clamping, iterative
-  free-space distribution). Both ready for `layout_2020` to feed off.
+  free-space distribution). `vixen-engine::grid_resolve` implements CSS Grid
+  1 § 12.5 fr-factor distribution + § 11.7 track maximization (the natural
+  complement to `flex_resolve` for grid columns/rows, with the iterative
+  growth-limit clamp-and-redistribute pattern). All three ready for
+  `layout_2020` to feed off.
 - **Phase 5 prep** — `vixen-engine::display_list` (all eight `SPEC.md`
   display-list invariants) + the paint-geometry family it will consume:
   `vixen-engine::transform` (CSS Transforms 1 § 13 2D affine algebra +
@@ -51,7 +55,22 @@ and reference material, plus:
   § 4.2 `<position>` resolution: keyword/length/percentage mix, the 1–4
   value forms, the keyword-axis swap rule), and `vixen-engine::stacking_context`
   (CSS 2.1 § 9.9.1 + Positioned Layout 3 § 6 stacking-context formation +
-  the seven-layer § App. E.2.1 paint-order classification). All
+  the seven-layer § App. E.2.1 paint-order classification). The paint
+  compositing family: `vixen-engine::blend` (CSS Compositing 1 § 5 + § 10 —
+  the 13 Porter-Duff operators + the 16 blend modes operating in linear
+  sRGB, with the § 5.2 combined isolation-blend pipeline `mix-blend-mode`
+  runs), `vixen-engine::filter` (CSS Filter Effects 1 § 5 — the
+  `<filter-function-list>` grammar + the per-pixel `feColorMatrix`-shaped
+  4×5 matrix family the paint path folds into one multiply), and
+  `vixen-engine::border_image` (CSS Backgrounds 3 § 6 — the four longhands
+  `border-image-slice`/`-width`/`-outset`/`-repeat`, the 3×3 nine-region
+  carving, and the `stretch`/`repeat`/`round`/`space` edge tiling). The
+  clip-path + mask family: `vixen-engine::clip_path` (CSS Masking 1 § 5
+  `clip-path` basic shapes — `inset`/`circle`/`ellipse`/`polygon` with the
+  per-pixel point-in-shape test + the polygon nonzero/evenodd winding
+  rules) + `vixen-engine::mask` (CSS Masking 1 § 6 `mask` shorthand
+  per-layer model — `mask-mode`/`mask-repeat`/`mask-clip`/`mask-origin` +
+  the paren-aware comma-separated layer parse). All
   `#![forbid(unsafe_code)]` and Rust-unit-tested.
 - **Phase 6 prep** — pure form-constraint validation in `vixen-engine::forms`
   (email/URL formats, step arithmetic, range/length flags) ready for the
@@ -86,6 +105,15 @@ and reference material, plus:
   `max()`/`clamp()` with full § 10.7 dimension type-checking) and `easing`
   (CSS Easing 1 `cubic-bezier`/`steps`/`linear` timing functions) cover the
   cascade's `calc()` reduction and the transition/animation driver surface.
+  The structured-clone + MessagePort family (`structured_clone`,
+  `message_port`) models the HTML § 2.7.5 serialisation algorithm +
+  § 9.5.2 entangled port pair `postMessage()` / `new MessageChannel()` /
+  worker messaging reduce to, with the transfer-list validation
+  (duplicate/ unreachable/detached rejection) and the `SharedArrayBuffer`
+  cross-origin-isolation gate. The Range/Selection family (`range`)
+  models the DOM § 5.2 boundary-point pair + § 5.4 direction-aware
+  selection (`add_range`/`collapse_to`/`extend_to`, the forward/backward
+  direction) the editing commands and user-selection reflection reduce to.
 - **Phase 7 prep** — CSP enforcement at the script execution boundary
   (`vixen-engine::script`); `vixen-net::referrer_policy` (Fetch § 3.4/§ 4.3.7
   `Referrer-Policy` parsing + `Referer` resolution); `vixen-net::strict_transport_security`
@@ -104,7 +132,17 @@ and reference material, plus:
   `vixen-net::permissions_policy` (Permissions Policy 1 § 3.3
   `Permissions-Policy` header + `<iframe allow>` parser + the § 4
   per-feature allowlist evaluation) — ready for the network layer to
-  consult at every fetch.
+  consult at every fetch. The cross-origin-isolation gate:
+  `vixen-net::coop` (HTML § 7.8 `Cross-Origin-Opener-Policy` parser +
+  the opener-isolation predicate) + `vixen-net::coep` (Fetch § 3.2
+  `Cross-Origin-Embedder-Policy` parser + the combined
+  `is_cross_origin_isolated` gate the `performance.now()` coarsening and
+  `SharedArrayBuffer` exposure consult). The SRI + nosniff response-header
+  family: `vixen-net::integrity` (W3C SRI `<script integrity>`/`<link
+  integrity>` metadata parse + the constant-time hash verify, SHA-2 family
+  only, any-match-passes) + `vixen-net::nosniff` (Fetch § 2
+  `X-Content-Type-Options: nosniff` enforcement — the script/style MIME
+  block) — ready for the fetch layer to consult at every subresource fetch.
 - **Phase 8 (partial)** — the CDP WebSocket server (`vixen-headless::cdp`)
   responds to the six required methods (`Browser.getVersion`,
   `Target.createTarget`, `Target.attachToTarget`, `Page.navigate`,

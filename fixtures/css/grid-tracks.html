@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>CSS Grid tracks — Vixen fixture</title>
+  <!--
+    Exercises the authored CSS Grid surface vixen-engine::grid_resolve
+    resolves (Phase 4 layout prep). The pure-logic module implements CSS
+    Grid 1 § 12.5 "Distribute Extra Space" + § 11.7 "Maximize Tracks": the
+    fr-factor distribution grid columns / rows reduce to (the natural
+    complement to vixen-engine::flex_resolve for Flexbox main-axis).
+
+    Specifically tests the easy-to-get-wrong parts:
+    - Equal `1fr` tracks split the leftover space evenly.
+    - Weighted `Nfr` tracks split proportional to the flex factor.
+    - `minmax(min, max)` clamps the fr distribution to the growth limit and
+      redistributes the excess to the remaining flex tracks.
+    - Fixed-length tracks (`100px`) consume their size; the flex tracks share
+      the rest.
+    - `auto` / `min-content` / `max-content` base sizes (the content
+      contribution the caller resolves before the fr distribution).
+
+    Structural checks confirm every authoring form is present, stable for
+    inspection once the layout_2020 layer feeds the cascade output through
+    resolve_tracks.
+  -->
+  <style>
+    /* The grid template authoring forms the resolver consumes. The styles
+       are declarative (no rendered geometry); the resolver's job is to turn
+       these into per-track used sizes. */
+    .equal-fr     { display: grid; grid-template-columns: 1fr 1fr 1fr; }
+    .weighted-fr  { display: grid; grid-template-columns: 1fr 2fr 1fr; }
+    .mixed-fixed  { display: grid; grid-template-columns: 100px 1fr 2fr; }
+    .minmax-grow  { display: grid; grid-template-columns: minmax(0, 100px) 1fr; }
+    .minmax-base  { display: grid; grid-template-columns: minmax(50px, 1fr) minmax(50px, 1fr); }
+    .auto-content { display: grid; grid-template-columns: auto minmax(0, 1fr); }
+    .max-content  { display: grid; grid-template-columns: max-content max-content; }
+    .rows-fr      { display: grid; grid-template-rows: 1fr 2fr; }
+  </style>
+</head>
+<body>
+  <main id="content">
+    <h1>CSS Grid track sizing surface</h1>
+    <p>The fr-factor distribution the layout engine resolves against the
+       cascade output.</p>
+
+    <!-- Equal 1fr tracks: leftover split evenly. -->
+    <div id="equal-fr" class="equal-fr" data-template="1fr 1fr 1fr">
+      <span>a</span><span>b</span><span>c</span>
+    </div>
+
+    <!-- Weighted fr tracks: 1fr 2fr 1fr splits 1:2:1. -->
+    <div id="weighted-fr" class="weighted-fr" data-template="1fr 2fr 1fr">
+      <span>a</span><span>b</span><span>c</span>
+    </div>
+
+    <!-- Mixed fixed + flex: 100px consumes first, the fr pair shares rest. -->
+    <div id="mixed-fixed" class="mixed-fixed" data-template="100px 1fr 2fr">
+      <span>a</span><span>b</span><span>c</span>
+    </div>
+
+    <!-- minmax with a growth-limit clamp: first track clamps at 100px, the
+         fr redistributes the excess. -->
+    <div id="minmax-grow" class="minmax-grow" data-template="minmax(0, 100px) 1fr">
+      <span>a</span><span>b</span>
+    </div>
+
+    <!-- minmax with a non-zero base: each track grows from 50px by its fr. -->
+    <div id="minmax-base" class="minmax-base" data-template="minmax(50px, 1fr) minmax(50px, 1fr)">
+      <span>a</span><span>b</span>
+    </div>
+
+    <!-- auto + minmax(0, 1fr): the auto base is the content contribution. -->
+    <div id="auto-content" class="auto-content" data-template="auto minmax(0, 1fr)">
+      <span>label</span><span>value</span>
+    </div>
+
+    <!-- max-content base: the widest item's content contribution. -->
+    <div id="max-content" class="max-content" data-template="max-content max-content">
+      <span>first</span><span>second</span>
+    </div>
+
+    <!-- grid-template-rows: the same resolver drives the row axis. -->
+    <div id="rows-fr" class="rows-fr" data-template="1fr 2fr">
+      <span>top</span><span>bottom</span>
+    </div>
+  </main>
+</body>
+</html>

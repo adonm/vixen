@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Compositing + blend modes — Vixen fixture</title>
+  <!--
+    Exercises the CSS surface vixen-engine::blend resolves today (Phase 5
+    paint prep). The pure-logic module implements every Compositing 1 § 10
+    blend mode (normal + 11 separable + 4 non-separable) + the 13 Porter-Duff
+    compositing operators (§ 5.1) against linear-sRGB pixels; this fixture
+    documents the authored `mix-blend-mode` / `background-blend-mode` /
+    `isolation` CSS the cascade will resolve into the module's inputs.
+    Structural checks confirm every mode variant is present + the isolation
+    group boundary is authored, stable for inspection.
+
+    mix-blend-mode (CSS Compositing 1 § 10):
+      the 16 keywords, against an isolated backdrop.
+    background-blend-mode (§ 10 + CSS Backgrounds 3 § 3.4):
+      the per-background-layer blend.
+    isolation (§ 5.2):
+      isolate / auto — controls whether the group is an independent
+      backdrop for blending.
+  -->
+  <style>
+    .stage { background: #808080; isolation: isolate; }
+
+    /* Separable modes. */
+    #m-normal       { mix-blend-mode: normal; }
+    #m-multiply     { mix-blend-mode: multiply; }
+    #m-screen       { mix-blend-mode: screen; }
+    #m-overlay      { mix-blend-mode: overlay; }
+    #m-darken       { mix-blend-mode: darken; }
+    #m-lighten      { mix-blend-mode: lighten; }
+    #m-color-dodge  { mix-blend-mode: color-dodge; }
+    #m-color-burn   { mix-blend-mode: color-burn; }
+    #m-hard-light   { mix-blend-mode: hard-light; }
+    #m-soft-light   { mix-blend-mode: soft-light; }
+    #m-difference   { mix-blend-mode: difference; }
+    #m-exclusion    { mix-blend-mode: exclusion; }
+    /* Non-separable modes. */
+    #m-hue          { mix-blend-mode: hue; }
+    #m-saturation   { mix-blend-mode: saturation; }
+    #m-color        { mix-blend-mode: color; }
+    #m-luminosity   { mix-blend-mode: luminosity; }
+
+    /* background-blend-mode (one layer). */
+    #bg-single { background-image: url("a.png"); background-color: #fff;
+                 background-blend-mode: multiply; }
+    /* background-blend-mode (per-layer list). */
+    #bg-list   { background-image: url("a.png"), url("b.png");
+                 background-color: #fff;
+                 background-blend-mode: screen, multiply; }
+
+    /* Isolation gating: the auto form does NOT form a group. */
+    #iso-auto     { isolation: auto; }
+    #iso-isolate  { isolation: isolate; }
+  </style>
+</head>
+<body>
+  <main id="content">
+    <div class="stage" id="blend-group">
+      <div id="m-normal">normal</div>
+      <div id="m-multiply">multiply</div>
+      <div id="m-screen">screen</div>
+      <div id="m-overlay">overlay</div>
+      <div id="m-darken">darken</div>
+      <div id="m-lighten">lighten</div>
+      <div id="m-color-dodge">color-dodge</div>
+      <div id="m-color-burn">color-burn</div>
+      <div id="m-hard-light">hard-light</div>
+      <div id="m-soft-light">soft-light</div>
+      <div id="m-difference">difference</div>
+      <div id="m-exclusion">exclusion</div>
+      <div id="m-hue">hue</div>
+      <div id="m-saturation">saturation</div>
+      <div id="m-color">color</div>
+      <div id="m-luminosity">luminosity</div>
+    </div>
+
+    <div id="bg-single">bg single</div>
+    <div id="bg-list">bg list</div>
+
+    <div id="iso-auto">iso auto</div>
+    <div id="iso-isolate">iso isolate</div>
+  </main>
+</body>
+</html>

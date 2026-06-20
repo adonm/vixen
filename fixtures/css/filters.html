@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Filter effects — Vixen fixture</title>
+  <!--
+    Exercises the CSS surface vixen-engine::filter resolves today (Phase 5
+    paint prep). The pure-logic module parses the full `<filter-function-
+    list>` grammar (CSS Filter Effects 1 § 5: blur/brightness/contrast/
+    drop-shadow/grayscale/hue-rotate/invert/opacity/saturate/sepia) and
+    folds the per-pixel family into one feColorMatrix-shaped 4×5 matrix the
+    paint path multiplies per pixel; this fixture documents the authored
+    `filter` CSS the cascade will resolve into the module's inputs.
+    Structural checks confirm every function variant is present + the chain
+    form is authored, stable for inspection.
+
+    Per-pixel family (each carries its default-arg rule):
+      brightness/contrast/invert/opacity/grayscale/saturate/sepia (number
+      or percentage; the unitless + percentage grammar), hue-rotate (angle).
+    Spatial family:
+      blur(<length>), drop-shadow(<length>{2,3} <color>?).
+    Chains:
+      leftmost-applied-first composition; `filter: none`.
+  -->
+  <style>
+    /* Per-pixel: each function with an explicit argument. */
+    #f-brightness  { filter: brightness(1.5); }
+    #f-contrast    { filter: contrast(0.8); }
+    #f-grayscale   { filter: grayscale(50%); }
+    #f-hue-rotate  { filter: hue-rotate(90deg); }
+    #f-invert      { filter: invert(1); }
+    #f-opacity     { filter: opacity(50%); }
+    #f-saturate    { filter: saturate(2); }
+    #f-sepia       { filter: sepia(0.75); }
+
+    /* Per-pixel: default-argument (empty parens) forms. */
+    #f-blur        { filter: blur(3px); }
+    #f-drop-shadow { filter: drop-shadow(2px 4px 6px black); }
+
+    /* Chains: leftmost applied first. */
+    #f-chain       { filter: sepia(1) hue-rotate(180deg) brightness(1.1); }
+
+    /* `none` is the identity (no filtering). */
+    #f-none        { filter: none; }
+
+    /* Percentage forms (100% == 1, 0% == 0). */
+    #f-percent     { filter: brightness(150%) contrast(120%); }
+  </style>
+</head>
+<body>
+  <main id="content">
+    <div id="f-brightness">brightness</div>
+    <div id="f-contrast">contrast</div>
+    <div id="f-grayscale">grayscale</div>
+    <div id="f-hue-rotate">hue-rotate</div>
+    <div id="f-invert">invert</div>
+    <div id="f-opacity">opacity</div>
+    <div id="f-saturate">saturate</div>
+    <div id="f-sepia">sepia</div>
+    <div id="f-blur">blur</div>
+    <div id="f-drop-shadow">drop-shadow</div>
+    <div id="f-chain">chain</div>
+    <div id="f-none">none</div>
+    <div id="f-percent">percent</div>
+  </main>
+</body>
+</html>

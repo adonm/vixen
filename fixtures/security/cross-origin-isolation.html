@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Cross-origin isolation (COOP/COEP) — Vixen fixture</title>
+  <!--
+    Exercises the HTML surface the COOP + COEP host-hook layer dispatches
+    on (Phase 7 security prep). The two pure-logic modules (vixen-net::coop
+    + vixen-net::coep) parse the HTML § 7.8 `Cross-Origin-Opener-Policy`
+    + Fetch § 3.2 `Cross-Origin-Embedder-Policy` response headers and
+    evaluate the `is_cross_origin_isolated` gate the high-resolution
+    timers + SharedArrayBuffer exposure consult.
+
+    Both headers are HTTP-only — they cannot be set via <meta>. So this
+    fixture documents the HTML surface *around* the gate that the
+    embedder + host-hook layer reads, not the headers themselves (those are
+    Rust-unit-tested against the real header strings):
+
+    - <iframe> embeds: COEP gates every cross-origin subresource the framed
+      document loads; CORP (Cross-Origin-Resource-Policy) is the per-response
+      opt-in COEP consults under `require-corp`.
+    - opener-scripting surface: COOP `same-origin` breaks window reachability
+      across the opener/openee boundary.
+    - Worker / SharedWorker: SharedArrayBuffer exposure is gated by the
+      cross-origin isolation the COOP+COEP pair establishes.
+    - Document pointers: the structured-header `report-to` parameter (the
+      reporting endpoint name) is captured by both parsers.
+
+    Structural checks confirm every iframe / worker variant is present,
+    stable for inspection once the host-hook layer wires the gate.
+  -->
+</head>
+<body>
+  <main id="content">
+    <h1>Cross-origin isolation surface</h1>
+    <p>The COOP and COEP headers establish the cross-origin isolation gate
+       the high-resolution timers and SharedArrayBuffer consult.</p>
+
+    <!-- A cross-origin iframe: the canonical COEP enforcement target. -->
+    <iframe id="embed-cross-origin"
+            src="https://example.test/embedded"
+            crossorigin="anonymous"></iframe>
+
+    <!-- A same-origin iframe: inherits the embedder's COEP. -->
+    <iframe id="embed-same-origin"
+            src="/local-embed"></iframe>
+
+    <!-- A cross-origin iframe that opts in via CORP (the COEP gate
+         accepts `Cross-Origin-Resource-Policy: same-origin` on the
+         subresource response). -->
+    <iframe id="embed-corp-opt-in"
+            src="https://cdn.example.test/widget"></iframe>
+
+    <!-- A dedicated worker: the COEP policy is inherited; SAB availability
+         is gated by the document's cross-origin isolation. -->
+    <script id="worker-script" type="javascript/worker">
+      // Worker source placeholder; the host-hook layer resolves the blob.
+    </script>
+
+    <!-- A shared worker: only reachable from a cross-origin-isolated
+         context once the gate evaluates `true`. -->
+    <script id="shared-worker-script" type="javascript/worker">
+      // SharedWorker source placeholder.
+    </script>
+
+    <!-- An opener boundary: a window.open() target that, under COOP
+         `same-origin`, would be process-isolated from this document. -->
+    <a id="opener-link" href="https://example.test/popup" target="_blank"
+       rel="opener">open popup</a>
+  </main>
+</body>
+</html>

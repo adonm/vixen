@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Subresource Integrity + nosniff — Vixen fixture</title>
+  <!--
+    Exercises the HTML surface the vixen-net::integrity + vixen-net::nosniff
+    host-hook layers dispatch on (Phase 7 security prep). The two pure-logic
+    modules parse the `<script integrity>` / `<link integrity>` metadata
+    (W3C SRI § 3.2.2) + compute the constant-time hash verify, and enforce
+    the `X-Content-Type-Options: nosniff` script/style MIME block (Fetch § 2).
+
+    The `integrity` attribute is the tampering-resistance surface: a CDN
+    compromise that swaps the script body breaks the hash and the fetch
+    layer refuses to execute. The `nosniff` header is the MIME-confusion
+    surface: a `<script>` whose response carries `nosniff` + a non-JS MIME
+    is blocked before execution.
+
+    Structural checks confirm every authoring form is present, stable for
+    inspection once the host-hook layer wires the verify + the nosniff
+    enforce at the fetch boundary:
+    - The single-algorithm integrity form (`sha256-…`).
+    - The multi-algorithm form (`sha256-… sha512-…` — any match passes).
+    - The forbidden-algorithm drop (`md5-…` is dropped at parse time).
+    - The crossorigin + integrity pairing (SRI requires CORS for
+      cross-origin integrity-checked resources).
+    - The script / style / worker destinations nosniff consults.
+  -->
+  <link id="style-integrity"
+        rel="stylesheet"
+        href="/css/critical.css"
+        integrity="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+        crossorigin="anonymous">
+  <link id="style-multi-integrity"
+        rel="stylesheet"
+        href="/css/theme.css"
+        integrity="sha256-AAA= sha512-BBB="
+        crossorigin="anonymous">
+  <link id="style-forbidden-algo"
+        rel="stylesheet"
+        href="/css/legacy.css"
+        integrity="md5-CCCC sha256-DDD="
+        crossorigin="anonymous">
+</head>
+<body>
+  <main id="content">
+    <h1>SRI + nosniff surface</h1>
+    <p>The integrity + X-Content-Type-Options boundaries the fetch layer
+       consults before executing a subresource.</p>
+
+    <!-- Single-algorithm integrity: sha256 over the script body. -->
+    <script id="script-sha256"
+            src="/js/app.js"
+            integrity="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+            crossorigin="anonymous"></script>
+
+    <!-- Multi-algorithm integrity: any match passes. -->
+    <script id="script-multi"
+            src="/js/vendor.js"
+            integrity="sha256-EEE= sha512-FFF="
+            crossorigin="anonymous"></script>
+
+    <!-- Forbidden algorithm dropped at parse; the sha512 entry survives. -->
+    <script id="script-forbidden"
+            src="/js/legacy.js"
+            integrity="md5-GGG sha1-HHH sha512-III="
+            crossorigin="anonymous"></script>
+
+    <!-- Same-origin script with integrity (no crossorigin needed for
+         same-origin SRI). -->
+    <script id="script-same-origin"
+            src="/js/local.js"
+            integrity="sha256-JJJ="></script>
+
+    <!-- A worker with integrity: the nosniff script-destination collapse
+         covers workers. -->
+    <script id="worker-script"
+            type="javascript/worker"
+            integrity="sha256-KKK="></script>
+
+    <!-- A module script with integrity. -->
+    <script id="module-script"
+            type="module"
+            src="/js/module.js"
+            integrity="sha256-LLL="
+            crossorigin="anonymous"></script>
+
+    <!-- The data-attribute marker the nosniff layer reads off the document
+         (the actual nosniff header is HTTP-only; this documents the
+         enforcement surface the fetch layer applies). -->
+    <div id="nosniff-marker" data-nosniff="script,text/css"></div>
+  </main>
+</body>
+</html>

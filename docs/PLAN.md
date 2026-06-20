@@ -216,6 +216,30 @@ terminates when every item is frozen. Pure given cascade-resolved
 + line packing) stays in `layout_2020` where it composes against real text
 metrics.
 
+**CSS Grid track sizing landed (Phase 4 prep).**
+`vixen-engine::grid_resolve` implements CSS Grid 1 § 12.5 "Distribute
+Extra Space" + § 11.7 "Maximize Tracks" — the natural complement to
+`flex_resolve` for grid columns / rows. [`GridTrack`] carries the
+§ 11.2 min track size (caller-resolved definite base) + the § 11.3 growth
+limit + the `Nfr` flex factor; [`resolve_tracks`] distributes the
+container's leftover to flex tracks proportionally to their flex factor,
+freezes any track that hits its growth limit, redistributes the excess to
+the remaining flex tracks (iterative, the same freeze-on-violation pattern
+`flex_resolve` uses), then grows non-flex tracks up to their growth limits
+equally when leftover remains (§ 11.7). The constructors ([`GridTrack::fr`]
+for `1fr`, [`GridTrack::minmax`] for `minmax(min, max, fr)`,
+[`GridTrack::length`] for fixed) cover the common authoring forms. Pure
+given definite base sizes; content-based sizing (`min-content`/`max-content`/
+`auto`) and multi-track spanning items stay in `layout_2020` where they
+compose against real text-shaping (the caller folds each spanning item's
+contribution into the track `base` before calling).
+
+[`GridTrack`]: ../../crates/vixen-engine/src/grid_resolve.rs
+[`GridTrack::fr`]: ../../crates/vixen-engine/src/grid_resolve.rs
+[`GridTrack::minmax`]: ../../crates/vixen-engine/src/grid_resolve.rs
+[`GridTrack::length`]: ../../crates/vixen-engine/src/grid_resolve.rs
+[`resolve_tracks`]: ../../crates/vixen-engine/src/grid_resolve.rs
+
 ---
 
 ## Phase 5 — Paint: WebRender + EGL surfaceless (≈ 2 weeks)
@@ -306,6 +330,103 @@ fixtures (both renders going through the same WebRender paint path).
 
 All six `#![forbid(unsafe_code)]`, Rust-unit-tested, ready for WebRender to
 consume once the display-list builder feeds them in.
+
+**Paint compositing pure-logic foundations landed (Phase 5 prep).**
+The pixel-mixing family the paint path's `mix-blend-mode` / `filter` /
+`border-image` surfaces reduce to. All three `#![forbid(unsafe_code)]`,
+Rust-unit-tested, consuming `vixen-engine::color`'s linear-sRGB arithmetic.
+- `vixen-engine::blend` — CSS Compositing 1 § 5 + § 10: the 13 Porter-Duff
+  compositing operators ([`blend::CompositingOperator`] with the § 5.1
+  general formula + per-operator Fa/Fb factors) and the 16 § 10 blend modes
+  ([`blend::BlendMode`] — `normal` + 11 separable § 10.1 + 4 non-separable
+  § 10.2, with the `SetLum`/`SetSat`/`ClipColor` helpers). [`blend::composite`]
+  evaluates one operator; [`blend::blend`] applies one mode to a pixel;
+  [`blend::composite_blend`] runs the § 5.2 combined pipeline (isolation
+  blend against the backdrop, then the Porter-Duff operator) that
+  `mix-blend-mode` actually performs. All arithmetic is in linear sRGB via
+  [`blend::LinColor`] (reusing `color::Color::to_linear_f32`).
+- `vixen-engine::filter` — CSS Filter Effects 1 § 5: the `<filter-function-
+  list>` grammar + the per-pixel colour-matrix family. [`filter::FilterList`]
+  parses a chain (tolerant of parenthesised-argument whitespace); the 10 § 5
+  functions (`blur`/`brightness`/`contrast`/`drop-shadow`/`grayscale`/
+  `hue-rotate`/`invert`/`opacity`/`saturate`/`sepia`) carry their § 5
+  default-argument rules. The per-pixel family folds into one
+  [`filter::ColorMatrix`] (SVG `feColorMatrix`-shaped 4×5) via
+  [`filter::compose_color_matrix`] so the paint path runs a single matrix
+  multiply per pixel; `blur`/`drop-shadow` keep their geometry for the
+  paint path's spatial pass (`drop-shadow` reuses `box_shadow::BoxShadow`).
+- `vixen-engine::border_image` — CSS Backgrounds 3 § 6: the four longhands
+  (`border-image-slice`/`-width`/`-outset`/`-repeat`) with full 1–4 TRBL
+  expansion + parse, the 3×3 nine-region carving
+  ([`border_image::source_regions`] / [`border_image::destination_regions`]),
+  and the `border-image-repeat` tiling primitive ([`border_image::tile_edge`]
+  — `stretch`/`repeat`/`round`/`space`, with the `round` integer-count
+  rescale and the `space` even-gap distribution).
+
+[`blend::CompositingOperator`]: ../../crates/vixen-engine/src/blend.rs
+[`blend::BlendMode`]: ../../crates/vixen-engine/src/blend.rs
+[`blend::composite`]: ../../crates/vixen-engine/src/blend.rs
+[`blend::blend`]: ../../crates/vixen-engine/src/blend.rs
+[`blend::composite_blend`]: ../../crates/vixen-engine/src/blend.rs
+[`blend::LinColor`]: ../../crates/vixen-engine/src/blend.rs
+[`filter::FilterList`]: ../../crates/vixen-engine/src/filter.rs
+[`filter::ColorMatrix`]: ../../crates/vixen-engine/src/filter.rs
+[`filter::compose_color_matrix`]: ../../crates/vixen-engine/src/filter.rs
+[`border_image::source_regions`]: ../../crates/vixen-engine/src/border_image.rs
+[`border_image::destination_regions`]: ../../crates/vixen-engine/src/border_image.rs
+[`border_image::tile_edge`]: ../../crates/vixen-engine/src/border_image.rs
+
+**Pure-logic foundation landed for clip-path + mask (Phase 5 prep).**
+The masking family the paint path's per-pixel clip + the masked-element
+alpha/luminance sampling reduce to. Both `#![forbid(unsafe_code)]`,
+Rust-unit-tested, consuming [`crate::border_radius`] + [`crate::blend`].
+- `vixen-engine::clip_path` — CSS Masking 1 § 5 `clip-path` basic shapes.
+  [`ClipPath`] is the typed family ([`ClipPath::Inset`] /
+  [`ClipPath::Circle`] / [`ClipPath::Ellipse`] / [`ClipPath::Polygon`] /
+  [`ClipPath::None`]); [`Coord`] is the `at <position>` coordinate (px /
+  percent / keyword) with [`Coord::resolve`] against a reference box;
+  [`GeometryBox`] is the `<geometry-box>` reference selector.
+  [`parse_clip_path`] parses the four basic shapes (case-insensitive
+  function name, parenthesised args, the `inset(… round <radius>)` form
+  reuses [`BorderRadius`], the `polygon(<fill-rule>, …)` form carries
+  [`FillRule::NonZero`] / [`FillRule::EvenOdd`]). [`ClipPath::contains`] is
+  the point-in-shape test the paint path calls per pixel — the inset corner
+  rounding via quarter-ellipse containment, the polygon winding rules
+  (non-zero + even-odd, the SVG § 8.4 ray-crossing algorithm). The `path()`
+  SVG-path form is deferred (the four geometric shapes cover the common
+  HTML surface).
+- `vixen-engine::mask` — CSS Masking 1 § 6 `mask` shorthand per-layer
+  model. [`MaskMode`] (`alpha`/`luminance`/`match-source`), [`MaskRepeat`]
+  (the 6 repeat styles, `repeat-x`/`repeat-y` collapsed), [`MaskBox`] (the
+  shared `mask-clip` + `mask-origin` keyword set, `no-clip` clip-only),
+  and [`MaskLayer`] (one layer's resolved longhands). [`parse_mask`] splits
+  comma-separated layers (paren-aware, so a gradient's commas don't split a
+  layer), fills the per-longhand slots in any order, recognises the
+  `<position> / <size>` slash form, and applies the "first unrecognised
+  token is the image source" rule. The mask-image fetch + the per-pixel
+  sampling is the paint path.
+
+[`ClipPath`]: ../../crates/vixen-engine/src/clip_path.rs
+[`ClipPath::Inset`]: ../../crates/vixen-engine/src/clip_path.rs
+[`ClipPath::Circle`]: ../../crates/vixen-engine/src/clip_path.rs
+[`ClipPath::Ellipse`]: ../../crates/vixen-engine/src/clip_path.rs
+[`ClipPath::Polygon`]: ../../crates/vixen-engine/src/clip_path.rs
+[`ClipPath::None`]: ../../crates/vixen-engine/src/clip_path.rs
+[`ClipPath::contains`]: ../../crates/vixen-engine/src/clip_path.rs
+[`Coord`]: ../../crates/vixen-engine/src/clip_path.rs
+[`Coord::resolve`]: ../../crates/vixen-engine/src/clip_path.rs
+[`GeometryBox`]: ../../crates/vixen-engine/src/clip_path.rs
+[`parse_clip_path`]: ../../crates/vixen-engine/src/clip_path.rs
+[`BorderRadius`]: ../../crates/vixen-engine/src/border_radius.rs
+[`FillRule::NonZero`]: ../../crates/vixen-engine/src/clip_path.rs
+[`FillRule::EvenOdd`]: ../../crates/vixen-engine/src/clip_path.rs
+[`MaskMode`]: ../../crates/vixen-engine/src/mask.rs
+[`MaskRepeat`]: ../../crates/vixen-engine/src/mask.rs
+[`MaskBox`]: ../../crates/vixen-engine/src/mask.rs
+[`MaskLayer`]: ../../crates/vixen-engine/src/mask.rs
+[`parse_mask`]: ../../crates/vixen-engine/src/mask.rs
+[`crate::border_radius`]: ../../crates/vixen-engine/src/border_radius.rs
+[`crate::blend`]: ../../crates/vixen-engine/src/blend.rs
 
 ---
 
@@ -621,6 +742,99 @@ to. Both `#![forbid(unsafe_code)]`, Rust-unit-tested.
 [`resolve_counters`]: ../../crates/vixen-engine/src/counter.rs
 [`render_counter`]: ../../crates/vixen-engine/src/counter.rs
 
+**Pure-logic foundation landed for structured clone + MessagePort (Phase 6 prep).**
+The serialisation + entangled-port model `postMessage()`,
+`new MessageChannel()`, worker `postMessage()`, `BroadcastChannel`, and
+IndexedDB / `history.pushState()` reduce to. Both
+`#![forbid(unsafe_code)]`, Rust-unit-tested, composing with the cross-origin-
+isolation gate ([`coep::is_cross_origin_isolated`]) for `SharedArrayBuffer`
+exposure.
+- `vixen-engine::structured_clone` — HTML § 2.7.5 structured clone algorithm.
+  [`StructuredCloneValue`] is the type-tagged tree of serialisable values
+  (primitives, `Date`, `Array`, `Object`, `Map`, `Set`, `ArrayBuffer`,
+  `MessagePort`, `Error` with the [`ErrorKind`] subclass family, and the
+  `PlatformObject` slot reserved for `File`/`Blob`/`ImageData` &c.). [`clone`]
+  deep-clones the tree honouring the transfer list: every transferred handle
+  must be reachable ([`DataCloneError::UnreachableTransferable`]), the list
+  may not carry duplicates ([`DataCloneError::DuplicateTransferable`]), a
+  detached buffer is rejected ([`DataCloneError::DetachedTransferable`]), and
+  a `SharedArrayBuffer` *clone* (not transfer) requires a cross-origin-
+  isolated context ([`DataCloneError::SharedBufferRequiresIsolation`] — the
+  gate `is_cross_origin_isolated` feeds). [`detach_transferred`] flips the
+  transferred `ArrayBuffer`s to detached in the source tree; `SharedArrayBuffer`s
+  stay shared. [`is_cloneable`] is the partial-check a host hook calls before
+  walking (so a `DataCloneError` surfaces before any transfer side-effect).
+  Shared-reference identity preservation (the spec's "memory" map) lives at
+  the host hook where real JS object identities exist; this is the faithful
+  tree-clone for tree inputs.
+- `vixen-engine::message_port` — HTML § 9.5 `MessagePort` / `MessageChannel`.
+  [`MessagePort`] is one end of an entangled pair (the [`PortId`] handle
+  appears in `StructuredCloneValue::MessagePort` and the transfer list);
+  [`MessageChannel::new`] constructs the pair. [`MessagePort::post_message`]
+  runs the § 9.5.4 steps: structured-clone the value (honouring the transfer
+  list), and return the clone + the partner id + the transferred ports in a
+  [`PostOutcome`] (the host hook routes the enqueue to the partner — the two
+  ports may live in different compartments / workers). [`MessagePort::enqueue`]
+  / [`MessagePort::drain`] are the receiver-side inbox + the event-loop
+  hand-off; `start()` / `close()` carry the § 9.5.3 / § 9.5.5 lifecycle (a
+  detached port drops `postMessage` and drains nothing).
+
+[`StructuredCloneValue`]: ../../crates/vixen-engine/src/structured_clone.rs
+[`ErrorKind`]: ../../crates/vixen-engine/src/structured_clone.rs
+[`clone`]: ../../crates/vixen-engine/src/structured_clone.rs
+[`DataCloneError::UnreachableTransferable`]: ../../crates/vixen-engine/src/structured_clone.rs
+[`DataCloneError::DuplicateTransferable`]: ../../crates/vixen-engine/src/structured_clone.rs
+[`DataCloneError::DetachedTransferable`]: ../../crates/vixen-engine/src/structured_clone.rs
+[`DataCloneError::SharedBufferRequiresIsolation`]: ../../crates/vixen-engine/src/structured_clone.rs
+[`detach_transferred`]: ../../crates/vixen-engine/src/structured_clone.rs
+[`is_cloneable`]: ../../crates/vixen-engine/src/structured_clone.rs
+[`MessagePort`]: ../../crates/vixen-engine/src/message_port.rs
+[`PortId`]: ../../crates/vixen-engine/src/message_port.rs
+[`MessageChannel::new`]: ../../crates/vixen-engine/src/message_port.rs
+[`MessagePort::post_message`]: ../../crates/vixen-engine/src/message_port.rs
+[`PostOutcome`]: ../../crates/vixen-engine/src/message_port.rs
+[`MessagePort::enqueue`]: ../../crates/vixen-engine/src/message_port.rs
+[`MessagePort::drain`]: ../../crates/vixen-engine/src/message_port.rs
+[`coep::is_cross_origin_isolated`]: ../../crates/vixen-net/src/coep.rs
+
+**Pure-logic foundation landed for Range + Selection (Phase 6 prep).**
+The boundary-point model the `Range` / `Selection` host hooks + the
+editing-command surface (`document.execCommand`, `beforeinput` dispatch)
+reduce to. `#![forbid(unsafe_code)]`, Rust-unit-tested.
+- `vixen-engine::range` — DOM § 5.2 `Range` + § 5.4 `Selection`.
+  [`NodeRef`] is an opaque DOM-node handle carrying a [`DocumentOrder`]
+  index (the pre-order DFS position the caller assigns) so two boundaries
+  compare in document order by pure arithmetic. [`Boundary`] is the
+  `(node, offset)` pair (child index for elements, UTF-16 index for text
+  nodes); [`Boundary::compare`] is the § 5.2 relative position
+  ([`Ordering::Before`] / [`Ordering::Equal`] / [`Ordering::After`]).
+  [`Range`] carries the `(start, end)` pair with [`Range::new`] re-ordering
+  to the § 5.2 `start ≤ end` invariant, [`Range::is_collapsed`] +
+  [`Range::collapse`] + [`Range::contains_boundary`] +
+  [`Range::intersect`]. [`Selection`] carries the `Range` list + the
+  anchor/focus (direction-aware) + `add_range` / `collapse_to` /
+  `extend_to` / `remove_all_ranges` + the [`SelectionDirection`]
+  (`Forward` / `Backward` / `None` — the focus-before-anchor "backward"
+  selection state). The live tree mutation (`surroundContents` /
+  `insertNode` / `extractContents` — the § 5.3 algorithms) is the host
+  hook; this module is the pure boundary model.
+
+[`NodeRef`]: ../../crates/vixen-engine/src/range.rs
+[`DocumentOrder`]: ../../crates/vixen-engine/src/range.rs
+[`Boundary`]: ../../crates/vixen-engine/src/range.rs
+[`Boundary::compare`]: ../../crates/vixen-engine/src/range.rs
+[`Ordering::Before`]: ../../crates/vixen-engine/src/range.rs
+[`Ordering::Equal`]: ../../crates/vixen-engine/src/range.rs
+[`Ordering::After`]: ../../crates/vixen-engine/src/range.rs
+[`Range`]: ../../crates/vixen-engine/src/range.rs
+[`Range::new`]: ../../crates/vixen-engine/src/range.rs
+[`Range::is_collapsed`]: ../../crates/vixen-engine/src/range.rs
+[`Range::collapse`]: ../../crates/vixen-engine/src/range.rs
+[`Range::contains_boundary`]: ../../crates/vixen-engine/src/range.rs
+[`Range::intersect`]: ../../crates/vixen-engine/src/range.rs
+[`Selection`]: ../../crates/vixen-engine/src/range.rs
+[`SelectionDirection`]: ../../crates/vixen-engine/src/range.rs
+
 **Gate:** `fixtures/dom/`, `fixtures/events/`, `fixtures/forms/`,
 `fixtures/storage/`, `fixtures/network/` all pass.
 
@@ -755,6 +969,72 @@ Wire every trust boundary from `docs/ARCHITECTURE.md`.
 [`parse_frame_header`]: ../../crates/vixen-net/src/websocket.rs
 [`apply_mask`]: ../../crates/vixen-net/src/websocket.rs
 [`validate_close_code`]: ../../crates/vixen-net/src/websocket.rs
+
+**Pure-logic foundation landed for the cross-origin isolation gate (Phase 7 prep).**
+The COOP + COEP response-header pair that, together, make a browsing context
+"cross-origin isolated" — the gate the high-resolution timers
+([`vixen_engine::high_res_time::coarsen`]), `SharedArrayBuffer` exposure,
+and the other Spectre-hardened APIs consult. Both `#![forbid(unsafe_code)]`,
+Rust-unit-tested.
+- `vixen-net::coop` — HTML § 7.8 `Cross-Origin-Opener-Policy` parser. The
+  three § 7.8.4 policy values ([`coop::Coop`] — `unsafe-none` default /
+  `same-origin-allow-popups` / `same-origin`) via the § 7.8.1 structured-header
+  item parse (case-insensitive token, unknown ⇒ `UnsafeNone` fail-closed,
+  `report-to` parameter captured). [`coop::Coop::isolates_opener`] is the § 7.8.4
+  opener-isolation predicate the navigation layer consults before reusing a
+  browsing-context group.
+- `vixen-net::coep` — Fetch § 3.2 `Cross-Origin-Embedder-Policy` parser. The
+  three § 3.2 policy values ([`coep::Coep`] — `unsafe-none` default /
+  `require-corp` / `credentialless`) via the structured-header item parse.
+  [`coep::is_cross_origin_isolated`] is the HTML § 7.2 combined gate: `true`
+  iff the COOP is `same-origin` **and** the COEP is `require-corp` or
+  `credentialless`. This is the boolean `MonotonicClock::now`'s
+  `cross_origin_isolated` parameter receives, removing the `100µs` coarsening
+  floor when the context is fully hardened.
+
+[`coop::Coop`]: ../../crates/vixen-net/src/coop.rs
+[`coop::Coop::isolates_opener`]: ../../crates/vixen-net/src/coop.rs
+[`coep::Coep`]: ../../crates/vixen-net/src/coep.rs
+[`coep::is_cross_origin_isolated`]: ../../crates/vixen-net/src/coep.rs
+[`vixen_engine::high_res_time::coarsen`]: ../../crates/vixen-engine/src/high_res_time.rs
+
+**Pure-logic foundation landed for Subresource Integrity + X-Content-Type-Options (Phase 7 prep).**
+The two response-header boundaries the fetch layer consults before
+executing a subresource — the tampering-resistance surface (SRI) + the
+MIME-confusion surface (nosniff). Both `#![forbid(unsafe_code)]`,
+Rust-unit-tested.
+- `vixen-net::integrity` — W3C SRI § 3.2.2 `<script integrity>` /
+  `<link integrity>` metadata parse + § 3.3.4 verify.
+  [`HashAlgorithm`] is the three SRI-mandated algorithms (`sha256` /
+  `sha384` / `sha512`); SHA-1/MD5 are collision-broken and dropped at parse
+  time per spec. [`parse_integrity`] splits ASCII-whitespace-separated
+  `<algo>-<base64>` entries (+ the optional `?<options>` tail, parsed but
+  not enforced in v1). [`verify`] computes each hash over the raw response
+  body via the vetted `sha2` crate + a constant-time compare (a timing
+  oracle can't recover the digest); **any** match passes (the spec's "best
+  candidate" rule). The [`IntegrityOutcome`] (`NoMetadata` / `Verified` /
+  `Mismatch` / `NoKnownAlgorithms`) drives the fetch layer's block.
+- `vixen-net::nosniff` — Fetch § 2 `X-Content-Type-Options: nosniff`
+  enforcement. [`is_nosniff`] is the case-insensitive token parse (the
+  parameterised historical form is rejected); [`is_javascript_mime`] is the
+  Fetch § 3.7 16-entry JavaScript-MIME-type predicate; [`Destination`]
+  collapses the § 3.1.7 request destination to the two nosniff-relevant
+  categories (`Script` / `Style` / `Other`); [`enforce`] blocks a `Script`
+  destination whose MIME is not a JavaScript MIME type and a `Style`
+  destination whose MIME is not `text/css`, returning the
+  [`NosniffOutcome`] (`Allow` / `BlockScript` / `BlockStyle`) the fetch
+  layer surfaces as a network error. Other destinations are unaffected
+  (the spec intentionally limits `nosniff`'s scope).
+
+[`HashAlgorithm`]: ../../crates/vixen-net/src/integrity.rs
+[`parse_integrity`]: ../../crates/vixen-net/src/integrity.rs
+[`verify`]: ../../crates/vixen-net/src/integrity.rs
+[`IntegrityOutcome`]: ../../crates/vixen-net/src/integrity.rs
+[`is_nosniff`]: ../../crates/vixen-net/src/nosniff.rs
+[`is_javascript_mime`]: ../../crates/vixen-net/src/nosniff.rs
+[`Destination`]: ../../crates/vixen-net/src/nosniff.rs
+[`enforce`]: ../../crates/vixen-net/src/nosniff.rs
+[`NosniffOutcome`]: ../../crates/vixen-net/src/nosniff.rs
 
 **Gate:** Every security test in `vixen-net` and `vixen-engine` green.
 Zero `cargo audit` advisories. Fuzz targets stable.

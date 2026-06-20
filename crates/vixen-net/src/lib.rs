@@ -32,16 +32,34 @@
 //! - [`permissions_policy::parse_permissions_policy`] — Permissions Policy 1
 //!   § 3.3 `Permissions-Policy` header + `<iframe allow>` parser the host
 //!   hooks consult before exposing `navigator.geolocation` &c. (Phase 7 prep).
+//! - [`coop::parse_coop`] — HTML § 7.8 `Cross-Origin-Opener-Policy` header
+//!   parser; together with [`coep::parse_coep`] gates the cross-origin
+//!   isolation the high-resolution timers require (Phase 7 prep).
+//! - [`coep::parse_coep`] — Fetch § 3.2 `Cross-Origin-Embedder-Policy`
+//!   header parser + the [`coep::is_cross_origin_isolated`] gate
+//!   `performance.now()` coarsening and `SharedArrayBuffer` exposure consult
+//!   (Phase 7 prep).
+//! - [`integrity::parse_integrity`] + [`integrity::verify`] — W3C SRI
+//!   `<script integrity>` / `<link integrity>` metadata parse + the
+//!   constant-time hash verify the fetch layer consults before executing a
+//!   subresource (Phase 7 prep).
+//! - [`nosniff::enforce`] — Fetch § 2 `X-Content-Type-Options: nosniff`
+//!   enforcement (the script / style MIME block) the fetch layer consults
+//!   before executing a script or applying a stylesheet (Phase 7 prep).
 
 #![forbid(unsafe_code)]
 
+pub mod coep;
 pub mod cookie;
+pub mod coop;
 pub mod cors;
 pub mod csp;
 pub mod fetch_types;
 pub mod http_helpers;
+pub mod integrity;
 pub mod mixed_content;
 pub mod network;
+pub mod nosniff;
 pub mod origin;
 pub mod permissions;
 pub mod permissions_policy;
@@ -52,17 +70,23 @@ pub mod strict_transport_security;
 pub mod url_policy;
 pub mod websocket;
 
+pub use coep::{Coep, is_cross_origin_isolated, parse_coep};
 pub use cookie::{Cookie, CookieError, CookieJar, MAX_COOKIES, SameSite};
+pub use coop::{Coop, parse_coop};
 pub use cors::{
     CORS_FORBIDDEN_RESPONSE_HEADERS, CORS_SAFELISTED_RESPONSE_HEADERS, CorsCheckOutcome,
     CorsCredentialsMode, CorsError, CorsResponseHeaders, cors_check, cors_filtered_headers,
 };
 pub use csp::{ContentSecurityPolicy, CspPolicy, HashAlg, HostSource, Source};
 pub use fetch_types::{Method, TextResponse};
+pub use integrity::{
+    HashAlgorithm, IntegrityOutcome, IntensityItem, parse_integrity, verify as verify_integrity,
+};
 pub use mixed_content::{MixedContentVerdict, ResourceType, classify as classify_mixed_content};
 pub use network::{
     DEFAULT_MAX_BODY_BYTES, DEFAULT_MAX_REDIRECTS, Network, NetworkConfig, NetworkError,
 };
+pub use nosniff::{Destination, NosniffOutcome, enforce as enforce_nosniff, is_nosniff};
 pub use origin::Origin;
 pub use permissions::{PermissionKind, PermissionState, PermissionStore};
 pub use permissions_policy::{

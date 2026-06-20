@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Border image — Vixen fixture</title>
+  <!--
+    Exercises the CSS surface vixen-engine::border_image resolves today
+    (Phase 5 paint prep). The pure-logic module parses the four § 6
+    longhands (border-image-slice / -width / -outset / -repeat), carves the
+    3×3 source + destination grids, and produces the per-edge tiling plan
+    (stretch/repeat/round/space); this fixture documents the authored
+    `border-image` CSS the cascade will resolve into the module's inputs.
+    Structural checks confirm every longhand + the shorthand, the TRBL
+    expansion forms, and the four repeat keywords are present, stable for
+    inspection.
+
+    border-image-slice (§ 6.4): 1–4 value TRBL + `fill`.
+    border-image-width (§ 6.3): length / percentage / number / auto.
+    border-image-outset (§ 6.4): length / number.
+    border-image-repeat (§ 6.5): stretch / repeat / round / space (1 or 2).
+    border-image shorthand: the § 6.1 combination form.
+  -->
+  <style>
+    /* Slice: 4-value TRBL with `fill`. */
+    #bi-slice { border-image-slice: 25 30 25 30 fill; }
+
+    /* Width: length / percentage / number / auto mix. */
+    #bi-width { border-image-width: 10px 20% 3 auto; }
+
+    /* Outset: extends beyond the border box. */
+    #bi-outset { border-image-outset: 5px 2; }
+
+    /* Repeat: one value (both axes) + two-value (h v) forms. */
+    #bi-repeat-stretch { border-image-repeat: stretch; }
+    #bi-repeat-round   { border-image-repeat: round; }
+    #bi-repeat-space   { border-image-repeat: space; }
+    #bi-repeat-two     { border-image-repeat: round space; }
+
+    /* Shorthand: source + slice + width + outset + repeat. */
+    #bi-shorthand {
+      border-image: url("frame.png") 25% / 10px / 5px round;
+    }
+
+    /* Default-repeat stretch applied to a single-source image. */
+    #bi-default { border-image-source: url("edge.png"); }
+  </style>
+</head>
+<body>
+  <main id="content">
+    <div id="bi-slice">slice</div>
+    <div id="bi-width">width</div>
+    <div id="bi-outset">outset</div>
+    <div id="bi-repeat-stretch">repeat stretch</div>
+    <div id="bi-repeat-round">repeat round</div>
+    <div id="bi-repeat-space">repeat space</div>
+    <div id="bi-repeat-two">repeat two</div>
+    <div id="bi-shorthand">shorthand</div>
+    <div id="bi-default">default</div>
+  </main>
+</body>
+</html>

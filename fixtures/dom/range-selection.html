@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Range + Selection — Vixen fixture</title>
+  <!--
+    Exercises the DOM § 5.2 Range + § 5.4 Selection surface the
+    vixen-engine::range host-hook layer dispatches on (Phase 6 DOM prep).
+    The pure-logic module models the boundary-point pair (Boundary =
+    (node, offset)) + the document-order comparison + the collapsed /
+    collapse / intersect predicates, and the Selection with its
+    anchor/focus (direction-aware) + add_range / collapse_to / extend_to
+    surface.
+
+    The live tree mutation (surroundContents / insertNode / extractContents
+    — the § 5.3 content-stepping algorithms) is the host hook; this fixture
+    documents the HTML surface the editing commands + the user-selection
+    reflection consult:
+    - Editable content (contenteditable) the Selection operates within.
+    - Form fields with text selection (input.select() / setSelectionRange).
+    - The window.getSelection() surface the host hook exposes.
+    - The beforeinput / selectionchange event surface.
+  -->
+</head>
+<body>
+  <main id="content">
+    <h1>Range + Selection surface</h1>
+    <p>The boundary-point model the editing commands + the user-selection
+       reflection reduce to.</p>
+
+    <!-- An editable region: the canonical Selection surface. -->
+    <div id="editable"
+         contenteditable="true"
+         spellcheck="false">
+      The quick brown fox jumps over the lazy dog.
+    </div>
+
+    <!-- A second editable region: multi-paragraph selection. -->
+    <div id="multi-paragraph" contenteditable="true">
+      <p id="para-one">First paragraph of editable content.</p>
+      <p id="para-two">Second paragraph of editable content.</p>
+      <p id="para-three">Third paragraph of editable content.</p>
+    </div>
+
+    <!-- A text input with setSelectionRange: the form-field selection
+         surface (a collapsed caret vs. a range selection). -->
+    <input id="text-input"
+           type="text"
+           value="input value here"
+           size="20">
+
+    <!-- A textarea: multi-line text selection. -->
+    <textarea id="text-area" rows="3" cols="20">line one
+line two
+line three</textarea>
+
+    <!-- The selectionchange event surface the host hook fires. -->
+    <button id="select-button"
+            onclick="document.getSelection().removeAllRanges();">
+      clear selection
+    </button>
+
+    <!-- A Range used as a programming surface: extractContents on a
+         contenteditable span. -->
+    <span id="extract-target">extract me</span>
+
+    <!-- The beforeinput event surface the editing commands dispatch on. -->
+    <div id="beforeinput-target"
+         contenteditable="true"
+         onbeforeinput="return false;">
+      beforeinput region
+    </div>
+  </main>
+</body>
+</html>

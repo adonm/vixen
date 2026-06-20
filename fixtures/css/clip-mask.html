@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>clip-path + mask — Vixen fixture</title>
+  <!--
+    Exercises the authored CSS surface vixen-engine::clip_path +
+    vixen-engine::mask resolve (Phase 5 paint prep). The two pure-logic
+    modules parse the `clip-path` basic-shape family (CSS Masking 1 § 5 +
+    CSS Shapes 1 § 6: inset / circle / ellipse / polygon) + the per-pixel
+    point-in-shape test, and the `mask` shorthand per-layer longhand model
+    (CSS Masking 1 § 6).
+
+    Structural checks confirm every authoring form is present, stable for
+    inspection once the paint path feeds the cascade output through
+    ClipPath::contains + the MaskLayer sampling. The `mask-mode` /
+    `mask-repeat` / `mask-clip` / `mask-origin` longhands and the
+    `polygon(evenodd, …)` fill-rule form are all exercised.
+  -->
+  <style>
+    /* The clip-path + mask authoring forms the pure-logic modules parse. */
+    .cp-inset      { clip-path: inset(10px round 5px); }
+    .cp-circle     { clip-path: circle(50px at center); }
+    .cp-ellipse    { clip-path: ellipse(50px 25px at 50% 50%); }
+    .cp-polygon    { clip-path: polygon(0 0, 100 0, 100 100, 0 100); }
+    .cp-poly-even  { clip-path: polygon(evenodd, 0 0, 100 0, 100 100, 0 100, 25 25, 75 25, 75 75, 25 75); }
+    .cp-none       { clip-path: none; }
+    .mask-url      { mask: url(#mask1); }
+    .mask-alpha    { mask: url(#mask1) alpha no-repeat; }
+    .mask-lumin    { mask: url(#mask1) luminance; }
+    .mask-grad     { mask: linear-gradient(to right, transparent, black); }
+    .mask-layered  { mask: url(#a) alpha, url(#b) luminance; }
+    .mask-box      { mask: url(#m) content-box padding-box; }
+    .mask-pos-size { mask: url(#m) 50% 50% / cover; }
+  </style>
+</head>
+<body>
+  <main id="content">
+    <h1>clip-path + mask surface</h1>
+    <p>The basic-shape clip family + the mask layer model the paint path
+       resolves against the cascade output.</p>
+
+    <!-- clip-path basic shapes. -->
+    <div id="cp-inset" class="cp-inset" data-clip="inset(10px round 5px)">inset</div>
+    <div id="cp-circle" class="cp-circle" data-clip="circle(50px at center)">circle</div>
+    <div id="cp-ellipse" class="cp-ellipse" data-clip="ellipse(50px 25px at 50% 50%)">ellipse</div>
+    <div id="cp-polygon" class="cp-polygon" data-clip="polygon(0 0, 100 0, 100 100, 0 100)">polygon</div>
+    <div id="cp-poly-even" class="cp-poly-even" data-clip="polygon(evenodd, ...)">polygon evenodd</div>
+    <div id="cp-none" class="cp-none" data-clip="none">none</div>
+
+    <!-- mask shorthand layers. -->
+    <div id="mask-url" class="mask-url" data-mask="url(#mask1)">mask url</div>
+    <div id="mask-alpha" class="mask-alpha" data-mask="url(#mask1) alpha no-repeat">mask alpha</div>
+    <div id="mask-lumin" class="mask-lumin" data-mask="url(#mask1) luminance">mask luminance</div>
+    <div id="mask-grad" class="mask-grad" data-mask="linear-gradient(to right, transparent, black)">mask gradient</div>
+    <div id="mask-layered" class="mask-layered" data-mask="url(#a) alpha, url(#b) luminance">mask layered</div>
+    <div id="mask-box" class="mask-box" data-mask="url(#m) content-box padding-box">mask box</div>
+    <div id="mask-pos-size" class="mask-pos-size" data-mask="url(#m) 50% 50% / cover">mask position+size</div>
+
+    <!-- An SVG mask definition referenced by the mask-* classes above. -->
+    <svg id="mask-defs" width="0" height="0">
+      <mask id="mask1" maskContentUnits="userSpaceOnUse">
+        <rect width="100" height="100" fill="white"></rect>
+      </mask>
+    </svg>
+  </main>
+</body>
+</html>

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>postMessage + MessageChannel — Vixen fixture</title>
+  <!--
+    Exercises the HTML § 9.5 messaging surface the vixen-engine::message_port +
+    vixen-engine::structured_clone host-hook layer will dispatch on (Phase 6
+    DOM prep). The two pure-logic modules model the entangled port pair +
+    message queue (HTML § 9.5.2) and the structured clone algorithm (HTML
+    § 2.7.5) that serialises the payload across the boundary.
+
+    The postMessage surface spans three sources:
+    - window.postMessage: same-compartment message passing (the simplest path,
+      no transfer).
+    - new MessageChannel(): the entangled port pair; port2 is handed across a
+      compartment/worker boundary.
+    - new Worker(): the dedicated-worker postMessage surface, with transfer
+      of an ArrayBuffer (the storage detaches at the sender).
+
+    Structural checks confirm every variant is present, stable for inspection
+    once the host-hook layer wires the structured-clone + MessagePort
+    surface. The payloads themselves are exercised by Rust unit tests over
+    vixen-engine::structured_clone (cycle-free deep clone, transfer
+    detachment, the SharedArrayBuffer cross-origin-isolation gate).
+  -->
+</head>
+<body>
+  <main id="content">
+    <h1>Messaging surface</h1>
+    <p>The structured-clone + MessagePort surface serialises values across
+       compartment and worker boundaries.</p>
+
+    <!-- window.postMessage: same-compartment message passing. The payload is
+         a structured-clonable record. -->
+    <button id="window-post-message"
+            onclick="window.postMessage({greeting: 'hello'}, '*')">
+      window.postMessage
+    </button>
+
+    <!-- new MessageChannel(): an entangled port pair. port1 stays here;
+         port2 would be transferred to a worker or another window. -->
+    <button id="channel-create"
+            onclick="const ch = new MessageChannel(); ch.port1.onmessage = () => {};">
+      new MessageChannel
+    </button>
+
+    <!-- MessagePort.postMessage with a transfer list: the ArrayBuffer is
+         detached at the sender once the clone is enqueued to the partner. -->
+    <button id="channel-transfer-buffer"
+            onclick="const ch = new MessageChannel(); const buf = new ArrayBuffer(8); ch.port1.postMessage(buf, [buf]);">
+      transfer ArrayBuffer
+    </button>
+
+    <!-- new Worker(): the dedicated-worker postMessage surface. -->
+    <script id="worker-source" type="javascript/worker">
+      // Worker source placeholder; the host-hook layer resolves the blob URL.
+      self.onmessage = (e) => { self.postMessage(e.data); };
+    </script>
+
+    <!-- SharedWorker: the shared cross-tab worker surface (gated by the
+         cross-origin-isolation context for SharedArrayBuffer transfer). -->
+    <script id="shared-worker-source" type="javascript/worker">
+      // SharedWorker source placeholder.
+    </script>
+
+    <!-- BroadcastChannel: the one-to-many messaging surface (every tab with
+         the same channel name receives the message). -->
+    <button id="broadcast-channel"
+            onclick="const bc = new BroadcastChannel('events'); bc.postMessage({n: 1});">
+      BroadcastChannel
+    </button>
+
+    <!-- postMessage to an iframe's contentWindow: the cross-compartment path
+         that re-applies the origin check before delivery. -->
+    <iframe id="target-iframe"
+            src="about:blank"
+            sandbox="allow-scripts"></iframe>
+
+    <!-- The non-cloneable case: passing a function throws DataCloneError at
+         the structured-clone step, before any enqueue or detachment. -->
+    <button id="non-cloneable"
+            onclick="try { window.postMessage(() => {}, '*'); } catch (e) {}">
+      function (DataCloneError)
+    </button>
+  </main>
+</body>
+</html>

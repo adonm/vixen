@@ -286,7 +286,10 @@ pub fn parse_sandbox(attribute_value: &str) -> SandboxFlags {
             "allow-top-navigation-to-custom-protocols",
             SandboxFlags(SandboxFlags::ALLOW_TOP_NAVIGATION_TO_CUSTOM_PROTOCOLS),
         ),
-        ("allow-downloads", SandboxFlags(SandboxFlags::ALLOW_DOWNLOADS)),
+        (
+            "allow-downloads",
+            SandboxFlags(SandboxFlags::ALLOW_DOWNLOADS),
+        ),
         (
             "allow-storage-access-by-user-activation",
             SandboxFlags(SandboxFlags::ALLOW_STORAGE_ACCESS_BY_USER_ACTIVATION),

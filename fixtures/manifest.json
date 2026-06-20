@@ -351,6 +351,140 @@
         { "type": "element-attribute", "selector": "#kitchen-sink", "attribute": "allow", "expected": "geolocation; microphone; camera; fullscreen; autoplay; encrypted-media; picture-in-picture; web-share" },
         { "type": "body-contains", "expected": "Permissions Policy delegation" }
       ]
+    },
+    {
+      "url": "fixtures/css/blend-modes.html",
+      "checks": [
+        { "type": "title", "expected": "Compositing + blend modes — Vixen fixture" },
+        { "type": "selector-count", "selector": "#blend-group > div", "expected": 16 },
+        { "type": "selectors-exact", "selector": "#blend-group > div", "expected": ["m-normal", "m-multiply", "m-screen", "m-overlay", "m-darken", "m-lighten", "m-color-dodge", "m-color-burn", "m-hard-light", "m-soft-light", "m-difference", "m-exclusion", "m-hue", "m-saturation", "m-color", "m-luminosity"] },
+        { "type": "selector-count", "selector": ".stage#blend-group", "expected": 1 },
+        { "type": "selector-count", "selector": "#bg-single, #bg-list", "expected": 2 },
+        { "type": "selector-count", "selector": "#iso-auto, #iso-isolate", "expected": 2 },
+        { "type": "body-contains", "expected": "luminosity" }
+      ]
+    },
+    {
+      "url": "fixtures/css/filters.html",
+      "checks": [
+        { "type": "title", "expected": "Filter effects — Vixen fixture" },
+        { "type": "selector-count", "selector": "main#content > div", "expected": 13 },
+        { "type": "selectors-exact", "selector": "main#content > div", "expected": ["f-brightness", "f-contrast", "f-grayscale", "f-hue-rotate", "f-invert", "f-opacity", "f-saturate", "f-sepia", "f-blur", "f-drop-shadow", "f-chain", "f-none", "f-percent"] },
+        { "type": "selector-count", "selector": "#f-chain", "expected": 1 },
+        { "type": "selector-count", "selector": "#f-none", "expected": 1 },
+        { "type": "body-contains", "expected": "drop-shadow" }
+      ]
+    },
+    {
+      "url": "fixtures/css/border-image.html",
+      "checks": [
+        { "type": "title", "expected": "Border image — Vixen fixture" },
+        { "type": "selector-count", "selector": "main#content > div", "expected": 9 },
+        { "type": "selectors-exact", "selector": "main#content > div", "expected": ["bi-slice", "bi-width", "bi-outset", "bi-repeat-stretch", "bi-repeat-round", "bi-repeat-space", "bi-repeat-two", "bi-shorthand", "bi-default"] },
+        { "type": "selector-count", "selector": "[id^='bi-repeat-']", "expected": 4 },
+        { "type": "selector-count", "selector": "#bi-shorthand", "expected": 1 },
+        { "type": "body-contains", "expected": "shorthand" }
+      ]
+    },
+    {
+      "url": "fixtures/security/cross-origin-isolation.html",
+      "checks": [
+        { "type": "title", "expected": "Cross-origin isolation (COOP/COEP) — Vixen fixture" },
+        { "type": "selector-count", "selector": "iframe", "expected": 3 },
+        { "type": "selectors-exact", "selector": "iframe", "expected": ["embed-cross-origin", "embed-same-origin", "embed-corp-opt-in"] },
+        { "type": "selector-count", "selector": "iframe[crossorigin]", "expected": 1 },
+        { "type": "selector-count", "selector": "script[type='javascript/worker']", "expected": 2 },
+        { "type": "selector-count", "selector": "a[target='_blank']", "expected": 1 },
+        { "type": "element-attribute", "selector": "#opener-link", "attribute": "rel", "expected": "opener" },
+        { "type": "body-contains", "expected": "cross-origin" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/messaging.html",
+      "checks": [
+        { "type": "title", "expected": "postMessage + MessageChannel — Vixen fixture" },
+        { "type": "selector-count", "selector": "button", "expected": 5 },
+        { "type": "selectors-exact", "selector": "button", "expected": ["window-post-message", "channel-create", "channel-transfer-buffer", "broadcast-channel", "non-cloneable"] },
+        { "type": "selector-count", "selector": "script[type='javascript/worker']", "expected": 2 },
+        { "type": "selectors-exact", "selector": "script[type='javascript/worker']", "expected": ["worker-source", "shared-worker-source"] },
+        { "type": "selector-count", "selector": "iframe[sandbox]", "expected": 1 },
+        { "type": "element-attribute", "selector": "#target-iframe", "attribute": "sandbox", "expected": "allow-scripts" },
+        { "type": "element-attribute", "selector": "#non-cloneable", "attribute": "id", "expected": "non-cloneable" },
+        { "type": "body-contains", "expected": "MessageChannel" }
+      ]
+    },
+    {
+      "url": "fixtures/css/grid-tracks.html",
+      "checks": [
+        { "type": "title", "expected": "CSS Grid tracks — Vixen fixture" },
+        { "type": "selector-count", "selector": "div[data-template]", "expected": 8 },
+        { "type": "selectors-exact", "selector": "div[data-template]", "expected": ["equal-fr", "weighted-fr", "mixed-fixed", "minmax-grow", "minmax-base", "auto-content", "max-content", "rows-fr"] },
+        { "type": "selector-count", "selector": ".equal-fr > span", "expected": 3 },
+        { "type": "selector-count", "selector": "#weighted-fr span", "expected": 3 },
+        { "type": "element-attribute", "selector": "#equal-fr", "attribute": "data-template", "expected": "1fr 1fr 1fr" },
+        { "type": "element-attribute", "selector": "#weighted-fr", "attribute": "data-template", "expected": "1fr 2fr 1fr" },
+        { "type": "element-attribute", "selector": "#mixed-fixed", "attribute": "data-template", "expected": "100px 1fr 2fr" },
+        { "type": "element-attribute", "selector": "#minmax-grow", "attribute": "data-template", "expected": "minmax(0, 100px) 1fr" },
+        { "type": "element-attribute", "selector": "#minmax-base", "attribute": "data-template", "expected": "minmax(50px, 1fr) minmax(50px, 1fr)" },
+        { "type": "element-attribute", "selector": "#rows-fr", "attribute": "data-template", "expected": "1fr 2fr" },
+        { "type": "body-contains", "expected": "Grid track" }
+      ]
+    },
+    {
+      "url": "fixtures/security/integrity-nosniff.html",
+      "checks": [
+        { "type": "title", "expected": "Subresource Integrity + nosniff — Vixen fixture" },
+        { "type": "selector-count", "selector": "[integrity]", "expected": 9 },
+        { "type": "selector-count", "selector": "script[integrity]", "expected": 6 },
+        { "type": "selector-count", "selector": "link[integrity]", "expected": 3 },
+        { "type": "selectors-exact", "selector": "script[integrity]", "expected": ["script-sha256", "script-multi", "script-forbidden", "script-same-origin", "worker-script", "module-script"] },
+        { "type": "selectors-exact", "selector": "link[integrity]", "expected": ["style-integrity", "style-multi-integrity", "style-forbidden-algo"] },
+        { "type": "element-attribute", "selector": "#script-sha256", "attribute": "integrity", "expected": "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=" },
+        { "type": "element-attribute", "selector": "#script-multi", "attribute": "integrity", "expected": "sha256-EEE= sha512-FFF=" },
+        { "type": "element-attribute", "selector": "#style-forbidden-algo", "attribute": "integrity", "expected": "md5-CCCC sha256-DDD=" },
+        { "type": "selector-count", "selector": "[crossorigin]", "expected": 7 },
+        { "type": "selector-count", "selector": "#script-same-origin:not([crossorigin])", "expected": 1 },
+        { "type": "element-attribute", "selector": "#module-script", "attribute": "type", "expected": "module" },
+        { "type": "element-attribute", "selector": "#nosniff-marker", "attribute": "data-nosniff", "expected": "script,text/css" },
+        { "type": "body-contains", "expected": "Subresource Integrity" }
+      ]
+    },
+    {
+      "url": "fixtures/css/clip-mask.html",
+      "checks": [
+        { "type": "title", "expected": "clip-path + mask — Vixen fixture" },
+        { "type": "selector-count", "selector": "[data-clip]", "expected": 6 },
+        { "type": "selectors-exact", "selector": "[data-clip]", "expected": ["cp-inset", "cp-circle", "cp-ellipse", "cp-polygon", "cp-poly-even", "cp-none"] },
+        { "type": "selector-count", "selector": "[data-mask]", "expected": 7 },
+        { "type": "selectors-exact", "selector": "[data-mask]", "expected": ["mask-url", "mask-alpha", "mask-lumin", "mask-grad", "mask-layered", "mask-box", "mask-pos-size"] },
+        { "type": "element-attribute", "selector": "#cp-inset", "attribute": "data-clip", "expected": "inset(10px round 5px)" },
+        { "type": "element-attribute", "selector": "#cp-circle", "attribute": "data-clip", "expected": "circle(50px at center)" },
+        { "type": "element-attribute", "selector": "#cp-ellipse", "attribute": "data-clip", "expected": "ellipse(50px 25px at 50% 50%)" },
+        { "type": "element-attribute", "selector": "#cp-none", "attribute": "data-clip", "expected": "none" },
+        { "type": "element-attribute", "selector": "#mask-alpha", "attribute": "data-mask", "expected": "url(#mask1) alpha no-repeat" },
+        { "type": "element-attribute", "selector": "#mask-layered", "attribute": "data-mask", "expected": "url(#a) alpha, url(#b) luminance" },
+        { "type": "element-attribute", "selector": "#mask-pos-size", "attribute": "data-mask", "expected": "url(#m) 50% 50% / cover" },
+        { "type": "selector-count", "selector": "svg mask", "expected": 1 },
+        { "type": "body-contains", "expected": "clip-path" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/range-selection.html",
+      "checks": [
+        { "type": "title", "expected": "Range + Selection — Vixen fixture" },
+        { "type": "selector-count", "selector": "[contenteditable]", "expected": 3 },
+        { "type": "selectors-exact", "selector": "[contenteditable]", "expected": ["editable", "multi-paragraph", "beforeinput-target"] },
+        { "type": "selector-count", "selector": "#multi-paragraph p", "expected": 3 },
+        { "type": "selectors-exact", "selector": "#multi-paragraph p", "expected": ["para-one", "para-two", "para-three"] },
+        { "type": "selector-count", "selector": "input", "expected": 1 },
+        { "type": "selector-count", "selector": "textarea", "expected": 1 },
+        { "type": "selector-count", "selector": "button", "expected": 1 },
+        { "type": "element-attribute", "selector": "#editable", "attribute": "contenteditable", "expected": "true" },
+        { "type": "element-attribute", "selector": "#text-input", "attribute": "type", "expected": "text" },
+        { "type": "element-attribute", "selector": "#beforeinput-target", "attribute": "onbeforeinput", "expected": "return false;" },
+        { "type": "body-contains", "expected": "lazy dog" },
+        { "type": "body-contains", "expected": "extract me" }
+      ]
     }
   ]
 }
