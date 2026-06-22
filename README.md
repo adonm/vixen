@@ -62,7 +62,14 @@ and reference material, plus:
   list parser), `vixen-engine::border_radius` (CSS Backgrounds 3 § 5.5
   corner shaping), `vixen-engine::gradient` (CSS Images 4 § 4.5
   linear-gradient colour-stop resolution + linear-sRGB sampling, with the
-  `repeating-linear-gradient()` wrap), `vixen-engine::box_shadow` (CSS
+  `repeating-linear-gradient()` wrap), `vixen-engine::radial_gradient`
+  (CSS Images 4 § 4.2.3–§ 4.2.4 `radial-gradient` colour sampling — the
+  four size keywords `closest-side`/`farthest-side`/`closest-corner`/
+  `farthest-corner` + the circle/ellipse distance projection), and
+  `vixen-engine::conic_gradient` (CSS Images 4 § 4.3.3 `conic-gradient`
+  colour sampling — the per-pixel angle → `t` projection, the
+  `from <angle>` start offset, and the `repeating-conic-gradient()` wrap),
+  `vixen-engine::box_shadow` (CSS
   Backgrounds 3 § 7.2 outer/inset shadow geometry + the `<shadow>#`
   parser), `vixen-engine::background_position` (CSS Backgrounds 3 § 3.6 +
   § 4.2 `<position>` resolution: keyword/length/percentage mix, the 1–4
@@ -88,7 +95,11 @@ and reference material, plus:
   the simple iteration progress + current iteration, the `direction`-aware
   directed progress, the easing-transformed progress via `easing::Easing`,
   and the `fill`-mode before/after resolution the transition/animation
-  drivers reduce to). All
+  drivers reduce to). The geometry-interfaces surface: `vixen-engine::geometry`
+  (CSS Geometry Interfaces L1 — `DOMPoint`/`DOMRect`/`DOMQuad`/`DOMMatrix`
+  with the full 4×4 matrix algebra + the perspective divide
+  `Element.getBoundingClientRect()`/`IntersectionObserver`/`DOMMatrixReadOnly`
+  reduce to). All
   `#![forbid(unsafe_code)]` and Rust-unit-tested.
 - **Phase 6 prep** — pure form-constraint validation in `vixen-engine::forms`
   (email/URL formats, step arithmetic, range/length flags) ready for the
@@ -103,7 +114,11 @@ and reference material, plus:
   `vixen-engine::mime` (WHATWG MIME Sniffing § 2.1/§ 2.2 parse/serialize +
   `essence()`), and   `vixen-engine::text_codec` (WHATWG Encoding API
   `TextEncoder`/`TextDecoder` with the `fatal` flag, BOM sniff, and § 7.1
-  line-break normalisation). The `vixen-engine::class_list` (WHATWG HTML
+  line-break normalisation). The DOM-serialisation surface:
+  `vixen-engine::html_serialize` (WHATWG HTML § 13.2.9 fragment serialisation
+  — the `Element.innerHTML` / `outerHTML` / `document.write` getter pipeline,
+  with the void-element + raw-text + text-escape + attribute-escape tables).
+  The `vixen-engine::class_list` (WHATWG HTML
   § 4.6.4 `DOMTokenList` + § 2.7.3 ordered-set parser: `add`/`remove`/
   `toggle`/`replace`/`contains` with the spec's atomic validate-then-mutate
   rule, the supported-tokens surface for `<link>.relList`) backs every

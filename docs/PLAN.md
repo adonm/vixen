@@ -372,6 +372,85 @@ to two `GlContext` implementations.
 6. CI: verify `LIBGL_ALWAYS_SOFTWARE=1` produces working screenshots
    via `llvmpipe` so headless runs anywhere.
 
+**Pure-logic foundation landed for radial + conic gradients (Phase 5 prep).**
+The CSS Images 4 § 4.2.3 + § 4.3.3 colour-sampling siblings of `gradient`,
+completing the three gradient families the paint path samples against. All
+three `#![forbid(unsafe_code)]`, Rust-unit-tested, reusing the
+[`crate::gradient::resolve_stop_positions`] + linear-sRGB interpolation the
+linear-gradient surface already owns.
+- `vixen-engine::radial_gradient` — CSS Images 4 § 4.2.3 `radial-gradient`.
+  [`RadialShape`] (`Circle`/`Ellipse`) + [`RadialSize`] (the four § 4.2.4
+  keywords `closest-side`/`farthest-side`/`closest-corner`/`farthest-corner`
+  + the explicit `Length`/`LengthPair` forms, with `farthest-corner` the
+  spec default). [`compute_radius`] is the § 4.2.4 radius-resolution step
+  for one of the four keyword forms against a known `(width, height)`
+  reference box centred at `(cx, cy)`, returning `(rx, ry)` so circle +
+  ellipse share the call site (the `closest-corner`/`farthest-corner`
+  ellipse cases keep the closest-side/farthest-side `rx/ry` ratio and scale
+  to the corner per the § 4.2.4 corner-scaling rule). [`project_to_t`] is
+  the per-pixel `(dx, dy)` → `t` distance projection (Euclidean for circle,
+  ellipse-norm for ellipse). [`RadialGradient::sample`] is the colour at a
+  projected `t` (with the `repeating-radial-gradient()` wrap via the shared
+  [`sample_resolved`] helper). The `<position>` centre and the
+  `<geometry-box>` reference-box resolution stay in the layout/paint layer;
+  this module receives `(cx, cy, width, height)` already resolved.
+- `vixen-engine::conic_gradient` — CSS Images 4 § 4.3.3 `conic-gradient`.
+  [`ConicGradient`] carries the stop list + the `from <angle>` start angle
+  (radians) + the `repeating` flag. [`project_angle_to_t`] is the per-pixel
+  `(dx, dy)` → `t ∈ [0, 1)` projection (CSS-clockwise from 12 o'clock, in
+  turns — one full revolution = `1.0`); [`add_from_angle`] folds in the
+  `from` angle and reduces modulo 1.0. [`ConicGradient::sample`] is the
+  colour at a projected `t` (with the `repeating-conic-gradient()` wrap).
+  The `<angle>` grammar + the `<position>` centre stay in the cascade /
+  layout layer.
+
+[`RadialShape`]: ../../crates/vixen-engine/src/radial_gradient.rs
+[`RadialSize`]: ../../crates/vixen-engine/src/radial_gradient.rs
+[`compute_radius`]: ../../crates/vixen-engine/src/radial_gradient.rs
+[`project_to_t`]: ../../crates/vixen-engine/src/radial_gradient.rs
+[`RadialGradient::sample`]: ../../crates/vixen-engine/src/radial_gradient.rs
+[`ConicGradient`]: ../../crates/vixen-engine/src/conic_gradient.rs
+[`project_angle_to_t`]: ../../crates/vixen-engine/src/conic_gradient.rs
+[`add_from_angle`]: ../../crates/vixen-engine/src/conic_gradient.rs
+[`ConicGradient::sample`]: ../../crates/vixen-engine/src/conic_gradient.rs
+[`sample_resolved`]: ../../crates/vixen-engine/src/gradient.rs
+[`crate::gradient::resolve_stop_positions`]: ../../crates/vixen-engine/src/gradient.rs
+
+**Pure-logic foundation landed for CSS Geometry Interfaces (Phase 5/6 prep).**
+The `DOMPoint` / `DOMRect` / `DOMQuad` / `DOMMatrix` value family the
+geometry-bearing host hooks reduce to. `#![forbid(unsafe_code)]`,
+Rust-unit-tested, complementing [`crate::transform`] (which owns the 2D
+subset of the matrix surface).
+- `vixen-engine::geometry` — CSS Geometry Interfaces L1. [`DOMPoint`] is
+  the 2D/3D/homogeneous `(x, y, z, w)` point (§ 2; the perspective divide
+  normalises `w` to `1` when projecting). [`DOMRect`] is the
+  `(x, y, width, height)` rectangle (§ 3) with the derived
+  `top`/`right`/`bottom`/`left` accessors + the negative-dimension
+  [`DOMRect::normalized`] flip + the `contains_point` / `intersects` /
+  `union` predicates `getBoundingClientRect()` + `IntersectionObserver`
+  consult. [`DOMQuad`] is the four-corner quadrilateral (§ 4) with the
+  `from_rect` constructor + the [`DOMQuad::bounds`] axis-aligned bounding
+  rectangle (§ 4.4). [`DOMMatrix`] is the § 6 4×4 homogeneous matrix (the
+  2D `matrix(a,b,c,d,e,f)` subset folds into the upper-left 2×3 + the
+  `[0 0 1 0]`/`[0 0 0 1]` bottom rows) with every § 6.3 transform
+  (`translate`/`scale`/`scale_non_uniform`/`rotate`/`rotate_axis_angle`/
+  `skew_x`/`skew_y`/`multiply`/`flip_x`/`flip_y`/`inverse`) + the § 6.4
+  [`DOMMatrix::transform_point`] homogeneous-coordinate projection + the
+  `is_2d` predicate + the `to_4x4_column_major` round-trip. Matrix
+  decomposition / interpolation (the CSS Transforms 2 § 16 pipeline the
+  animation interpolation layer reduces to) and the full `transform`
+  property parser land with the 3D WebRender plumbing; this module is the
+  arithmetic those slices reduce to.
+
+[`DOMPoint`]: ../../crates/vixen-engine/src/geometry.rs
+[`DOMRect`]: ../../crates/vixen-engine/src/geometry.rs
+[`DOMRect::normalized`]: ../../crates/vixen-engine/src/geometry.rs
+[`DOMQuad`]: ../../crates/vixen-engine/src/geometry.rs
+[`DOMQuad::bounds`]: ../../crates/vixen-engine/src/geometry.rs
+[`DOMMatrix`]: ../../crates/vixen-engine/src/geometry.rs
+[`DOMMatrix::transform_point`]: ../../crates/vixen-engine/src/geometry.rs
+[`crate::transform`]: ../../crates/vixen-engine/src/transform.rs
+
 **Gate:** `just run` shows a real web page in the window.
 `vixen-headless --screenshot out.png --url fixtures/css/border-rendering.html`
 produces a PNG matching the GUI's render within 1 % pixel diff on 5
@@ -1076,6 +1155,35 @@ Rust-unit-tested.
 [`Url::origin`]: ../../crates/vixen-engine/src/whatwg_url.rs
 [`percent_encode`]: ../../crates/vixen-engine/src/whatwg_url.rs
 [`EncodeSet`]: ../../crates/vixen-engine/src/whatwg_url.rs
+
+**Pure-logic foundation landed for HTML fragment serialisation (Phase 6 prep).**
+The DOM → HTML string pipeline the `Element.innerHTML` getter, `outerHTML`,
+`document.write`, `DOMParser` round-trip, and `XMLHttpRequest.responseText`
+(HTML documents) host hooks read from. `#![forbid(unsafe_code)]`,
+Rust-unit-tested, operating over the `markup5ever_rcdom::Handle` the parse
+side (`crate::doc`) already owns.
+- `vixen-engine::html_serialize` — WHATWG HTML § 13.2.9 "Serializing HTML
+  fragments". [`serialize_children`] is the `Element.innerHTML` getter
+  (the § 13.2.9 fragment serializer over a node's children); [`serialize_node`]
+  is the `Element.outerHTML` getter (one node + descendants). [`escape_text`]
+  (§ 13.2.9 step 8: `&` → `&amp;`, `<` → `&lt;`, `>` → `&gt;`, NBSP →
+  `&nbsp;`) and [`escape_attribute`] (§ 13.2.9 step 5: `&`, `"`, NBSP) are
+  the escape rules exposed standalone for the editing-command surface.
+  [`Scripting`] is the scripting-flag toggle (the `noscript` element is
+  raw-text when scripting is enabled, the production case; normal-text
+  otherwise, the `DOMParser` / print case). The void-element table
+  (`area`/`base`/`br`/`col`/`embed`/`hr`/`img`/`input`/`link`/`meta`/`param`/
+  `source`/`track`/`wbr`) + the raw-text table (`script`/`style`/`xmp`/
+  `iframe`/`noembed`/`noframes`/`plaintext` + conditional `noscript`) are
+  the § 13.2.9 step 3 classification. The pre-serialisation tree mutation
+  for the `innerHTML` *setter* (the parse side) and the foreign-content
+  (SVG/MathML) CDATA escapes stay in the parse layer.
+
+[`serialize_children`]: ../../crates/vixen-engine/src/html_serialize.rs
+[`serialize_node`]: ../../crates/vixen-engine/src/html_serialize.rs
+[`escape_text`]: ../../crates/vixen-engine/src/html_serialize.rs
+[`escape_attribute`]: ../../crates/vixen-engine/src/html_serialize.rs
+[`Scripting`]: ../../crates/vixen-engine/src/html_serialize.rs
 
 **Gate:** `fixtures/dom/`, `fixtures/events/`, `fixtures/forms/`,
 `fixtures/storage/`, `fixtures/network/` all pass.

@@ -224,7 +224,16 @@ pub fn resolve_stop_positions(stops: &[ColorStop]) -> Vec<f32> {
 
 /// Sample a normalised gradient at `t`. `positions` and `stops` are parallel.
 /// For non-repeating gradients, `t` outside `[0, 1]` clamps to the end stop.
-fn sample_resolved(positions: &[f32], stops: &[ColorStop], t: f32, repeating: bool) -> Color {
+///
+/// Exposed `pub(crate)` so the radial-gradient + conic-gradient siblings can
+/// reuse the segment-search + interpolation pipeline (they only differ in
+/// how they project a pixel onto `t`).
+pub(crate) fn sample_resolved(
+    positions: &[f32],
+    stops: &[ColorStop],
+    t: f32,
+    repeating: bool,
+) -> Color {
     let n = positions.len();
     debug_assert_eq!(n, stops.len());
     debug_assert!(n >= 2);
