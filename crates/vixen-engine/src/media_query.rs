@@ -8,7 +8,9 @@
 //! What lives here:
 //! - [`Viewport`] — the resolved media description the queries match against
 //!   (size in CSS px, DPR, orientation, colour depth, hover/pointer,
-//!   `prefers-color-scheme`, `prefers-reduced-motion`).
+//!   output media type (`screen` / `print`), `prefers-color-scheme`,
+//!   `prefers-reduced-motion`, primary pointer/hover, and the MQ4
+//!   `any-pointer` / `any-hover` aggregate device state).
 //! - [`MediaQuery`] — a parsed query (optional media-type prefix + a
 //!   [`MediaCondition`] tree). [`MediaQuery::parse`] + [`MediaQuery::matches`].
 //! - [`MediaCondition`] / [`MediaInParens`] / [`MediaFeature`] — the condition
@@ -83,6 +85,61 @@ pub enum PointerAccuracy {
     Coarse,
 }
 
+/// Aggregate pointing-device capabilities for MQ4 `any-pointer`. Unlike the
+/// primary [`PointerAccuracy`] feature, `any-pointer` can match both `fine` and
+/// `coarse` when a laptop has a mouse/trackpad *and* a touchscreen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub struct PointerCapabilities(u8);
+
+impl PointerCapabilities {
+    const FINE: u8 = 1 << 0;
+    const COARSE: u8 = 1 << 1;
+
+    /// No pointing devices (`any-pointer: none`).
+    pub const fn none() -> Self {
+        Self(0)
+    }
+
+    /// A fine pointer is present.
+    pub const fn fine() -> Self {
+        Self(Self::FINE)
+    }
+
+    /// A coarse pointer is present.
+    pub const fn coarse() -> Self {
+        Self(Self::COARSE)
+    }
+
+    /// Both fine and coarse pointers are present.
+    pub const fn fine_and_coarse() -> Self {
+        Self(Self::FINE | Self::COARSE)
+    }
+
+    /// Promote a primary pointer value to an aggregate capability set.
+    pub const fn from_primary(pointer: PointerAccuracy) -> Self {
+        match pointer {
+            PointerAccuracy::None => Self::none(),
+            PointerAccuracy::Fine => Self::fine(),
+            PointerAccuracy::Coarse => Self::coarse(),
+        }
+    }
+
+    /// `true` iff at least one pointing device is present.
+    pub const fn any(self) -> bool {
+        self.0 != 0
+    }
+
+    /// `true` iff the requested pointer class is present. `None` means no
+    /// pointer devices at all, per MQ4 `any-pointer: none`.
+    pub const fn has(self, pointer: PointerAccuracy) -> bool {
+        match pointer {
+            PointerAccuracy::None => self.0 == 0,
+            PointerAccuracy::Fine => self.0 & Self::FINE != 0,
+            PointerAccuracy::Coarse => self.0 & Self::COARSE != 0,
+        }
+    }
+}
+
 /// The resolved viewport + environment description media queries match
 /// against. Every field maps to at least one media feature; the responsive
 /// selectors and the `MediaQueryList` host hook (Phase 6) both reduce against
@@ -110,6 +167,14 @@ pub struct Viewport {
     /// Whether the user has requested reduced motion (`prefers-reduced-motion`
     /// feature).
     pub reduced_motion: bool,
+    /// The output media type this viewport represents. Normal browsing is
+    /// `screen`; print preview / paged layout sets this to `print`.
+    pub media_type: MediaType,
+    /// Whether *any* input device can hover (`any-hover`). This may be true even
+    /// when the primary pointer's [`hover`] feature is false.
+    pub any_hover: bool,
+    /// Aggregate pointer capabilities for `any-pointer`.
+    pub any_pointer: PointerCapabilities,
 }
 
 impl Viewport {
@@ -131,7 +196,17 @@ impl Viewport {
             pointer: PointerAccuracy::Fine,
             color_scheme: ColorScheme::Light,
             reduced_motion: false,
+            media_type: MediaType::Screen,
+            any_hover: true,
+            any_pointer: PointerCapabilities::fine(),
         }
+    }
+
+    /// Return a copy representing print / screen output. Keeps call sites
+    /// concise in tests and in the future print-preview host hook.
+    pub fn with_media_type(mut self, media_type: MediaType) -> Self {
+        self.media_type = media_type;
+        self
     }
 
     /// The aspect ratio of the viewport (`width / height`).
@@ -145,11 +220,10 @@ impl Viewport {
 
     /// The [`LengthContext`] viewport-relative features resolve against.
     pub fn length_context(self) -> LengthContext {
-        LengthContext {
-            viewport_w: self.width_px.round().max(0.0) as u32,
-            viewport_h: self.height_px.round().max(0.0) as u32,
-            ..LengthContext::default()
-        }
+        LengthContext::for_viewport(
+            self.width_px.round().max(0.0) as u32,
+            self.height_px.round().max(0.0) as u32,
+        )
     }
 }
 
@@ -301,6 +375,13 @@ impl MediaFeature {
                 PointerAccuracy::Fine => "fine",
                 PointerAccuracy::Coarse => "coarse",
             }),
+            "any-hover" => {
+                if self.value.is_none() {
+                    return vp.any_hover;
+                }
+                self.compare_keyword(if vp.any_hover { "hover" } else { "none" })
+            }
+            "any-pointer" => self.compare_any_pointer(vp.any_pointer),
             // --- User preference (§ 5) ---
             "prefers-color-scheme" => self.compare_keyword(match vp.color_scheme {
                 ColorScheme::NoPreference => "no-preference",
@@ -368,6 +449,9 @@ impl MediaFeature {
         // For keyword features, only the Exact range makes sense; min-/max-
         // prefixes on a keyword feature are ignored per § 4 (the prefix is
         // only valid on numeric features).
+        if self.range != Range::Exact {
+            return false;
+        }
         match &self.value {
             Some(FeatureValue::Keyword(authored)) => authored.eq_ignore_ascii_case(viewport_kw),
             // Boolean form `(hover)` — matches iff the feature is "on". For
@@ -375,6 +459,22 @@ impl MediaFeature {
             // viewport state as the boolean.
             None => match self.name {
                 "hover" => viewport_kw == "hover",
+                _ => false,
+            },
+            _ => false,
+        }
+    }
+
+    fn compare_any_pointer(&self, caps: PointerCapabilities) -> bool {
+        if self.range != Range::Exact {
+            return false;
+        }
+        match &self.value {
+            None => caps.any(),
+            Some(FeatureValue::Keyword(authored)) => match authored.as_str() {
+                "none" => caps.has(PointerAccuracy::None),
+                "fine" => caps.has(PointerAccuracy::Fine),
+                "coarse" => caps.has(PointerAccuracy::Coarse),
                 _ => false,
             },
             _ => false,
@@ -409,19 +509,14 @@ impl MediaType {
         }
     }
 
-    /// Whether the given viewport satisfies this media type. A web browser
-    /// shell is always `Screen`/`All`; `Print` is only satisfied when the
-    /// viewport is flagged as a print context (Vixen surfaces this via a
-    /// dedicated `Viewport` flag in a later slice — for now print matches
-    /// `false` against a screen viewport).
+    /// Whether the given viewport satisfies this media type. A query for `all`
+    /// matches every output; `screen` / `print` compare against the viewport's
+    /// explicit output context.
     pub fn matches(self, vp: &Viewport) -> bool {
         match self {
-            MediaType::All | MediaType::Screen => true,
-            MediaType::Print => {
-                // TODO(Phase 6): consult a `print_mode` flag on Viewport.
-                let _ = vp;
-                false
-            }
+            MediaType::All => true,
+            MediaType::Screen => vp.media_type == MediaType::Screen,
+            MediaType::Print => vp.media_type == MediaType::Print,
         }
     }
 }
@@ -846,6 +941,8 @@ fn static_feature_name(base: &str) -> Option<&'static str> {
         "color",
         "hover",
         "pointer",
+        "any-hover",
+        "any-pointer",
         "prefers-color-scheme",
         "prefers-reduced-motion",
     ];
@@ -866,7 +963,13 @@ fn parse_feature_value(name: &str, raw: &str) -> Option<FeatureValue> {
         "color" => raw.parse::<i64>().ok().map(FeatureValue::Integer),
         // Keyword-valued features — accept any identifier; the comparator
         // checks the specific keyword.
-        "orientation" | "hover" | "pointer" | "prefers-color-scheme" | "prefers-reduced-motion" => {
+        "orientation"
+        | "hover"
+        | "pointer"
+        | "any-hover"
+        | "any-pointer"
+        | "prefers-color-scheme"
+        | "prefers-reduced-motion" => {
             // Validate it's a bare identifier (no digits/units). We accept
             // anything that doesn't look like a number/unit pair; the match
             // step rejects unknown keywords by failing to compare equal.
@@ -1004,6 +1107,14 @@ mod tests {
     }
 
     #[test]
+    fn print_matches_print_viewport() {
+        let q = MediaQuery::parse("print and (min-width: 600px)").unwrap();
+        let print = vp(800.0, 600.0).with_media_type(MediaType::Print);
+        assert!(q.matches(&print));
+        assert!(!q.matches(&vp(800.0, 600.0))); // default screen context
+    }
+
+    #[test]
     fn screen_and_condition() {
         let q = MediaQuery::parse("screen and (min-width: 600px)").unwrap();
         assert!(q.matches(&vp(800.0, 600.0)));
@@ -1093,6 +1204,55 @@ mod tests {
         let q = MediaQuery::parse("(pointer: coarse)").unwrap();
         assert!(q.matches(&v));
         assert!(!q.matches(&vp(800.0, 600.0))); // default fine
+    }
+
+    #[test]
+    fn any_hover_can_match_when_primary_hover_does_not() {
+        let mut v = vp(800.0, 600.0);
+        v.hover = false;
+        v.pointer = PointerAccuracy::Coarse;
+        v.any_hover = true; // e.g. touch primary + paired mouse.
+
+        assert!(!MediaQuery::parse("(hover)").unwrap().matches(&v));
+        assert!(MediaQuery::parse("(any-hover)").unwrap().matches(&v));
+        assert!(MediaQuery::parse("(any-hover: hover)").unwrap().matches(&v));
+        assert!(!MediaQuery::parse("(any-hover: none)").unwrap().matches(&v));
+    }
+
+    #[test]
+    fn any_pointer_matches_multiple_pointer_classes() {
+        let mut v = vp(800.0, 600.0);
+        v.pointer = PointerAccuracy::Fine; // primary pointer.
+        v.any_pointer = PointerCapabilities::fine_and_coarse();
+
+        assert!(MediaQuery::parse("(pointer: fine)").unwrap().matches(&v));
+        assert!(!MediaQuery::parse("(pointer: coarse)").unwrap().matches(&v));
+        assert!(
+            MediaQuery::parse("(any-pointer: fine)")
+                .unwrap()
+                .matches(&v)
+        );
+        assert!(
+            MediaQuery::parse("(any-pointer: coarse)")
+                .unwrap()
+                .matches(&v)
+        );
+        assert!(MediaQuery::parse("(any-pointer)").unwrap().matches(&v));
+    }
+
+    #[test]
+    fn keyword_features_reject_range_prefixes() {
+        let v = vp(800.0, 600.0);
+        assert!(
+            !MediaQuery::parse("(min-orientation: landscape)")
+                .unwrap()
+                .matches(&v)
+        );
+        assert!(
+            !MediaQuery::parse("(max-any-pointer: fine)")
+                .unwrap()
+                .matches(&v)
+        );
     }
 
     #[test]

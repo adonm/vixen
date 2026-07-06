@@ -135,6 +135,9 @@ URL
 vixen-net::Network::get_text_with_cookies       (reqwest + rustls + URL/CSP policy)
  │  → TextResponse { body, headers, cookies, redirects }
  ▼
+vixen-engine::page::Page                         (URL + pipeline state facade)
+ │
+ ▼
 html5ever::parse_document                        (HTML5 parser)
  │  → RcDom
  ▼

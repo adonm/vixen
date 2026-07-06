@@ -1,7 +1,7 @@
 //! End-to-end WPT runner — drives `fixtures/manifest.json` through
-//! [`vixen_wpt`] against a parsed [`vixen_engine::doc::Document`] wrapped as a
-//! [`HarnessEngine`]. This is the Phase 3 gate (docs/PLAN.md "vixen-wpt runs
-//! the CSS fixtures; pass rate recorded as baseline").
+//! [`vixen_wpt`] against the shared [`vixen_engine::page::Page`] facade wrapped
+//! as a [`HarnessEngine`]. This is the Phase 3 gate (docs/PLAN.md "vixen-wpt
+//! runs the CSS fixtures; pass rate recorded as baseline").
 //!
 //! Lives in `vixen-headless/tests/` (not the lib) because `vixen-wpt` is a
 //! dev-dependency: the architecture rule "vixen-wpt → vixen-api only"
@@ -9,63 +9,42 @@
 //! graph, so the engine-side adapter lives here at the integration seam.
 
 use vixen_api::{ElementInfo, EngineDiagnostic, PageSnapshot};
-use vixen_engine::doc::Document;
-use vixen_engine::style_dom::Selector;
+use vixen_engine::page::Page;
 use vixen_wpt::harness::HarnessEngine;
 use vixen_wpt::manifest::Manifest;
 
-/// Wrap a parsed [`Document`] as a [`HarnessEngine`] the WPT harness can drive.
-struct DocumentHarnessEngine<'a> {
-    doc: &'a Document,
+/// Wrap the shared engine [`Page`] facade as a [`HarnessEngine`] the WPT
+/// harness can drive. This keeps the fixture runner on the same vertical seam
+/// as `vixen-headless` instead of growing a parallel document adapter.
+struct PageHarnessEngine<'a> {
+    page: &'a Page,
 }
 
-impl<'a> DocumentHarnessEngine<'a> {
-    fn new(doc: &'a Document) -> Self {
-        Self { doc }
+impl<'a> PageHarnessEngine<'a> {
+    fn new(page: &'a Page) -> Self {
+        Self { page }
     }
 }
 
-impl<'a> HarnessEngine for DocumentHarnessEngine<'a> {
-    fn snapshot(&self, _vw: u32, _vh: u32) -> PageSnapshot {
-        PageSnapshot {
-            url: String::new(),
-            title: self.doc.title(),
-            viewport: (800, 600),
-            text_content: self.doc.text_content(),
-            element_count: self.doc.element_count(),
-        }
+impl<'a> HarnessEngine for PageHarnessEngine<'a> {
+    fn snapshot(&self, vw: u32, vh: u32) -> PageSnapshot {
+        self.page.snapshot((vw, vh))
     }
 
     fn query_selector_all(&self, selector: &str) -> Result<Vec<ElementInfo>, String> {
-        let parsed = Selector::parse(selector).map_err(|e| e.to_string())?;
-        Ok(self
-            .doc
-            .query_all(&parsed)
-            .into_iter()
-            .map(|m| vixen_api::ElementInfo {
-                node_id: m.node_id,
-                tag: m.tag,
-                id: m.id,
-                classes: m.classes,
-                attributes: m.attributes,
-                text: m.text,
-                bbox: None,
-            })
-            .collect())
+        self.page.query_selector_all(selector)
     }
 
-    fn computed_style(&self, _node_id: usize) -> Vec<(String, String)> {
-        // Phase 3 step 3 (cascade) lands next; until then the WPT
-        // `computed-style` check fails closed against this adapter.
-        Vec::new()
+    fn computed_style(&self, node_id: usize) -> Vec<(String, String)> {
+        self.page.computed_style(node_id)
     }
 
     fn diagnostics(&self) -> Vec<EngineDiagnostic> {
-        Vec::new()
+        self.page.diagnostics()
     }
 
     fn eval(&self, _expr: &str) -> Result<String, String> {
-        Err("eval not available on the read-only Document adapter".into())
+        Err("eval not available on the read-only Page harness adapter".into())
     }
 }
 
@@ -91,8 +70,8 @@ fn fixtures_manifest_passes_end_to_end() {
         let path = root.join(&fixture.url);
         let html = std::fs::read_to_string(&path)
             .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-        let doc = Document::parse(&html).expect("parse fixture");
-        let engine = DocumentHarnessEngine::new(&doc);
+        let page = Page::from_html(fixture.url.clone(), &html).expect("parse fixture");
+        let engine = PageHarnessEngine::new(&page);
         for check in &fixture.checks {
             total += 1;
             let outcome = vixen_wpt::check::Check::run(check, &engine);

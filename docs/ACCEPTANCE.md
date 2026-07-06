@@ -172,14 +172,14 @@ Restated from `PLAN.md` as the per-phase acceptance check.
 |-----------------------------------|---------------------------------------------------------------------------------------|
 | 0 — Scaffolding                   | `cargo check --workspace` passes; `cargo test -p vixen-api` passes                    |
 | 1 — Net + store crown jewels      | `cargo test -p vixen-net -p vixen-store` green; fuzz 1 M iters stable                 |
-| 2 — SpiderMonkey                  | `vixen-headless --url <file> --eval '1+2'` returns `3`                                             |
-| 3 — HTML + Stylo                  | WPT CSS fixtures pass; cascade output correct                                         |
-| 4 — Layout                        | 20+ visual-hash fixtures match reference                                              |
-| 5 — Paint                         | `just run` shows a page; headless PNG within 1 % of GUI on 5 fixtures                 |
-| 6 — Host bindings                 | `fixtures/{dom,events,forms,storage,network}/` all pass                               |
+| 2 — SpiderMonkey                  | `just gate-phase2` (`vixen-headless --url <file> --eval '1+2'` returns `3`)           |
+| 3 — HTML + Stylo                  | `just gate-phase3`; then WPT CSS fixtures pass with cascade output correct            |
+| 4 — Layout                        | `just gate-phase4`; then 20+ visual-hash fixtures match reference                     |
+| 5 — Paint                         | `just gate-phase5`; then `just run` shows a page and headless PNG diff ≤ 1 %          |
+| 6 — Host bindings                 | `just gate-phase6`; then `fixtures/{dom,events,forms,storage,network}/` all pass      |
 | 7 — Security                      | `cargo audit` clean; all security tests green; fuzz stable                            |
 | 8 — Headless CDP                  | Every CLI flag works; CDP responds to required methods                                |
-| 9 — Release                       | All gates above green; tag `v1.0.0`                                                   |
+| 9 — Release                       | `just gate-smoke` and all gates above green; tag `v1.0.0`                             |
 
 A phase is not done until its gate passes *and* the tock discipline
 (dead-code removal, ≤ 1 kLOC modules, references cited) has been observed.

@@ -11,8 +11,9 @@
     attribute value verbatim; these structural + attribute checks pin the
     canonical responsive-image authoring forms (conditional sizes, the default
     fallback, width-vs-density srcset, the <picture>/<source> art-direction
-    combination with media queries) the host-hook layer will hand the parser +
-    selector once Phase 6 wires the HTMLImageElement reflection.
+    combination with width/orientation/output/input-device media queries) the
+    host-hook layer will hand the parser + selector once Phase 6 wires the
+    HTMLImageElement reflection.
   -->
 </head>
 <body>
@@ -90,6 +91,26 @@
             media="(orientation: landscape)"
             srcset="wide.jpg">
     <img src="square.jpg" alt="orientation-aware">
+  </picture>
+
+  <!-- Environment art-direction: output context + aggregate input devices. -->
+  <picture id="picture-environment">
+    <source id="print-source"
+            media="print"
+            srcset="print.jpg">
+    <source id="screen-source"
+            media="screen"
+            srcset="screen.jpg">
+    <source id="any-pointer-source"
+            media="(any-pointer: coarse)"
+            srcset="touch.jpg">
+    <source id="any-hover-source"
+            media="(any-hover: hover)"
+            srcset="hover.jpg">
+    <img id="environment-img"
+         src="environment-default.jpg"
+         srcset="environment-default.jpg"
+         alt="environment-aware">
   </picture>
 </body>
 </html>

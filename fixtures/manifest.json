@@ -37,6 +37,18 @@
       ]
     },
     {
+      "url": "fixtures/css/computed-inline.html",
+      "checks": [
+        { "type": "title", "expected": "Computed inline style — Vixen fixture" },
+        { "type": "selector-count", "selector": "[style]", "expected": 2 },
+        { "type": "computed-style", "selector": "#hero", "property": "display", "expected": "grid" },
+        { "type": "computed-style", "selector": "#hero", "property": "margin-left", "expected": "10px" },
+        { "type": "computed-style", "selector": "#hero", "property": "color", "expected": "blue" },
+        { "type": "computed-style", "selector": "#copy", "property": "font-size", "expected": "18px" },
+        { "type": "computed-style", "selector": "#copy", "property": "background-image", "expected": "url('a;b:c')" }
+      ]
+    },
+    {
       "url": "fixtures/dom/basic.html",
       "checks": [
         { "type": "title", "expected": "DOM basic — Vixen fixture" },
@@ -312,15 +324,15 @@
       "url": "fixtures/dom/sizes.html",
       "checks": [
         { "type": "title", "expected": "img sizes + responsive selection — Vixen fixture" },
-        { "type": "selector-count", "selector": "img", "expected": 9 },
-        { "type": "selector-count", "selector": "picture", "expected": 3 },
-        { "type": "selector-count", "selector": "source", "expected": 5 },
+        { "type": "selector-count", "selector": "img", "expected": 10 },
+        { "type": "selector-count", "selector": "picture", "expected": 4 },
+        { "type": "selector-count", "selector": "source", "expected": 9 },
         { "type": "selector-count", "selector": "[sizes]", "expected": 6 },
-        { "type": "selector-count", "selector": "[srcset]", "expected": 11 },
-        { "type": "selector-count", "selector": "source[media]", "expected": 5 },
+        { "type": "selector-count", "selector": "[srcset]", "expected": 16 },
+        { "type": "selector-count", "selector": "source[media]", "expected": 9 },
         { "type": "selector-count", "selector": "img[sizes]", "expected": 5 },
         { "type": "selectors-exact", "selector": "img[sizes]", "expected": ["mobile-first", "three-tier", "density", "bare-length", "em-based"] },
-        { "type": "selectors-exact", "selector": "source[media]", "expected": ["wide-source", "narrow-source", "tablet-source", "portrait-source", "landscape-source"] },
+        { "type": "selectors-exact", "selector": "source[media]", "expected": ["wide-source", "narrow-source", "tablet-source", "portrait-source", "landscape-source", "print-source", "screen-source", "any-pointer-source", "any-hover-source"] },
         { "type": "element-attribute", "selector": "#mobile-first", "attribute": "sizes", "expected": "(max-width: 600px) 100vw, 50vw" },
         { "type": "element-attribute", "selector": "#three-tier", "attribute": "sizes", "expected": "(max-width: 480px) 100vw, (max-width: 1024px) 75vw, 1200px" },
         { "type": "element-attribute", "selector": "#bare-length", "attribute": "sizes", "expected": "300px" },
@@ -329,6 +341,10 @@
         { "type": "element-attribute", "selector": "#narrow-source", "attribute": "media", "expected": "(max-width: 799px)" },
         { "type": "element-attribute", "selector": "#portrait-source", "attribute": "media", "expected": "(orientation: portrait)" },
         { "type": "element-attribute", "selector": "#landscape-source", "attribute": "media", "expected": "(orientation: landscape)" },
+        { "type": "element-attribute", "selector": "#print-source", "attribute": "media", "expected": "print" },
+        { "type": "element-attribute", "selector": "#screen-source", "attribute": "media", "expected": "screen" },
+        { "type": "element-attribute", "selector": "#any-pointer-source", "attribute": "media", "expected": "(any-pointer: coarse)" },
+        { "type": "element-attribute", "selector": "#any-hover-source", "attribute": "media", "expected": "(any-hover: hover)" },
         { "type": "selector-count", "selector": "#no-sizes:not([sizes])", "expected": 1 },
         { "type": "body-contains", "expected": "Responsive image selection" }
       ]

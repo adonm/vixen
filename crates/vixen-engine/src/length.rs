@@ -21,6 +21,11 @@
 //! without a shaped font; per CSS Values 4 § 6.2 "the advance measure '0'
 //! glyph ... when this would be impractical to determine, it must be assumed
 //! to be `0.5em`" — Vixen uses that `0.5em` fallback for both `ex` and `ch`.
+//! The default viewport units (`vw` / `vh` / `vi` / `vb`) resolve against the
+//! caller's current viewport; the explicit small / large / dynamic viewport
+//! families (`sv*` / `lv*` / `dv*`) resolve against their dedicated fields in
+//! [`LengthContext`], defaulting to the current viewport when the host layer has
+//! not reported browser-chrome deltas yet.
 //!
 //! Reference: <https://www.w3.org/TR/css-values-4/#lengths>.
 
@@ -53,6 +58,24 @@ pub enum Unit {
     Vb,
     Vmin,
     Vmax,
+    Svw,
+    Svh,
+    Svi,
+    Svb,
+    Svmin,
+    Svmax,
+    Lvw,
+    Lvh,
+    Lvi,
+    Lvb,
+    Lvmin,
+    Lvmax,
+    Dvw,
+    Dvh,
+    Dvi,
+    Dvb,
+    Dvmin,
+    Dvmax,
     /// Percentages are not strictly `<length>` but the layout math treats them
     /// as length-valued; they resolve against a caller-provided basis
     /// ([`LengthContext::percent_basis`]).
@@ -76,6 +99,24 @@ impl Unit {
                 | Unit::Vb
                 | Unit::Vmin
                 | Unit::Vmax
+                | Unit::Svw
+                | Unit::Svh
+                | Unit::Svi
+                | Unit::Svb
+                | Unit::Svmin
+                | Unit::Svmax
+                | Unit::Lvw
+                | Unit::Lvh
+                | Unit::Lvi
+                | Unit::Lvb
+                | Unit::Lvmin
+                | Unit::Lvmax
+                | Unit::Dvw
+                | Unit::Dvh
+                | Unit::Dvi
+                | Unit::Dvb
+                | Unit::Dvmin
+                | Unit::Dvmax
                 | Unit::Percent
         )
     }
@@ -100,6 +141,24 @@ impl Unit {
             Unit::Vb => "vb",
             Unit::Vmin => "vmin",
             Unit::Vmax => "vmax",
+            Unit::Svw => "svw",
+            Unit::Svh => "svh",
+            Unit::Svi => "svi",
+            Unit::Svb => "svb",
+            Unit::Svmin => "svmin",
+            Unit::Svmax => "svmax",
+            Unit::Lvw => "lvw",
+            Unit::Lvh => "lvh",
+            Unit::Lvi => "lvi",
+            Unit::Lvb => "lvb",
+            Unit::Lvmin => "lvmin",
+            Unit::Lvmax => "lvmax",
+            Unit::Dvw => "dvw",
+            Unit::Dvh => "dvh",
+            Unit::Dvi => "dvi",
+            Unit::Dvb => "dvb",
+            Unit::Dvmin => "dvmin",
+            Unit::Dvmax => "dvmax",
             Unit::Percent => "%",
         }
     }
@@ -253,6 +312,36 @@ impl Length {
             Unit::Vb => self.value / 100.0 * ctx.viewport_h as f64,
             Unit::Vmin => self.value / 100.0 * ctx.viewport_w.min(ctx.viewport_h) as f64,
             Unit::Vmax => self.value / 100.0 * ctx.viewport_w.max(ctx.viewport_h) as f64,
+            Unit::Svw => self.value / 100.0 * ctx.small_viewport_w as f64,
+            Unit::Svh => self.value / 100.0 * ctx.small_viewport_h as f64,
+            Unit::Svi => self.value / 100.0 * ctx.small_viewport_w as f64,
+            Unit::Svb => self.value / 100.0 * ctx.small_viewport_h as f64,
+            Unit::Svmin => {
+                self.value / 100.0 * ctx.small_viewport_w.min(ctx.small_viewport_h) as f64
+            }
+            Unit::Svmax => {
+                self.value / 100.0 * ctx.small_viewport_w.max(ctx.small_viewport_h) as f64
+            }
+            Unit::Lvw => self.value / 100.0 * ctx.large_viewport_w as f64,
+            Unit::Lvh => self.value / 100.0 * ctx.large_viewport_h as f64,
+            Unit::Lvi => self.value / 100.0 * ctx.large_viewport_w as f64,
+            Unit::Lvb => self.value / 100.0 * ctx.large_viewport_h as f64,
+            Unit::Lvmin => {
+                self.value / 100.0 * ctx.large_viewport_w.min(ctx.large_viewport_h) as f64
+            }
+            Unit::Lvmax => {
+                self.value / 100.0 * ctx.large_viewport_w.max(ctx.large_viewport_h) as f64
+            }
+            Unit::Dvw => self.value / 100.0 * ctx.dynamic_viewport_w as f64,
+            Unit::Dvh => self.value / 100.0 * ctx.dynamic_viewport_h as f64,
+            Unit::Dvi => self.value / 100.0 * ctx.dynamic_viewport_w as f64,
+            Unit::Dvb => self.value / 100.0 * ctx.dynamic_viewport_h as f64,
+            Unit::Dvmin => {
+                self.value / 100.0 * ctx.dynamic_viewport_w.min(ctx.dynamic_viewport_h) as f64
+            }
+            Unit::Dvmax => {
+                self.value / 100.0 * ctx.dynamic_viewport_w.max(ctx.dynamic_viewport_h) as f64
+            }
             Unit::Percent => self.value / 100.0 * ctx.percent_basis,
         }
     }
@@ -299,6 +388,24 @@ fn parse_unit(s: &str) -> Result<Unit, LengthParseError> {
         "vb" => Unit::Vb,
         "vmin" => Unit::Vmin,
         "vmax" => Unit::Vmax,
+        "svw" => Unit::Svw,
+        "svh" => Unit::Svh,
+        "svi" => Unit::Svi,
+        "svb" => Unit::Svb,
+        "svmin" => Unit::Svmin,
+        "svmax" => Unit::Svmax,
+        "lvw" => Unit::Lvw,
+        "lvh" => Unit::Lvh,
+        "lvi" => Unit::Lvi,
+        "lvb" => Unit::Lvb,
+        "lvmin" => Unit::Lvmin,
+        "lvmax" => Unit::Lvmax,
+        "dvw" => Unit::Dvw,
+        "dvh" => Unit::Dvh,
+        "dvi" => Unit::Dvi,
+        "dvb" => Unit::Dvb,
+        "dvmin" => Unit::Dvmin,
+        "dvmax" => Unit::Dvmax,
         "%" => Unit::Percent,
         other => return Err(LengthParseError::UnknownUnit(other.to_owned())),
     })
@@ -321,9 +428,41 @@ pub struct LengthContext {
     pub viewport_w: u32,
     /// Viewport height in px (`vh` / `vb`).
     pub viewport_h: u32,
+    /// Small viewport width in px (`svw` / `svi` / `svmin`/`svmax`).
+    pub small_viewport_w: u32,
+    /// Small viewport height in px (`svh` / `svb`).
+    pub small_viewport_h: u32,
+    /// Large viewport width in px (`lvw` / `lvi` / `lvmin`/`lvmax`).
+    pub large_viewport_w: u32,
+    /// Large viewport height in px (`lvh` / `lvb`).
+    pub large_viewport_h: u32,
+    /// Dynamic viewport width in px (`dvw` / `dvi` / `dvmin`/`dvmax`).
+    pub dynamic_viewport_w: u32,
+    /// Dynamic viewport height in px (`dvh` / `dvb`).
+    pub dynamic_viewport_h: u32,
     /// Percentage basis in px — property-dependent (containing-block size,
     /// font size, ...). The caller picks the right one before resolving.
     pub percent_basis: f64,
+}
+
+impl LengthContext {
+    /// Construct a context whose default, small, large, and dynamic viewport
+    /// families all resolve against the same dimensions. Host integrations can
+    /// override individual `small_*` / `large_*` / `dynamic_*` fields once the
+    /// browser chrome state is known.
+    pub fn for_viewport(width: u32, height: u32) -> Self {
+        Self {
+            viewport_w: width,
+            viewport_h: height,
+            small_viewport_w: width,
+            small_viewport_h: height,
+            large_viewport_w: width,
+            large_viewport_h: height,
+            dynamic_viewport_w: width,
+            dynamic_viewport_h: height,
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for LengthContext {
@@ -336,6 +475,12 @@ impl Default for LengthContext {
             root_font_px: 16.0,
             viewport_w: 800,
             viewport_h: 600,
+            small_viewport_w: 800,
+            small_viewport_h: 600,
+            large_viewport_w: 800,
+            large_viewport_h: 600,
+            dynamic_viewport_w: 800,
+            dynamic_viewport_h: 600,
             percent_basis: 0.0,
         }
     }
@@ -351,6 +496,12 @@ mod tests {
             root_font_px: 16.0,
             viewport_w: 1000,
             viewport_h: 500,
+            small_viewport_w: 900,
+            small_viewport_h: 450,
+            large_viewport_w: 1200,
+            large_viewport_h: 700,
+            dynamic_viewport_w: 960,
+            dynamic_viewport_h: 480,
             percent_basis: 400.0,
         }
     }
@@ -377,6 +528,24 @@ mod tests {
             ("10vb", Unit::Vb),
             ("5vmin", Unit::Vmin),
             ("5vmax", Unit::Vmax),
+            ("10svw", Unit::Svw),
+            ("10svh", Unit::Svh),
+            ("10svi", Unit::Svi),
+            ("10svb", Unit::Svb),
+            ("5svmin", Unit::Svmin),
+            ("5svmax", Unit::Svmax),
+            ("10lvw", Unit::Lvw),
+            ("10lvh", Unit::Lvh),
+            ("10lvi", Unit::Lvi),
+            ("10lvb", Unit::Lvb),
+            ("5lvmin", Unit::Lvmin),
+            ("5lvmax", Unit::Lvmax),
+            ("10dvw", Unit::Dvw),
+            ("10dvh", Unit::Dvh),
+            ("10dvi", Unit::Dvi),
+            ("10dvb", Unit::Dvb),
+            ("5dvmin", Unit::Dvmin),
+            ("5dvmax", Unit::Dvmax),
             ("50%", Unit::Percent),
         ] {
             let l = Length::parse(s).unwrap_or_else(|e| panic!("{s}: {e:?}"));
@@ -475,6 +644,39 @@ mod tests {
         // horizontal-tb: vi→vw, vb→vh (docs/ACCEPTANCE.md scope).
         assert!((Length::parse("50vi").unwrap().to_px(&c) - 500.0).abs() < 1e-9);
         assert!((Length::parse("50vb").unwrap().to_px(&c) - 250.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn viewport_variant_units_resolve_against_dedicated_contexts() {
+        let c = ctx();
+        // Small viewport: 900x450.
+        assert!((Length::parse("10svw").unwrap().to_px(&c) - 90.0).abs() < 1e-9);
+        assert!((Length::parse("10svh").unwrap().to_px(&c) - 45.0).abs() < 1e-9);
+        assert!((Length::parse("10svi").unwrap().to_px(&c) - 90.0).abs() < 1e-9);
+        assert!((Length::parse("10svb").unwrap().to_px(&c) - 45.0).abs() < 1e-9);
+        assert!((Length::parse("10svmin").unwrap().to_px(&c) - 45.0).abs() < 1e-9);
+        assert!((Length::parse("10svmax").unwrap().to_px(&c) - 90.0).abs() < 1e-9);
+
+        // Large viewport: 1200x700.
+        assert!((Length::parse("10lvw").unwrap().to_px(&c) - 120.0).abs() < 1e-9);
+        assert!((Length::parse("10lvh").unwrap().to_px(&c) - 70.0).abs() < 1e-9);
+        assert!((Length::parse("10lvmin").unwrap().to_px(&c) - 70.0).abs() < 1e-9);
+        assert!((Length::parse("10lvmax").unwrap().to_px(&c) - 120.0).abs() < 1e-9);
+
+        // Dynamic viewport: 960x480.
+        assert!((Length::parse("10dvw").unwrap().to_px(&c) - 96.0).abs() < 1e-9);
+        assert!((Length::parse("10dvh").unwrap().to_px(&c) - 48.0).abs() < 1e-9);
+        assert!((Length::parse("10dvmin").unwrap().to_px(&c) - 48.0).abs() < 1e-9);
+        assert!((Length::parse("10dvmax").unwrap().to_px(&c) - 96.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn for_viewport_initialises_all_viewport_families() {
+        let c = LengthContext::for_viewport(360, 640);
+        assert!((Length::parse("100vw").unwrap().to_px(&c) - 360.0).abs() < 1e-9);
+        assert!((Length::parse("100svw").unwrap().to_px(&c) - 360.0).abs() < 1e-9);
+        assert!((Length::parse("100lvh").unwrap().to_px(&c) - 640.0).abs() < 1e-9);
+        assert!((Length::parse("100dvb").unwrap().to_px(&c) - 640.0).abs() < 1e-9);
     }
 
     #[test]

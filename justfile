@@ -1,5 +1,6 @@
-# Vixen justfile. Recipe names referenced from docs/PLAN.md and
-# docs/ACCEPTANCE.md: `check-all-host`, `test-host`, `size-fp`, `run`.
+# Vixen justfile. Recipe names referenced from docs/PLAN.md,
+# docs/MILESTONES.md, and docs/ACCEPTANCE.md: `check-all-host`, `test-host`,
+# `gate-*`, `size-fp`, `run`.
 #
 # The GNOME 50 SDK is NOT installed on the host; it is managed inside a
 # flatpak-builder container. See docs/guidance/gnome-sdk-flatpak-builder.md
@@ -56,6 +57,81 @@ fmt-check:
 
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
+
+# --- Executable gates --------------------------------------------------------
+# These are current, runnable milestone gates. They complement (not replace)
+# the broader release acceptance checks in docs/ACCEPTANCE.md.
+
+# Reviewer smoke: formatting, linting, and all host-runnable tests.
+gate-smoke: fmt-check clippy test-host
+
+# Phase 2 vertical gate: SpiderMonkey eval through the headless binary.
+gate-phase2:
+    test "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/dom/basic.html --eval '1+2')" = "3"
+
+# Phase 3 current gate: DOM parse + Stylo selector matching through the shared
+# Page facade and the WPT fixture runner. Full computed cascade extends this.
+gate-phase3:
+    cargo test -p vixen-engine doc
+    cargo test -p vixen-engine style_dom
+    cargo test -p vixen-engine page
+    cargo test -p vixen-headless --test wpt_runner
+
+# Phase 4 current gate: pure layout-resolution prep plus the first executable
+# Page-backed line-layout slice (`vixen-headless --dump-lines`).
+gate-phase4:
+    cargo test -p vixen-engine line_layout
+    cargo test -p vixen-engine box_model
+    cargo test -p vixen-engine flex_resolve
+    cargo test -p vixen-engine grid_resolve
+    cargo test -p vixen-engine writing_modes
+    cargo test -p vixen-engine multicol
+    cargo test -p vixen-engine scroll_snap
+    case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/layout/boxes.html --viewport 120x200 --dump-lines)" in *"line 1:"*) true;; *) false;; esac
+
+# Phase 5 current gate: display-list contract + paint-geometry/compositing prep
+# until the WebRender renderer lands behind Page.
+gate-phase5:
+    cargo test -p vixen-engine display_list
+    cargo test -p vixen-engine transform
+    cargo test -p vixen-engine border_radius
+    cargo test -p vixen-engine gradient
+    cargo test -p vixen-engine radial_gradient
+    cargo test -p vixen-engine conic_gradient
+    cargo test -p vixen-engine box_shadow
+    cargo test -p vixen-engine background_position
+    cargo test -p vixen-engine stacking_context
+    cargo test -p vixen-engine blend
+    cargo test -p vixen-engine filter
+    cargo test -p vixen-engine border_image
+    cargo test -p vixen-engine clip_path
+    cargo test -p vixen-engine mask
+    cargo test -p vixen-engine animation
+    cargo test -p vixen-engine geometry
+
+# Phase 6 current gate: DOM/forms/network-host pure prep + responsive images.
+gate-phase6:
+    cargo test -p vixen-engine forms
+    cargo test -p vixen-engine form_submission
+    cargo test -p vixen-engine dataset
+    cargo test -p vixen-engine storage_key
+    cargo test -p vixen-engine url_search_params
+    cargo test -p vixen-engine mime
+    cargo test -p vixen-engine text_codec
+    cargo test -p vixen-engine html_serialize
+    cargo test -p vixen-engine class_list
+    cargo test -p vixen-engine calc
+    cargo test -p vixen-engine easing
+    cargo test -p vixen-engine media_query
+    cargo test -p vixen-engine source_size
+    cargo test -p vixen-engine responsive_select
+    cargo test -p vixen-engine structured_clone
+    cargo test -p vixen-engine message_port
+    cargo test -p vixen-engine range
+    cargo test -p vixen-engine history
+    cargo test -p vixen-engine mutation_observer
+    cargo test -p vixen-engine traversal
+    cargo test -p vixen-engine whatwg_url
 
 # --- Fuzz (docs/PLAN.md Phase 1 gate: 1M iterations each) --------------------
 # Requires `cargo install cargo-fuzz` and a nightly toolchain.

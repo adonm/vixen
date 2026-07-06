@@ -27,8 +27,10 @@ and reference material, plus:
   html5ever → RcDom) with `--dump-dom`/`--extract-text`; **selector matching
   via Stylo** (`vixen-engine::style_dom` implementing `selectors::Element` over
   the RcDom), driving `--extract-selector` and the WPT selector fixtures;
-  and the **WPT harness** (`vixen-wpt`: manifest + runner + all 13 check
-  types). The full Stylo cascade (`TNode`/`TElement`/`TDocument` +
+  the shared `vixen-engine::page::Page` facade; inline `style` declarations now
+  project through `Page::computed_style(node_id)` and WPT `computed-style`
+  checks; and the **WPT harness** (`vixen-wpt`: manifest + runner + all 13
+  check types). The full Stylo cascade (`TNode`/`TElement`/`TDocument` +
   `Stylist::update_stylist` + `computed_values_for(node_id)`) is the next
   slice; Stylo arrives via the crates.io-published `stylo` crate per
   ADR-011 (no Servo git dep).
@@ -55,7 +57,10 @@ and reference material, plus:
   (`start`/`end`/`center` per axis, clamped to the scrollable range) + the
   `scroll-snap-type` axis/strictness + `scroll-snap-align`/`scroll-snap-stop`
   model the scroll layer's snap targeting reduces to. All six ready for
-  `layout_2020` to feed off.
+  `layout_2020` to feed off. The first vertical layout surface is live:
+  `vixen-engine::line_layout` + `Page::dump_lines` power
+  `vixen-headless --dump-lines` with deterministic body-text line boxes until
+  the full positioned box tree replaces the text-width estimate.
 - **Phase 5 prep** — `vixen-engine::display_list` (all eight `SPEC.md`
   display-list invariants) + the paint-geometry family it will consume:
   `vixen-engine::transform` (CSS Transforms 1 § 13 2D affine algebra +
@@ -125,15 +130,19 @@ and reference material, plus:
   `element.classList` / `relList` / `sandbox` host-hook reflection. The CSS
   Values 4 dimension family (`length`,
   `color`, `angle`, `time`, `resolution`) — the value primitives the
-  cascade/layout/paint resolves against — is now complete for v1.0; pure
-  sRGB colour arithmetic + interpolation, premultiplied alpha, hue/unit
-  normalisation, and dots-per-pixel conversion are all Rust-unit-tested and
-  ready for the cascade + WebRender to consume. The responsive-image
+  cascade/layout/paint resolves against — is now complete for v1.0; `<length>`
+  includes logical viewport units plus the small/large/dynamic viewport
+  families (`sv*`/`lv*`/`dv*`), pure sRGB colour arithmetic + interpolation,
+  premultiplied alpha, hue/unit normalisation, and dots-per-pixel conversion
+  are all Rust-unit-tested and ready for the cascade + WebRender to consume.
+  The responsive-image
   selection family (`media_query`, `source_size`, `responsive_select`)
   completes the WHATWG § 4.8.4.6–§ 4.8.4.8 pipeline end-to-end: CSS Media
-  Queries 4 condition evaluation against a `Viewport`, the `<img sizes>`
-  source-size-list parser, and the § 4.8.4.8 density-based source selection
-  (incl. the `<picture>`/`<source media>` art-direction walk). The
+  Queries 4 condition evaluation against a `Viewport` (including `screen` /
+  `print` output contexts and `any-hover` / `any-pointer` aggregate input
+  devices), the `<img sizes>` source-size-list parser, and the § 4.8.4.8
+  density-based source selection (incl. the `<picture>`/`<source media>`
+  art-direction walk). The
   value-resolution primitives `calc` (CSS Values 4 § 10 `calc()`/`min()`/
   `max()`/`clamp()` with full § 10.7 dimension type-checking) and `easing`
   (CSS Easing 1 `cubic-bezier`/`steps`/`linear` timing functions) cover the

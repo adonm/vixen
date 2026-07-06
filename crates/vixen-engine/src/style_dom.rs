@@ -620,6 +620,17 @@ fn direct_text(node: &Node) -> String {
 // ---------------------------------------------------------------------------
 
 impl Document {
+    /// Element by the stable 1-based document-order `node_id` used by WPT
+    /// checks and inspector DTOs.
+    pub fn element_by_node_id(&self, node_id: usize) -> Option<MatchedElement> {
+        let idx = node_id.checked_sub(1)?;
+        let arena = ElementArena::build(&self.dom.document);
+        if idx >= arena.len() {
+            return None;
+        }
+        Some(MatchedElement::from_node(arena.node(idx), node_id))
+    }
+
     /// All elements matching `selector`, in document order. Each element's
     /// `node_id` is its 1-based document-order index among elements — the
     /// stable correlation key for WPT `computed-style`/`element-attribute`.
@@ -849,6 +860,20 @@ mod tests {
         // IDs are sequential in document order.
         let nids: Vec<_> = matches.iter().map(|m| m.node_id).collect();
         assert_eq!(nids, (1..=6).skip(3).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn element_by_node_id_uses_same_stable_ids_as_queries() {
+        let d = doc(
+            "<html><body><section><p id='target' style='display: grid'></p></section></body></html>",
+        );
+        let target = d.query_first(&sel("#target")).unwrap();
+        let by_id = d.element_by_node_id(target.node_id).unwrap();
+        assert_eq!(by_id.id.as_deref(), Some("target"));
+        assert_eq!(by_id.tag, "p");
+        assert_eq!(by_id.attributes, target.attributes);
+        assert!(d.element_by_node_id(0).is_none());
+        assert!(d.element_by_node_id(usize::MAX).is_none());
     }
 
     #[test]

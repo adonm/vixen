@@ -355,6 +355,38 @@ mod tests {
         assert_eq!(url.as_deref(), Some("first.jpg"));
     }
 
+    #[test]
+    fn picture_walk_respects_print_media_context() {
+        let sources = [("print", "print.jpg"), ("screen", "screen.jpg")];
+        let screen = vp(800.0, 600.0, 1.0);
+        assert_eq!(
+            select_source(sources, "default.jpg", "100vw", &screen).as_deref(),
+            Some("screen.jpg")
+        );
+
+        let print = screen.with_media_type(crate::media_query::MediaType::Print);
+        assert_eq!(
+            select_source(sources, "default.jpg", "100vw", &print).as_deref(),
+            Some("print.jpg")
+        );
+    }
+
+    #[test]
+    fn picture_walk_respects_any_pointer_media() {
+        let sources = [
+            ("(pointer: coarse)", "primary-coarse.jpg"),
+            ("(any-pointer: coarse)", "any-coarse.jpg"),
+        ];
+        let mut hybrid = vp(800.0, 600.0, 1.0);
+        hybrid.pointer = crate::media_query::PointerAccuracy::Fine;
+        hybrid.any_pointer = crate::media_query::PointerCapabilities::fine_and_coarse();
+
+        assert_eq!(
+            select_source(sources, "default.jpg", "100vw", &hybrid).as_deref(),
+            Some("any-coarse.jpg")
+        );
+    }
+
     // --- Descriptor access sanity --------------------------------------
 
     #[test]

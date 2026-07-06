@@ -159,14 +159,16 @@ impl SourceSizeList {
         // Source-size lengths resolve viewport-relative units against the
         // actual viewport; percentages are not valid in `sizes` but resolve
         // against the viewport width if they somehow appear.
-        LengthContext {
-            viewport_w: vp.width_px.round().max(0.0) as u32,
-            viewport_h: vp.height_px.round().max(0.0) as u32,
-            // Source-size lengths are viewport-relative: a bare `vw` resolves
-            // to viewport width; `em`/`rem` use the default font (16px).
-            percent_basis: vp.width_px,
-            ..LengthContext::default()
-        }
+        // Source-size lengths are viewport-relative: a bare `vw` resolves to
+        // viewport width; `em`/`rem` use the default font (16px). Percentages
+        // are not valid in `sizes`, but if one sneaks through, resolve it
+        // against the viewport width as the least-surprising fallback.
+        let mut ctx = LengthContext::for_viewport(
+            vp.width_px.round().max(0.0) as u32,
+            vp.height_px.round().max(0.0) as u32,
+        );
+        ctx.percent_basis = vp.width_px;
+        ctx
     }
 }
 

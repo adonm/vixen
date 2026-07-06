@@ -9,6 +9,10 @@ Tick-tock discipline applies throughout: each phase is a *tick*
 removal, module ≤ 1 kLOC, references cited). See `docs/ACCEPTANCE.md`
 for the per-phase gates.
 
+For the executable vertical slice order, use [`docs/MILESTONES.md`](MILESTONES.md):
+large browser features should extend `vixen_engine::page::Page` and prove the
+slice with a `just gate-*` command, not land only as isolated prep modules.
+
 ---
 
 ## Phase 0 — Scaffolding (≈ 3 days)
@@ -118,7 +122,16 @@ Wire up HTML parsing and CSS cascade.
    `--extract-selector`, the WPT selector checks, and the
    `:valid`/`:invalid`/`:checked` pseudos. Phase 3's gate (WPT CSS
    fixtures) now passes against the selector surface.
-3. `vixen-engine/src/style.rs` (next slice): load `<style>` / `<link
+   The shared `vixen-engine::page::Page` facade now owns URL + parsed document
+   state for headless and WPT; cascade/layout/paint slices extend that facade
+   in order.
+3. **Inline computed-style projection (done) — `Page::computed_style`** maps
+   the stable selector `node_id` back to the element and returns parsed inline
+   `style` declarations with inline `!important` precedence and
+   last-declaration-wins inside each priority tier.
+   This lights up the WPT `computed-style` check type for the first vertical
+   style fixture while failing closed for elements without inline style.
+4. `vixen-engine/src/style.rs` (next slice): load `<style>` / `<link
    rel=stylesheet>` into `Stylesheet` list → `Stylist::update_stylist`
    → cascade via Stylo's `SharedStyleContext` / traversal. Expose
    `computed_values_for(NodeId) -> Arc<ComputedValues>`. Requires
@@ -127,14 +140,15 @@ Wire up HTML parsing and CSS cascade.
    `reference-browsers/firefox/servo/components/script/dom/` for DOM
    node patterns and `reference-browsers/firefox/servo/components/style/dom.rs`
    for the trait definitions being implemented.
-4. CSS-wide keywords, `@layer`, `@property`, `@import`, `@supports`,
+5. CSS-wide keywords, `@layer`, `@property`, `@import`, `@supports`,
    `@media`, `@keyframes`, custom properties + `var()` all come free
    from Stylo. Verify via WPT fixtures.
 
 **Pure-logic foundation landed (testing-strategy item).**
 `vixen-engine::length` implements CSS Values 4 `<length>` parsing + the
 absolute/relative unit conversions the cascade and layout resolves against
-(`px`/`em`/`rem`/`%`/`vh`/`vw`/`vmin`/`vmax`/`ex`/`ch`/`pt`/`pc`/`in`/`cm`/`mm`/`Q`).
+(`px`/`em`/`rem`/`%`/`vh`/`vw`/`vi`/`vb`/`vmin`/`vmax`/`sv*`/`lv*`/`dv*`/
+`ex`/`ch`/`pt`/`pc`/`in`/`cm`/`mm`/`Q`).
 Rust-unit-tested per "Rust tests cover only pure logic (CSS length
 arithmetic, …)".
 
@@ -191,6 +205,12 @@ Turn cascade output into a positioned box tree.
    layout engine, produce a positioned box tree.
 3. CSS Grid, Flexbox, block layout, all `position` values, scroll
    containers — all from the upstream `layout_2020` crate.
+
+**Vertical line-layout slice landed.** `vixen-engine::line_layout` and
+`Page::dump_lines` now turn body text into deterministic line boxes for the
+headless `--dump-lines` flag. This is the first executable Phase 4 surface
+behind the shared `Page` facade; the full layout adapter replaces the
+text-width estimate with real style/layout boxes without changing the CLI seam.
 
 **Gate:** Visual-hash WPT check on 20+ fixtures matches reference
 baseline within tolerance. Specifically, nested-flex/grid + padding +
@@ -858,10 +878,12 @@ family is now complete end-to-end.
   the `<media-type>` prefix (`screen`/`print`/`all` with `not`/`only`), and
   the `min-`/`max-` prefix decode into a `Range` constraint (`min-width` ≡
   `width >=`). `MediaQuery::matches` evaluates against a `Viewport` (CSS-px
-  width/height, DPR, derived orientation, colour depth, hover/pointer,
+  width/height, DPR, derived orientation, output context (`screen`/`print`),
+  colour depth, primary hover/pointer, aggregate `any-hover`/`any-pointer`,
   `prefers-color-scheme`, `prefers-reduced-motion`). The § 4 features
   implemented: `width`/`height`/`aspect-ratio`/`orientation`/`resolution`/
-  `color`/`hover`/`pointer`/`prefers-color-scheme`/`prefers-reduced-motion`,
+  `color`/`hover`/`pointer`/`any-hover`/`any-pointer`/
+  `prefers-color-scheme`/`prefers-reduced-motion`,
   with the § 4.3 boolean form (`(hover)`, `(color)`) and the
   `<general-enclosed>` fail-closed rule (unknown ⇒ `false`).
 - `vixen-engine::source_size` — WHATWG HTML § 4.8.4.7 "Parsing a sizes
@@ -884,7 +906,8 @@ family is now complete end-to-end.
 - `fixtures/dom/sizes.html` — exercises every `<img sizes>` / `<source media>`
   authoring form (mobile-first + three-tier conditional lists, the bare-length
   default, em-based sizes, the `<picture>` art-direction surface with
-  min/max-width and orientation media queries); wired into
+  min/max-width, orientation, output-context, and aggregate input-device media
+  queries); wired into
   `fixtures/manifest.json`.
 
 **Pure-logic foundation landed for CSS value-resolution + easing (Phase 3/6 prep).**

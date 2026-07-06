@@ -653,13 +653,9 @@ mod tests {
 
     fn ctx() -> LengthContext {
         // percent_basis = 400 so 50% = 200 for the assertions.
-        LengthContext {
-            font_px: 16.0,
-            root_font_px: 16.0,
-            viewport_w: 800,
-            viewport_h: 600,
-            percent_basis: 400.0,
-        }
+        let mut ctx = LengthContext::for_viewport(800, 600);
+        ctx.percent_basis = 400.0;
+        ctx
     }
 
     // --- Pure number arithmetic ----------------------------------------

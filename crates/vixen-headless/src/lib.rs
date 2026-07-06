@@ -2,11 +2,10 @@
 //!
 //! Phase 2 implements the CLI flag surface (docs/SPEC.md "Headless CLI
 //! surface") and wires `--url`/`--eval` to the SpiderMonkey runtime
-//! (`vixen-engine::script`). The Phase 2 gate is
-//! `vixen-headless --url <file> --eval '1+2'` → `3`. Render/DOM/CDP flags are
-//! accepted and dispatched with the **stable error codes** preserved exactly
-//! (`unsupported.screenshot`, `invalid-selector`); their full implementation
-//! lands in later phases.
+//! (`vixen-engine::script`). Phase 3 DOM/selector paths run through
+//! `vixen_engine::page::Page`. Render/CDP-only flags are accepted and dispatched
+//! with the **stable error codes** preserved exactly (`unsupported.screenshot`,
+//! `invalid-selector`); their full implementation lands in later phases.
 
 #![forbid(unsafe_code)]
 
@@ -15,8 +14,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
-use vixen_engine::doc::Document;
 use vixen_engine::engine_error::codes;
+use vixen_engine::page::Page;
 use vixen_engine::script::JsRuntime;
 
 pub mod cdp;
@@ -124,10 +123,16 @@ pub fn run(cli: Cli) -> ExitCode {
         return run_eval(js, &cli);
     }
 
-    // --dump-dom / --extract-text: parse the URL's HTML and print.
+    // --dump-dom / --extract-text / --dump-lines: parse the URL's HTML and print.
     // (file:// only for now — HTTP fetch lands with the engine pipeline.)
-    if cli.dump_dom || cli.extract_text {
-        return run_dom_dump(url, cli.dump_dom, cli.extract_text);
+    if cli.dump_dom || cli.extract_text || cli.dump_lines {
+        return run_dom_outputs(
+            url,
+            cli.dump_dom,
+            cli.extract_text,
+            cli.dump_lines,
+            &cli.viewport,
+        );
     }
 
     // --screenshot requires the offscreen renderer (Phase 5). Without it the
@@ -147,7 +152,6 @@ pub fn run(cli: Cli) -> ExitCode {
     // Remaining flags need the DOM/layout/paint stack (Phases 3–8).
     let unimplemented = [
         cli.dump_display_list,
-        cli.dump_lines,
         cli.click_at.is_some(),
         cli.focus.is_some(),
         cli.submit_form.is_some(),
@@ -207,7 +211,7 @@ fn run_cdp_server(port: u16) -> ExitCode {
 fn run_extract_selector(url: &str, sel: &str) -> ExitCode {
     use vixen_engine::style_dom::Selector;
 
-    let parsed = match Selector::parse(sel) {
+    let _parsed = match Selector::parse(sel) {
         Ok(s) => s,
         Err(_) => {
             eprintln!("{}", codes::INVALID_SELECTOR);
@@ -215,21 +219,21 @@ fn run_extract_selector(url: &str, sel: &str) -> ExitCode {
         }
     };
 
-    let html = match load_url_source(url) {
-        Ok(h) => h,
+    let page = match load_page(url) {
+        Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let doc = match Document::parse(&html) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error: parse failed: {e}");
+    let matches = match page.query_selector_all(sel) {
+        Ok(matches) => matches,
+        Err(_) => {
+            eprintln!("{}", codes::INVALID_SELECTOR);
             return ExitCode::FAILURE;
         }
     };
-    for m in doc.query_all(&parsed) {
+    for m in matches {
         // One JSON object per line — jq-friendly. Field set matches
         // vixen-wpt's `MatchedElement` projection.
         let json = serde_json::json!({
@@ -278,31 +282,64 @@ fn run_eval(js: &str, cli: &Cli) -> ExitCode {
     }
 }
 
-/// `--dump-dom` / `--extract-text`: parse the URL's HTML and print the tree
-/// or the visible text. `file://` only — HTTP fetch lands with the engine
-/// pipeline (Phase 6).
-fn run_dom_dump(url: &str, dump_dom: bool, extract_text: bool) -> ExitCode {
-    let html = match load_url_source(url) {
-        Ok(h) => h,
+/// `--dump-dom` / `--extract-text` / `--dump-lines`: parse the URL's HTML and
+/// print the requested DOM/layout projections. `file://` only — HTTP fetch lands
+/// with the engine pipeline (Phase 6).
+fn run_dom_outputs(
+    url: &str,
+    dump_dom: bool,
+    extract_text: bool,
+    dump_lines: bool,
+    viewport: &str,
+) -> ExitCode {
+    let page = match load_page(url) {
+        Ok(p) => p,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let doc = match Document::parse(&html) {
-        Ok(d) => d,
-        Err(e) => {
-            eprintln!("error: parse failed: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
     if dump_dom {
-        print!("{}", doc.dump());
+        print!("{}", page.dump_dom());
     }
     if extract_text {
-        println!("{}", doc.text_content());
+        println!("{}", page.text_content());
+    }
+    if dump_lines {
+        let viewport = match parse_viewport(viewport) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("error: {e}");
+                return ExitCode::from(2);
+            }
+        };
+        print!("{}", page.dump_lines(viewport));
     }
     ExitCode::SUCCESS
+}
+
+fn parse_viewport(input: &str) -> Result<(u32, u32), String> {
+    let Some((w, h)) = input.split_once('x').or_else(|| input.split_once('X')) else {
+        return Err("--viewport must be WIDTHxHEIGHT".to_owned());
+    };
+    let w: u32 = w
+        .parse()
+        .map_err(|_| "--viewport width must be a positive integer".to_owned())?;
+    let h: u32 = h
+        .parse()
+        .map_err(|_| "--viewport height must be a positive integer".to_owned())?;
+    if w == 0 || h == 0 {
+        return Err("--viewport dimensions must be positive".to_owned());
+    }
+    Ok((w, h))
+}
+
+/// Load and parse a page through the shared engine facade. This is the single
+/// vertical integration entry for headless DOM/selector surfaces until the full
+/// network/style/layout/paint pipeline grows behind `vixen_engine::page::Page`.
+fn load_page(url: &str) -> Result<Page, String> {
+    let html = load_url_source(url)?;
+    Page::from_html(url.to_owned(), &html).map_err(|e| format!("parse failed: {e}"))
 }
 
 /// Read a page's source. Only `file://` is supported until the networked
@@ -424,6 +461,35 @@ mod tests {
         let url = format!("file://{}", html.display());
         let cli = parse(&["--url", url.as_str(), "--extract-selector", "p.x"]);
         assert_eq!(run(cli), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn dump_lines_runs_through_page_layout_facade() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("lines.html");
+        std::fs::write(
+            &html,
+            "<html><head><title>Hidden</title></head><body><p>one two three four</p></body></html>",
+        )
+        .unwrap();
+        let url = format!("file://{}", html.display());
+        let cli = parse(&[
+            "--url",
+            url.as_str(),
+            "--viewport",
+            "56x200",
+            "--dump-lines",
+        ]);
+        assert_eq!(run(cli), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn viewport_parser_rejects_bad_dimensions() {
+        assert_eq!(parse_viewport("800x600").unwrap(), (800, 600));
+        assert_eq!(parse_viewport("800X600").unwrap(), (800, 600));
+        assert!(parse_viewport("800").is_err());
+        assert!(parse_viewport("0x600").is_err());
+        assert!(parse_viewport("800xnope").is_err());
     }
 
     #[test]
