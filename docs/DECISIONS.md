@@ -396,9 +396,8 @@ and `relm4-components` reuse.
   re-entrancy, no GTK mutate-from-background bugs.
 - Stronger dependency on Relm4 upstream. Track `relm4` releases;
   breaking changes (rare) require shell-side updates.
-- `reference-browsers/relm4/examples/` and
-  `reference-browsers/relm4/relm4-components/` are the primary
-  reference for any new shell widget.
+- `.tmp/ref/relm4/examples/` and `.tmp/ref/relm4/relm4-components/` are the
+  primary reference for any new shell widget.
 
 ---
 
@@ -451,3 +450,101 @@ not patch crates.io, do not vendor the source. Implement
 - Future Stylo releases may shift trait shapes (`TElement` etc.). Pin
   `stylo = "0.18"` and bump deliberately; track upstream
   `https://github.com/servo/stylo/releases`.
+
+---
+
+## ADR-012: Verify and pin the layout source before the full layout adapter
+
+**Status:** accepted
+
+**Context.** ADR-001 selected Servo `layout_2020` for layout. The refreshed
+Firefox/Servo reference pin (`46e9f12a8f9b`) no longer contains the historical
+`servo/components/layout_2020/` or `servo/components/layout/` trees; the
+current Servo subtree under Firefox contains Stylo and selector support only.
+Continuing to cite removed paths would make implementation decisions
+non-reproducible.
+
+**Decision.** Keep the Phase 4 executable line-layout slice behind
+`vixen_engine::page::Page`, but do not add a full layout dependency or cite
+historical Servo layout paths until a current Rust layout source is verified
+and pinned in `docs/REFERENCES.md`. If no maintained Servo-family layout source
+is available, narrow the v1.0 layout scope explicitly in `docs/COMPAT.md`
+rather than silently swapping to an unrelated fallback crate.
+
+**Alternatives considered.**
+
+- *Keep citing the old Firefox/Servo layout paths.* Rejected: those paths are
+  absent from the current reference pin and violate the citation discipline.
+- *Switch immediately to an unrelated layout crate.* Rejected: ADR-001's
+  compatibility rationale still applies; a fallback would need its own ADR and
+  acceptance impact.
+
+**Consequences.**
+
+- Phase 3 Stylo work remains unblocked: `style`/`selectors` are present and
+  pinned via the current Firefox/Servo reference and the crates.io `stylo`
+  dependency.
+- Phase 4 can continue with vertical `Page` fixtures and pure layout helpers,
+  but the full positioned-box-tree adapter has an explicit source-selection
+  gate.
+- Future layout commits must cite either the new layout source pin or the
+  narrowed v1.0 compatibility document, not historical `layout_2020` paths.
+
+---
+
+## ADR-013: Vixen-owned Rust layout, Ladybird architecture reference
+
+**Status:** accepted
+
+**Supersedes:** ADR-001's `layout_2020` layout row and ADR-012's open
+source-selection gate.
+
+**Context.** The refreshed Firefox/Servo reference pin no longer contains a
+maintained Rust layout crate. Keeping layout blocked on historical Servo paths
+would stop the vertical browser slices, while switching to a generic UI layout
+crate would not implement web layout semantics. Ladybird's LibWeb layout stack
+at `0de15a5dd2a9` is a current, readable browser-layout architecture:
+`Libraries/LibWeb/Layout/TreeBuilder.cpp` centralizes DOM-to-layout-tree
+construction, `Libraries/LibWeb/Layout/*FormattingContext*` separates block,
+inline, flex, grid, and table algorithms, and `Libraries/LibWeb/Painting/`
+keeps paint/display-list construction behind a later seam.
+
+**Decision.** Vixen owns its layout engine in Rust. Stylo remains the CSS
+cascade/computed-value source, SpiderMonkey remains the JS engine, and
+WebRender remains the only paint backend. The layout layer follows Ladybird's
+architecture but uses Rust/data-oriented internals: stable `NodeId` /
+`LayoutNodeId` handles, arenas, compact structs/enums, explicit dirty bits,
+cached intrinsic sizes, and deterministic formatting-context passes.
+
+The v1.0 layout target is not "all of CSS layout." It is the subset needed for
+simple real pages and the release WPT profile: normal-flow block layout, inline
+line boxes, basic replaced elements, margin/border/padding/box sizing,
+positioned descendants, overflow/scroll containers, and useful flex/grid
+coverage. Tables, floats, fragmentation, full vertical writing, advanced
+intrinsic sizing, and complete print/page layout are post-v1 unless promoted by
+WPT/real-site evidence.
+
+**Alternatives considered.**
+
+- *Keep waiting for Servo `layout_2020`.* Rejected: it is absent from the
+  current Firefox/Servo reference pin and would leave Phase 4 without a
+  reproducible source path.
+- *Use a generic UI layout crate.* Rejected: UI-layout crates do not implement
+  web layout semantics, cascade interactions, inline formatting, fragmentation,
+  or WPT-compatible CSS behavior.
+- *Port Ladybird C++ directly.* Rejected: Vixen should reuse the architecture
+  and tests, not import C++ ownership patterns or create a transliteration that
+  fights Rust.
+
+**Consequences.**
+
+- Vixen's compatibility claim narrows: Firefox/Servo-family cascade, selector,
+  JS, and paint components, but Vixen-owned layout with WPT-gated coverage.
+- Layout becomes a core Vixen subsystem and a multi-phase effort. The plan must
+  prefer small vertical slices through `Page`, not large unexercised layout
+  modules.
+- Every layout semantic decision cites either Ladybird layout/painting paths at
+  `0de15a5dd2a9` for architecture or Firefox/Stylo/WebRender paths at
+  `46e9f12a8f9b` for computed values and rendering contracts.
+- `docs/COMPAT.md` is release-blocking and must state the WPT profile, achieved
+  pass rates, and known layout gaps honestly.

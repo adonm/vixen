@@ -2,8 +2,9 @@
 
 Release is "done" when every gate below passes. Per-capability criteria
 are expressed as fixture passes plus specific invariants; this document
-does not re-list the web-platform features that come from the upstream
-crates (see [`SPEC.md`](SPEC.md) for Vixen's actual contracts).
+does not re-list the delegated web-platform features or the Vixen-owned
+layout subset (see [`SPEC.md`](SPEC.md) and [`COMPAT.md`](COMPAT.md) for the
+actual contracts).
 
 ---
 
@@ -23,7 +24,8 @@ crates (see [`SPEC.md`](SPEC.md) for Vixen's actual contracts).
       placeholders)
 - [ ] `vixen-headless` reproduces every flag in `SPEC.md` "Headless CLI
       surface" with stable error codes preserved
-- [ ] WPT CSS+DOM fixture share ≥ 70 %
+- [ ] WPT target profile in `docs/COMPAT.md` is green; measured pass counts
+      are published for every supported category
 - [ ] Binary sizes meet §"Binary size gates" below
 - [ ] `docs/COMPAT.md` published with honest capability matrix
 - [ ] `cargo audit` clean; `cargo deny` checks pass
@@ -56,13 +58,15 @@ dedicated `fixtures/events/focus-order.html`).
 
 ### Layout
 
-**Done when** every fixture in `fixtures/css/` that exercises layout
-passes its visual-hash check, and nested-container coordinates are
-correct *without* any post-pass fixup. A realworld fixture set
-(`fixtures/realworld/`) renders without obvious breakage.
+**Done when** the Vixen-owned Rust layout engine (ADR-013) passes the v1 WPT
+target profile in `docs/COMPAT.md`: normal-flow block layout, inline line
+boxes, margin/border/padding/box sizing, positioned descendants,
+overflow/scroll containers, and useful flex/grid coverage. Nested-container
+coordinates must be correct *without* any post-pass fixup. A realworld fixture
+set (`fixtures/realworld/`) renders without obvious breakage.
 
-Documented gaps allowed in `docs/COMPAT.md`: writing modes,
-page fragmentation (post-v1.0).
+Documented gaps allowed in `docs/COMPAT.md`: tables, floats, full vertical
+writing, fragmentation/pagination, and advanced intrinsic sizing.
 
 ### Paint
 
@@ -132,7 +136,9 @@ drop the flag.
 - Runs the full `fixtures/manifest.json`
 - Every check type in `SPEC.md` passes its existing assertions
 - The new `ref-equivalent` check works against at least 3 fixtures
-- Reports pass rate per category and overall
+- Reports pass count/rate per category and overall
+- Separates local Vixen fixtures from imported upstream WPT fixtures so release
+  notes can state exactly what was measured
 
 ### Shell
 
@@ -174,7 +180,7 @@ Restated from `PLAN.md` as the per-phase acceptance check.
 | 1 — Net + store crown jewels      | `cargo test -p vixen-net -p vixen-store` green; fuzz 1 M iters stable                 |
 | 2 — SpiderMonkey                  | `just gate-phase2` (`vixen-headless --url <file> --eval '1+2'` returns `3`)           |
 | 3 — HTML + Stylo                  | `just gate-phase3`; then WPT CSS fixtures pass with cascade output correct            |
-| 4 — Layout                        | `just gate-phase4`; then 20+ visual-hash fixtures match reference                     |
+| 4 — Vixen-owned layout            | `just gate-phase4`; then the v1 WPT layout target profile in `docs/COMPAT.md` is green |
 | 5 — Paint                         | `just gate-phase5`; then `just run` shows a page and headless PNG diff ≤ 1 %          |
 | 6 — Host bindings                 | `just gate-phase6`; then `fixtures/{dom,events,forms,storage,network}/` all pass      |
 | 7 — Security                      | `cargo audit` clean; all security tests green; fuzz stable                            |
@@ -196,7 +202,8 @@ implicit non-goals:
 - macOS / Windows native builds (rejected for v1.0, ADR-007)
 - WebGPU (v1.1, via `wgpu`)
 - Media playback (v1.1, via GStreamer)
-- Writing modes / vertical text (v1.1)
+- Full writing modes / vertical text (v1.1)
+- Tables, floats, advanced intrinsic sizing (v1.1/v1.2, WPT-prioritized)
 - Page fragmentation / pagination (v1.2)
 - Service workers (v1.2)
 - WebRTC (not planned)

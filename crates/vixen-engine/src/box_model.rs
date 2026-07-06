@@ -323,7 +323,13 @@ pub fn resolve_box_model(input: &BoxModelInput) -> BoxModel {
     // CSS2 § 10.6.3: `auto` margins top/bottom are `0` for in-flow blocks.
     let mt = input.margin.top.px().unwrap_or(0.0);
     let mb = input.margin.bottom.px().unwrap_or(0.0);
-    let content_h = input.height.px().unwrap_or(0.0).max(0.0);
+    let content_h = match input.height {
+        LengthOrAuto::Auto => 0.0,
+        LengthOrAuto::Px(decl) if input.box_sizing == BoxSizing::BorderBox => {
+            (decl - input.border.block_sum() - input.padding.block_sum()).max(0.0)
+        }
+        LengthOrAuto::Px(decl) => decl.max(0.0),
+    };
 
     BoxModel {
         margin: Edges {
@@ -400,6 +406,32 @@ mod tests {
         assert!((m.content_w - 240.0).abs() < 1e-4, "got {}", m.content_w);
         // Border-box size is the declared 300.
         assert!((m.border_box().w - 300.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn definite_border_box_height_subtracts_vertical_chrome() {
+        let i = BoxModelInput {
+            box_sizing: BoxSizing::BorderBox,
+            containing_inline: 1000.0,
+            margin: AutoEdges::px_all(0.0),
+            border: Edges {
+                top: 3.0,
+                right: 0.0,
+                bottom: 3.0,
+                left: 0.0,
+            },
+            padding: Edges {
+                top: 5.0,
+                right: 0.0,
+                bottom: 5.0,
+                left: 0.0,
+            },
+            width: LengthOrAuto::Auto,
+            height: LengthOrAuto::Px(40.0),
+        };
+        let m = resolve_box_model(&i);
+        assert_eq!(m.content_h, 24.0);
+        assert_eq!(m.border_box().h, 40.0);
     }
 
     #[test]

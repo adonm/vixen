@@ -4,7 +4,7 @@
 //! surface") and wires `--url`/`--eval` to the SpiderMonkey runtime
 //! (`vixen-engine::script`). Phase 3 DOM/selector paths run through
 //! `vixen_engine::page::Page`. The first layout/paint projections are exposed
-//! through `--dump-lines`, `--dump-display-list`, and `--paint-stats`;
+//! through `--dump-layout-tree`, `--dump-lines`, `--dump-display-list`, and `--paint-stats`;
 //! renderer/CDP-only flags keep the stable error codes (`unsupported.screenshot`,
 //! `invalid-selector`) until their later phases land.
 
@@ -61,6 +61,10 @@ pub struct Cli {
     /// Dump inline layout lines.
     #[arg(long)]
     pub dump_lines: bool,
+
+    /// Dump the Vixen layout tree.
+    #[arg(long)]
+    pub dump_layout_tree: bool,
 
     /// Dispatch a MouseEvent at coordinates (X,Y).
     #[arg(long)]
@@ -124,24 +128,17 @@ pub fn run(cli: Cli) -> ExitCode {
         return run_eval(js, &cli);
     }
 
-    // --dump-dom / --extract-text / --dump-lines / --dump-display-list /
-    // --paint-stats: parse the URL's HTML and print.
+    // --dump-dom / --extract-text / --dump-layout-tree / --dump-lines /
+    // --dump-display-list / --paint-stats: parse the URL's HTML and print.
     // (file:// only for now — HTTP fetch lands with the engine pipeline.)
     if cli.dump_dom
         || cli.extract_text
+        || cli.dump_layout_tree
         || cli.dump_lines
         || cli.dump_display_list
         || cli.paint_stats
     {
-        return run_dom_outputs(
-            url,
-            cli.dump_dom,
-            cli.extract_text,
-            cli.dump_lines,
-            cli.dump_display_list,
-            cli.paint_stats,
-            &cli.viewport,
-        );
+        return run_dom_outputs(url, &cli);
     }
 
     // --screenshot requires the offscreen renderer (Phase 5). Without it the
@@ -289,19 +286,11 @@ fn run_eval(js: &str, cli: &Cli) -> ExitCode {
     }
 }
 
-/// `--dump-dom` / `--extract-text` / `--dump-lines` / `--dump-display-list` /
-/// `--paint-stats`: parse the URL's HTML and print the requested
+/// `--dump-dom` / `--extract-text` / `--dump-layout-tree` / `--dump-lines` /
+/// `--dump-display-list` / `--paint-stats`: parse the URL's HTML and print the requested
 /// DOM/layout/paint projections. `file://` only — HTTP fetch lands with the
 /// engine pipeline (Phase 6).
-fn run_dom_outputs(
-    url: &str,
-    dump_dom: bool,
-    extract_text: bool,
-    dump_lines: bool,
-    dump_display_list: bool,
-    paint_stats: bool,
-    viewport: &str,
-) -> ExitCode {
+fn run_dom_outputs(url: &str, cli: &Cli) -> ExitCode {
     let page = match load_page(url) {
         Ok(p) => p,
         Err(e) => {
@@ -309,33 +298,40 @@ fn run_dom_outputs(
             return ExitCode::FAILURE;
         }
     };
-    let viewport = if dump_lines || dump_display_list || paint_stats {
-        match parse_viewport(viewport) {
-            Ok(v) => Some(v),
-            Err(e) => {
-                eprintln!("error: {e}");
-                return ExitCode::from(2);
+    let viewport =
+        if cli.dump_layout_tree || cli.dump_lines || cli.dump_display_list || cli.paint_stats {
+            match parse_viewport(&cli.viewport) {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    eprintln!("error: {e}");
+                    return ExitCode::from(2);
+                }
             }
-        }
-    } else {
-        None
-    };
-    if dump_dom {
+        } else {
+            None
+        };
+    if cli.dump_dom {
         print!("{}", page.dump_dom());
     }
-    if extract_text {
+    if cli.extract_text {
         println!("{}", page.text_content());
     }
-    if dump_lines {
+    if cli.dump_layout_tree {
+        print!(
+            "{}",
+            page.dump_layout_tree(viewport.expect("viewport parsed"))
+        );
+    }
+    if cli.dump_lines {
         print!("{}", page.dump_lines(viewport.expect("viewport parsed")));
     }
-    if dump_display_list {
+    if cli.dump_display_list {
         print!(
             "{}",
             page.dump_display_list(viewport.expect("viewport parsed"))
         );
     }
-    if paint_stats {
+    if cli.paint_stats {
         print!(
             "{}",
             page.dump_paint_stats(viewport.expect("viewport parsed"))
@@ -425,6 +421,7 @@ mod tests {
             "--dump-dom",
             "--dump-display-list",
             "--dump-lines",
+            "--dump-layout-tree",
             "--click-at",
             "10,20",
             "--focus",
@@ -441,7 +438,7 @@ mod tests {
         assert_eq!(cli.url.as_deref(), Some("https://example.com"));
         assert_eq!(cli.viewport, "1280x720");
         assert_eq!(cli.cdp_port, 9999);
-        assert!(cli.dump_dom && cli.cdp && cli.incremental);
+        assert!(cli.dump_dom && cli.dump_layout_tree && cli.cdp && cli.incremental);
     }
 
     #[test]
@@ -505,6 +502,26 @@ mod tests {
             "--viewport",
             "56x200",
             "--dump-lines",
+        ]);
+        assert_eq!(run(cli), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn dump_layout_tree_runs_through_page_layout_facade() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("layout-tree.html");
+        std::fs::write(
+            &html,
+            "<html><head><title>Hidden</title></head><body><main id='root'><p>one two</p></main></body></html>",
+        )
+        .unwrap();
+        let url = format!("file://{}", html.display());
+        let cli = parse(&[
+            "--url",
+            url.as_str(),
+            "--viewport",
+            "120x200",
+            "--dump-layout-tree",
         ]);
         assert_eq!(run(cli), ExitCode::SUCCESS);
     }

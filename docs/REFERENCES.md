@@ -11,38 +11,42 @@ tree state.
 
 ---
 
-## Pin table (captured 2026-06-17)
+## Pin table (captured 2026-07-06 from branch HEADs)
 
 | Reference      | Upstream                                                          | Pinned revision    | Branch | Used for |
 |----------------|-------------------------------------------------------------------|--------------------|--------|----------|
-| **Firefox**    | `https://github.com/mozilla-firefox/firefox.git`                  | `1d85bc4044b2`     | `main` | CSS property definitions, DOM API behavior, layout internals, WPT test selection. Also hosts the `servo/` subtree (see below). |
-| **Servo** (under Firefox tree) | vendored at `firefox/servo/` @ `1d85bc4044b2`        | (same as Firefox)  | —      | **Primary rewrite reference.** Stylo (`components/style/`), `mozjs` host binding patterns (`components/script/bindings/`), layout crate (`components/layout_2020/` or `components/layout/`), WebRender consumer patterns. |
-| **Ladybird**   | `https://github.com/LadybirdBrowser/ladybird.git`                 | `347ac79e7b7c`     | `master` | Engine subsystem seams (LibWeb/LibGfx), readable C++ implementation slices for sanity-checking Rust ports. |
-| **GNOME Web (Epiphany)** | `https://gitlab.gnome.org/GNOME/epiphany.git`            | `cb66369c9ae3`     | `main` | GTK4/libadwaita shell patterns, WebKitGTK embedding, GSettings usage, Flatpak manifest conventions. |
-| **Obscura**    | `https://github.com/h4ckf0r0day/obscura.git`                      | `cd889d56596d`     | `main` | Headless CLI design, CDP server patterns, single-binary distribution. |
-| **Relm4**      | `https://github.com/Relm4/relm4.git`                              | `7b8251cbc109`     | `main` | Relm4 component patterns, factory widgets, async actions. The `examples/` (45) and `relm4-components/` directories are the primary value. |
+| **Firefox**    | `https://github.com/mozilla-firefox/firefox.git`                  | `46e9f12a8f9b`     | `main` | CSS property definitions, DOM API behavior, JS/realm/rooting discipline, WebRender internals, WPT test selection. Also hosts the `servo/` Stylo subtree (see below). |
+| **Servo Stylo** (under Firefox tree) | vendored at `firefox/servo/` @ `46e9f12a8f9b` | (same as Firefox) | —      | **Primary CSS reference.** Stylo (`components/style/`), selectors (`components/selectors/`), and supporting Servo crates. Current Firefox HEAD does **not** carry the old Servo script/layout crates. |
+| **Ladybird**   | `https://github.com/LadybirdBrowser/ladybird.git`                 | `0de15a5dd2a9`     | `master` | **Primary layout architecture reference.** LibWeb DOM/style/layout/paint seams, TreeBuilder, formatting contexts, display-list construction. |
+| **GNOME Web (Epiphany)** | `https://gitlab.gnome.org/GNOME/epiphany.git`            | `21e02b9a272d`     | `main` | GTK4/libadwaita shell patterns, WebKitGTK embedding, GSettings usage, Flatpak manifest conventions. |
+| **Obscura**    | `https://github.com/h4ckf0r0day/obscura.git`                      | `ca71ce3c2da9`     | `main` | Headless CLI design, CDP server patterns, single-binary distribution. |
+| **Relm4**      | `https://github.com/Relm4/relm4.git`                              | `1ee9b5208b8b`     | `main` | Relm4 component patterns, factory widgets, async actions. The `examples/` and `relm4-components/` directories are the primary value. |
 
 ---
 
 ## How to consult each
 
-### Firefox / Servo subtree (`firefox/` checkout)
+### Firefox / Servo Stylo subtree (`firefox/` checkout)
 
-The Firefox checkout is large (~4 GB). Only the `servo/` subtree is
-relevant to the rewrite — Firefox's own `dom/`, `layout/`, and `gfx/` are
-the C++ originals; the Rust implementations under `servo/` are what we
-actually depend on.
+The Firefox checkout is large. For Vixen, use a sparse checkout containing
+the Rust-facing pieces we can cite directly plus the Firefox C++ seams that
+show API contracts:
 
 ```
-firefox/servo/components/style/                    ← Stylo. Read this for CSS.
-firefox/servo/components/script/                   ← DOM. Big; consult for patterns, don't depend on the crate directly.
-firefox/servo/components/script/bindings/          ← mozjs host-binding codegen patterns. Read before writing any new ClassBuilder wrapper.
-firefox/servo/components/layout_2020/              ← modern layout crate (preferred over components/layout/).
-firefox/servo/components/layout/                   ← legacy layout crate; richer feature coverage if layout_2020 is too sparse.
-firefox/servo/components/gfx/                      ← font + image helper types.
-firefox/servo/components/net/                      ← network trait shapes (we keep our own reqwest stack).
-firefox/servo/ports/script_bindings/               ← additional mozjs glue.
+firefox/servo/components/style/                    ← Stylo. Read this for CSS cascade/computed values.
+firefox/servo/components/selectors/                ← selector engine used by Stylo.
+firefox/gfx/wr/webrender_api/src/                  ← WebRender display-list API.
+firefox/gfx/webrender_bindings/                    ← Firefox ↔ WebRender transaction/builder bridge.
+firefox/js/public/                                 ← SpiderMonkey rooting/realm APIs.
+firefox/dom/bindings/                              ← WebIDL binding and wrapping discipline.
+firefox/dom/webidl/                                ← DOM API surface contracts.
+firefox/dom/base/                                  ← DOM API behavior and selector delegation.
 ```
+
+Current Firefox HEAD (`46e9f12a8f9b`) does **not** include
+`servo/components/layout_2020/`, `servo/components/layout/`, or
+`servo/components/script/`. Do not cite those removed historical paths.
+Vixen-owned layout uses Ladybird as the architecture reference per ADR-013.
 
 When in doubt about a CSS computed value, search
 `firefox/servo/components/style/properties/` for the property name —
@@ -51,12 +55,14 @@ longhands, shorthands, and computed-value logic all live there.
 ### Ladybird (`ladybird/`)
 
 Use Ladybird when a question is **architectural** ("how do other engines
-seam X from Y?") rather than **specification-level**. Its C++ is unusually
-readable for a browser engine.
+seam X from Y?") rather than **specification-level**. Per ADR-013, Vixen's
+Rust layout engine follows Ladybird's layout architecture, not its C++
+ownership model.
 
 ```
 ladybird/Libraries/LibWeb/                         ← DOM, CSS, layout, paint (cleanly seamed)
 ladybird/Libraries/LibWeb/CSS/                     ← cascade + stylesheet model
+ladybird/Libraries/LibWeb/Layout/TreeBuilder.cpp   ← styled DOM → layout tree seam
 ladybird/Libraries/LibWeb/Layout/                  ← formatting contexts
 ladybird/Libraries/LibWeb/Painting/                ← display-list construction
 ladybird/Libraries/LibGfx/                         ← rasteriser fallback
@@ -98,31 +104,33 @@ relm4/relm4/src/                                   ← factory, actions, message
 
 ## Re-cloning fresh
 
-If the `reference-browsers/` directory is unavailable, clone each at the
-pinned revision:
+If `.tmp/ref/` is unavailable, clone each at the pinned revision:
 
 ```sh
-mkdir -p reference-browsers && cd reference-browsers
+mkdir -p .tmp/ref && cd .tmp/ref
 
-git clone https://github.com/mozilla-firefox/firefox.git
-git -C firefox checkout 1d85bc4044b2
+git clone --depth 1 --filter=blob:none --sparse --branch main https://github.com/mozilla-firefox/firefox.git
+git -C firefox sparse-checkout set servo gfx/wr gfx/layers/wr gfx/webrender_bindings dom/webidl dom/base dom/bindings js/public
+git -C firefox checkout 46e9f12a8f9b
 
-git clone https://github.com/LadybirdBrowser/ladybird.git
-git -C ladybird checkout 347ac79e7b7c
+git clone --depth 1 --filter=blob:none --sparse --branch master https://github.com/LadybirdBrowser/ladybird.git
+git -C ladybird sparse-checkout set Libraries/LibWeb Libraries/LibGfx
+git -C ladybird checkout 0de15a5dd2a9
 
-git clone https://gitlab.gnome.org/GNOME/epiphany.git gnome-web
-git -C gnome-web checkout cb66369c9ae3
+git clone --depth 1 --filter=blob:none --sparse --branch main https://gitlab.gnome.org/GNOME/epiphany.git gnome-web
+git -C gnome-web sparse-checkout set src data flatpak
+git -C gnome-web checkout 21e02b9a272d
 
-git clone https://github.com/h4ckf0r0day/obscura.git
-git -C obscura checkout cd889d56596d
+git clone --depth 1 --filter=blob:none --branch main https://github.com/h4ckf0r0day/obscura.git
+git -C obscura checkout ca71ce3c2da9
 
-git clone https://github.com/Relm4/relm4.git
-git -C relm4 checkout 7b8251cbc109
+git clone --depth 1 --filter=blob:none --sparse --branch main https://github.com/Relm4/relm4.git
+git -C relm4 sparse-checkout set examples relm4-components relm4/src
+git -C relm4 checkout 1ee9b5208b8b
 ```
 
-Disk budget: ~4 GB for Firefox (only `firefox/servo/` is needed; the rest
-can be `rm -rf`'d after checkout to reclaim space), ~600 MB Ladybird,
-~150 MB GNOME Web, ~30 MB each for Obscura and Relm4.
+Disk budget depends on sparse settings. Keep the checkouts in `.tmp/ref/`
+or another ignored workspace; avoid committing reference trees.
 
 ---
 
@@ -135,5 +143,8 @@ reference citations):
 - **Every implementation commit** cites at least one path + commit hash from
   a reference tree explaining *why* the behaviour is correct.
 - **Every tock** (post-phase hardening) cites at least four reference paths.
-- Commit hashes are the **short form of the pin above** (`1d85bc4044`,
-  `347ac79e7b`, etc.), never `HEAD` or `main`.
+- Commit hashes are the **short form of the pin above** (`46e9f12a8f`,
+  `0de15a5dd2`, etc.), never `HEAD` or `main`.
+- When a reference path goes stale, refresh the affected checkout to the
+  current branch HEAD and update this file in the same change; do not leave
+  implementation comments pointing at historical paths that no longer exist.

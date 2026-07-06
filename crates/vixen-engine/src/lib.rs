@@ -45,6 +45,7 @@ pub mod headers;
 pub mod high_res_time;
 pub mod history;
 pub mod html_serialize;
+pub mod layout_tree;
 pub mod length;
 pub mod line_layout;
 pub mod list_marker;

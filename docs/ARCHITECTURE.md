@@ -25,14 +25,16 @@ vixen/                                  # workspace root
 │   │       └── http_helpers.rs
 │   ├── vixen-store/                     # persistence (redb)
 │   │   └── src/lib.rs
-│   ├── vixen-engine/                      # engine integration glue
+│   ├── vixen-engine/                      # engine integration glue + Vixen-owned layout
 │   │   └── src/
 │   │       ├── lib.rs
 │   │       ├── engine.rs                # Engine: load lifecycle, history
 │   │       ├── doc.rs                   # Document impl of Stylo TNode/TElement
 │   │       ├── style.rs                 # Stylo cascade driver
 │   │       ├── script.rs                # mozjs runtime + compartment per origin
-│   │       ├── layout.rs                # Servo layout crate adapter
+│   │       ├── layout.rs                # Vixen-owned Rust layout entry point
+│   │       ├── layout_tree.rs           # styled DOM → arena-backed layout tree
+│   │       ├── formatting_context.rs    # block/inline/flex/grid layout algorithms
 │   │       ├── paint.rs                 # display list → WebRender (single paint path; consumes the GlContext trait, two impls)
 │   │       ├── snapshot.rs              # PageSnapshot, ElementInfo
 │   │       ├── inspector.rs             # inspect_element_at, computed-style export
@@ -94,7 +96,7 @@ vixen-shell           vixen-engine        vixen-wpt       vixen-headless
 (GTK4 + Relm4; owns   (Stylo, mozjs,    (manifest +     (CLI + CDP; EGL
  gtk4::GLArea as       webrender,        runner;          surfaceless
  GlAreaSurface;        html5ever,        consumes         SurfacelessSurface;
- EngineWorker/tab)     Servo layout)     EngineInspector  dev-dep: vixen-wpt)
+ EngineWorker/tab)     Vixen layout)     EngineInspector  dev-dep: vixen-wpt)
                           │
                           ▼
                        vixen-net   (leaf — HTTP, cookies, CSP,
@@ -147,7 +149,7 @@ vixen-engine::doc::Document::from_dom              (Stylo-compatible DOM)
 vixen-engine::style::cascade                       (Stylo traversal)
  │  → per-element ComputedValues
  ▼
-vixen-engine::layout::layout                       (Servo layout_2020)
+vixen-engine::layout::layout                       (Vixen-owned Rust layout; ADR-013)
  │  → positioned box tree
  ▼
 vixen-engine::paint::build_display_list            (single display list)
@@ -168,6 +170,13 @@ EGL_KHR_surfaceless with a pbuffer fallback) provides a GPU context
 without one. A headless Wayland compositor (`weston` / `cage` on a
 virtual output) is an opt-in fallback when full compositor semantics
 (pointer focus, XDG toplevel) are needed for CDP interaction tests.
+
+Layout is Vixen-owned Rust code per ADR-013. The browser-engine seam mirrors
+Ladybird's architecture at `0de15a5dd2a9`: a single tree builder converts the
+styled DOM into layout nodes, then block/inline/flex/grid formatting contexts
+produce geometry. Internally the Vixen implementation stays data-oriented
+(stable node ids, arenas, explicit invalidation bits) rather than exposing a
+pointer-heavy object graph across crates.
 
 ---
 

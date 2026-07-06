@@ -21,7 +21,8 @@ use crate::display_list::{
     PaintStats, Rect, TextRun, dump_paint_commands, dump_paint_stats,
 };
 use crate::doc::{Document, ParseError};
-use crate::line_layout::{LineBox, LineLayoutConfig, dump_line_boxes, layout_text_lines};
+use crate::layout_tree::{LayoutTree, build_layout_tree, dump_layout_tree, line_boxes_from_tree};
+use crate::line_layout::{LineBox, dump_line_boxes};
 use crate::style_cascade::AuthorStylesheet;
 use crate::style_dom::Selector;
 
@@ -76,13 +77,23 @@ impl Page {
         self.document.text_content()
     }
 
-    /// First executable Phase 4 layout slice: body text wrapped into stable
-    /// line boxes for a viewport.
+    /// First Vixen-owned layout tree slice: styled DOM projected into an
+    /// arena-backed tree with stable layout-node ids.
+    pub fn layout_tree(&self, viewport: (u32, u32)) -> LayoutTree {
+        build_layout_tree(&self.document, viewport, |node_id| {
+            self.computed_style(node_id)
+        })
+    }
+
+    /// Deterministic layout-tree dump (`vixen-headless --dump-layout-tree`).
+    pub fn dump_layout_tree(&self, viewport: (u32, u32)) -> String {
+        dump_layout_tree(&self.layout_tree(viewport))
+    }
+
+    /// First executable Phase 4 line slice: the layout tree's visible text
+    /// wrapped into stable line boxes for a viewport.
     pub fn layout_lines(&self, viewport: (u32, u32)) -> Vec<LineBox> {
-        layout_text_lines(
-            &self.document.body_text_content(),
-            LineLayoutConfig::for_viewport(viewport),
-        )
+        line_boxes_from_tree(&self.layout_tree(viewport))
     }
 
     /// Text dump for `vixen-headless --dump-lines`.
@@ -339,6 +350,38 @@ mod tests {
         assert!(dump.contains("line 1:"));
         assert!(dump.contains("text=\"one\""));
         assert!(!dump.contains("Hidden title"));
+    }
+
+    #[test]
+    fn dump_layout_tree_runs_behind_page_facade() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<style>#drop { display: none }</style><main id='root'><p>Keep</p><p id='drop'>Drop</p></main>",
+        )
+        .unwrap();
+        let dump = page.dump_layout_tree((120, 200));
+        assert!(dump.contains("# layout-tree viewport=120x200"));
+        assert!(dump.contains("tag=main id=root"));
+        assert!(dump.contains("text=\"Keep\""));
+        assert!(!dump.contains("Drop"));
+        assert!(!dump.contains("id=drop"));
+    }
+
+    #[test]
+    fn layout_tree_consumes_author_box_model_styles() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<style>#box { width: 40px; height: 20px; padding: 5px; border-width: 2px; }</style><div id='box'>x</div>",
+        )
+        .unwrap();
+        let tree = page.layout_tree((120, 200));
+        let node = tree
+            .nodes
+            .iter()
+            .find(|node| node.html_id.as_deref() == Some("box"))
+            .unwrap();
+        assert_eq!(node.rect, Rect::new(8.0, 8.0, 54.0, 34.0));
+        assert_eq!(node.boxes.content, Rect::new(15.0, 15.0, 40.0, 20.0));
     }
 
     #[test]

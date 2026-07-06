@@ -12,7 +12,7 @@ fixture in `fixtures/manifest.json`.
 | `just gate-smoke` | fmt, clippy, all host tests | reviewer baseline before commit/push |
 | `just gate-phase2` | `vixen-headless --eval '1+2'` through SpiderMonkey | DOM/document host bindings |
 | `just gate-phase3` | HTML parse + Stylo selector matching + author/inline computed-style cascade through `Page` + WPT fixtures | full Stylo `Stylist`/computed values behind `Page::computed_style` |
-| `just gate-phase4` | layout pure-logic prep + Page-backed text line boxes through `vixen-headless --dump-lines` | real box tree via layout adapter |
+| `just gate-phase4` | layout pure-logic prep + Page-backed layout tree / text line boxes through `vixen-headless --dump-layout-tree` and `--dump-lines` | richer Vixen formatting contexts |
 | `just gate-phase5` | display-list + paint prep + Page-backed text display list/stats through `vixen-headless --dump-display-list` + `--paint-stats` | WebRender screenshot path through `Page` |
 | `just gate-phase6` | DOM/forms/network-host pure prep | actual host hooks, events, forms, history, responsive images |
 
@@ -23,10 +23,13 @@ fixture in `fixtures/manifest.json`.
    specificity, source order, and `!important`. Next: replace the compact
    projection with Stylo `Stylist` computed values. Proof:
    `just gate-phase3 && just gate-smoke`.
-2. **Layout slice** — `Page::dump_lines` now emits deterministic body-text line
-   boxes for `vixen-headless --dump-lines`. Next: feed computed styles into the
-   layout adapter and replace the text-only boxes with the positioned box tree.
-   Proof: `just gate-phase4 && just gate-smoke`.
+2. **Layout slice** — `Page::dump_layout_tree` now emits the first
+   arena-backed Vixen layout tree, basic block box-model styles
+   (`width`/`height`/`margin`/`border`/`padding`/`box-sizing`) influence node
+   boxes, and `Page::dump_lines` derives line boxes from that tree. Next: enrich
+   the inline/flex/grid formatting-context passes and replace text-only boxes
+   with positioned fragments. Proof:
+   `just gate-phase4 && just gate-smoke`.
 3. **Display-list slice** — `Page::display_list` now converts the first line
    layout into invariant-enforced paint commands and exposes
    `vixen-headless --dump-display-list`; `--paint-stats` reports command counts

@@ -138,9 +138,9 @@ Wire up HTML parsing and CSS cascade.
    `computed_values_for(NodeId) -> Arc<ComputedValues>`. Requires
    implementing the full `TNode` / `TElement` / `TDocument` traits;
    budget 3–4 days for trait conformance. Consult
-   `reference-browsers/firefox/servo/components/script/dom/` for DOM
-   node patterns and `reference-browsers/firefox/servo/components/style/dom.rs`
-   for the trait definitions being implemented.
+   `.tmp/ref/firefox/dom/base/` for DOM API behavior and
+   `.tmp/ref/firefox/servo/components/style/dom.rs` for the Stylo trait
+   definitions being implemented.
 5. CSS-wide keywords, `@layer`, `@property`, `@import`, `@supports`,
    `@media`, `@keyframes`, custom properties + `var()` all come free
    from Stylo. Verify via WPT fixtures.
@@ -192,32 +192,53 @@ pending step 4.)
 
 ---
 
-## Phase 4 — Layout (≈ 1–2 weeks)
+## Phase 4 — Vixen-owned Rust layout (≈ 4–8 weeks for v1 subset)
 
 Turn cascade output into a positioned box tree.
 
 **Steps:**
 
-1. Add Servo `layout_2020` crate to `vixen-engine` (per ADR-001 and
-   `docs/REFERENCES.md`). Confirm dependency closure is workable; if
-   `layout_2020` coverage proves too sparse for real sites, narrow the
-   v1.0 layout scope and document the gap in `docs/COMPAT.md` rather
-   than swapping crates.
-2. `vixen-engine/src/layout.rs`: feed the cascade output + DOM into the
-   layout engine, produce a positioned box tree.
-3. CSS Grid, Flexbox, block layout, all `position` values, scroll
-   containers — all from the upstream `layout_2020` crate.
+1. Build Vixen's Rust layout engine per ADR-013. The architecture reference is
+   Ladybird LibWeb at `0de15a5dd2a9`, especially
+   `.tmp/ref/ladybird/Libraries/LibWeb/Layout/TreeBuilder.cpp` and
+   `.tmp/ref/ladybird/Libraries/LibWeb/Layout/*FormattingContext*`.
+2. `vixen-engine/src/layout_tree.rs`: convert the Stylo-computed DOM into an
+   arena-backed layout tree with stable `LayoutNodeId`s, explicit dirty bits,
+   and no cross-crate pointers.
+3. `vixen-engine/src/layout.rs` / `formatting_context.rs`: run block, inline,
+   flex, and grid formatting-context passes over that tree and produce
+   positioned fragments.
+4. Feed positioned fragments into the existing display-list builder; layout
+   never owns a paint backend.
+5. Tables, floats, full vertical writing, page fragmentation, and advanced
+   intrinsic sizing are post-v1 unless a WPT/real-site gate promotes them.
 
-**Vertical line-layout slice landed.** `vixen-engine::line_layout` and
-`Page::dump_lines` now turn body text into deterministic line boxes for the
-headless `--dump-lines` flag. This is the first executable Phase 4 surface
-behind the shared `Page` facade; the full layout adapter replaces the
-text-width estimate with real style/layout boxes without changing the CLI seam.
+**Implementation crate note.** Keep the layout engine Vixen-owned, but use
+small helper crates where they reduce risk without taking over web layout
+semantics: `smallvec` for common-case child/fragment lists, `bitflags` for
+dirty/invalidation state, `slotmap`/`thunderdome` if raw arena ids become
+error-prone, and `euclid` when replacing ad-hoc geometry with typed units.
+Defer text-specific crates (`rustybuzz`, `fontdb`, `unicode-linebreak`,
+`unicode-bidi`, `unicode-segmentation`) until the inline formatting slice.
+Do not use generic UI layout engines (`taffy`, `stretch`, etc.) for CSS layout
+without a new ADR.
+
+**Vertical layout-tree slice landed.** `vixen-engine::layout_tree` now builds
+the first arena-backed Vixen layout tree behind `Page::layout_tree`, and
+`vixen-headless --dump-layout-tree` exposes a deterministic dump. The first
+block formatting-context slice consumes cascade-projected `width`/`height`,
+`margin`, `border-width`/`border`, `padding`, and `box-sizing` through the
+existing `box_model` resolver, so authored block dimensions now affect node
+boxes. The existing `Page::dump_lines` projection derives visible text from the
+tree instead of raw body text, keeping the line-layout and paint surfaces on the
+same spine. Next slices replace the text-width estimate with styled
+inline/flex/grid formatting-context fragments without changing the CLI seam.
 
 **Gate:** Visual-hash WPT check on 20+ fixtures matches reference
 baseline within tolerance. Specifically, nested-flex/grid + padding +
 margins + gaps must produce correct absolute coordinates *without* any
-post-pass coordinate fixup (`layout_2020` doesn't need it).
+post-pass coordinate fixup. `docs/COMPAT.md` records the achieved WPT profile
+for the shipped subset.
 
 **Pure-logic foundation landed (Phase 4 prep).**
 `vixen-engine::box_model` implements the CSS2 § 10.3.3 block-level
@@ -234,9 +255,9 @@ under-fill, shrink otherwise), the inflexible-item freeze step, the
 proportional free-space distribution (scaled by `shrink × flex_basis` for
 the shrink case), and the iterative min/max-violation clamping that
 terminates when every item is frozen. Pure given cascade-resolved
-`flex-basis` + `grow`/`shrink` + `min`/`max` per item; cross-axis (alignment
-+ line packing) stays in `layout_2020` where it composes against real text
-metrics.
+`flex-basis` + `grow`/`shrink` + `min`/`max` per item. Cross-axis alignment
+and line packing stay in Vixen's formatting-context pass where they compose
+against real text metrics.
 
 **CSS Grid track sizing landed (Phase 4 prep).**
 `vixen-engine::grid_resolve` implements CSS Grid 1 § 12.5 "Distribute
@@ -252,9 +273,9 @@ equally when leftover remains (§ 11.7). The constructors ([`GridTrack::fr`]
 for `1fr`, [`GridTrack::minmax`] for `minmax(min, max, fr)`,
 [`GridTrack::length`] for fixed) cover the common authoring forms. Pure
 given definite base sizes; content-based sizing (`min-content`/`max-content`/
-`auto`) and multi-track spanning items stay in `layout_2020` where they
-compose against real text-shaping (the caller folds each spanning item's
-contribution into the track `base` before calling).
+`auto`) and multi-track spanning items stay in Vixen's formatting-context pass
+where they compose against real text-shaping (the caller folds each spanning
+item's contribution into the track `base` before calling).
 
 [`GridTrack`]: ../../crates/vixen-engine/src/grid_resolve.rs
 [`GridTrack::fr`]: ../../crates/vixen-engine/src/grid_resolve.rs
@@ -316,8 +337,8 @@ Rust-unit-tested.
   [`ResolvedColumns::total_width`] + [`ResolvedColumns::overflows`] report
   the row geometry (the gaps-alone-overflow case). The `column-gap: normal`
   → `1em` length resolution, the § 8 `column-fill: balance` height
-  balancing, the `column-rule` paint, and `column-span: all` stay in
-  `layout_2020` / the paint path (they compose against real text metrics).
+  balancing, the `column-rule` paint, and `column-span: all` stay in Vixen's
+  formatting-context / paint path (they compose against real text metrics).
 
 [`ColumnWidth`]: ../../crates/vixen-engine/src/multicol.rs
 [`ColumnCount`]: ../../crates/vixen-engine/src/multicol.rs
@@ -1521,16 +1542,18 @@ Final tock before v1.0.
    release.
 4. Binary size measurement: `just size-fp`. Confirm targets per
    `docs/ACCEPTANCE.md`.
-5. WPT fixture share ≥ 70 % for CSS+DOM. Migrate remaining Rust tests.
-6. Write `docs/COMPAT.md` — the honest capability matrix (what works,
-   what's partial, what's missing, what's planned for v1.1/v1.2).
+5. WPT target profile from `docs/COMPAT.md` is green. Migrate remaining
+   end-to-end CSS+DOM assertions out of Rust tests where an HTML fixture can
+   cover the behavior.
+6. Update `docs/COMPAT.md` with measured pass counts, known gaps, and the
+   next-release WPT expansion plan.
 7. Write user-facing release notes.
 
 **Gate:** every release gate in `docs/ACCEPTANCE.md` green. Tag `v1.0.0`.
 
 ---
 
-## Total: ~12–14 weeks of focused work.
+## Total: ~16–22 weeks of focused work.
 
 ---
 
@@ -1591,11 +1614,11 @@ previous release.
 | `mozjs` build complexity                          | Medium     | High   | Use system libmozjs where possible. Vendor mozjs as a Flatpak module (ADR-005).     |
 | EGL surfaceless unavailable on some CI runners    | Low        | Medium | `LIBGL_ALWAYS_SOFTWARE=1` + Mesa `llvmpipe` covers every Linux runner.              |
 | `gtk4::GLArea` context sharing with WebRender     | Medium     | High   | Validate in Phase 5 first week. Fallback: render to FBO, blit to GLArea with a tex. |
-| `layout_2020` coverage too sparse for real sites  | Medium     | Medium | Narrow v1.0 layout scope; document gaps in `docs/COMPAT.md`. No fallback crate (per ACCEPTANCE.md hard gate). |
-| SpiderMonkey GC + Rust ownership friction         | Medium     | Medium | Follow `reference-browsers/firefox/servo/components/script/bindings/` patterns.     |
+| Vixen-owned layout takes longer than planned      | High       | High   | Keep Phase 4 vertical through `Page`; ship only the WPT-profiled v1 subset and document gaps in `docs/COMPAT.md` (ADR-013). |
+| SpiderMonkey GC + Rust ownership friction         | Medium     | Medium | Follow `.tmp/ref/firefox/js/public/` and `.tmp/ref/firefox/dom/bindings/` patterns. |
 | Real-world pages regress vs Servo/Firefox         | Low        | Medium | Upstream issues; report and work around. Document in `docs/COMPAT.md`.              |
 | WPT migration backlog grows during build          | Medium     | Medium | Per-phase gate: each phase deletes Rust tests at the rate it adds WPT fixtures.     |
-| Relm4 breaking change in `Factory`/`Worker` API   | Low        | Medium | Pin Relm4 version per release; consult `reference-browsers/relm4/` on upgrades.     |
+| Relm4 breaking change in `Factory`/`Worker` API   | Low        | Medium | Pin Relm4 version per release; consult `.tmp/ref/relm4/` on upgrades.               |
 
 ---
 

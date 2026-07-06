@@ -79,8 +79,9 @@ gate-phase3:
     cargo test -p vixen-headless --test wpt_runner
 
 # Phase 4 current gate: pure layout-resolution prep plus the first executable
-# Page-backed line-layout slice (`vixen-headless --dump-lines`).
+# Page-backed Vixen layout-tree / line-layout slices.
 gate-phase4:
+    cargo test -p vixen-engine layout_tree
     cargo test -p vixen-engine line_layout
     cargo test -p vixen-engine box_model
     cargo test -p vixen-engine flex_resolve
@@ -88,6 +89,7 @@ gate-phase4:
     cargo test -p vixen-engine writing_modes
     cargo test -p vixen-engine multicol
     cargo test -p vixen-engine scroll_snap
+    case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/layout/boxes.html --viewport 120x200 --dump-layout-tree)" in *"# layout-tree"*"tag=main id=root"*"tag=div id=a"*"w=100.0 h=100.0"*) true;; *) false;; esac
     case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/layout/boxes.html --viewport 120x200 --dump-lines)" in *"line 1:"*) true;; *) false;; esac
 
 # Phase 5 current gate: display-list contract + paint-geometry/compositing prep,

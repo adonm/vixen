@@ -12,13 +12,14 @@ Vixen's contract. What this document captures:
 
 What this document deliberately does **not** capture:
 
-- Restatement of web-platform specs. CSS, DOM, selectors, layout, ES,
-  fetch, etc. are implemented by delegating to Firefox-family crates
-  (Stylo, SpiderMonkey, `html5ever`, Servo layout, WebRender — see
-  [`DECISIONS.md`](DECISIONS.md) ADR-001). Behavioural parity with
-  modern Firefox on those surfaces is the contract; if a behaviour
-  isn't called out below, follow the latest stable spec. Deviations
-  are documented in `docs/COMPAT.md` (written at release time).
+- Restatement of web-platform specs. CSS cascade/selectors, HTML parsing,
+  ES execution, and paint are delegated to Firefox-family crates/components
+  where possible (Stylo, `selectors`, SpiderMonkey, `html5ever`, WebRender —
+  see [`DECISIONS.md`](DECISIONS.md) ADR-001 / ADR-011). Layout is
+  Vixen-owned Rust code per ADR-013, with Ladybird used as the architecture
+  reference. Behavioural parity is measured by the WPT profile documented in
+  `docs/COMPAT.md`; if a behaviour isn't called out below, follow the latest
+  stable spec and document deviations in `docs/COMPAT.md`.
 
 ---
 
@@ -37,6 +38,7 @@ vixen-headless --url <URL> [options]
   --extract-selector <css>    Print JSON snapshots for matching elements.
   --eval <js>                 Execute JS, print result.
   --dump-dom                  Dump the DOM tree.
+  --dump-layout-tree          Dump the Vixen layout tree.
   --dump-display-list         Dump paint commands.
   --dump-lines                Dump inline layout lines.
   --click-at <X,Y>            Dispatch a MouseEvent at coordinates.
@@ -91,9 +93,10 @@ check types below are the public contract for fixture authors.
 | `dom-nodes-range`       | DOM node count is within [min, max]                      |
 | `ref-equivalent`        | Rendered page matches a reference HTML fixture           |
 
-WPT fixture share target: **≥ 70 %** of CSS+DOM assertions live in
-fixtures, not in Rust unit tests. Rust tests cover only pure logic
-(URL parsing, cookie validation, CSP parsing, redb round-trip).
+WPT target profile lives in [`COMPAT.md`](COMPAT.md). End-to-end CSS/DOM/layout
+behavior should move into fixtures when practical; Rust tests cover pure logic
+(URL parsing, cookie validation, CSP parsing, layout arithmetic, redb
+round-trip) and low-level invariants.
 
 ---
 
