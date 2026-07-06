@@ -125,14 +125,15 @@ Wire up HTML parsing and CSS cascade.
    The shared `vixen-engine::page::Page` facade now owns URL + parsed document
    state for headless and WPT; cascade/layout/paint slices extend that facade
    in order.
-3. **Inline computed-style projection (done) — `Page::computed_style`** maps
-   the stable selector `node_id` back to the element and returns parsed inline
-   `style` declarations with inline `!important` precedence and
-   last-declaration-wins inside each priority tier.
-   This lights up the WPT `computed-style` check type for the first vertical
-   style fixture while failing closed for elements without inline style.
-4. `vixen-engine/src/style.rs` (next slice): load `<style>` / `<link
-   rel=stylesheet>` into `Stylesheet` list → `Stylist::update_stylist`
+3. **Computed-style cascade projection (done) — `Page::computed_style`** maps
+   the stable selector `node_id` back to the element and returns a compact
+   author/inline cascade. `vixen-engine::style_cascade` loads `<style>` blocks,
+   matches selectors through Stylo's selector engine, applies specificity,
+   source order, and author/inline `!important`, and keeps the WPT
+   `computed-style` check vertical behind `Page`.
+4. `vixen-engine/src/style.rs` (next slice): replace the compact projection
+   with full Stylo style data: load `<style>` / `<link rel=stylesheet>` into
+   `Stylesheet` list → `Stylist::update_stylist`
    → cascade via Stylo's `SharedStyleContext` / traversal. Expose
    `computed_values_for(NodeId) -> Arc<ComputedValues>`. Requires
    implementing the full `TNode` / `TElement` / `TDocument` traits;
@@ -186,7 +187,8 @@ plan no longer applies. See ADR-011.
 **Gate:** `vixen-headless --url fixtures/css/at-property.html
 --extract-selector '[style]'` returns correctly cascaded styles.
 vixen-wpt runs the CSS fixtures; pass rate recorded as baseline.
-(Selector surface green today; cascade surface pending step 3.)
+(Selector and compact cascade surfaces green today; full Stylo computed values
+pending step 4.)
 
 ---
 
@@ -385,6 +387,14 @@ to two `GlContext` implementations.
    `DisplayListBuilder::build` that emits the pruned, z-sorted
    `PaintCommand` stream. The WebRender `Renderer` (this step, next slice)
    consumes that stream; the invariant logic is done and Rust-unit-tested.
+
+   **Vertical display-list slice landed.** `Page::display_list` now turns the
+   Phase 4 line boxes into the single `DisplayListBuilder` command stream:
+   viewport background first, then clipped text commands, exposed through
+   `vixen-headless --dump-display-list`. `--paint-stats` now aggregates command
+   counts and painted area from that same stream. This is not a renderer or CPU
+   paint fallback; WebRender consumes the same `PaintCommand` stream once the GL
+   surfaces land.
 5. `vixen-shell/src/engine_factory.rs`: creates the `gtk4::GLArea`,
    wraps it as `GlAreaSurface` (the shell's `GlContext` impl), and
    returns it as the content widget alongside the tab's `EngineWorker`.

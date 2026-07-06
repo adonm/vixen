@@ -16,14 +16,20 @@
 
 use vixen_api::{ElementInfo, EngineDiagnostic, EngineInspector, PageSnapshot};
 
+use crate::display_list::{
+    BackgroundAttachment, BackgroundBox, Color, DisplayListBuilder, DrawItem, PaintCommand,
+    PaintStats, Rect, TextRun, dump_paint_commands, dump_paint_stats,
+};
 use crate::doc::{Document, ParseError};
 use crate::line_layout::{LineBox, LineLayoutConfig, dump_line_boxes, layout_text_lines};
+use crate::style_cascade::AuthorStylesheet;
 use crate::style_dom::Selector;
 
 /// A loaded page at the current vertical integration boundary.
 pub struct Page {
     url: String,
     document: Document,
+    author_stylesheet: AuthorStylesheet,
     diagnostics: Vec<EngineDiagnostic>,
 }
 
@@ -40,9 +46,11 @@ impl Page {
     /// network path will call into `vixen-net` before this boundary).
     pub fn from_html(url: impl Into<String>, html: &str) -> Result<Self, PageError> {
         let document = Document::parse(html)?;
+        let author_stylesheet = AuthorStylesheet::from_blocks(&document.style_blocks());
         Ok(Self {
             url: url.into(),
             document,
+            author_stylesheet,
             diagnostics: Vec::new(),
         })
     }
@@ -82,6 +90,33 @@ impl Page {
         dump_line_boxes(&self.layout_lines(viewport), viewport)
     }
 
+    /// First executable Phase 5 paint slice: convert the Page-backed line boxes
+    /// into the single invariant-enforced display-list command stream.
+    pub fn display_list(&self, viewport: (u32, u32)) -> Vec<PaintCommand> {
+        let viewport_rect = Rect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32);
+        let mut builder = DisplayListBuilder::new();
+        builder.push(viewport_background_item(viewport_rect));
+        for (idx, line) in self.layout_lines(viewport).iter().enumerate() {
+            builder.push(line_text_item(idx as u32 + 1, line, viewport_rect));
+        }
+        builder.build()
+    }
+
+    /// Text dump for `vixen-headless --dump-display-list`.
+    pub fn dump_display_list(&self, viewport: (u32, u32)) -> String {
+        dump_paint_commands(&self.display_list(viewport), viewport)
+    }
+
+    /// Aggregate display-list stats for `vixen-headless --paint-stats`.
+    pub fn paint_stats(&self, viewport: (u32, u32)) -> PaintStats {
+        PaintStats::from_commands(&self.display_list(viewport))
+    }
+
+    /// Text dump for `vixen-headless --paint-stats`.
+    pub fn dump_paint_stats(&self, viewport: (u32, u32)) -> String {
+        dump_paint_stats(&self.display_list(viewport), viewport)
+    }
+
     /// Coarse page snapshot at a viewport.
     pub fn snapshot(&self, viewport: (u32, u32)) -> PageSnapshot {
         PageSnapshot {
@@ -112,25 +147,13 @@ impl Page {
             .collect())
     }
 
-    /// Computed style facade for the current Phase 3 vertical slice.
-    ///
-    /// Full Stylo cascade lands next. Until then this returns the element's
-    /// inline declaration block with CSS cascade basics applied locally:
-    /// declaration parsing, ASCII case-insensitive property names, inline
-    /// `!important` precedence, and last-declaration-wins within the same
-    /// priority tier. Missing elements or elements without inline style return
-    /// an empty vector rather than fabricating UA/default values.
+    /// Computed style facade for the current Phase 3 vertical slice: author
+    /// `<style>` rules matched via Stylo selectors, plus inline declarations,
+    /// cascaded by importance, specificity, and source order. Missing elements
+    /// return an empty vector rather than fabricating UA/default values.
     pub fn computed_style(&self, node_id: usize) -> Vec<(String, String)> {
-        self.document
-            .element_by_node_id(node_id)
-            .and_then(|element| {
-                element
-                    .attributes
-                    .into_iter()
-                    .find(|(name, _)| name == "style")
-                    .map(|(_, value)| parse_inline_style(&value))
-            })
-            .unwrap_or_default()
+        self.author_stylesheet
+            .computed_style(&self.document, node_id)
     }
 
     /// Diagnostics accumulated by pipeline stages.
@@ -139,129 +162,46 @@ impl Page {
     }
 }
 
-fn parse_inline_style(style: &str) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String, bool)> = Vec::new();
-    for declaration in split_top_level(style, ';') {
-        let Some((name, value)) = split_once_top_level(declaration, ':') else {
-            continue;
-        };
-        let Some(property) = normalise_property_name(name) else {
-            continue;
-        };
-        let Some((value, important)) = normalise_declaration_value(value) else {
-            continue;
-        };
-        if let Some((_, existing_value, existing_important)) =
-            out.iter_mut().find(|(p, _, _)| *p == property)
-        {
-            if important || !*existing_important {
-                *existing_value = value;
-                *existing_important = important;
-            }
-        } else {
-            out.push((property, value, important));
-        }
-    }
-    out.into_iter()
-        .map(|(property, value, _)| (property, value))
-        .collect()
-}
-
-fn normalise_property_name(name: &str) -> Option<String> {
-    let name = name.trim();
-    if name.is_empty() {
-        return None;
-    }
-    if name.starts_with("--") {
-        return Some(name.to_owned());
-    }
-    let lower = name.to_ascii_lowercase();
-    if lower
-        .bytes()
-        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
-    {
-        Some(lower)
-    } else {
-        None
+fn viewport_background_item(rect: Rect) -> DrawItem {
+    DrawItem {
+        order: 0,
+        z_index: 0,
+        visibility: crate::display_list::Visibility::Visible,
+        opacity: 1.0,
+        clip: None,
+        is_viewport_background: true,
+        border_box: rect,
+        padding_box: rect,
+        content_box: rect,
+        background_clip: BackgroundBox::BorderBox,
+        background_origin: BackgroundBox::BorderBox,
+        background_attachment: BackgroundAttachment::Scroll,
+        background: Some(Color::WHITE),
+        text: None,
     }
 }
 
-fn normalise_declaration_value(value: &str) -> Option<(String, bool)> {
-    let (value, important) = strip_important(value.trim());
-    let value = value.trim();
-    if value.is_empty() {
-        None
-    } else {
-        Some((value.to_owned(), important))
+fn line_text_item(order: u32, line: &LineBox, viewport: Rect) -> DrawItem {
+    let rect = Rect::new(line.x, line.y, line.w, line.h);
+    DrawItem {
+        order,
+        z_index: 0,
+        visibility: crate::display_list::Visibility::Visible,
+        opacity: 1.0,
+        clip: Some(viewport),
+        is_viewport_background: false,
+        border_box: rect,
+        padding_box: rect,
+        content_box: rect,
+        background_clip: BackgroundBox::BorderBox,
+        background_origin: BackgroundBox::ContentBox,
+        background_attachment: BackgroundAttachment::Scroll,
+        background: None,
+        text: Some(TextRun {
+            color: Color::BLACK,
+            text: line.text.clone(),
+        }),
     }
-}
-
-fn strip_important(value: &str) -> (&str, bool) {
-    let trimmed = value.trim_end();
-    if trimmed.to_ascii_lowercase().ends_with("!important") {
-        let keep_len = trimmed.len() - "!important".len();
-        (&trimmed[..keep_len], true)
-    } else {
-        (value, false)
-    }
-}
-
-fn split_top_level(input: &str, delimiter: char) -> Vec<&str> {
-    let mut parts = Vec::new();
-    let mut start = 0usize;
-    for (idx, ch) in top_level_chars(input) {
-        if ch == delimiter {
-            parts.push(&input[start..idx]);
-            start = idx + ch.len_utf8();
-        }
-    }
-    parts.push(&input[start..]);
-    parts
-}
-
-fn split_once_top_level(input: &str, delimiter: char) -> Option<(&str, &str)> {
-    for (idx, ch) in top_level_chars(input) {
-        if ch == delimiter {
-            let rhs = idx + ch.len_utf8();
-            return Some((&input[..idx], &input[rhs..]));
-        }
-    }
-    None
-}
-
-fn top_level_chars(input: &str) -> impl Iterator<Item = (usize, char)> + '_ {
-    let mut depth = 0usize;
-    let mut quote: Option<char> = None;
-    let mut escaped = false;
-    input.char_indices().filter_map(move |(idx, ch)| {
-        if let Some(q) = quote {
-            if escaped {
-                escaped = false;
-            } else if ch == '\\' {
-                escaped = true;
-            } else if ch == q {
-                quote = None;
-            }
-            return None;
-        }
-
-        match ch {
-            '\'' | '"' => {
-                quote = Some(ch);
-                None
-            }
-            '(' => {
-                depth = depth.saturating_add(1);
-                None
-            }
-            ')' => {
-                depth = depth.saturating_sub(1);
-                None
-            }
-            _ if depth == 0 => Some((idx, ch)),
-            _ => None,
-        }
-    })
 }
 
 impl EngineInspector for Page {
@@ -361,6 +301,33 @@ mod tests {
     }
 
     #[test]
+    fn computed_style_cascades_author_stylesheet_rules() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<style>p { color: red; display: block } #x { color: blue }</style><p id='x'>x</p>",
+        )
+        .unwrap();
+        let node_id = page.query_selector_all("#x").unwrap()[0].node_id;
+        let styles = page.computed_style(node_id);
+        assert_eq!(style_value(&styles, "display"), Some("block"));
+        assert_eq!(style_value(&styles, "color"), Some("blue"));
+    }
+
+    #[test]
+    fn computed_style_author_important_beats_inline_normal() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<style>#x { color: red !important }</style><p id='x' style='color: blue'>x</p>",
+        )
+        .unwrap();
+        let node_id = page.query_selector_all("#x").unwrap()[0].node_id;
+        assert_eq!(
+            style_value(&page.computed_style(node_id), "color"),
+            Some("red")
+        );
+    }
+
+    #[test]
     fn dump_lines_wraps_body_text_and_excludes_title() {
         let page = Page::from_html(
             "file:///fixture.html",
@@ -372,5 +339,43 @@ mod tests {
         assert!(dump.contains("line 1:"));
         assert!(dump.contains("text=\"one\""));
         assert!(!dump.contains("Hidden title"));
+    }
+
+    #[test]
+    fn dump_display_list_builds_background_and_text_commands() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<html><head><title>Hidden title</title></head><body><p>one two three four</p></body></html>",
+        )
+        .unwrap();
+        let dump = page.dump_display_list((56, 200));
+        assert!(dump.contains("# display-list viewport=56x200 count=5"));
+        assert!(dump.contains("cmd 0: background x=0.0 y=0.0 w=56.0 h=200.0"));
+        assert!(dump.contains("cmd 1: text"));
+        assert!(dump.contains("text=\"one\""));
+        assert!(!dump.contains("Hidden title"));
+    }
+
+    #[test]
+    fn paint_stats_summarise_display_list() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<html><head><title>Hidden title</title></head><body><p>one two</p></body></html>",
+        )
+        .unwrap();
+        let stats = page.paint_stats((56, 200));
+        assert_eq!(stats.backgrounds, 1);
+        assert_eq!(stats.text_runs, 2);
+        assert_eq!(stats.commands, 3);
+        let dump = page.dump_paint_stats((56, 200));
+        assert!(dump.contains("# paint-stats viewport=56x200 commands=3"));
+        assert!(dump.contains("text-runs=2"));
+    }
+
+    fn style_value<'a>(styles: &'a [(String, String)], property: &str) -> Option<&'a str> {
+        styles
+            .iter()
+            .find(|(name, _)| name == property)
+            .map(|(_, value)| value.as_str())
     }
 }

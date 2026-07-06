@@ -49,6 +49,19 @@
       ]
     },
     {
+      "url": "fixtures/css/computed-cascade.html",
+      "checks": [
+        { "type": "title", "expected": "Computed cascade — Vixen fixture" },
+        { "type": "selector-count", "selector": "style", "expected": 1 },
+        { "type": "computed-style", "selector": "#copy", "property": "display", "expected": "block" },
+        { "type": "computed-style", "selector": "#copy", "property": "color", "expected": "blue" },
+        { "type": "computed-style", "selector": "#copy", "property": "font-size", "expected": "20px" },
+        { "type": "computed-style", "selector": "#copy", "property": "margin-left", "expected": "10px" },
+        { "type": "computed-style", "selector": "#copy", "property": "background-image", "expected": "url('a;b:c')" },
+        { "type": "computed-style", "selector": "#copy", "property": "--Token", "expected": "A:B" }
+      ]
+    },
+    {
       "url": "fixtures/dom/basic.html",
       "checks": [
         { "type": "title", "expected": "DOM basic — Vixen fixture" },
@@ -295,6 +308,16 @@
         { "type": "body-contains", "expected": "shadow outer" },
         { "type": "body-contains", "expected": "pos center" },
         { "type": "body-contains", "expected": "z positive" }
+      ]
+    },
+    {
+      "url": "fixtures/paint/display-list.html",
+      "checks": [
+        { "type": "title", "expected": "Display list — Vixen fixture" },
+        { "type": "selector-count", "selector": "#paint-root p", "expected": 2 },
+        { "type": "selectors-exact", "selector": "#paint-root p", "expected": ["intro", "quote"] },
+        { "type": "body-contains", "expected": "shared Page paint facade" },
+        { "type": "no-critical-diagnostics" }
       ]
     },
     {

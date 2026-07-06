@@ -74,6 +74,7 @@ gate-phase2:
 gate-phase3:
     cargo test -p vixen-engine doc
     cargo test -p vixen-engine style_dom
+    cargo test -p vixen-engine style_cascade
     cargo test -p vixen-engine page
     cargo test -p vixen-headless --test wpt_runner
 
@@ -89,10 +90,11 @@ gate-phase4:
     cargo test -p vixen-engine scroll_snap
     case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/layout/boxes.html --viewport 120x200 --dump-lines)" in *"line 1:"*) true;; *) false;; esac
 
-# Phase 5 current gate: display-list contract + paint-geometry/compositing prep
-# until the WebRender renderer lands behind Page.
+# Phase 5 current gate: display-list contract + paint-geometry/compositing prep,
+# plus the first executable Page-backed display-list dump.
 gate-phase5:
     cargo test -p vixen-engine display_list
+    cargo test -p vixen-engine page
     cargo test -p vixen-engine transform
     cargo test -p vixen-engine border_radius
     cargo test -p vixen-engine gradient
@@ -108,6 +110,8 @@ gate-phase5:
     cargo test -p vixen-engine mask
     cargo test -p vixen-engine animation
     cargo test -p vixen-engine geometry
+    case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/paint/display-list.html --viewport 160x120 --dump-display-list)" in *"cmd 0: background"*"cmd 1: text"*) true;; *) false;; esac
+    case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/paint/display-list.html --viewport 160x120 --paint-stats)" in *"# paint-stats"*"text-runs="*) true;; *) false;; esac
 
 # Phase 6 current gate: DOM/forms/network-host pure prep + responsive images.
 gate-phase6:

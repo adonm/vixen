@@ -27,10 +27,11 @@ and reference material, plus:
   html5ever → RcDom) with `--dump-dom`/`--extract-text`; **selector matching
   via Stylo** (`vixen-engine::style_dom` implementing `selectors::Element` over
   the RcDom), driving `--extract-selector` and the WPT selector fixtures;
-  the shared `vixen-engine::page::Page` facade; inline `style` declarations now
-  project through `Page::computed_style(node_id)` and WPT `computed-style`
-  checks; and the **WPT harness** (`vixen-wpt`: manifest + runner + all 13
-  check types). The full Stylo cascade (`TNode`/`TElement`/`TDocument` +
+  the shared `vixen-engine::page::Page` facade; author `<style>` blocks and
+  inline `style` declarations now project through `Page::computed_style(node_id)`
+  with specificity/source-order/`!important` cascade basics and WPT
+  `computed-style` checks; and the **WPT harness** (`vixen-wpt`: manifest +
+  runner + all 13 check types). The full Stylo cascade (`TNode`/`TElement`/`TDocument` +
   `Stylist::update_stylist` + `computed_values_for(node_id)`) is the next
   slice; Stylo arrives via the crates.io-published `stylo` crate per
   ADR-011 (no Servo git dep).
@@ -62,7 +63,11 @@ and reference material, plus:
   `vixen-headless --dump-lines` with deterministic body-text line boxes until
   the full positioned box tree replaces the text-width estimate.
 - **Phase 5 prep** — `vixen-engine::display_list` (all eight `SPEC.md`
-  display-list invariants) + the paint-geometry family it will consume:
+  display-list invariants) now has its first vertical surface:
+  `Page::display_list` turns line boxes into invariant-enforced paint commands
+  and `vixen-headless --dump-display-list` dumps them; `--paint-stats` reports
+  command counts and painted area from the same stream. The paint-geometry
+  family it will consume:
   `vixen-engine::transform` (CSS Transforms 1 § 13 2D affine algebra +
   list parser), `vixen-engine::border_radius` (CSS Backgrounds 3 § 5.5
   corner shaping), `vixen-engine::gradient` (CSS Images 4 § 4.5

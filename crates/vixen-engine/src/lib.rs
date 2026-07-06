@@ -68,6 +68,7 @@ pub mod srcset;
 pub mod stacking_context;
 pub mod storage_key;
 pub mod structured_clone;
+pub mod style_cascade;
 pub mod style_dom;
 pub mod text_codec;
 pub mod time;

@@ -631,6 +631,19 @@ impl Document {
         Some(MatchedElement::from_node(arena.node(idx), node_id))
     }
 
+    /// Whether a stable 1-based `node_id` matches the parsed selector list.
+    pub fn matches_selector(&self, node_id: usize, selector: &Selector) -> bool {
+        let Some(idx) = node_id.checked_sub(1) else {
+            return false;
+        };
+        let arena = ElementArena::build(&self.dom.document);
+        if idx >= arena.len() {
+            return false;
+        }
+        let layout = LayoutDom::new(&arena, idx);
+        dom_apis::element_matches(&layout, selector.as_stylo_list(), QuirksMode::NoQuirks)
+    }
+
     /// All elements matching `selector`, in document order. Each element's
     /// `node_id` is its 1-based document-order index among elements — the
     /// stable correlation key for WPT `computed-style`/`element-attribute`.
@@ -874,6 +887,16 @@ mod tests {
         assert_eq!(by_id.attributes, target.attributes);
         assert!(d.element_by_node_id(0).is_none());
         assert!(d.element_by_node_id(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn matches_selector_uses_stable_node_ids() {
+        let d = doc("<html><body><p id='a' class='lead'>one</p><p id='b'>two</p></body></html>");
+        let a = d.query_first(&sel("#a")).unwrap();
+        let b = d.query_first(&sel("#b")).unwrap();
+        assert!(d.matches_selector(a.node_id, &sel("p.lead")));
+        assert!(!d.matches_selector(b.node_id, &sel("p.lead")));
+        assert!(!d.matches_selector(usize::MAX, &sel("p")));
     }
 
     #[test]

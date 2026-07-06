@@ -155,6 +155,7 @@ pub struct DrawItem {
     pub background_origin: BackgroundBox,
     pub background_attachment: BackgroundAttachment,
     pub background: Option<Color>,
+    pub text: Option<TextRun>,
 }
 
 impl DrawItem {
@@ -162,6 +163,15 @@ impl DrawItem {
     pub fn paints_anything(&self) -> bool {
         self.visibility.paints() && self.opacity > 0.0
     }
+}
+
+/// Text emitted by layout for the first vertical paint slice. Full glyph runs
+/// and shaping land with the renderer; this keeps the display-list seam visible
+/// without adding a second paint path.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextRun {
+    pub color: Color,
+    pub text: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -180,6 +190,52 @@ pub enum PaintCommand {
         attachment: BackgroundAttachment,
         origin: BackgroundBox,
     },
+    /// Text draw clipped to the content rect. The renderer replaces the stable
+    /// line-box rect with real glyph runs once shaping is wired.
+    Text {
+        rect: Rect,
+        color: Color,
+        text: String,
+    },
+}
+
+/// Cheap aggregate over the command stream for `vixen-headless --paint-stats`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PaintStats {
+    pub commands: usize,
+    pub backgrounds: usize,
+    pub text_runs: usize,
+    pub background_area_px: f32,
+    pub text_area_px: f32,
+}
+
+impl PaintStats {
+    pub fn from_commands(commands: &[PaintCommand]) -> Self {
+        let mut stats = Self {
+            commands: commands.len(),
+            backgrounds: 0,
+            text_runs: 0,
+            background_area_px: 0.0,
+            text_area_px: 0.0,
+        };
+        for command in commands {
+            match command {
+                PaintCommand::Background { fill, .. } => {
+                    stats.backgrounds += 1;
+                    stats.background_area_px += rect_area(*fill);
+                }
+                PaintCommand::Text { rect, .. } => {
+                    stats.text_runs += 1;
+                    stats.text_area_px += rect_area(*rect);
+                }
+            }
+        }
+        stats
+    }
+
+    pub fn total_area_px(self) -> f32 {
+        self.background_area_px + self.text_area_px
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -258,6 +314,23 @@ pub fn background_paint_rect(item: &DrawItem) -> Option<Rect> {
     Some(fill)
 }
 
+/// Rules 2 + 8 for text/content paint: content is clipped by overflow and
+/// empty clipped content is dropped before the renderer sees it.
+pub fn content_paint_rect(item: &DrawItem) -> Option<Rect> {
+    let mut rect = item.content_box;
+    if let Some(clip) = item.clip {
+        rect = rect.intersect(clip)?;
+    }
+    if rect.is_empty() {
+        return None;
+    }
+    Some(rect)
+}
+
+fn rect_area(rect: Rect) -> f32 {
+    rect.w.max(0.0) * rect.h.max(0.0)
+}
+
 // ---------------------------------------------------------------------------
 // Builder
 // ---------------------------------------------------------------------------
@@ -296,24 +369,115 @@ impl DisplayListBuilder {
                 .then_with(|| a.order.cmp(&b.order))
         });
 
-        let mut out = Vec::with_capacity(live.len());
+        let mut out = Vec::with_capacity(live.len() * 2);
         for item in live {
-            let Some(color) = item.background else {
-                continue;
-            };
-            // Rule 8 + rules 2/5: drop empties after clip intersection.
-            let Some(fill) = background_paint_rect(&item) else {
-                continue;
-            };
-            out.push(PaintCommand::Background {
-                fill,
-                color,
-                attachment: item.background_attachment,
-                origin: item.background_origin,
-            });
+            if let Some(color) = item.background {
+                // Rule 8 + rules 2/5: drop empties after clip intersection.
+                if let Some(fill) = background_paint_rect(&item) {
+                    out.push(PaintCommand::Background {
+                        fill,
+                        color,
+                        attachment: item.background_attachment,
+                        origin: item.background_origin,
+                    });
+                }
+            }
+
+            if let Some(text) = item.text.as_ref()
+                && !text.text.is_empty()
+                && let Some(rect) = content_paint_rect(&item)
+            {
+                out.push(PaintCommand::Text {
+                    rect,
+                    color: text.color,
+                    text: text.text.clone(),
+                });
+            }
         }
         out
     }
+}
+
+/// Render the stable `--dump-display-list` text format.
+pub fn dump_paint_commands(commands: &[PaintCommand], viewport: (u32, u32)) -> String {
+    let mut out = format!(
+        "# display-list viewport={}x{} count={}\n",
+        viewport.0,
+        viewport.1,
+        commands.len()
+    );
+    for (idx, command) in commands.iter().enumerate() {
+        match command {
+            PaintCommand::Background {
+                fill,
+                color,
+                attachment,
+                origin,
+            } => out.push_str(&format!(
+                "cmd {idx}: background x={:.1} y={:.1} w={:.1} h={:.1} color={} attachment={} origin={}\n",
+                fill.x,
+                fill.y,
+                fill.w,
+                fill.h,
+                format_color(*color),
+                attachment_name(*attachment),
+                background_box_name(*origin),
+            )),
+            PaintCommand::Text { rect, color, text } => out.push_str(&format!(
+                "cmd {idx}: text x={:.1} y={:.1} w={:.1} h={:.1} color={} text=\"{}\"\n",
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                format_color(*color),
+                escape_dump_text(text),
+            )),
+        }
+    }
+    out
+}
+
+/// Render the stable `--paint-stats` text format.
+pub fn dump_paint_stats(commands: &[PaintCommand], viewport: (u32, u32)) -> String {
+    let stats = PaintStats::from_commands(commands);
+    format!(
+        "# paint-stats viewport={}x{} commands={} backgrounds={} text-runs={} background-area={:.1} text-area={:.1} total-area={:.1}\n",
+        viewport.0,
+        viewport.1,
+        stats.commands,
+        stats.backgrounds,
+        stats.text_runs,
+        stats.background_area_px,
+        stats.text_area_px,
+        stats.total_area_px(),
+    )
+}
+
+fn format_color(color: Color) -> String {
+    format!(
+        "#{:02x}{:02x}{:02x}{:02x}",
+        color.r, color.g, color.b, color.a
+    )
+}
+
+fn background_box_name(value: BackgroundBox) -> &'static str {
+    match value {
+        BackgroundBox::BorderBox => "border-box",
+        BackgroundBox::PaddingBox => "padding-box",
+        BackgroundBox::ContentBox => "content-box",
+    }
+}
+
+fn attachment_name(value: BackgroundAttachment) -> &'static str {
+    match value {
+        BackgroundAttachment::Scroll => "scroll",
+        BackgroundAttachment::Local => "local",
+        BackgroundAttachment::Fixed => "fixed",
+    }
+}
+
+fn escape_dump_text(text: &str) -> String {
+    text.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 #[cfg(test)]
@@ -335,6 +499,7 @@ mod tests {
             background_origin: BackgroundBox::PaddingBox,
             background_attachment: BackgroundAttachment::Scroll,
             background: Some(color),
+            text: None,
         }
     }
 
@@ -385,6 +550,7 @@ mod tests {
             .iter()
             .map(|c| match c {
                 PaintCommand::Background { color, .. } => color.r,
+                PaintCommand::Text { .. } => unreachable!("test only emits backgrounds"),
             })
             .collect();
         // Expected: negative(20,40) then zero(30,50) then positive(10).
@@ -486,6 +652,30 @@ mod tests {
         assert!(b.build().is_empty());
     }
 
+    #[test]
+    fn text_items_emit_content_clipped_text_commands() {
+        let mut i = item(0, 0, Color::WHITE);
+        i.background = None;
+        i.content_box = Rect::new(2.0, 2.0, 10.0, 10.0);
+        i.clip = Some(Rect::new(8.0, 0.0, 10.0, 10.0));
+        i.text = Some(TextRun {
+            color: Color::BLACK,
+            text: "hello".to_owned(),
+        });
+
+        let mut b = DisplayListBuilder::new();
+        b.push(i);
+        let out = b.build();
+        assert_eq!(
+            out,
+            vec![PaintCommand::Text {
+                rect: Rect::new(8.0, 2.0, 4.0, 8.0),
+                color: Color::BLACK,
+                text: "hello".to_owned(),
+            }]
+        );
+    }
+
     // --- Rule 6: attachment carried through ---------------------------
 
     #[test]
@@ -511,6 +701,56 @@ mod tests {
         let mut b = DisplayListBuilder::new();
         b.push(i);
         assert!(b.build().is_empty());
+    }
+
+    #[test]
+    fn dump_paint_commands_format_is_stable_and_escaped() {
+        let commands = vec![
+            PaintCommand::Background {
+                fill: Rect::new(0.0, 0.0, 10.0, 20.0),
+                color: Color::WHITE,
+                attachment: BackgroundAttachment::Scroll,
+                origin: BackgroundBox::BorderBox,
+            },
+            PaintCommand::Text {
+                rect: Rect::new(1.0, 2.0, 3.0, 4.0),
+                color: Color::BLACK,
+                text: "a \"quote\"".to_owned(),
+            },
+        ];
+        let dump = dump_paint_commands(&commands, (10, 20));
+        assert!(dump.contains("# display-list viewport=10x20 count=2"));
+        assert!(dump.contains(
+            "cmd 0: background x=0.0 y=0.0 w=10.0 h=20.0 color=#ffffffff attachment=scroll origin=border-box"
+        ));
+        assert!(dump.contains(
+            "cmd 1: text x=1.0 y=2.0 w=3.0 h=4.0 color=#000000ff text=\"a \\\"quote\\\"\""
+        ));
+    }
+
+    #[test]
+    fn paint_stats_counts_command_types_and_area() {
+        let commands = vec![
+            PaintCommand::Background {
+                fill: Rect::new(0.0, 0.0, 10.0, 20.0),
+                color: Color::WHITE,
+                attachment: BackgroundAttachment::Scroll,
+                origin: BackgroundBox::BorderBox,
+            },
+            PaintCommand::Text {
+                rect: Rect::new(1.0, 2.0, 3.0, 4.0),
+                color: Color::BLACK,
+                text: "hello".to_owned(),
+            },
+        ];
+        let stats = PaintStats::from_commands(&commands);
+        assert_eq!(stats.commands, 2);
+        assert_eq!(stats.backgrounds, 1);
+        assert_eq!(stats.text_runs, 1);
+        assert_eq!(stats.background_area_px, 200.0);
+        assert_eq!(stats.text_area_px, 12.0);
+        assert_eq!(stats.total_area_px(), 212.0);
+        assert!(dump_paint_stats(&commands, (10, 20)).contains("total-area=212.0"));
     }
 
     // Helper for the attachment test: construct from an iterator.

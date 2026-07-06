@@ -84,6 +84,19 @@ impl Document {
             .unwrap_or_else(|| self.text_content())
     }
 
+    /// Raw text contents of author `<style>` blocks, in document order.
+    pub fn style_blocks(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        walk(&self.dom.document, &mut |node| {
+            if let NodeData::Element { name, .. } = &node.data
+                && name.local.as_ref() == "style"
+            {
+                out.push(text_content_of(node));
+            }
+        });
+        out
+    }
+
     /// Number of element nodes (a coarse `min-nodes`/`dom-nodes-range` signal).
     pub fn element_count(&self) -> usize {
         let mut n = 0;
@@ -207,6 +220,18 @@ mod tests {
         assert!(body.contains("Visible"));
         assert!(body.contains("body"));
         assert!(!body.contains("Hidden title"));
+    }
+
+    #[test]
+    fn style_blocks_are_collected_in_document_order() {
+        let doc = Document::parse(
+            "<html><head><style>p { color: red }</style><style>.x { display: grid }</style></head><body></body></html>",
+        )
+        .unwrap();
+        let blocks = doc.style_blocks();
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].contains("color: red"));
+        assert!(blocks[1].contains("display: grid"));
     }
 
     #[test]

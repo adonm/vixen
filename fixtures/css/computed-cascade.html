@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Computed cascade — Vixen fixture</title>
+  <style>
+    /* Exercises the Page-backed author cascade slice. */
+    p { display: block; color: red; margin-left: 4px; }
+    .lead { color: green; }
+    #hero .lead { color: blue; }
+    #hero p { font-size: 20px !important; }
+    #copy { background-image: url('a;b:c'); }
+    #copy { --Token: A:B; }
+  </style>
+</head>
+<body>
+  <main id="hero">
+    <p id="copy" class="lead" style="font-size: 18px; margin-left: 10px">
+      Stylesheet computed style projection
+    </p>
+  </main>
+</body>
+</html>
