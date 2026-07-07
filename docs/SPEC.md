@@ -74,8 +74,12 @@ without a GPU device fails closed with `unsupported.screenshot`.
 
 ## WPT harness — check types
 
-The WPT harness asserts document state against fixture manifests. The
-check types below are the public contract for fixture authors.
+The WPT harness asserts document state against fixture manifests. The committed
+`fixtures/manifest.json` remains the hermetic release-blocking smoke suite.
+Larger upstream slices may instead be described by small JSON WPT profiles and
+run against an ignored checkout such as `.tmp/wpt/` via `just wpt-profile
+fixtures/wpt-profiles/<profile>.json .tmp/wpt`. The check types below are the
+public contract for fixture/profile authors.
 
 | Check type              | Asserts                                                  |
 |-------------------------|----------------------------------------------------------|

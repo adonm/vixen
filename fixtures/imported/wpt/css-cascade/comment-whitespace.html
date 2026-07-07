@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: comments and whitespace</title>
+  <style>
+    /* leading */
+    #target /* mid */ { color : red ; /* declaration */ display : block ; background-image: url("a/*not-comment*/b"); }
+  </style>
+</head>
+<body>
+  <p id="target">Comments and whitespace</p>
+</body>
+</html>

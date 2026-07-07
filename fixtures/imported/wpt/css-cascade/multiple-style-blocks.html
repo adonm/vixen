@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: multiple style blocks</title>
+  <style>.item { color: red; display: block; }</style>
+  <style>.item { color: green; } #target { font-size: 16px; }</style>
+</head>
+<body>
+  <p id="target" class="item">Multiple style blocks</p>
+</body>
+</html>

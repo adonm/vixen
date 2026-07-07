@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: :has selector</title>
+  <style>
+    article { color: gray; }
+    article:has(> img[alt]) { color: teal; background-color: #ddeeff; }
+  </style>
+</head>
+<body>
+  <article id="media"><img src="x.png" alt="x"><p>Media</p></article>
+  <article id="plain"><p>Plain</p></article>
+</body>
+</html>

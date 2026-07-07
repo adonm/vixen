@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: important specificity</title>
+  <style>
+    #target { color: green !important; display: block; }
+    .item { color: red !important; margin-left: 2px !important; }
+    #target.item { margin-left: 6px !important; }
+  </style>
+</head>
+<body>
+  <p id="target" class="item">Target</p>
+  <p id="peer" class="item">Peer</p>
+</body>
+</html>

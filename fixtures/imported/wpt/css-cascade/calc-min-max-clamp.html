@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT values smoke: calc min max clamp</title>
+  <style>
+    #target {
+      width: min(100%, 20rem);
+      height: max(10px, 2em);
+      margin-left: clamp(1rem, 5vw, 3rem);
+      padding-left: calc((100% - 2rem) / 2);
+    }
+  </style>
+</head>
+<body>
+  <p id="target">Math functions</p>
+</body>
+</html>

@@ -5,6 +5,14 @@
 # The GNOME 50 SDK is NOT installed on the host; it is managed inside a
 # flatpak-builder container. See docs/guidance/gnome-sdk-flatpak-builder.md
 # and the `flatpak-*` recipes below.
+#
+# Tool ownership is intentionally split: mise pins versions and environment;
+# this justfile owns project actions. Prefer adding/updating a recipe here over
+# duplicating `cargo ...` command lines in docs, mise tasks, or CI.
+
+alias check := check-all-host
+alias smoke := gate-smoke
+alias test := test-host
 
 # Container runtime + the flatpak-builder image that owns the GNOME SDK.
 # Bump these two together (and runtime-version in build-aux/*.json) to move SDK.
@@ -15,6 +23,23 @@ GNOME_RUNTIME_VERSION := "50"
 # Default recipe: explain yourself.
 default:
     @just --list
+
+# --- Setup -------------------------------------------------------------------
+
+# Full project setup after `mise install`: nightly for fuzzing, optional Cargo
+# tools, then the cheap workspace build check. `mise bootstrap --yes` runs this.
+setup: setup-rust setup-dev-tools check-all-host
+
+# cargo-fuzz needs nightly even though normal development uses stable Rust.
+setup-rust:
+    rustup toolchain install nightly --profile minimal --component rust-src --allow-downgrade || true
+
+# Optional developer tools used by `audit` and `fuzz-security`. Prefer the
+# mise-managed cargo-binstall; fall back to `cargo install` where possible.
+setup-dev-tools:
+    cargo binstall --no-confirm cargo-audit || cargo install cargo-audit || true
+    cargo binstall --no-confirm cargo-deny || cargo install cargo-deny || true
+    cargo binstall --no-confirm cargo-fuzz || cargo install cargo-fuzz || true
 
 # --- Build / check -----------------------------------------------------------
 
@@ -47,6 +72,9 @@ test-net:
 test-store:
     cargo test -p vixen-store
 
+test-engine:
+    cargo test -p vixen-engine
+
 # --- Lint / format -----------------------------------------------------------
 
 fmt:
@@ -63,10 +91,17 @@ clippy:
 # the broader release acceptance checks in docs/ACCEPTANCE.md.
 
 # Reviewer smoke: formatting, linting, and all host-runnable tests.
-gate-smoke: fmt-check clippy test-host
+gate-smoke: fmt-check clippy check-all-host test-host
 
-# Phase 2 vertical gate: SpiderMonkey eval through the headless binary.
-gate-phase2:
+# Phase 0 gate: workspace builds and API DTO/trait tests pass.
+gate-phase0: check-all-host test-api
+
+# Phase 1 gate: networking/store tests, advisory/license audit, and security
+# fuzz targets at their planned iteration count.
+gate-phase1: test-net test-store audit fuzz-security
+
+# Phase 2 vertical gate: engine tests plus SpiderMonkey eval through headless.
+gate-phase2: test-engine
     test "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/dom/basic.html --eval '1+2')" = "3"
 
 # Phase 3 current gate: DOM parse + Stylo selector matching through the shared
@@ -77,6 +112,11 @@ gate-phase3:
     cargo test -p vixen-engine style_cascade
     cargo test -p vixen-engine page
     cargo test -p vixen-headless --test wpt_runner
+
+# Run a committed external-WPT profile against an ignored upstream checkout.
+# Example: `just wpt-profile fixtures/wpt-profiles/layout.json .tmp/wpt`.
+wpt-profile profile root=".tmp/wpt":
+    VIXEN_WPT_PROFILE="{{profile}}" VIXEN_WPT_ROOT="{{root}}" cargo test -p vixen-headless --test wpt_profile_runner -- --nocapture
 
 # Phase 4 current gate: pure layout-resolution prep plus the first executable
 # Page-backed Vixen layout-tree / line-layout slices.
@@ -140,21 +180,45 @@ gate-phase6:
     cargo test -p vixen-engine whatwg_url
 
 # --- Fuzz (docs/PLAN.md Phase 1 gate: 1M iterations each) --------------------
-# Requires `cargo install cargo-fuzz` and a nightly toolchain.
-fuzz-init:
-    @echo "Run once: cargo install cargo-fuzz"
+
+_fuzz-tools-present:
+    command -v cargo-fuzz >/dev/null || { printf '%s\n' "cargo-fuzz missing; run 'mise bootstrap --yes' or 'just setup-dev-tools'" >&2; exit 1; }
+
+fuzz-security: _fuzz-tools-present
     cargo fuzz run url_policy_validate -- -max_len=4096 -runs=1000000
     cargo fuzz run csp_parse       -- -max_len=4096 -runs=1000000
+
+# Backward-compatible name retained for older notes/scripts.
+fuzz-init: fuzz-security
 
 # --- Size (docs/ACCEPTANCE.md "Binary size gates") ---------------------------
 # Measure stripped release binaries. Document any change > +50 KiB in the
 # commit message (docs/ACCEPTANCE.md).
 size-fp: build-release
-    @ls -la target/release/vixen target/release/vixen-headless 2>/dev/null || \
-        echo "binaries not present yet (some crates are still stubs)"
+    @set -eu; \
+        gui="target/release/vixen"; \
+        headless="target/release/vixen-headless"; \
+        test -x "$gui" || { echo "missing $gui" >&2; exit 1; }; \
+        test -x "$headless" || { echo "missing $headless" >&2; exit 1; }; \
+        gui_bytes=$(stat -c '%s' "$gui"); \
+        headless_bytes=$(stat -c '%s' "$headless"); \
+        gui_limit=$((14 * 1024 * 1024)); \
+        headless_limit=$((14 * 1024 * 1024)); \
+        printf '%s %s bytes\n' "$gui" "$gui_bytes"; \
+        printf '%s %s bytes\n' "$headless" "$headless_bytes"; \
+        failed=0; \
+        if [ "$gui_bytes" -gt "$gui_limit" ]; then \
+            echo "vixen exceeds static mozjs size target ($gui_bytes > $gui_limit bytes)" >&2; \
+            failed=1; \
+        fi; \
+        if [ "$headless_bytes" -gt "$headless_limit" ]; then \
+            echo "vixen-headless exceeds static mozjs size target ($headless_bytes > $headless_limit bytes)" >&2; \
+            failed=1; \
+        fi; \
+        exit "$failed"
 
 build-release:
-    cargo build --release
+    cargo build --release -p vixen --bin vixen -p vixen-headless --bin vixen-headless
 
 # --- Run ---------------------------------------------------------------------
 # Launch the GUI. Needs the GNOME SDK; the supported path is the flatpak
@@ -183,8 +247,11 @@ flatpak-build:
         build-aux/_build build-aux/org.vixen.Vixen.json
 
 # --- Audit (docs/ACCEPTANCE.md hard gate) ------------------------------------
-# Requires `cargo install cargo-audit cargo-deny`.
-audit:
+
+_audit-tools-present:
+    command -v cargo-audit >/dev/null || { printf '%s\n' "cargo-audit missing; run 'mise bootstrap --yes' or 'just setup-dev-tools'" >&2; exit 1; }
+    command -v cargo-deny >/dev/null || { printf '%s\n' "cargo-deny missing; run 'mise bootstrap --yes' or 'just setup-dev-tools'" >&2; exit 1; }
+
+audit: _audit-tools-present
     cargo audit
-    command -v cargo-deny >/dev/null || { echo "cargo-deny not installed" >&2; exit 1; }
     cargo deny check

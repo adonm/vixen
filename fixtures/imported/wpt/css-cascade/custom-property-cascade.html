@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT values smoke: custom property cascade</title>
+  <style>
+    .theme { --accent: blue; --gap: 8px; }
+    #target { --accent: green; color: var(--accent); margin-left: var(--gap, 4px); }
+  </style>
+</head>
+<body>
+  <p id="target" class="theme">Custom property cascade</p>
+</body>
+</html>

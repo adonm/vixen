@@ -23,8 +23,8 @@ tooling — stays inside the workspace tree.
   - `CARGO_HOME = "{{ config_root }}/.cargo"`
   - `_.path = ["{{ config_root }}/.cargo/bin"]` (mise's PATH-prepend
     directive, so Cargo itself plus `cargo-audit`, `cargo-deny`, and
-    `cargo-fuzz` installed by `mise bootstrap` are runnable from an activated
-    shell)
+    `cargo-fuzz` installed by `mise bootstrap` / `just setup-dev-tools` are
+    runnable from an activated shell)
 - `.gitignore` ignores everything under `.cargo/` **except** `config.toml`,
   which is the project-pinned Cargo config and ships with the repo.
 - `.cargo/config.toml` is checked in. It doubles as the CARGO_HOME config
@@ -60,13 +60,15 @@ will repopulate on the next build.
 
 ## Updating tooling installed via `cargo-binstall`
 
-`mise bootstrap` runs `cargo-binstall` for `cargo-audit`, `cargo-deny`, and
-`cargo-fuzz`. Because `CARGO_HOME` is workspace-local, those binaries land
-in `.cargo/bin/`. To refresh:
+`mise bootstrap` delegates to `just setup-dev-tools`, which uses
+`cargo-binstall` for `cargo-audit`, `cargo-deny`, and `cargo-fuzz` (falling
+back to `cargo install` where possible). Because `CARGO_HOME` is
+workspace-local, those binaries land in `.cargo/bin/`. To install or re-check
+them:
 
 ```sh
 eval "$(mise activate bash)"
-cargo binstall --no-confirm --force cargo-audit cargo-deny cargo-fuzz
+just setup-dev-tools
 ```
 
 or rerun `mise bootstrap --yes`.

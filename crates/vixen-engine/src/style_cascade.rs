@@ -3,23 +3,33 @@
 //! This is deliberately smaller than the final Stylo style system, but it moves
 //! Vixen past inline-only style projection: `<style>` blocks are parsed in
 //! document order, selectors are matched through the existing Stylo selector
-//! adapter, declarations cascade by importance → origin tier → specificity →
-//! source order, and inline `style` attributes still sit on the same computed
-//! style surface. The final Stylo `Stylist` integration can replace this module
-//! without changing `Page::computed_style(node_id)` or the WPT harness seam.
+//! adapter, declarations cascade by importance → origin tier → cascade layer →
+//! specificity → source order, and inline `style` attributes still sit on the
+//! same computed style surface. The final Stylo `Stylist` integration can
+//! replace this module without changing `Page::computed_style(node_id)` or the
+//! WPT harness seam.
 
 #![forbid(unsafe_code)]
 
 use std::cmp::Ordering;
 
 use crate::doc::Document;
+use crate::media_query::Viewport;
+use crate::style_dom::ElementRelation;
 use crate::style_dom::Selector;
+
+mod conditions;
+use conditions::RuleCondition;
+
+const DEFAULT_VIEWPORT: (u32, u32) = (800, 600);
 
 /// Parsed author stylesheet state for a [`Page`](crate::page::Page).
 #[derive(Debug, Clone, Default)]
 pub struct AuthorStylesheet {
     rules: Vec<StyleRule>,
+    layers: Vec<String>,
     next_source_order: u32,
+    next_anonymous_layer: u16,
 }
 
 impl AuthorStylesheet {
@@ -38,14 +48,54 @@ impl AuthorStylesheet {
 
     /// Compute the current cascade projection for one element.
     pub fn computed_style(&self, document: &Document, node_id: usize) -> Vec<(String, String)> {
+        self.computed_style_for_viewport(document, node_id, DEFAULT_VIEWPORT)
+    }
+
+    /// Compute the cascade projection for one element under a concrete viewport.
+    ///
+    /// `Page::layout_tree(viewport)` uses this so `@media` rules respond to the
+    /// same dimensions as layout, while the public WPT/headless computed-style
+    /// surface keeps the existing 800×600 default.
+    pub fn computed_style_for_viewport(
+        &self,
+        document: &Document,
+        node_id: usize,
+        viewport: (u32, u32),
+    ) -> Vec<(String, String)> {
+        self.computed_style_inner(document, node_id, viewport, 0)
+    }
+
+    fn computed_style_inner(
+        &self,
+        document: &Document,
+        node_id: usize,
+        viewport: (u32, u32),
+        depth: usize,
+    ) -> Vec<(String, String)> {
+        if depth > 64 || document.element_by_node_id(node_id).is_none() {
+            return Vec::new();
+        }
+
+        let parent_styles = document
+            .related_element_by_node_id(node_id, ElementRelation::Parent)
+            .map(|parent| self.computed_style_inner(document, parent.node_id, viewport, depth + 1))
+            .unwrap_or_default();
+        let viewport = Viewport::new(viewport.0 as f64, viewport.1 as f64, 1.0);
         let mut out = CascadedStyle::new();
 
         for rule in &self.rules {
+            if !rule
+                .conditions
+                .iter()
+                .all(|condition| condition.matches(&viewport))
+            {
+                continue;
+            }
             if document.matches_selector(node_id, &rule.selector) {
                 for declaration in &rule.declarations {
                     out.apply(
                         declaration,
-                        declaration.weight(rule.specificity, Origin::Author),
+                        declaration.weight(rule.specificity, Origin::Author, rule.layer),
                     );
                 }
             }
@@ -60,27 +110,33 @@ impl AuthorStylesheet {
             for declaration in parse_declarations(&inline, self.next_source_order) {
                 out.apply(
                     &declaration,
-                    declaration.weight(Specificity::INLINE, Origin::Inline),
+                    declaration.weight(Specificity::INLINE, Origin::Inline, None),
                 );
             }
         }
 
-        out.finish()
+        out.finish(&parent_styles)
     }
 
     fn extend_block(&mut self, css: &str) {
         let css = strip_comments(css);
+        self.extend_block_scoped(&css, None, &[]);
+    }
+
+    fn extend_block_scoped(&mut self, css: &str, layer: Option<u16>, conditions: &[RuleCondition]) {
         let mut cursor = 0usize;
         while let Some(open_rel) = find_top_level_char(&css[cursor..], '{') {
             let open = cursor + open_rel;
-            let selector_text = css[cursor..open].trim();
-            let Some(close) = find_matching_brace(&css, open) else {
+            let raw_prelude = css[cursor..open].trim();
+            let selector_text = self.process_prelude_statements(raw_prelude).trim();
+            let Some(close) = find_matching_brace(css, open) else {
                 break;
             };
             let body = &css[open + 1..close];
             cursor = close + 1;
 
             if selector_text.is_empty() || selector_text.starts_with('@') {
+                self.extend_at_rule(selector_text, body, layer, conditions);
                 continue;
             }
 
@@ -99,11 +155,79 @@ impl AuthorStylesheet {
                     self.rules.push(StyleRule {
                         selector,
                         specificity: Specificity::parse(selector_text),
+                        layer,
+                        conditions: conditions.to_vec(),
                         declarations: declarations.clone(),
                     });
                 }
             }
         }
+    }
+
+    fn process_prelude_statements<'a>(&mut self, raw: &'a str) -> &'a str {
+        let mut parts = split_top_level(raw, ';');
+        let prelude = parts.pop().unwrap_or_default();
+        for statement in parts {
+            self.process_statement(statement.trim());
+        }
+        prelude
+    }
+
+    fn process_statement(&mut self, statement: &str) {
+        if let Some(names) = statement.strip_prefix("@layer") {
+            for name in split_top_level(names, ',') {
+                let name = name.trim();
+                if !name.is_empty() {
+                    self.ensure_layer(name);
+                }
+            }
+        }
+    }
+
+    fn extend_at_rule(
+        &mut self,
+        prelude: &str,
+        body: &str,
+        layer: Option<u16>,
+        conditions: &[RuleCondition],
+    ) {
+        let prelude = prelude.trim();
+        if let Some(query) = prelude.strip_prefix("@media") {
+            let mut next = conditions.to_vec();
+            next.push(RuleCondition::media(query.trim()));
+            self.extend_block_scoped(body, layer, &next);
+        } else if let Some(condition) = prelude.strip_prefix("@supports") {
+            let mut next = conditions.to_vec();
+            next.push(RuleCondition::supports(condition.trim()));
+            self.extend_block_scoped(body, layer, &next);
+        } else if let Some(names) = prelude.strip_prefix("@layer") {
+            let next_layer = self.layer_for_block(names.trim());
+            self.extend_block_scoped(body, next_layer, conditions);
+        }
+    }
+
+    fn layer_for_block(&mut self, names: &str) -> Option<u16> {
+        let name = split_top_level(names, ',')
+            .into_iter()
+            .map(str::trim)
+            .find(|name| !name.is_empty());
+        match name {
+            Some(name) => Some(self.ensure_layer(name)),
+            None => {
+                let name = format!("#anonymous-{}", self.next_anonymous_layer);
+                self.next_anonymous_layer = self.next_anonymous_layer.saturating_add(1);
+                Some(self.ensure_layer(&name))
+            }
+        }
+    }
+
+    fn ensure_layer(&mut self, name: &str) -> u16 {
+        if let Some(idx) = self.layers.iter().position(|layer| layer == name) {
+            return idx as u16;
+        }
+        let idx = self.layers.len().min(u16::MAX as usize) as u16;
+        self.layers.push(name.to_owned());
+        idx
     }
 }
 
@@ -111,6 +235,8 @@ impl AuthorStylesheet {
 struct StyleRule {
     selector: Selector,
     specificity: Specificity,
+    layer: Option<u16>,
+    conditions: Vec<RuleCondition>,
     declarations: Vec<Declaration>,
 }
 
@@ -123,7 +249,12 @@ pub struct Declaration {
 }
 
 impl Declaration {
-    fn weight(&self, specificity: Specificity, origin: Origin) -> CascadeWeight {
+    fn weight(
+        &self,
+        specificity: Specificity,
+        origin: Origin,
+        layer: Option<u16>,
+    ) -> CascadeWeight {
         CascadeWeight {
             tier: match (origin, self.important) {
                 (Origin::Author, false) => 0,
@@ -131,9 +262,26 @@ impl Declaration {
                 (Origin::Author, true) => 2,
                 (Origin::Inline, true) => 3,
             },
+            layer_rank: layer_rank(origin, self.important, layer),
             specificity,
             source_order: self.source_order,
         }
+    }
+}
+
+fn layer_rank(origin: Origin, important: bool, layer: Option<u16>) -> i32 {
+    if matches!(origin, Origin::Inline) {
+        return i32::MAX;
+    }
+    match (important, layer) {
+        // Normal unlayered author declarations beat normal layered declarations.
+        (false, None) => i32::MAX,
+        // Later layers beat earlier layers for normal declarations.
+        (false, Some(layer)) => i32::from(layer),
+        // Important layer order is reversed by CSS Cascade 5.
+        (true, Some(layer)) => i32::MAX - i32::from(layer),
+        // Important unlayered declarations lose to important layered ones.
+        (true, None) => 0,
     }
 }
 
@@ -177,14 +325,27 @@ impl Specificity {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CascadeWeight {
     tier: u8,
+    layer_rank: i32,
     specificity: Specificity,
     source_order: u32,
+}
+
+impl CascadeWeight {
+    fn inherited_custom_property() -> Self {
+        Self {
+            tier: 0,
+            layer_rank: 0,
+            specificity: Specificity::default(),
+            source_order: 0,
+        }
+    }
 }
 
 impl Ord for CascadeWeight {
     fn cmp(&self, other: &Self) -> Ordering {
         self.tier
             .cmp(&other.tier)
+            .then_with(|| self.layer_rank.cmp(&other.layer_rank))
             .then_with(|| self.specificity.cmp(&other.specificity))
             .then_with(|| self.source_order.cmp(&other.source_order))
     }
@@ -226,10 +387,36 @@ impl CascadedStyle {
         }
     }
 
-    fn finish(self) -> Vec<(String, String)> {
-        self.entries
+    fn finish(self, parent_styles: &[(String, String)]) -> Vec<(String, String)> {
+        let mut entries = apply_css_wide_keywords(self.entries, parent_styles);
+        for (property, value) in parent_styles
+            .iter()
+            .filter(|(property, _)| property.starts_with("--"))
+        {
+            if entries.iter().all(|entry| entry.property != *property) {
+                entries.push(CascadedEntry {
+                    property: property.clone(),
+                    value: value.clone(),
+                    weight: CascadeWeight::inherited_custom_property(),
+                });
+            }
+        }
+
+        let custom_properties: Vec<(String, String)> = entries
+            .iter()
+            .filter(|entry| entry.property.starts_with("--"))
+            .map(|entry| (entry.property.clone(), entry.value.clone()))
+            .collect();
+
+        entries
             .into_iter()
-            .map(|entry| (entry.property, entry.value))
+            .filter_map(|entry| {
+                if entry.property.starts_with("--") {
+                    return Some((entry.property, entry.value));
+                }
+                resolve_var_functions(&entry.value, &custom_properties, 0)
+                    .map(|value| (entry.property, value))
+            })
             .collect()
     }
 }
@@ -238,6 +425,131 @@ struct CascadedEntry {
     property: String,
     value: String,
     weight: CascadeWeight,
+}
+
+fn apply_css_wide_keywords(
+    entries: Vec<CascadedEntry>,
+    parent_styles: &[(String, String)],
+) -> Vec<CascadedEntry> {
+    entries
+        .into_iter()
+        .filter_map(|mut entry| {
+            let keyword = entry.value.trim().to_ascii_lowercase();
+            match keyword.as_str() {
+                "inherit" => {
+                    entry.value = parent_style_value(parent_styles, &entry.property)?.to_owned();
+                    Some(entry)
+                }
+                "unset"
+                    if entry.property.starts_with("--")
+                        || is_inherited_property(&entry.property) =>
+                {
+                    entry.value = parent_style_value(parent_styles, &entry.property)?.to_owned();
+                    Some(entry)
+                }
+                "unset" | "initial" | "revert" | "revert-layer" => None,
+                _ => Some(entry),
+            }
+        })
+        .collect()
+}
+
+fn parent_style_value<'a>(styles: &'a [(String, String)], property: &str) -> Option<&'a str> {
+    styles
+        .iter()
+        .find(|(name, _)| name == property)
+        .map(|(_, value)| value.as_str())
+}
+
+fn is_inherited_property(property: &str) -> bool {
+    matches!(
+        property,
+        "color"
+            | "font"
+            | "font-family"
+            | "font-size"
+            | "font-style"
+            | "font-weight"
+            | "line-height"
+            | "letter-spacing"
+            | "text-align"
+            | "text-indent"
+            | "text-transform"
+            | "visibility"
+            | "white-space"
+            | "word-spacing"
+    )
+}
+
+fn resolve_var_functions(
+    value: &str,
+    custom_properties: &[(String, String)],
+    depth: usize,
+) -> Option<String> {
+    if depth > 16 {
+        return None;
+    }
+    let Some(start) = value.find("var(") else {
+        return Some(value.to_owned());
+    };
+    let open = start + "var".len();
+    let close = find_matching_paren(value, open)?;
+    let args = &value[open + 1..close];
+    let pieces = split_top_level(args, ',');
+    let name = pieces.first()?.trim();
+    if !name.starts_with("--") || name.len() <= 2 {
+        return None;
+    }
+    let replacement = custom_properties
+        .iter()
+        .rev()
+        .find(|(property, _)| property == name)
+        .and_then(|(_, value)| resolve_var_functions(value, custom_properties, depth + 1))
+        .or_else(|| {
+            if pieces.len() > 1 {
+                let fallback_start = args.find(',')? + 1;
+                resolve_var_functions(args[fallback_start..].trim(), custom_properties, depth + 1)
+            } else {
+                None
+            }
+        })?;
+
+    let mut out = String::with_capacity(value.len() + replacement.len());
+    out.push_str(&value[..start]);
+    out.push_str(&replacement);
+    out.push_str(&value[close + 1..]);
+    resolve_var_functions(&out, custom_properties, depth + 1)
+}
+
+fn find_matching_paren(input: &str, open: usize) -> Option<usize> {
+    let mut depth = 0usize;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+    for (idx, ch) in input[open..].char_indices() {
+        let idx = open + idx;
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
+                quote = None;
+            }
+            continue;
+        }
+        match ch {
+            '\'' | '"' => quote = Some(ch),
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    return Some(idx);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Parse a CSS declaration list (`name: value; ...`). Also used for inline
@@ -622,9 +934,10 @@ mod tests {
         let sheet = AuthorStylesheet::from_blocks(&[String::from(
             "/* comment */ #a, .b { color: red; display: block } @media screen { p { color: blue } }",
         )]);
-        assert_eq!(sheet.rules.len(), 2);
+        assert_eq!(sheet.rules.len(), 3);
         assert_eq!(sheet.rules[0].specificity, sp(1, 0, 0));
         assert_eq!(sheet.rules[1].specificity, sp(0, 1, 0));
+        assert_eq!(sheet.rules[2].specificity, sp(0, 0, 1));
     }
 
     #[test]
@@ -697,6 +1010,92 @@ mod tests {
             value(&sheet.computed_style(&document, node_id), "color"),
             Some("green")
         );
+    }
+
+    #[test]
+    fn media_queries_gate_rules_by_viewport() {
+        let document = doc(
+            "<style>p { color: red } @media (max-width: 400px) { p { color: blue } }</style><p id='x'>x</p>",
+        );
+        let sheet = AuthorStylesheet::from_blocks(&document.style_blocks());
+        let node_id = document
+            .query_first(&Selector::parse("#x").unwrap())
+            .unwrap()
+            .node_id;
+
+        assert_eq!(
+            value(
+                &sheet.computed_style_for_viewport(&document, node_id, (800, 600)),
+                "color"
+            ),
+            Some("red")
+        );
+        assert_eq!(
+            value(
+                &sheet.computed_style_for_viewport(&document, node_id, (360, 600)),
+                "color"
+            ),
+            Some("blue")
+        );
+    }
+
+    #[test]
+    fn supports_conditions_gate_rules_fail_closed() {
+        let document = doc(
+            "<style>@supports (display: grid) { #x { display: grid } } @supports (unknown-prop: yes) { #x { color: red } }</style><p id='x'>x</p>",
+        );
+        let sheet = AuthorStylesheet::from_blocks(&document.style_blocks());
+        let node_id = document
+            .query_first(&Selector::parse("#x").unwrap())
+            .unwrap()
+            .node_id;
+        let styles = sheet.computed_style(&document, node_id);
+        assert_eq!(value(&styles, "display"), Some("grid"));
+        assert_eq!(value(&styles, "color"), None);
+    }
+
+    #[test]
+    fn cascade_layers_apply_normal_and_important_ordering() {
+        let document = doc(
+            "<style>@layer base, theme; @layer base { #x { color: red } } @layer theme { #x { color: blue } } #x { display: block }</style><p id='x'>x</p>",
+        );
+        let sheet = AuthorStylesheet::from_blocks(&document.style_blocks());
+        let node_id = document
+            .query_first(&Selector::parse("#x").unwrap())
+            .unwrap()
+            .node_id;
+        let styles = sheet.computed_style(&document, node_id);
+        assert_eq!(value(&styles, "color"), Some("blue"));
+        assert_eq!(value(&styles, "display"), Some("block"));
+
+        let document = doc(
+            "<style>@layer base, theme; @layer base { #x { color: red !important } } @layer theme { #x { color: blue !important } } #x { color: green !important }</style><p id='x'>x</p>",
+        );
+        let sheet = AuthorStylesheet::from_blocks(&document.style_blocks());
+        let node_id = document
+            .query_first(&Selector::parse("#x").unwrap())
+            .unwrap()
+            .node_id;
+        assert_eq!(
+            value(&sheet.computed_style(&document, node_id), "color"),
+            Some("red")
+        );
+    }
+
+    #[test]
+    fn custom_properties_and_css_wide_keywords_resolve() {
+        let document = doc(
+            "<style>#parent { color: purple; --accent: blue } #child { color: inherit; background-color: var(--accent, red); display: initial }</style><div id='parent'><p id='child'>x</p></div>",
+        );
+        let sheet = AuthorStylesheet::from_blocks(&document.style_blocks());
+        let child = document
+            .query_first(&Selector::parse("#child").unwrap())
+            .unwrap()
+            .node_id;
+        let styles = sheet.computed_style(&document, child);
+        assert_eq!(value(&styles, "color"), Some("purple"));
+        assert_eq!(value(&styles, "background-color"), Some("blue"));
+        assert_eq!(value(&styles, "display"), None);
     }
 
     #[test]

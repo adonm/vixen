@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: important source order</title>
+  <style>
+    .item { color: red !important; font-size: 10px !important; }
+    .item { color: green !important; font-size: 14px !important; display: block; }
+  </style>
+</head>
+<body>
+  <p id="target" class="item">Important source order</p>
+</body>
+</html>

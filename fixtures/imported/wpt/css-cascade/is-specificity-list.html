@@ -1,0 +1,19 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: is specificity list</title>
+  <style>
+    :is(.fallback, #target) { color: green; }
+    .card { color: red; }
+    :is(section, article) .card { display: block; }
+    :where(#target) { font-size: 10px; }
+    .card.primary { font-size: 18px; }
+  </style>
+</head>
+<body>
+  <section>
+    <p id="target" class="card primary">Target</p>
+    <p id="fallback" class="card fallback">Fallback</p>
+  </section>
+</body>
+</html>

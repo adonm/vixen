@@ -29,12 +29,14 @@ and reference material, plus:
   the RcDom), driving `--extract-selector` and the WPT selector fixtures;
   the shared `vixen-engine::page::Page` facade; author `<style>` blocks and
   inline `style` declarations now project through `Page::computed_style(node_id)`
-  with specificity/source-order/`!important` cascade basics and WPT
-  `computed-style` checks; and the **WPT harness** (`vixen-wpt`: manifest +
-  runner + all 15 check types). The full Stylo cascade (`TNode`/`TElement`/`TDocument` +
-  `Stylist::update_stylist` + `computed_values_for(node_id)`) is the next
-  slice; Stylo arrives via the crates.io-published `stylo` crate per
-  ADR-011 (no Servo git dep).
+  with specificity/source-order/`!important`, cascade layers, `@media`,
+  `@supports`, inherited custom properties, `var()` fallback, and CSS-wide
+  keyword coverage through WPT `computed-style` checks; and the **WPT harness**
+  (`vixen-wpt`: manifest + runner + all 15 check types). The full Stylo cascade
+  (`TNode`/`TElement`/`TDocument` + `Stylist::update_stylist` +
+  `computed_values_for(node_id)`) remains the implementation replacement behind
+  the same `Page` facade; Stylo arrives via the crates.io-published `stylo`
+  crate per ADR-011 (no Servo git dep).
 - **Phase 4 prep** — `vixen-engine::box_model` implements the CSS2 § 10.3.3
   block-level horizontal-constraint solve (`auto`-width leftover absorption,
   one/two `auto`-margin centering, `box-sizing: border-box` content
@@ -229,19 +231,37 @@ Source for later phases lands per [`docs/PLAN.md`](docs/PLAN.md).
 
 ## Setup
 
-Workspace setup is managed by [mise](https://mise.jdx.dev) for the Rust
-toolchain, `just`, and project tooling:
+Workspace setup is split deliberately:
+
+- [mise](https://mise.jdx.dev) pins tool versions and exports the workspace
+  environment (`CARGO_HOME`, `PATH`, Rust toolchain selection).
+- [`just`](justfile) owns project actions. Prefer a recipe over spelling out
+  raw `cargo ...` commands in docs, CI, or local scripts.
 
 ```sh
 mise trust
-mise bootstrap --yes     # Rust toolchain + just + dev tooling + build check
-just check-all-host      # type-check the workspace
-just test-host           # run host-runnable tests
+mise bootstrap --yes     # pinned tools + optional Cargo tools + `just setup`
+eval "$(mise activate bash)"
+just check               # alias: check-all-host
+just test                # alias: test-host
+just smoke               # fmt-check + clippy + check + tests
 ```
 
-`mise bootstrap` also points `CARGO_HOME` at `<workspace>/.cargo` so the
-Cargo registry cache and `cargo-binstall`-ed tooling stay inside the
-workspace (see [`docs/guidance/cargo-home.md`](docs/guidance/cargo-home.md)).
+Common recipes:
+
+| Recipe | Use |
+|--------|-----|
+| `just setup` | Nightly for fuzzing, optional Cargo tools, then `check-all-host` |
+| `just check` / `just check-all-host` | Type-check the host-runnable workspace |
+| `just test` / `just test-host` | Run host-runnable tests |
+| `just smoke` / `just gate-smoke` | Reviewer baseline before commit/push |
+| `just audit` | `cargo audit` + `cargo deny check` |
+| `just flatpak-update-sdk` / `just flatpak-build` | Manage and build against the GNOME SDK container |
+
+`mise bootstrap` and recipes run from a mise-active shell use
+`CARGO_HOME=<workspace>/.cargo`, so the Cargo registry cache and installed dev
+tooling stay inside the workspace (see
+[`docs/guidance/cargo-home.md`](docs/guidance/cargo-home.md)).
 
 **The GNOME 50 SDK is not installed on the host** — it is managed inside a
 `flatpak-builder` container, so host churn stays at zero and the build is
@@ -255,11 +275,12 @@ just flatpak-build       # flatpak-builder against org.gnome.Sdk//50 in the cont
 See [`docs/guidance/gnome-sdk-flatpak-builder.md`](docs/guidance/gnome-sdk-flatpak-builder.md)
 for the full workflow. Headless/CI hosts that only build `vixen-api` /
 `vixen-net` / `vixen-store` need neither the SDK nor the container —
-`mise install` + `just check-all-host` is enough.
+`mise install` + an activated shell + `just check` is enough.
 
 See [`.mise.toml`](.mise.toml) and the
 [mise bootstrap guide](https://mise.jdx.dev/bootstrap.html). The library
-MSRV is 1.88 (let-chains); the dev toolchain floats to latest stable.
+MSRV is 1.88 (let-chains); the developer toolchain is pinned in
+[`.mise.toml`](.mise.toml).
 
 ---
 

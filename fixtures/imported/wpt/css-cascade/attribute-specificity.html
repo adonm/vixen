@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: attribute specificity</title>
+  <style>
+    [data-state] { color: green; display: block; }
+    article { color: red; margin-left: 2px; }
+    .item { font-size: 13px; }
+  </style>
+</head>
+<body>
+  <article id="target" class="item" data-state="active">Attribute specificity</article>
+  <article id="other">Other</article>
+</body>
+</html>

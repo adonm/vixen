@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use vixen_api::PageSnapshot;
 
 use crate::harness::HarnessEngine;
+use crate::visual_hash::{VisualHash, hash_rgba};
 
 /// Default viewport the harness inspects at (matches `vixen-headless`).
 const VW: u32 = 800;
@@ -248,9 +249,24 @@ impl Check {
                 Ok(_) => Outcome::Fail("display-list does not contain expected substring".into()),
                 Err(e) => Outcome::Fail(format!("display-list: {e}")),
             },
-            Check::VisualHash { .. } => {
-                Outcome::Skipped("needs offscreen renderer (Phase 5)".into())
-            }
+            Check::VisualHash { expected } => match engine.screenshot_rgba(VW, VH) {
+                Err(_) => Outcome::Skipped("needs offscreen renderer (Phase 5)".into()),
+                Ok(screenshot) => {
+                    let expected = match expected.parse::<VisualHash>() {
+                        Ok(hash) => hash,
+                        Err(err) => return Outcome::Fail(format!("visual-hash: {err}")),
+                    };
+                    match hash_rgba(screenshot.width, screenshot.height, &screenshot.rgba) {
+                        Some(actual) if expected.matches(actual) => Outcome::Pass,
+                        Some(actual) => Outcome::Fail(format!(
+                            "visual-hash: expected {expected}, got {actual} (distance {}, tolerance {})",
+                            expected.distance(actual),
+                            expected.tolerance
+                        )),
+                        None => Outcome::Fail("visual-hash: invalid RGBA screenshot buffer".into()),
+                    }
+                }
+            },
             Check::RefEquivalent { reference } => match (
                 engine.display_list(VW, VH),
                 engine.reference_display_list(reference, VW, VH),
@@ -316,7 +332,7 @@ fn _snapshot_bound(_: &PageSnapshot) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::MockEngine;
+    use crate::harness::{MockEngine, RgbaScreenshot};
     use vixen_api::{ElementInfo, EngineDiagnostic, EngineDiagnosticCategory, PageSnapshot};
 
     fn snap(title: Option<&str>, text: &str, n: usize) -> PageSnapshot {
@@ -526,6 +542,47 @@ mod tests {
             .run(&e),
             Outcome::Skipped(_)
         ));
+    }
+
+    #[test]
+    fn visual_hash_uses_rgba_screenshots_when_available() {
+        let mut rgba = Vec::new();
+        for _y in 0..8 {
+            for x in 0..8 {
+                let value = if x < 4 { 0 } else { 255 };
+                rgba.extend_from_slice(&[value, value, value, 255]);
+            }
+        }
+        let e = MockEngine {
+            screenshot: Some(Ok(RgbaScreenshot {
+                width: 8,
+                height: 8,
+                rgba,
+            })),
+            ..Default::default()
+        };
+
+        assert_eq!(
+            Check::VisualHash {
+                expected: "0f0f0f0f0f0f0f0f".into()
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+        assert!(
+            Check::VisualHash {
+                expected: "f0f0f0f0f0f0f0f0@0".into()
+            }
+            .run(&e)
+            .is_fail()
+        );
+        assert!(
+            Check::VisualHash {
+                expected: "bad".into()
+            }
+            .run(&e)
+            .is_fail()
+        );
     }
 
     #[test]

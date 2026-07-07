@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: class chain specificity</title>
+  <style>
+    .item { color: red; margin-left: 1px; }
+    .theme .item { color: green; display: block; }
+    .theme .item.featured { color: purple; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <section class="theme">
+    <p id="target" class="item featured">Featured</p>
+    <p id="peer" class="item">Peer</p>
+  </section>
+</body>
+</html>

@@ -22,6 +22,7 @@ use vixen_net::{CookieJar, Method, Network};
 
 pub mod cdp;
 mod interactions;
+pub mod surface;
 
 /// The `vixen-headless` CLI (docs/SPEC.md "Headless CLI surface").
 /// Flags and stable error codes are a public contract — automation depends on them.
@@ -124,23 +125,34 @@ pub fn run(cli: Cli) -> ExitCode {
         return ExitCode::from(2);
     }
 
-    // --screenshot requires the offscreen renderer (Phase 5). Without it the
-    // stable code `unsupported.screenshot` is returned (docs/SPEC.md). Check it
-    // before all other page actions so combinations fail closed consistently.
-    if cli.screenshot.is_some() {
-        eprintln!("{}", codes::UNSUPPORTED_SCREENSHOT);
-        return ExitCode::FAILURE;
-    }
+    let viewport = match parse_viewport(&cli.viewport) {
+        Ok(viewport) => viewport,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::from(2);
+        }
+    };
 
     if cli.memory_stats && !has_non_memory_action(&cli) {
         return run_memory_stats();
     }
 
-    // `--incremental` needs the offscreen screenshot path. Keep it explicit so
-    // combinations like `--incremental --eval` do not silently ignore the flag.
+    // `--incremental` is a two-frame screenshot workflow. Validate the required
+    // flag combination now, then fail on the same stable renderer code as
+    // `--screenshot` until the Phase 5 offscreen path lands.
     if cli.incremental {
-        eprintln!("requested feature is not implemented yet (Phase 5 offscreen renderer)");
-        return ExitCode::from(2);
+        if cli.screenshot.is_none() || cli.eval.is_none() {
+            eprintln!("error: --incremental requires --screenshot and --eval");
+            return ExitCode::from(2);
+        }
+        return run_screenshot(url, viewport);
+    }
+
+    // --screenshot requires the offscreen renderer (Phase 5). Probe the
+    // concrete headless `GlContext` creation boundary before all other page
+    // actions so combinations fail closed consistently with the stable code.
+    if cli.screenshot.is_some() {
+        return run_screenshot(url, viewport);
     }
 
     if has_interaction_action(&cli) {
@@ -152,7 +164,7 @@ pub fn run(cli: Cli) -> ExitCode {
 
     // --eval: the Phase 2 gate path.
     if let Some(js) = cli.eval.as_deref() {
-        return run_eval(js, &cli);
+        return run_eval(url, js);
     }
 
     // --dump-dom / --extract-text / --dump-layout-tree / --dump-lines /
@@ -164,25 +176,34 @@ pub fn run(cli: Cli) -> ExitCode {
         || cli.dump_display_list
         || cli.paint_stats
     {
-        return run_dom_outputs(url, &cli);
+        return run_dom_outputs(url, &cli, viewport);
     }
 
     // --extract-selector: validate the selector first (`invalid-selector` on
     // malformed input — docs/SPEC.md), then walk the parsed DOM and print
     // each match as JSON. Selector matching runs through Stylo (Phase 3).
     if let Some(sel) = cli.extract_selector.as_deref() {
-        return run_extract_selector(url, sel);
+        return run_extract_selector(url, sel, viewport);
     }
 
     // `--cdp` starts the WebSocket CDP server (Phase 8 step 4). It runs
     // until the process is killed.
     if cli.cdp {
-        return run_cdp_server(cli.cdp_port);
+        return run_cdp_server(url, cli.cdp_port);
     }
 
-    // Nothing to do — just a URL load. Without the engine pipeline we acknowledge it.
-    eprintln!("loaded {url} (no action requested; engine pipeline lands Phases 3–6)");
-    ExitCode::SUCCESS
+    // Nothing else to do: still perform the load so URL-only runs exercise the
+    // same file/HTTP trust boundary as the other page actions.
+    match load_page(url) {
+        Ok(page) => {
+            eprintln!("loaded {}", page.url());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
 }
 
 /// `--cdp [--cdp-port N]`: run the CDP WebSocket server on 127.0.0.1:N.
@@ -192,7 +213,7 @@ pub fn run(cli: Cli) -> ExitCode {
 /// tokio runtime + `LocalSet`. CDP clients keep one long-lived WebSocket
 /// connection per browser instance, so single-threaded serving is not a
 /// bottleneck in practice.
-fn run_cdp_server(port: u16) -> ExitCode {
+fn run_cdp_server(initial_url: &str, port: u16) -> ExitCode {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -204,11 +225,29 @@ fn run_cdp_server(port: u16) -> ExitCode {
         }
     };
     let local = tokio::task::LocalSet::new();
-    let result = local.block_on(&rt, cdp::serve(port));
+    let result = local.block_on(
+        &rt,
+        cdp::serve_with_initial_url(port, Some(initial_url.to_owned())),
+    );
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: CDP server failed: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn run_screenshot(_url: &str, viewport: (u32, u32)) -> ExitCode {
+    match surface::SurfacelessSurface::new(viewport) {
+        Ok(_surface) => {
+            // The EGL context constructor is the first Phase 5 boundary; PNG
+            // capture still waits for the single WebRender paint path.
+            eprintln!("{}", codes::UNSUPPORTED_SCREENSHOT);
+            ExitCode::FAILURE
+        }
+        Err(err) => {
+            eprintln!("{}", err.stable_code());
             ExitCode::FAILURE
         }
     }
@@ -343,7 +382,7 @@ fn memory_stats() -> MemoryStats {
 /// print every element matching `css` as a JSON object (one per line).
 /// Returns the stable `invalid-selector` code on malformed selectors
 /// (docs/SPEC.md). Selector matching uses Stylo via `vixen_engine::style_dom`.
-fn run_extract_selector(url: &str, sel: &str) -> ExitCode {
+fn run_extract_selector(url: &str, sel: &str, viewport: (u32, u32)) -> ExitCode {
     use vixen_engine::style_dom::Selector;
 
     let _parsed = match Selector::parse(sel) {
@@ -361,7 +400,7 @@ fn run_extract_selector(url: &str, sel: &str) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let matches = match page.query_selector_all(sel) {
+    let matches = match page.query_selector_all_in_viewport(sel, viewport) {
         Ok(matches) => matches,
         Err(_) => {
             eprintln!("{}", codes::INVALID_SELECTOR);
@@ -377,6 +416,12 @@ fn run_extract_selector(url: &str, sel: &str) -> ExitCode {
             "id": m.id,
             "classes": m.classes,
             "text": m.text,
+            "bbox": m.bbox.map(|(x, y, w, h)| serde_json::json!({
+                "x": x,
+                "y": y,
+                "w": w,
+                "h": h,
+            })),
             "attributes": m.attributes.iter()
                 .map(|(k, v)| (k.clone(), v.clone()))
                 .collect::<std::collections::BTreeMap<_, _>>(),
@@ -386,11 +431,17 @@ fn run_extract_selector(url: &str, sel: &str) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `--url file://… --eval '1+2'` → prints `3` (the Phase 2 gate).
-fn run_eval(js: &str, cli: &Cli) -> ExitCode {
-    let url = cli.url.as_deref().expect("--url validated before eval");
+/// `--url file://… --eval '1+2'` → load the page context then prints `3`.
+fn run_eval(url: &str, js: &str) -> ExitCode {
+    let page = match load_page(url) {
+        Ok(page) => page,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
 
-    if let Some(result) = run_dom_eval(url, js) {
+    if let Some(result) = run_dom_eval_on_page(&page, js) {
         return match result {
             Ok(value) => {
                 println!("{value}");
@@ -426,17 +477,25 @@ fn run_eval(js: &str, cli: &Cli) -> ExitCode {
     }
 }
 
+#[cfg(test)]
 fn run_dom_eval(url: &str, js: &str) -> Option<Result<String, String>> {
     if !looks_like_dom_eval(js) {
         return None;
     }
     match load_page(url) {
-        Ok(page) => page.evaluate_dom_expression(js),
+        Ok(page) => run_dom_eval_on_page(&page, js),
         Err(e) => Some(Err(e)),
     }
 }
 
-fn looks_like_dom_eval(js: &str) -> bool {
+fn run_dom_eval_on_page(page: &Page, js: &str) -> Option<Result<String, String>> {
+    if !looks_like_dom_eval(js) {
+        return None;
+    }
+    page.evaluate_dom_expression(js)
+}
+
+pub(crate) fn looks_like_dom_eval(js: &str) -> bool {
     let js = js.trim_start();
     js.starts_with("document.") || js.starts_with("location.") || js.starts_with("window.location.")
 }
@@ -444,7 +503,7 @@ fn looks_like_dom_eval(js: &str) -> bool {
 /// `--dump-dom` / `--extract-text` / `--dump-layout-tree` / `--dump-lines` /
 /// `--dump-display-list` / `--paint-stats`: load the URL's HTML and print the requested
 /// DOM/layout/paint projections.
-fn run_dom_outputs(url: &str, cli: &Cli) -> ExitCode {
+fn run_dom_outputs(url: &str, cli: &Cli, viewport: (u32, u32)) -> ExitCode {
     let page = match load_page(url) {
         Ok(p) => p,
         Err(e) => {
@@ -452,18 +511,6 @@ fn run_dom_outputs(url: &str, cli: &Cli) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let viewport =
-        if cli.dump_layout_tree || cli.dump_lines || cli.dump_display_list || cli.paint_stats {
-            match parse_viewport(&cli.viewport) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    eprintln!("error: {e}");
-                    return ExitCode::from(2);
-                }
-            }
-        } else {
-            None
-        };
     if cli.dump_dom {
         print!("{}", page.dump_dom());
     }
@@ -471,25 +518,16 @@ fn run_dom_outputs(url: &str, cli: &Cli) -> ExitCode {
         println!("{}", page.text_content());
     }
     if cli.dump_layout_tree {
-        print!(
-            "{}",
-            page.dump_layout_tree(viewport.expect("viewport parsed"))
-        );
+        print!("{}", page.dump_layout_tree(viewport));
     }
     if cli.dump_lines {
-        print!("{}", page.dump_lines(viewport.expect("viewport parsed")));
+        print!("{}", page.dump_lines(viewport));
     }
     if cli.dump_display_list {
-        print!(
-            "{}",
-            page.dump_display_list(viewport.expect("viewport parsed"))
-        );
+        print!("{}", page.dump_display_list(viewport));
     }
     if cli.paint_stats {
-        print!(
-            "{}",
-            page.dump_paint_stats(viewport.expect("viewport parsed"))
-        );
+        print!("{}", page.dump_paint_stats(viewport));
     }
     ExitCode::SUCCESS
 }

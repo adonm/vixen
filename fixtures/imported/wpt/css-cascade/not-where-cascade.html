@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: not and where</title>
+  <style>
+    .item { color: red; margin-left: 8px; }
+    .item:not(.disabled) { color: green; }
+    :where(.theme .item.active) { font-size: 10px; }
+    .item.active { font-size: 16px; }
+  </style>
+</head>
+<body>
+  <section class="theme">
+    <p id="active" class="item active">Active</p>
+    <p id="disabled" class="item disabled">Disabled</p>
+  </section>
+</body>
+</html>

@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: :not specificity</title>
+  <style>
+    p:not(#never) { color: red; font-size: 15px; }
+    .item { color: blue; display: block; }
+  </style>
+</head>
+<body>
+  <p id="target" class="item">Not specificity</p>
+</body>
+</html>

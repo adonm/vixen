@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: id class conflict</title>
+  <style>
+    .card.featured { color: red; display: inline; }
+    .card.featured.primary { font-size: 12px; }
+    #target { color: blue; }
+  </style>
+</head>
+<body>
+  <main>
+    <p id="target" class="card featured primary">Target</p>
+    <p id="peer" class="card featured">Peer</p>
+  </main>
+</body>
+</html>

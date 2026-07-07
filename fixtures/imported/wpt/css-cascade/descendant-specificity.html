@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: descendant specificity</title>
+  <style>
+    article .note { color: green; }
+    .note { color: red; display: block; }
+    article section .note { font-size: 18px; }
+    section .note { font-size: 14px; }
+  </style>
+</head>
+<body>
+  <article><section><p id="target" class="note">Target</p></section></article>
+</body>
+</html>

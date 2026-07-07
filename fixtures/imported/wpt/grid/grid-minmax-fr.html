@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT grid smoke: minmax fr tracks</title>
+  <style>
+    body { margin: 0; }
+    #grid { display: grid; width: 300px; grid-template-columns: 50px minmax(50px,1fr) 2fr; grid-template-rows: 20px; column-gap: 10px; }
+  </style>
+</head>
+<body><div id="grid"><div id="a">A</div><div id="b">B</div><div id="c">C</div></div></body>
+</html>

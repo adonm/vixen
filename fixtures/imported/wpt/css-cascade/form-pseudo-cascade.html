@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: form pseudos</title>
+  <style>
+    input:required { color: red; }
+    input:disabled { color: gray; }
+    input:checked { background-color: #ccffcc; }
+    button:enabled { display: inline-block; }
+  </style>
+</head>
+<body>
+  <form id="form-root">
+    <input id="req" required value="x">
+    <input id="off" disabled value="x">
+    <input id="check" type="checkbox" checked>
+    <button id="go">Go</button>
+  </form>
+</body>
+</html>

@@ -29,18 +29,20 @@ use std::hash::{Hash, Hasher};
 use std::ptr;
 use std::rc::Rc;
 
+use cssparser::{CowRcStr, Parser as CssParser, ParserInput, SourceLocation};
 use markup5ever_rcdom::{Node, NodeData};
 use selectors::attr::{
     AttrSelectorOperation, AttrSelectorOperator, CaseSensitivity, NamespaceConstraint,
 };
 use selectors::matching::{ElementSelectorFlags, MatchingContext};
-use selectors::parser::SelectorList;
+use selectors::parser::{ParseRelative, SelectorList};
 use selectors::{Element, OpaqueElement};
 // Stylo publishes its crate under the lib name `style`.
 use style::context::QuirksMode;
 use style::dom_apis;
 use style::selector_parser::{NonTSPseudoClass, SelectorImpl};
-use style::stylesheets::UrlExtraData;
+use style::stylesheets::{Namespaces, Origin, UrlExtraData};
+use style_traits::{ParseError, StyleParseErrorKind};
 
 use crate::doc::Document;
 
@@ -517,14 +519,117 @@ pub struct Selector {
     list: SelectorList<SelectorImpl>,
 }
 
+/// Wrapper around Stylo's Servo selector parser that enables `:has()` for DOM
+/// query surfaces. All pseudo-class/pseudo-element parsing delegates back to
+/// Stylo; the only policy difference is `parse_has() -> true`.
+struct VixenSelectorParser<'a> {
+    inner: style::selector_parser::SelectorParser<'a>,
+}
+
+impl<'a> VixenSelectorParser<'a> {
+    fn author_no_namespace(url_data: &'a UrlExtraData, namespaces: &'a Namespaces) -> Self {
+        Self {
+            inner: style::selector_parser::SelectorParser {
+                stylesheet_origin: Origin::Author,
+                namespaces,
+                url_data,
+                for_supports_rule: false,
+            },
+        }
+    }
+}
+
+impl<'a, 'i> selectors::Parser<'i> for VixenSelectorParser<'a> {
+    type Impl = SelectorImpl;
+    type Error = StyleParseErrorKind<'i>;
+
+    fn parse_nth_child_of(&self) -> bool {
+        selectors::Parser::parse_nth_child_of(&self.inner)
+    }
+
+    fn parse_is_and_where(&self) -> bool {
+        selectors::Parser::parse_is_and_where(&self.inner)
+    }
+
+    fn parse_has(&self) -> bool {
+        true
+    }
+
+    fn parse_parent_selector(&self) -> bool {
+        selectors::Parser::parse_parent_selector(&self.inner)
+    }
+
+    fn parse_part(&self) -> bool {
+        selectors::Parser::parse_part(&self.inner)
+    }
+
+    fn allow_forgiving_selectors(&self) -> bool {
+        selectors::Parser::allow_forgiving_selectors(&self.inner)
+    }
+
+    fn parse_non_ts_pseudo_class(
+        &self,
+        location: SourceLocation,
+        name: CowRcStr<'i>,
+    ) -> Result<NonTSPseudoClass, ParseError<'i>> {
+        selectors::Parser::parse_non_ts_pseudo_class(&self.inner, location, name)
+    }
+
+    fn parse_non_ts_functional_pseudo_class<'t>(
+        &self,
+        name: CowRcStr<'i>,
+        parser: &mut CssParser<'i, 't>,
+        after_part: bool,
+    ) -> Result<NonTSPseudoClass, ParseError<'i>> {
+        selectors::Parser::parse_non_ts_functional_pseudo_class(
+            &self.inner,
+            name,
+            parser,
+            after_part,
+        )
+    }
+
+    fn parse_pseudo_element(
+        &self,
+        location: SourceLocation,
+        name: CowRcStr<'i>,
+    ) -> Result<<SelectorImpl as selectors::SelectorImpl>::PseudoElement, ParseError<'i>> {
+        selectors::Parser::parse_pseudo_element(&self.inner, location, name)
+    }
+
+    fn default_namespace(&self) -> Option<<SelectorImpl as selectors::SelectorImpl>::NamespaceUrl> {
+        selectors::Parser::default_namespace(&self.inner)
+    }
+
+    fn namespace_for_prefix(
+        &self,
+        prefix: &<SelectorImpl as selectors::SelectorImpl>::NamespacePrefix,
+    ) -> Option<<SelectorImpl as selectors::SelectorImpl>::NamespaceUrl> {
+        selectors::Parser::namespace_for_prefix(&self.inner, prefix)
+    }
+
+    fn parse_host(&self) -> bool {
+        selectors::Parser::parse_host(&self.inner)
+    }
+
+    fn parse_slotted(&self) -> bool {
+        selectors::Parser::parse_slotted(&self.inner)
+    }
+}
+
 impl Selector {
     /// Parse a comma-separated selector list (`a, div#x, .y > z`). Errors
     /// for malformed input (the CLI surfaces `invalid-selector`, SPEC.md).
     pub fn parse(input: &str) -> Result<Self, SelectorError> {
         let url_data =
             UrlExtraData::from(url::Url::parse("about:blank").expect("about:blank parses"));
-        match style::selector_parser::SelectorParser::parse_author_origin_no_namespace(
-            input, &url_data,
+        let namespaces = Namespaces::default();
+        let parser = VixenSelectorParser::author_no_namespace(&url_data, &namespaces);
+        let mut input_parser = ParserInput::new(input);
+        match SelectorList::parse(
+            &parser,
+            &mut CssParser::new(&mut input_parser),
+            ParseRelative::No,
         ) {
             Ok(list) => Ok(Selector { list }),
             Err(_) => Err(SelectorError::Parse(input.to_owned())),
@@ -552,6 +657,16 @@ pub struct MatchedElement {
     pub classes: Vec<String>,
     pub attributes: Vec<(String, String)>,
     pub text: String,
+}
+
+/// Element-tree relation for read-only DOM host projections.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum ElementRelation {
+    Parent,
+    FirstChild,
+    LastChild,
+    PreviousSibling,
+    NextSibling,
 }
 
 impl MatchedElement {
@@ -615,6 +730,22 @@ fn direct_text(node: &Node) -> String {
     s.trim().to_owned()
 }
 
+fn descendant_text(node: &Node) -> String {
+    let mut out = String::new();
+    collect_text(node, &mut out);
+    out.trim().to_owned()
+}
+
+fn collect_text(node: &Node, out: &mut String) {
+    if let NodeData::Text { contents } = &node.data {
+        out.push_str(&contents.borrow());
+    }
+    let children: Vec<Rc<Node>> = node.children.borrow().clone();
+    for child in children {
+        collect_text(&child, out);
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Document query methods
 // ---------------------------------------------------------------------------
@@ -629,6 +760,60 @@ impl Document {
             return None;
         }
         Some(MatchedElement::from_node(arena.node(idx), node_id))
+    }
+
+    /// Full descendant text content for an element, by stable 1-based
+    /// document-order `node_id`.
+    pub fn element_text_content(&self, node_id: usize) -> Option<String> {
+        let idx = node_id.checked_sub(1)?;
+        let arena = ElementArena::build(&self.dom.document);
+        if idx >= arena.len() {
+            return None;
+        }
+        Some(descendant_text(arena.node(idx)))
+    }
+
+    /// Immediate element-child count for read-only DOM host projections.
+    pub fn element_child_count(&self, node_id: usize) -> Option<usize> {
+        let idx = node_id.checked_sub(1)?;
+        let arena = ElementArena::build(&self.dom.document);
+        if idx >= arena.len() {
+            return None;
+        }
+        let mut count = 0;
+        let mut child = arena.first_element_child_of(idx);
+        while let Some(child_idx) = child {
+            count += 1;
+            child = arena.next_element(child_idx);
+        }
+        Some(count)
+    }
+
+    /// Related element by stable 1-based document-order `node_id`.
+    pub fn related_element_by_node_id(
+        &self,
+        node_id: usize,
+        relation: ElementRelation,
+    ) -> Option<MatchedElement> {
+        let idx = node_id.checked_sub(1)?;
+        let arena = ElementArena::build(&self.dom.document);
+        if idx >= arena.len() {
+            return None;
+        }
+        let related = match relation {
+            ElementRelation::Parent => arena.parent(idx),
+            ElementRelation::FirstChild => arena.first_element_child_of(idx),
+            ElementRelation::LastChild => {
+                let mut last = arena.first_element_child_of(idx)?;
+                while let Some(next) = arena.next_element(last) {
+                    last = next;
+                }
+                Some(last)
+            }
+            ElementRelation::PreviousSibling => arena.prev_element(idx),
+            ElementRelation::NextSibling => arena.next_element(idx),
+        }?;
+        Some(MatchedElement::from_node(arena.node(related), related + 1))
     }
 
     /// Whether a stable 1-based `node_id` matches the parsed selector list.
@@ -716,11 +901,7 @@ mod tests {
             "div ~ p",
             ":is(.a, .b)",
             ":where(.a)",
-            // `:has()` is gated off in Stylo's default SelectorParser
-            // (`parse_has() -> false`); enabling it requires a wrapper Parser
-            // impl that overrides `parse_has()`. Tracked as a follow-up; the
-            // other ~95% of selectors work today via Stylo's default parser.
-            // ":has(> img)",
+            "section:has(> img)",
             "p:nth-child(odd)",
             "li:first-child",
             "li:last-child",
@@ -794,15 +975,10 @@ mod tests {
              <section><h2>S</h2></section>\
              <article><img src='x.png'></article>");
         assert_eq!(d.query_all(&sel(":is(h1, h2)")).len(), 2);
-        // `:has()` needs the wrapper parser (see comment in
-        // `parses_simple_selectors`); the straightforward descendant test
-        // here covers the same article/img topology without it.
-        let articles_with_img = d.query_all(&sel("article")).into_iter().filter(|a| {
-            // Re-parse the doc and look up by `img` parent — keeps the test
-            // honest without depending on `:has()`.
-            d.query_first(&sel("img[src='x.png']")).is_some() && a.tag == "article"
-        });
-        assert_eq!(articles_with_img.count(), 1);
+        let articles_with_img = d.query_all(&sel("article:has(> img[src='x.png'])"));
+        assert_eq!(articles_with_img.len(), 1);
+        assert_eq!(articles_with_img[0].tag, "article");
+        assert_eq!(d.query_all(&sel("section:not(:has(img))")).len(), 1);
     }
 
     #[test]
@@ -897,6 +1073,54 @@ mod tests {
         assert!(d.matches_selector(a.node_id, &sel("p.lead")));
         assert!(!d.matches_selector(b.node_id, &sel("p.lead")));
         assert!(!d.matches_selector(usize::MAX, &sel("p")));
+    }
+
+    #[test]
+    fn element_tree_projection_uses_stable_node_ids() {
+        let d = doc(
+            "<main id='root'><section id='first'><p id='child'>Alpha <b>Beta</b></p></section><aside id='next'>Next</aside></main>",
+        );
+        let root = d.query_first(&sel("#root")).unwrap();
+        let first = d.query_first(&sel("#first")).unwrap();
+        let child = d.query_first(&sel("#child")).unwrap();
+
+        assert_eq!(d.element_child_count(root.node_id), Some(2));
+        assert_eq!(
+            d.element_text_content(child.node_id).as_deref(),
+            Some("Alpha Beta")
+        );
+        assert_eq!(
+            d.related_element_by_node_id(child.node_id, ElementRelation::Parent)
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("first")
+        );
+        assert_eq!(
+            d.related_element_by_node_id(root.node_id, ElementRelation::FirstChild)
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("first")
+        );
+        assert_eq!(
+            d.related_element_by_node_id(root.node_id, ElementRelation::LastChild)
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("next")
+        );
+        assert_eq!(
+            d.related_element_by_node_id(first.node_id, ElementRelation::NextSibling)
+                .unwrap()
+                .id
+                .as_deref(),
+            Some("next")
+        );
+        assert!(
+            d.related_element_by_node_id(first.node_id, ElementRelation::PreviousSibling)
+                .is_none()
+        );
     }
 
     #[test]

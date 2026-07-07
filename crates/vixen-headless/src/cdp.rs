@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
+use vixen_engine::page::Page;
 use vixen_engine::script::{JsRuntime, JsValue};
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -41,11 +42,24 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// CDP clients (Chrome DevTools, Puppeteer, Playwright) maintain a single
 /// WebSocket per browser instance, so this is not a bottleneck in practice.
 pub async fn serve(port: u16) -> std::io::Result<()> {
+    serve_with_initial_url(port, None).await
+}
+
+/// CDP server entry point with an already requested page URL. The URL is loaded
+/// through the same headless trust boundary as CLI page actions before clients
+/// connect, so early `Runtime.evaluate` DOM probes see the requested page.
+pub async fn serve_with_initial_url(port: u16, initial_url: Option<String>) -> std::io::Result<()> {
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
     let listener = TcpListener::bind(addr).await?;
     // The state is `Rc<RefCell<>>` so it can move across `await` points in
     // a single-threaded `LocalSet` without going through `Arc<Mutex>`.
-    let state: Rc<RefCell<CdpState>> = Rc::new(RefCell::new(CdpState::default()));
+    let mut initial_state = CdpState::default();
+    if let Some(url) = initial_url
+        && let Err(e) = initial_state.seed_initial_target(url)
+    {
+        eprintln!("vixen-headless: initial CDP load failed: {e}");
+    }
+    let state: Rc<RefCell<CdpState>> = Rc::new(RefCell::new(initial_state));
     eprintln!("vixen-headless: CDP listening on ws://127.0.0.1:{port}");
 
     loop {
@@ -95,7 +109,6 @@ pub struct CdpState {
     js: Option<JsRuntime>,
 }
 
-#[derive(Debug, Clone)]
 #[allow(dead_code)] // Bookkeeping fields; required for future per-target routing.
 struct Target {
     id: u64,
@@ -103,12 +116,13 @@ struct Target {
     url: String,
     title: Option<String>,
     load_fired: bool,
+    page: Option<Page>,
 }
 
 impl CdpState {
     /// Dispatch a single JSON request (synchronous — no await while state
-    /// is borrowed). Returns a list of outgoing lines: zero or more
-    /// notifications followed by the response.
+    /// is borrowed). Returns outgoing lines: exactly one response followed by
+    /// zero or more notifications caused by that response.
     pub fn handle_text_sync(&mut self, raw: &str) -> Vec<String> {
         let req: CdpRequest = match serde_json::from_str(raw) {
             Ok(r) => r,
@@ -117,37 +131,38 @@ impl CdpState {
             }
         };
         let id = req.id;
-        let (result, side_effects) = self.dispatch(&req);
-        let mut out: Vec<String> = side_effects;
-        let resp = CdpResponse {
-            id,
-            result,
-            error: None,
+        let outcome = self.dispatch(&req);
+        let resp = match outcome.response {
+            Ok(result) => CdpResponse {
+                id,
+                result: Some(result),
+                error: None,
+            },
+            Err(error) => CdpResponse {
+                id,
+                result: None,
+                error: Some(error),
+            },
         };
+        let mut out = Vec::with_capacity(1 + outcome.notifications.len());
         match serde_json::to_string(&resp) {
             Ok(s) => out.push(s),
             Err(e) => out.push(error_response(Some(id), -32603, &e.to_string())),
         }
+        out.extend(outcome.notifications);
         out
     }
 
-    /// Pure dispatch on the method name. Returns `(result_value, notifications)`.
-    fn dispatch(&mut self, req: &CdpRequest) -> (Value, Vec<String>) {
+    /// Pure dispatch on the method name.
+    fn dispatch(&mut self, req: &CdpRequest) -> CdpDispatch {
         match req.method.as_str() {
-            "Browser.getVersion" => (self.browser_get_version(), vec![]),
+            "Browser.getVersion" => CdpDispatch::ok(self.browser_get_version()),
             "Target.createTarget" => self.target_create(req),
             "Target.attachToTarget" => self.target_attach(req),
             "Page.navigate" => self.page_navigate(req),
-            "Page.loadEventFired" => (json!({}), vec![]),
+            "Page.loadEventFired" => CdpDispatch::ok(json!({})),
             "Runtime.evaluate" => self.runtime_evaluate(req),
-            _ => (
-                Value::Null,
-                vec![error_response(
-                    Some(req.id),
-                    -32601,
-                    &format!("method not found: {}", req.method),
-                )],
-            ),
+            _ => CdpDispatch::error(-32601, format!("method not found: {}", req.method)),
         }
     }
 
@@ -164,27 +179,20 @@ impl CdpState {
         })
     }
 
-    fn target_create(&mut self, req: &CdpRequest) -> (Value, Vec<String>) {
+    fn target_create(&mut self, req: &CdpRequest) -> CdpDispatch {
         let url = req
             .params
             .get("url")
             .and_then(Value::as_str)
             .unwrap_or("about:blank")
             .to_owned();
-        let id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
-        let session_id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
-        let target = Target {
-            id,
-            session_id,
-            url,
-            title: None,
-            load_fired: false,
-        };
-        self.targets.push(target);
-        (json!({ "targetId": format!("tab-{id}") }), vec![])
+        match self.push_loaded_target(url) {
+            Ok(id) => CdpDispatch::ok(json!({ "targetId": format!("tab-{id}") })),
+            Err(e) => CdpDispatch::error(-32602, e),
+        }
     }
 
-    fn target_attach(&self, req: &CdpRequest) -> (Value, Vec<String>) {
+    fn target_attach(&self, req: &CdpRequest) -> CdpDispatch {
         // CDP attaches to a target and returns a session. We mint a
         // deterministic id even if the requested targetId doesn't exist —
         // CDP clients treat attach as a fairly thin session bootstrap.
@@ -194,19 +202,35 @@ impl CdpState {
             .and_then(Value::as_str)
             .unwrap_or("");
         let session_id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
-        (json!({ "sessionId": format!("sess-{session_id}") }), vec![])
+        CdpDispatch::ok(json!({ "sessionId": format!("sess-{session_id}") }))
     }
 
-    fn page_navigate(&mut self, req: &CdpRequest) -> (Value, Vec<String>) {
-        let url = req
-            .params
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap_or("")
-            .to_owned();
+    fn page_navigate(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(url) = req.params.get("url").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "Page.navigate: missing `url`");
+        };
+        let url = url.to_owned();
+        let page = match load_cdp_page(&url) {
+            Ok(page) => page,
+            Err(e) => return CdpDispatch::error(-32602, e),
+        };
+        let title = page.document().title();
         if let Some(t) = self.targets.first_mut() {
             t.url = url.clone();
+            t.title = title;
             t.load_fired = true;
+            t.page = Some(page);
+        } else {
+            let id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
+            let session_id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
+            self.targets.push(Target {
+                id,
+                session_id,
+                url: url.clone(),
+                title,
+                load_fired: true,
+                page: Some(page),
+            });
         }
         // Notify: loadEventFired after navigate. This mirrors what real
         // browsers do — `Page.navigate` resolves, then `loadEventFired`
@@ -216,40 +240,42 @@ impl CdpState {
             params: json!({ "timestamp": now_ms() }),
         })
         .unwrap_or_else(|_| "{}".into());
-        (
+        CdpDispatch::ok_with_notifications(
             json!({ "frameId": "main", "loaderId": format!("loader-{}", now_ms()) }),
             vec![notif],
         )
     }
 
-    fn runtime_evaluate(&mut self, req: &CdpRequest) -> (Value, Vec<String>) {
+    fn runtime_evaluate(&mut self, req: &CdpRequest) -> CdpDispatch {
         let expr = match req.params.get("expression").and_then(Value::as_str) {
             Some(e) => e.to_owned(),
             None => {
-                return (
-                    Value::Null,
-                    vec![error_response(
-                        Some(req.id),
-                        -32602,
-                        "Runtime.evaluate: missing `expression`",
-                    )],
-                );
+                return CdpDispatch::error(-32602, "Runtime.evaluate: missing `expression`");
             }
         };
+        if crate::looks_like_dom_eval(&expr)
+            && let Some(page) = self.targets.first().and_then(|target| target.page.as_ref())
+            && let Some(result) = page.evaluate_dom_expression(&expr)
+        {
+            return match result {
+                Ok(value) => CdpDispatch::ok(remote_object_from_text(value)),
+                Err(e) => CdpDispatch::ok(json!({
+                    "result": { "type": "undefined" },
+                    "exceptionDetails": {
+                        "exceptionId": 1,
+                        "text": e,
+                        "code": "dom.eval",
+                    }
+                })),
+            };
+        }
         // Lazily init the JS runtime per process. Errors at this point are
         // surfaced as CDP error responses (stable code, fail closed).
         if self.js.is_none() {
             match JsRuntime::new() {
                 Ok(rt) => self.js = Some(rt),
                 Err(e) => {
-                    return (
-                        Value::Null,
-                        vec![error_response(
-                            Some(req.id),
-                            -32603,
-                            &format!("SpiderMonkey init failed: {e}"),
-                        )],
-                    );
+                    return CdpDispatch::error(-32603, format!("SpiderMonkey init failed: {e}"));
                 }
             }
         }
@@ -273,33 +299,47 @@ impl CdpState {
                     JsValue::Undefined => Value::Null,
                     JsValue::Object => json!({}),
                 };
-                (
-                    json!({
-                        "result": {
-                            "type": type_str,
-                            "value": value_json,
-                            "description": value.to_display(),
-                        }
-                    }),
-                    vec![],
-                )
+                CdpDispatch::ok(json!({
+                    "result": {
+                        "type": type_str,
+                        "value": value_json,
+                        "description": value.to_display(),
+                    }
+                }))
             }
             Err(e) => {
                 let code = e.code();
                 let msg = e.to_string();
-                (
-                    json!({
-                        "result": { "type": "undefined" },
-                        "exceptionDetails": {
-                            "exceptionId": 1,
-                            "text": msg,
-                            "code": code,
-                        }
-                    }),
-                    vec![],
-                )
+                CdpDispatch::ok(json!({
+                    "result": { "type": "undefined" },
+                    "exceptionDetails": {
+                        "exceptionId": 1,
+                        "text": msg,
+                        "code": code,
+                    }
+                }))
             }
         }
+    }
+
+    fn seed_initial_target(&mut self, url: String) -> Result<(), String> {
+        self.push_loaded_target(url).map(|_| ())
+    }
+
+    fn push_loaded_target(&mut self, url: String) -> Result<u64, String> {
+        let page = load_cdp_page(&url)?;
+        let title = page.document().title();
+        let id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
+        let session_id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
+        self.targets.push(Target {
+            id,
+            session_id,
+            url,
+            title,
+            load_fired: false,
+            page: Some(page),
+        });
+        Ok(id)
     }
 }
 
@@ -313,6 +353,53 @@ impl CdpState {
             js: Some(rt),
         }
     }
+}
+
+struct CdpDispatch {
+    response: Result<Value, CdpError>,
+    notifications: Vec<String>,
+}
+
+impl CdpDispatch {
+    fn ok(result: Value) -> Self {
+        Self {
+            response: Ok(result),
+            notifications: Vec::new(),
+        }
+    }
+
+    fn ok_with_notifications(result: Value, notifications: Vec<String>) -> Self {
+        Self {
+            response: Ok(result),
+            notifications,
+        }
+    }
+
+    fn error(code: i32, message: impl Into<String>) -> Self {
+        Self {
+            response: Err(CdpError {
+                code,
+                message: message.into(),
+            }),
+            notifications: Vec::new(),
+        }
+    }
+}
+
+fn load_cdp_page(url: &str) -> Result<Page, String> {
+    if url == "about:blank" {
+        return Page::from_html("about:blank", "").map_err(|e| format!("parse about:blank: {e}"));
+    }
+    crate::load_page(url)
+}
+
+fn remote_object_from_text(value: String) -> Value {
+    json!({
+        "result": {
+            "type": "string",
+            "value": value,
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -332,9 +419,9 @@ struct CdpResponse {
     id: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<CdpError>,
-    // CDP has `result` OR `error`, never both. We always set `result` to a
-    // JSON object (possibly `{}`), and let `error` be `None` on success.
-    result: Value,
+    // CDP has `result` OR `error`, never both.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result: Option<Value>,
 }
 
 #[derive(Debug, Serialize)]
@@ -385,8 +472,7 @@ mod tests {
             method: method.into(),
             params,
         };
-        let (result, _) = state.dispatch(&req);
-        result
+        state.dispatch(&req).response.expect("success response")
     }
 
     /// All CDP dispatcher checks (except `Runtime.evaluate`, which lives in
@@ -420,15 +506,17 @@ mod tests {
         );
         assert!(v["sessionId"].as_str().unwrap().starts_with("sess-"));
 
-        // Page.navigate — fires loadEventFired as a side-effect notification.
+        // Page.navigate — returns success and queues loadEventFired.
         let req = CdpRequest {
             id: 1,
             method: "Page.navigate".into(),
-            params: json!({ "url": "https://example.test/" }),
+            params: json!({ "url": "about:blank" }),
         };
-        let (result, side_effects) = s.dispatch(&req);
+        let outcome = s.dispatch(&req);
+        let result = outcome.response.expect("navigate response");
         assert_eq!(result["frameId"], "main");
-        let notif: Value = serde_json::from_str(&side_effects[0]).expect("notification JSON");
+        let notif: Value =
+            serde_json::from_str(&outcome.notifications[0]).expect("notification JSON");
         assert_eq!(notif["method"], "Page.loadEventFired");
         assert!(notif["params"]["timestamp"].as_u64().is_some());
 
@@ -438,14 +526,64 @@ mod tests {
             method: "Foo.bar".into(),
             params: json!({}),
         };
-        let (_, side_effects) = s.dispatch(&req);
-        let parsed: Value = serde_json::from_str(&side_effects[0]).unwrap();
-        assert_eq!(parsed["id"], 99);
-        assert_eq!(parsed["error"]["code"], -32601);
+        let err = s.dispatch(&req).response.expect_err("unknown method error");
+        assert_eq!(err.code, -32601);
 
         // Malformed JSON → JSON-RPC -32700.
         let out = s.handle_text_sync("not json");
         let parsed: Value = serde_json::from_str(&out[0]).unwrap();
         assert_eq!(parsed["error"]["code"], -32700);
+    }
+
+    #[test]
+    fn wire_path_returns_response_before_notifications() {
+        let mut s = CdpState::default();
+        let out = s.handle_text_sync(
+            &json!({
+                "id": 7,
+                "method": "Page.navigate",
+                "params": { "url": "about:blank" }
+            })
+            .to_string(),
+        );
+
+        assert_eq!(out.len(), 2);
+        let response: Value = serde_json::from_str(&out[0]).unwrap();
+        let notification: Value = serde_json::from_str(&out[1]).unwrap();
+        assert_eq!(response["id"], 7);
+        assert_eq!(response["result"]["frameId"], "main");
+        assert_eq!(notification["method"], "Page.loadEventFired");
+    }
+
+    #[test]
+    fn runtime_evaluate_can_read_navigated_page_dom() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("cdp-title.html");
+        std::fs::write(&html, "<title>CDP title</title><p>Body</p>").unwrap();
+        let url = format!("file://{}", html.display());
+
+        let mut s = CdpState::default();
+        let navigate = s.handle_text_sync(
+            &json!({
+                "id": 1,
+                "method": "Page.navigate",
+                "params": { "url": url }
+            })
+            .to_string(),
+        );
+        let response: Value = serde_json::from_str(&navigate[0]).unwrap();
+        assert_eq!(response["result"]["frameId"], "main");
+
+        let eval = s.handle_text_sync(
+            &json!({
+                "id": 2,
+                "method": "Runtime.evaluate",
+                "params": { "expression": "document.title" }
+            })
+            .to_string(),
+        );
+        let response: Value = serde_json::from_str(&eval[0]).unwrap();
+        assert_eq!(response["result"]["result"]["type"], "string");
+        assert_eq!(response["result"]["result"]["value"], "CDP title");
     }
 }

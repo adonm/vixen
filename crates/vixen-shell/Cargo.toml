@@ -1,10 +1,10 @@
 # vixen-shell — Relm4/libadwaita browser chrome (ADR-010).
 #
 # The GTK/libadwaita dependencies live behind the `gtk-shell` feature so the
-# workspace type-checks on hosts without the GNOME SDK (docs/PLAN.md Phase 0
-# gate is `cargo check --workspace`). Build the real shell with:
+# workspace type-checks on hosts without the GNOME SDK (`just check`). Type-check
+# the real shell with:
 #
-#     cargo build --features vixen-shell/gtk-shell
+#     just shell-check
 #
 # Module layout (docs/ARCHITECTURE.md "Crate layout"):
 #   app.rs browser_window.rs tabs.rs tab.rs location_entry.rs find_bar.rs

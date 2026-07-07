@@ -1,0 +1,27 @@
+{
+  "name": "layout-block-inline-position",
+  "description": "Starter external upstream WPT profile for block/inline/position layout smoke. Expand this profile instead of vendoring broad WPT HTML fixtures.",
+  "upstream": {
+    "repo": "https://github.com/web-platform-tests/wpt.git",
+    "revision": "9089531cfc7a76fe192e640f0cd60141b1f21b3f",
+    "sparse_paths": ["css/css-display"]
+  },
+  "fixtures": [
+    {
+      "path": "css/css-display/display-flow-root-001.html",
+      "category": "layout block/inline/position",
+      "checks": [
+        {
+          "type": "title",
+          "expected": "CSS Display Test: display:flow-root"
+        },
+        {
+          "type": "selector-count",
+          "selector": ".float",
+          "expected": 2
+        },
+        { "type": "no-critical-diagnostics" }
+      ]
+    }
+  ]
+}

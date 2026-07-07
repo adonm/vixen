@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: link pseudos</title>
+  <style>
+    a:any-link { color: purple; }
+    a:link.special { color: orange; }
+    a:not(:any-link) { color: gray; }
+  </style>
+</head>
+<body>
+  <a id="target" class="special" href="/target">Target</a>
+  <a id="plain" href="/plain">Plain</a>
+  <a id="placeholder">Placeholder</a>
+</body>
+</html>

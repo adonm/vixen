@@ -31,6 +31,10 @@ base64 = "0.22"
 stylo = { version = "0.18", default-features = false, features = ["servo"] }
 stylo_atoms = "0.18"
 selectors = "0.38"
+# Direct because `style_dom` wraps Stylo's selector parser to enable `:has()`.
+# Both crates are already present through Stylo; this adds no new packages.
+cssparser = "0.37"
+style_traits = { package = "stylo_traits", version = "0.18", features = ["servo"] }
 
 [lib]
 path = "src/lib.rs"

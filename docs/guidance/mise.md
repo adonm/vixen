@@ -1,47 +1,69 @@
-# mise workflow
+# mise + just workflow
 
-Vixen uses `mise` as the only project tool manager. The intended workflow is an
-activated shell where `cargo`, `rustfmt`, `clippy`, `rustup`, and `just` are all
-on `PATH` from the versions pinned in `.mise.toml`.
+Vixen uses two tools with separate jobs:
+
+- `mise` pins tool versions and exports the project environment from
+  `.mise.toml` (`RUSTUP_TOOLCHAIN`, `CARGO_HOME`, and `PATH`).
+- `just` owns repository actions. Add or update a `justfile` recipe instead of
+  copying `cargo ...` command lines into docs, scripts, or CI.
+
+The intended workflow is an activated shell where `cargo`, `rustfmt`, `clippy`,
+`rustup`, `cargo-binstall`, and `just` come from the versions pinned in
+`.mise.toml`.
 
 ## First setup
 
 ```sh
 mise trust
-mise install
-```
-
-For the full local setup, including optional Cargo tools:
-
-```sh
 mise bootstrap --yes
 ```
 
+`mise bootstrap` installs pinned tools, then runs `just setup`, which installs
+the optional Cargo tools used by `just audit` / `just fuzz-security`, installs a
+nightly Rust toolchain for cargo-fuzz, and finishes with `just check-all-host`.
+
+For tools-only CI images, `mise install` is enough; run project checks through
+`just` after activating the shell.
+
 ## Daily shell setup
 
-Activate mise once per shell, then run normal commands directly:
+Activate mise once per shell, then run recipes directly:
 
 ```sh
 eval "$(mise activate bash)"    # bash
 # eval "$(mise activate zsh)"   # zsh
 # mise activate fish | source   # fish
 
-cargo --version
-just --version
-just test-host
+just check
+just test
+just smoke
 ```
 
 Do **not** hard-code paths to Cargo, and do not wrap every build command in
 `mise exec`. If `cargo` is missing, the shell is not activated or `mise install`
 has not completed.
 
+## Common recipes
+
+| Recipe | What it does |
+|--------|--------------|
+| `just setup` | Optional dev tools + nightly for fuzzing + `check-all-host` |
+| `just check` / `just check-all-host` | Type-check the host-runnable workspace |
+| `just test` / `just test-host` | Run host-runnable tests |
+| `just smoke` / `just gate-smoke` | Formatting check, clippy, check, tests |
+| `just audit` | `cargo audit` and `cargo deny check` |
+| `just fuzz-security` | Phase 1 fuzz targets at 1 M iterations |
+| `just flatpak-update-sdk` / `just flatpak-build` | GNOME SDK container workflow |
+
+Use `just --list` for the full recipe list.
+
 ## One-shot commands
 
 For automation that cannot keep an activated shell, prefer a single activated
-subshell:
+subshell and still call `just` recipes:
 
 ```sh
-bash -lc 'eval "$(mise activate bash)" && cargo fmt --all && just test-host'
+bash -lc 'eval "$(mise activate bash)" && just smoke'
 ```
 
 Avoid tool-specific invocations like `mise exec rust@... -- cargo ...`; Rust is
@@ -58,6 +80,7 @@ command -v cargo
 cargo --version
 command -v just
 just --version
+printenv CARGO_HOME
 ```
 
 Expected properties:
@@ -78,5 +101,5 @@ mise use just@<version>
 mise use cargo-binstall@<version>
 ```
 
-Then verify in a freshly activated shell and run `just gate-smoke` before
-committing the version change.
+Then verify in a freshly activated shell and run `just smoke` before committing
+the version change.

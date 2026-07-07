@@ -27,7 +27,7 @@ use crate::layout_tree::{
 };
 use crate::line_layout::{LineBox, dump_line_boxes};
 use crate::style_cascade::AuthorStylesheet;
-use crate::style_dom::Selector;
+use crate::style_dom::{ElementRelation, Selector};
 
 mod interaction;
 pub use interaction::FormSubmissionSnapshot;
@@ -80,7 +80,7 @@ impl Page {
 
     /// Visible text extraction (`vixen-headless --extract-text`).
     pub fn text_content(&self) -> String {
-        self.document.text_content()
+        self.document.body_text_content()
     }
 
     /// Minimal DOM-backed JS expression projection for host-binding smoke
@@ -97,7 +97,14 @@ impl Page {
             "document.body.textContent" | "document.body.innerText" => {
                 return Some(Ok(self.document.body_text_content()));
             }
+            "document.forms.length" => {
+                return Some(self.query_selector_all("form").map(|m| m.len().to_string()));
+            }
             _ => {}
+        }
+
+        if let Some(result) = self.document_member_expr(expr) {
+            return Some(result);
         }
 
         if let Some(selector) = query_selector_all_length_expr(expr) {
@@ -107,14 +114,204 @@ impl Page {
             );
         }
 
+        if let Some(result) = self.query_selector_dom_member_expr(expr) {
+            return Some(result);
+        }
+
+        if let Some(result) = self.get_element_by_id_dom_member_expr(expr) {
+            return Some(result);
+        }
+
         None
+    }
+
+    fn document_member_expr(&self, expr: &str) -> Option<Result<String, String>> {
+        if let Some(member) = expr.strip_prefix("document.documentElement") {
+            return Some(self.first_selector_member_value(":root", member));
+        }
+        if let Some(member) = expr.strip_prefix("document.head") {
+            return Some(self.first_selector_member_value("head", member));
+        }
+        if let Some(member) = expr.strip_prefix("document.body") {
+            return Some(self.first_selector_member_value("body", member));
+        }
+        if let Some(name) = collection_length_arg(expr, "document.getElementsByTagName(") {
+            if !is_simple_ident(&name) && name != "*" {
+                return Some(Err(
+                    "getElementsByTagName smoke only accepts simple tags".into()
+                ));
+            }
+            return Some(self.query_selector_all(&name).map(|m| m.len().to_string()));
+        }
+        if let Some(name) = collection_length_arg(expr, "document.getElementsByClassName(") {
+            if !is_simple_ident(&name) {
+                return Some(Err(
+                    "getElementsByClassName smoke only accepts simple classes".into(),
+                ));
+            }
+            let selector = format!(".{name}");
+            return Some(
+                self.query_selector_all(&selector)
+                    .map(|m| m.len().to_string()),
+            );
+        }
+        None
+    }
+
+    fn query_selector_dom_member_expr(&self, expr: &str) -> Option<Result<String, String>> {
+        let rest = expr.strip_prefix("document.querySelector(")?;
+        let (selector, member) = parse_single_string_arg_call(rest)?;
+        if member == " === null" {
+            return Some(
+                self.query_selector_all(&selector)
+                    .map(|m| m.is_empty().to_string()),
+            );
+        }
+        if member == " !== null" {
+            return Some(
+                self.query_selector_all(&selector)
+                    .map(|m| (!m.is_empty()).to_string()),
+            );
+        }
+        Some(self.first_selector_member_value(&selector, member))
+    }
+
+    fn get_element_by_id_dom_member_expr(&self, expr: &str) -> Option<Result<String, String>> {
+        let rest = expr.strip_prefix("document.getElementById(")?;
+        let (id, member) = parse_single_string_arg_call(rest)?;
+        if !is_simple_id_selector(&id) {
+            return Some(Err("getElementById smoke only accepts simple ids".into()));
+        }
+        let selector = format!("#{id}");
+        if member == " === null" {
+            return Some(
+                self.query_selector_all(&selector)
+                    .map(|m| m.is_empty().to_string()),
+            );
+        }
+        if member == " !== null" {
+            return Some(
+                self.query_selector_all(&selector)
+                    .map(|m| (!m.is_empty()).to_string()),
+            );
+        }
+        Some(self.first_selector_member_value(&selector, member))
+    }
+
+    fn first_selector_member_value(&self, selector: &str, member: &str) -> Result<String, String> {
+        let Some(info) = self.query_selector_all(selector)?.into_iter().next() else {
+            return Err("DOM eval selector matched nothing".into());
+        };
+        self.element_member_value(info, member)
+    }
+
+    fn first_selector_method_value(
+        &self,
+        info: &ElementInfo,
+        member: &str,
+    ) -> Result<String, String> {
+        if let Some(arg) = method_string_arg(member, ".getAttribute(") {
+            return Ok(info
+                .attributes
+                .iter()
+                .find(|(name, _)| name == &arg)
+                .map(|(_, value)| value.clone())
+                .unwrap_or_else(|| "null".to_owned()));
+        }
+        if let Some(arg) = method_string_arg(member, ".hasAttribute(") {
+            return Ok(info
+                .attributes
+                .iter()
+                .any(|(name, _)| name == &arg)
+                .to_string());
+        }
+        if let Some(arg) = method_string_arg(member, ".matches(") {
+            let selector = Selector::parse(&arg).map_err(|e| e.to_string())?;
+            return Ok(self
+                .document
+                .matches_selector(info.node_id, &selector)
+                .to_string());
+        }
+        if let Some(result) = self.related_element_member_value(info, member) {
+            return result;
+        }
+        Err("unsupported DOM eval member expression".into())
+    }
+
+    fn related_element_member_value(
+        &self,
+        info: &ElementInfo,
+        member: &str,
+    ) -> Option<Result<String, String>> {
+        let (relation, rest) = if let Some(rest) = member.strip_prefix(".parentElement") {
+            (ElementRelation::Parent, rest)
+        } else if let Some(rest) = member.strip_prefix(".firstElementChild") {
+            (ElementRelation::FirstChild, rest)
+        } else if let Some(rest) = member.strip_prefix(".lastElementChild") {
+            (ElementRelation::LastChild, rest)
+        } else if let Some(rest) = member.strip_prefix(".previousElementSibling") {
+            (ElementRelation::PreviousSibling, rest)
+        } else if let Some(rest) = member.strip_prefix(".nextElementSibling") {
+            (ElementRelation::NextSibling, rest)
+        } else {
+            return None;
+        };
+
+        let related = self
+            .document
+            .related_element_by_node_id(info.node_id, relation)
+            .map(|element| element.into_element_info());
+        match (related, rest) {
+            (None, " === null") => Some(Ok("true".into())),
+            (Some(_), " === null") => Some(Ok("false".into())),
+            (None, " !== null") => Some(Ok("false".into())),
+            (Some(_), " !== null") => Some(Ok("true".into())),
+            (None, _) => Some(Err("DOM eval relation matched nothing".into())),
+            (Some(related), _) => Some(self.element_member_value(related, rest)),
+        }
+    }
+
+    fn element_member_value(&self, info: ElementInfo, member: &str) -> Result<String, String> {
+        match member {
+            ".id" => Ok(info.id.unwrap_or_default()),
+            ".className" => Ok(info.classes.join(" ")),
+            ".tagName" => Ok(info.tag.to_ascii_uppercase()),
+            ".textContent" | ".innerText" => Ok(self
+                .document
+                .element_text_content(info.node_id)
+                .unwrap_or(info.text)),
+            ".childElementCount" | ".children.length" => Ok(self
+                .document
+                .element_child_count(info.node_id)
+                .unwrap_or_default()
+                .to_string()),
+            ".value" => Ok(element_attr(&info, "value").unwrap_or_default()),
+            ".name" => Ok(element_attr(&info, "name").unwrap_or_default()),
+            ".type" => Ok(element_attr(&info, "type").unwrap_or_else(|| default_type(&info))),
+            ".placeholder" => Ok(element_attr(&info, "placeholder").unwrap_or_default()),
+            ".htmlFor" => Ok(element_attr(&info, "for").unwrap_or_default()),
+            ".checked" => Ok(element_has_attr(&info, "checked").to_string()),
+            ".disabled" => Ok(element_has_attr(&info, "disabled").to_string()),
+            ".required" => Ok(element_has_attr(&info, "required").to_string()),
+            ".readOnly" => Ok(element_has_attr(&info, "readonly").to_string()),
+            ".selected" => Ok(element_has_attr(&info, "selected").to_string()),
+            ".multiple" => Ok(element_has_attr(&info, "multiple").to_string()),
+            ".method" => Ok(element_attr(&info, "method")
+                .unwrap_or_else(|| "get".into())
+                .to_ascii_lowercase()),
+            ".enctype" => Ok(element_attr(&info, "enctype")
+                .unwrap_or_else(|| "application/x-www-form-urlencoded".into())
+                .to_ascii_lowercase()),
+            ".action" => Ok(element_attr(&info, "action").unwrap_or_default()),
+            _ => self.first_selector_method_value(&info, member),
+        }
     }
 
     /// First Vixen-owned layout tree slice: styled DOM projected into an
     /// arena-backed tree with stable layout-node ids.
     pub fn layout_tree(&self, viewport: (u32, u32)) -> LayoutTree {
         build_layout_tree(&self.document, viewport, |node_id| {
-            self.computed_style(node_id)
+            self.computed_style_for_viewport(node_id, viewport)
         })
     }
 
@@ -173,15 +370,24 @@ impl Page {
             url: self.url.clone(),
             title: self.document.title(),
             viewport,
-            text_content: self.document.text_content(),
+            text_content: self.document.body_text_content(),
             element_count: self.document.element_count(),
         }
     }
 
     /// Query selector facade over the current DOM-backed selector surface.
     pub fn query_selector_all(&self, selector: &str) -> Result<Vec<ElementInfo>, String> {
+        self.query_selector_all_in_viewport(selector, (800, 600))
+    }
+
+    /// Query selector facade with layout metadata resolved at `viewport`.
+    pub fn query_selector_all_in_viewport(
+        &self,
+        selector: &str,
+        viewport: (u32, u32),
+    ) -> Result<Vec<ElementInfo>, String> {
         let parsed = Selector::parse(selector).map_err(|e| e.to_string())?;
-        let layout_tree = self.layout_tree((800, 600));
+        let layout_tree = self.layout_tree(viewport);
         Ok(self
             .document
             .query_all(&parsed)
@@ -205,6 +411,18 @@ impl Page {
     pub fn computed_style(&self, node_id: usize) -> Vec<(String, String)> {
         self.author_stylesheet
             .computed_style(&self.document, node_id)
+    }
+
+    /// Computed style for layout/paint paths whose cascade depends on the
+    /// requested viewport (`@media`). The public WPT/headless computed-style
+    /// query keeps using the default 800×600 viewport for stable assertions.
+    pub fn computed_style_for_viewport(
+        &self,
+        node_id: usize,
+        viewport: (u32, u32),
+    ) -> Vec<(String, String)> {
+        self.author_stylesheet
+            .computed_style_for_viewport(&self.document, node_id, viewport)
     }
 
     /// Diagnostics accumulated by pipeline stages.
@@ -336,6 +554,75 @@ fn query_selector_all_length_expr(expr: &str) -> Option<String> {
     js_string_literal(inner)
 }
 
+fn collection_length_arg(expr: &str, prefix: &str) -> Option<String> {
+    let inner = expr.strip_prefix(prefix)?.strip_suffix(").length")?;
+    js_string_literal(inner)
+}
+
+fn element_attr(info: &ElementInfo, name: &str) -> Option<String> {
+    info.attributes
+        .iter()
+        .find(|(attr_name, _)| attr_name == name)
+        .map(|(_, value)| value.clone())
+}
+
+fn element_has_attr(info: &ElementInfo, name: &str) -> bool {
+    info.attributes
+        .iter()
+        .any(|(attr_name, _)| attr_name == name)
+}
+
+fn default_type(info: &ElementInfo) -> String {
+    match info.tag.as_str() {
+        "input" => "text".into(),
+        "button" => "submit".into(),
+        _ => String::new(),
+    }
+}
+
+fn parse_single_string_arg_call(input: &str) -> Option<(String, &str)> {
+    let bytes = input.as_bytes();
+    let quote = *bytes.first()?;
+    if !matches!(quote, b'\'' | b'\"') {
+        return None;
+    }
+    let mut end_quote = None;
+    for (idx, byte) in bytes.iter().copied().enumerate().skip(1) {
+        if byte == b'\\' {
+            return None;
+        }
+        if byte == quote {
+            end_quote = Some(idx);
+            break;
+        }
+    }
+    let end_quote = end_quote?;
+    if bytes.get(end_quote + 1).copied() != Some(b')') {
+        return None;
+    }
+    let arg = &input[1..end_quote];
+    let rest = &input[end_quote + 2..];
+    Some((arg.to_owned(), rest))
+}
+
+fn method_string_arg(member: &str, prefix: &str) -> Option<String> {
+    let inner = member.strip_prefix(prefix)?.strip_suffix(')')?;
+    js_string_literal(inner)
+}
+
+fn is_simple_id_selector(id: &str) -> bool {
+    is_simple_ident(id)
+}
+
+fn is_simple_ident(ident: &str) -> bool {
+    let mut chars = ident.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
+}
+
 fn js_string_literal(input: &str) -> Option<String> {
     let input = input.trim();
     let bytes = input.as_bytes();
@@ -382,7 +669,20 @@ mod tests {
         assert_eq!(snap.title.as_deref(), Some("T"));
         assert_eq!(snap.viewport, (1024, 768));
         assert!(snap.text_content.contains("Hi"));
+        assert!(!snap.text_content.contains('T'));
         assert_eq!(snap.element_count, 5);
+    }
+
+    #[test]
+    fn page_text_content_excludes_head_and_title() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<html><head><title>Hidden</title></head><body><p>Visible</p></body></html>",
+        )
+        .unwrap();
+
+        assert_eq!(page.text_content(), "Visible");
+        assert_eq!(page.snapshot((800, 600)).text_content, "Visible");
     }
 
     #[test]
@@ -397,6 +697,25 @@ mod tests {
         assert_eq!(matches[0].id.as_deref(), Some("a"));
         assert_eq!(matches[0].tag, "p");
         assert!(page.query_selector_all("p >").is_err());
+    }
+
+    #[test]
+    fn selector_bboxes_use_requested_viewport() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<style>body { margin: 0; } #wide { height: 10px; }</style><div id='wide'>x</div>",
+        )
+        .unwrap();
+
+        let narrow = page
+            .query_selector_all_in_viewport("#wide", (200, 100))
+            .unwrap();
+        let wide = page
+            .query_selector_all_in_viewport("#wide", (400, 100))
+            .unwrap();
+
+        assert_eq!(narrow[0].bbox.unwrap().2, 200.0);
+        assert_eq!(wide[0].bbox.unwrap().2, 400.0);
     }
 
     #[test]
@@ -423,6 +742,177 @@ mod tests {
             None
         );
         assert_eq!(page.evaluate_dom_expression("1+2"), None);
+    }
+
+    #[test]
+    fn page_evaluates_dom_query_member_subset() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<main id='root'><p id='lead' class='note primary' data-role='intro'>Lead <b id='bold'>Beta</b></p><section id='empty'></section><form id='form'></form></main>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            page.evaluate_dom_expression("document.documentElement.tagName"),
+            Some(Ok("HTML".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.body.tagName"),
+            Some(Ok("BODY".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.forms.length"),
+            Some(Ok("1".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.getElementsByTagName('p').length"),
+            Some(Ok("1".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.getElementsByClassName('note').length"),
+            Some(Ok("1".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#lead').id"),
+            Some(Ok("lead".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#lead').className"),
+            Some(Ok("note primary".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#lead').tagName"),
+            Some(Ok("P".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#lead').textContent"),
+            Some(Ok("Lead Beta".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#root').children.length"),
+            Some(Ok("3".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#root').firstElementChild.id"),
+            Some(Ok("lead".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#root').lastElementChild.id"),
+            Some(Ok("form".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#bold').parentElement.id"),
+            Some(Ok("lead".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression(
+                "document.querySelector('#empty').previousElementSibling.id"
+            ),
+            Some(Ok("lead".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#empty').nextElementSibling.id"),
+            Some(Ok("form".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#form').method"),
+            Some(Ok("get".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression(
+                "document.querySelector('#lead').getAttribute('data-role')"
+            ),
+            Some(Ok("intro".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#lead').hasAttribute('hidden')"),
+            Some(Ok("false".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#lead').matches('p.note')"),
+            Some(Ok("true".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('.missing') === null"),
+            Some(Ok("true".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.getElementById('empty').tagName"),
+            Some(Ok("SECTION".into()))
+        );
+    }
+
+    #[test]
+    fn page_evaluates_form_reflected_property_subset() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<form id='f' method='POST' enctype='multipart/form-data' action='/submit'>\
+                <label id='l' for='email'>Email</label>\
+                <input id='email' name='email' required placeholder='you@example.test' value='a@example.test'>\
+                <input id='agree' type='checkbox' checked disabled>\
+                <textarea id='bio' readonly>bio</textarea>\
+                <select id='roles' multiple><option id='admin' selected>Admin</option></select>\
+                <button id='save'>Save</button>\
+             </form>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#f').method"),
+            Some(Ok("post".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#f').enctype"),
+            Some(Ok("multipart/form-data".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#f').action"),
+            Some(Ok("/submit".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#l').htmlFor"),
+            Some(Ok("email".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#email').type"),
+            Some(Ok("text".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#email').name"),
+            Some(Ok("email".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#email').value"),
+            Some(Ok("a@example.test".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#email').required"),
+            Some(Ok("true".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#agree').checked"),
+            Some(Ok("true".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#agree').disabled"),
+            Some(Ok("true".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#bio').readOnly"),
+            Some(Ok("true".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#roles').multiple"),
+            Some(Ok("true".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#admin').selected"),
+            Some(Ok("true".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#save').type"),
+            Some(Ok("submit".into()))
+        );
     }
 
     #[test]

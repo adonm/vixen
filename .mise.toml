@@ -1,8 +1,8 @@
 #:schema https://mise.jdx.dev/schema/mise.json
 # Vixen project & workspace setup — managed by mise.
 #
-# Canonical one-shot machine setup (Rust toolchain + just + GNOME SDK native
-# deps + project tooling):
+# Canonical one-shot machine setup (Rust toolchain + just + optional Cargo dev
+# tooling + a build check):
 #
 #     mise trust && mise bootstrap --yes
 #
@@ -10,14 +10,14 @@
 #
 #     mise install
 #
-# Then activate mise once per shell and drive the build through the activated
-# `cargo` / `just` binaries. Do not hard-code tool paths or wrap every command
-# in `mise exec`; the activated shell is the supported workflow:
+# Then activate mise once per shell and drive repository actions through the
+# justfile. Do not hard-code tool paths or wrap every command in `mise exec`;
+# the activated shell is the supported workflow:
 #
 #     eval "$(mise activate bash)"     # bash/zsh users; see docs/guidance/mise.md
 #     cargo --version                  # from .cargo/bin, with RUSTUP_TOOLCHAIN set
-#     just check-all-host
-#     just test-host
+#     just check
+#     just test
 #
 # References: https://mise.jdx.dev/bootstrap.html and
 # https://mise.jdx.dev/lang/rust.html
@@ -29,7 +29,7 @@
 # and out of the user's `~/.cargo`. See `docs/guidance/cargo-home.md`.
 #
 # `mise` exports these to any mise-active shell; the PATH entry makes the
-# installed binaries reachable from `just audit` / `just fuzz-init`.
+# installed binaries reachable from `just audit` / `just fuzz-security`.
 [env]
 CARGO_HOME = "{{ config_root }}/.cargo"
 # `_.path` is mise's dedicated PATH-prepend directive. Each entry is pushed
@@ -46,7 +46,7 @@ _.path = ["{{ config_root }}/.cargo/bin"]
 # from CARGO_HOME on PATH once the shell is activated.
 rust = { version = "1.96.1", profile = "default", components = "rustfmt,clippy" }
 just = "1.55.1"
-# Self-contained: bootstrap tasks use binstall to fetch optional dev tooling.
+# Self-contained: `just setup-dev-tools` uses binstall to fetch optional tooling.
 cargo-binstall = "1.20.1"
 
 # --- GNOME SDK --------------------------------------------------------------
@@ -58,28 +58,8 @@ cargo-binstall = "1.20.1"
 # your distro's gtk4 / libadwaita -devel packages yourself (unsupported path).
 
 # --- Imperative project bootstrap -------------------------------------------
-# `mise bootstrap` runs this as step 8 (after tools are installed), with the
-# project env active. Everything here is idempotent.
+# `mise bootstrap` runs this after [tools] are installed, with the project env
+# active. Keep project command logic in the justfile; mise owns versions/env.
 [tasks.bootstrap]
-description = "Converge the Vixen workspace: rust components, nightly (for fuzz), dev tooling, then a build check."
-depends = ["setup-rust", "setup-dev-tools", "verify"]
-
-[tasks.setup-rust]
-hide = true
-description = "Install the nightly toolchain cargo-fuzz needs. Stable rustfmt/clippy are declared in [tools]."
-run = [
-    "rustup toolchain install nightly --profile minimal --component rust-src --allow-downgrade || true",
-]
-
-[tasks.setup-dev-tools]
-hide = true
-description = "Optional dev tooling (audit/deny/fuzz) used by the justfile."
-run = [
-    "cargo binstall --no-confirm cargo-audit cargo-deny || true",
-    "cargo binstall --no-confirm cargo-fuzz || cargo install cargo-fuzz || true",
-]
-
-[tasks.verify]
-hide = true
-description = "Confirm the workspace type-checks after setup."
-run = "just check-all-host"
+description = "Converge Vixen through the justfile: optional tools, nightly for fuzzing, then a build check."
+run = "just setup"

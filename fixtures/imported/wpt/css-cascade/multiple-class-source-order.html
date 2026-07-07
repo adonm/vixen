@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: multiple class source order</title>
+  <style>
+    .box.primary { color: red; }
+    .box.accent { color: blue; }
+    .box.primary.accent { font-size: 15px; }
+    .box { display: block; }
+  </style>
+</head>
+<body>
+  <p id="target" class="box primary accent">Multiple classes</p>
+</body>
+</html>

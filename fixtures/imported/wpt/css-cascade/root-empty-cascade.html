@@ -1,0 +1,17 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: root empty</title>
+  <style>
+    :root { --RootToken: ready; color: black; }
+    main:has(#empty:empty) { background-color: #f0f0f0; }
+    #empty:empty { display: block; }
+  </style>
+</head>
+<body>
+  <main id="container">
+    <div id="empty"></div>
+    <div id="not-empty"><span>child</span></div>
+  </main>
+</body>
+</html>

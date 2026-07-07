@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Advanced computed cascade — Vixen fixture</title>
+  <style>
+    @layer base, theme;
+
+    #parent {
+      color: purple;
+      --accent: blue;
+    }
+
+    @layer base {
+      #target {
+        color: red;
+        background-color: var(--accent, orange);
+      }
+    }
+
+    @layer theme {
+      #target {
+        color: green;
+      }
+    }
+
+    @supports (display: grid) {
+      #target {
+        display: grid;
+      }
+    }
+
+    @supports (unknown-prop: yes) {
+      #target {
+        margin-left: 99px;
+      }
+    }
+
+    @media (max-width: 900px) {
+      #target {
+        font-size: 21px;
+      }
+    }
+
+    #target {
+      color: inherit;
+      width: var(--missing, 42px);
+      height: initial;
+    }
+  </style>
+</head>
+<body>
+  <main id="parent">
+    <p id="target">Advanced cascade projection</p>
+  </main>
+</body>
+</html>

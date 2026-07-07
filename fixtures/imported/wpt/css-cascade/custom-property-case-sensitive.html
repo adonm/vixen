@@ -1,0 +1,12 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT values smoke: custom property case sensitive</title>
+  <style>
+    #target { --Token: Upper; --token: Lower; color: var(--Token); background-color: var(--token); }
+  </style>
+</head>
+<body>
+  <p id="target">Custom property case</p>
+</body>
+</html>

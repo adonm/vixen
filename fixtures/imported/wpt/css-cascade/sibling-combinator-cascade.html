@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: sibling combinators</title>
+  <style>
+    p { color: red; font-size: 10px; }
+    h2 + p { color: green; }
+    h2 ~ p { font-size: 13px; }
+  </style>
+</head>
+<body>
+  <section>
+    <h2 id="heading">Heading</h2>
+    <p id="first">First sibling</p>
+    <p id="second">Second sibling</p>
+  </section>
+</body>
+</html>

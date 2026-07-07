@@ -62,6 +62,18 @@
       ]
     },
     {
+      "url": "fixtures/css/computed-advanced.html",
+      "checks": [
+        { "type": "title", "expected": "Advanced computed cascade — Vixen fixture" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "purple" },
+        { "type": "computed-style", "selector": "#target", "property": "background-color", "expected": "blue" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "grid" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "21px" },
+        { "type": "computed-style", "selector": "#target", "property": "width", "expected": "42px" },
+        { "type": "computed-style", "selector": "#target", "property": "--accent", "expected": "blue" }
+      ]
+    },
+    {
       "url": "fixtures/dom/basic.html",
       "checks": [
         { "type": "title", "expected": "DOM basic — Vixen fixture" },
@@ -625,7 +637,7 @@
         { "type": "selector-count", "selector": "#script-same-origin:not([crossorigin])", "expected": 1 },
         { "type": "element-attribute", "selector": "#module-script", "attribute": "type", "expected": "module" },
         { "type": "element-attribute", "selector": "#nosniff-marker", "attribute": "data-nosniff", "expected": "script,text/css" },
-        { "type": "body-contains", "expected": "Subresource Integrity" }
+        { "type": "body-contains", "expected": "SRI + nosniff surface" }
       ]
     },
     {
@@ -838,6 +850,2370 @@
         { "type": "selector-count", "selector": "[onclick*='createPolicy']", "expected": 3 },
         { "type": "element-attribute", "selector": "#csp-require", "attribute": "http-equiv", "expected": "Content-Security-Policy" },
         { "type": "body-contains", "expected": "TrustedHTML kind" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/attribute-operators.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: attribute operators" },
+        { "type": "selectors-exact", "selector": "[data-token~='beta']", "expected": ["space"] },
+        { "type": "selectors-exact", "selector": "[lang|='en']", "expected": ["dash-en"] },
+        { "type": "selectors-exact", "selector": "[data-code^='AB']", "expected": ["prefix"] },
+        { "type": "selectors-exact", "selector": "[data-file$='.pdf']", "expected": ["suffix"] },
+        { "type": "selectors-exact", "selector": "[data-path*='icons']", "expected": ["substring"] },
+        { "type": "selector-count", "selector": "[data-state='ready' i]", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/combinators.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: combinators" },
+        { "type": "selectors-exact", "selector": "#tree > article", "expected": ["a1", "a2"] },
+        { "type": "selectors-exact", "selector": "article.featured > h2", "expected": ["h2"] },
+        { "type": "selectors-exact", "selector": "p.lead + p", "expected": ["p2"] },
+        { "type": "selectors-exact", "selector": "h2 ~ p", "expected": ["p1", "p2", "p3"] },
+        { "type": "selector-count", "selector": "article span", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/logical-pseudos.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: logical pseudos" },
+        { "type": "selectors-exact", "selector": ":is(article, aside).entry", "expected": ["docs", "news", "note"] },
+        { "type": "selectors-exact", "selector": ":where(article, aside).note", "expected": ["note"] },
+        { "type": "selectors-exact", "selector": ".entry:not(.secondary)", "expected": ["news", "note"] },
+        { "type": "selector-count", "selector": "main > :not(.entry)", "expected": 1 },
+        { "type": "selectors-exact", "selector": "nav :is(a, button)", "expected": ["home"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/relational-combinators.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: relational combinators" },
+        { "type": "selector-count", "selector": "#with-heading > h2", "expected": 1 },
+        { "type": "selectors-exact", "selector": "figure img[alt]", "expected": ["hero"] },
+        { "type": "selectors-exact", "selector": "li + li.selected", "expected": ["two"] },
+        { "type": "selectors-exact", "selector": "li.selected ~ li", "expected": ["three"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/nth-child.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: structural pseudos" },
+        { "type": "selectors-exact", "selector": "#items > li:first-child", "expected": ["i1"] },
+        { "type": "selectors-exact", "selector": "#items > li:last-child", "expected": ["i5"] },
+        { "type": "selectors-exact", "selector": "#items > li:nth-child(2n+1)", "expected": ["i1", "i3", "i5"] },
+        { "type": "selectors-exact", "selector": "#items > li:nth-last-child(2)", "expected": ["i4"] },
+        { "type": "selectors-exact", "selector": "#only-parent > :only-child", "expected": ["only-child"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/form-pseudos.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: form pseudos" },
+        { "type": "selectors-exact", "selector": ":disabled", "expected": ["disabled-button", "disabled-input"] },
+        { "type": "selector-count", "selector": ":enabled", "expected": 4 },
+        { "type": "selectors-exact", "selector": ":checked", "expected": ["checked-box"] },
+        { "type": "selectors-exact", "selector": ":required", "expected": ["enabled-required"] },
+        { "type": "selectors-exact", "selector": ":optional", "expected": ["checked-box", "disabled-button", "disabled-input", "optional-input", "submit-button"] },
+        { "type": "selectors-exact", "selector": "button:disabled", "expected": ["disabled-button"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/link-pseudos.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: link pseudos" },
+        { "type": "selectors-exact", "selector": ":link", "expected": ["absolute", "fragment", "relative"] },
+        { "type": "selector-count", "selector": "a[href]", "expected": 3 },
+        { "type": "selectors-exact", "selector": "a:not([href])", "expected": ["placeholder"] },
+        { "type": "selector-count", "selector": ":is(a, button)", "expected": 5 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/root-empty-universal.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: root empty universal" },
+        { "type": "selector-count", "selector": ":root", "expected": 1 },
+        { "type": "selectors-exact", "selector": "main > :empty", "expected": ["empty", "template"] },
+        { "type": "selector-count", "selector": "*", "expected": 9 },
+        { "type": "selectors-exact", "selector": "*:not(:empty)", "expected": ["root-empty", "not-empty", "child"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/class-id-case.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: class and id matching" },
+        { "type": "selectors-exact", "selector": ".token", "expected": ["lower", "multi"] },
+        { "type": "selectors-exact", "selector": ".Token", "expected": ["upper"] },
+        { "type": "selectors-exact", "selector": ".alpha.beta", "expected": ["multi"] },
+        { "type": "selectors-exact", "selector": "#hyphen-id.token-beta", "expected": ["hyphen-id"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/selector-list-order.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: selector-list order" },
+        { "type": "selectors-exact", "selector": "header, footer", "expected": ["footer", "header"] },
+        { "type": "selector-match", "selector": "article, aside", "expected": ["article", "aside", "article"] },
+        { "type": "selectors-exact", "selector": ".item.special, aside.item", "expected": ["aside", "second"] },
+        { "type": "selector-count", "selector": "main > *", "expected": 5 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/has-child.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: :has child" },
+        { "type": "selectors-exact", "selector": "section:has(> h2)", "expected": ["intro"] },
+        { "type": "selectors-exact", "selector": "section:has(img[alt])", "expected": ["media"] },
+        { "type": "selectors-exact", "selector": "article:has(> img[alt])", "expected": ["article"] },
+        { "type": "selectors-exact", "selector": "section:not(:has(h2, img))", "expected": ["plain"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/has-descendant.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: :has descendant" },
+        { "type": "selectors-exact", "selector": "article:has(.badge)", "expected": ["deep", "news"] },
+        { "type": "selectors-exact", "selector": "article:has(header .badge)", "expected": ["news"] },
+        { "type": "selectors-exact", "selector": "main:has(article.card)", "expected": ["cards"] },
+        { "type": "selector-count", "selector": ".card:not(:has(.badge))", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/has-sibling.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: :has sibling" },
+        { "type": "selectors-exact", "selector": "label:has(+ input:checked)", "expected": ["label-checked"] },
+        { "type": "selectors-exact", "selector": "p:has(+ .note)", "expected": ["before-note"] },
+        { "type": "selectors-exact", "selector": "label:not(:has(+ input:checked))", "expected": ["label-unchecked"] },
+        { "type": "selector-count", "selector": "form:has(> input:checked)", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/has-list.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: :has selector list" },
+        { "type": "selectors-exact", "selector": "section:has(h2, img)", "expected": ["both", "heading", "image"] },
+        { "type": "selectors-exact", "selector": "section:has(> h2):has(> img)", "expected": ["both"] },
+        { "type": "selectors-exact", "selector": "section:not(:has(h2, img))", "expected": ["neither"] },
+        { "type": "selector-count", "selector": "main:has(section#both)", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/has-compound.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: :has compound" },
+        { "type": "selectors-exact", "selector": "form:has(input:required)", "expected": ["login"] },
+        { "type": "selectors-exact", "selector": "form:has(input):has(button)", "expected": ["login", "search"] },
+        { "type": "selectors-exact", "selector": ".box:has(p > .warning)", "expected": ["panel"] },
+        { "type": "selectors-exact", "selector": "form:not(:has(input, button))", "expected": ["empty"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/specificity.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: specificity" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "blue" },
+        { "type": "computed-style", "selector": "#other", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "12px" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/important-inline.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: important inline" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "red" },
+        { "type": "computed-style", "selector": "#target", "property": "margin-left", "expected": "10px" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "selector-count", "selector": "p.item", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/source-order.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: source order" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "background-color", "expected": "rgb(0, 0, 255)" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/selector-list.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: selector list" },
+        { "type": "computed-style", "selector": "#heading", "property": "color", "expected": "purple" },
+        { "type": "computed-style", "selector": "#copy", "property": "color", "expected": "purple" },
+        { "type": "computed-style", "selector": "#copy", "property": "font-size", "expected": "20px" },
+        { "type": "selectors-exact", "selector": ".callout", "expected": ["copy"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/has-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: :has selector" },
+        { "type": "computed-style", "selector": "#media", "property": "color", "expected": "teal" },
+        { "type": "computed-style", "selector": "#media", "property": "background-color", "expected": "#ddeeff" },
+        { "type": "computed-style", "selector": "#plain", "property": "color", "expected": "gray" },
+        { "type": "selector-count", "selector": "article:has(> img)", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/nested-values.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: nested declaration values" },
+        { "type": "computed-style", "selector": "#target", "property": "background-image", "expected": "url('a;b:c')" },
+        { "type": "computed-style", "selector": "#target", "property": "transform", "expected": "translate(10px, 0) rotate(45deg)" },
+        { "type": "computed-style", "selector": "#target", "property": "--Token", "expected": "A:B" },
+        { "type": "body-contains", "expected": "Nested values" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/attribute-specificity.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: attribute specificity" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "13px" },
+        { "type": "selector-count", "selector": "article[data-state]", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/class-chain-specificity.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: class chain specificity" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "purple" },
+        { "type": "computed-style", "selector": "#peer", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "14px" },
+        { "type": "selector-count", "selector": ".theme .item", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/declaration-order.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: declaration order" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "computed-style", "selector": "#target", "property": "margin-left", "expected": "6px" },
+        { "type": "body-contains", "expected": "Declaration order" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/function-values.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: function values" },
+        { "type": "computed-style", "selector": "#target", "property": "width", "expected": "calc(100% - 10px)" },
+        { "type": "computed-style", "selector": "#target", "property": "background-image", "expected": "linear-gradient(red, blue)" },
+        { "type": "computed-style", "selector": "#target", "property": "transform", "expected": "translate(calc(10px + 5px), 0)" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "rgb(1, 2, 3)" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/inline-important.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: inline important" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "blue" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "computed-style", "selector": "#target", "property": "margin-left", "expected": "8px" },
+        { "type": "selector-count", "selector": "p[style]", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/is-specificity.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: :is specificity" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "18px" },
+        { "type": "selector-count", "selector": ":is(#target, .fallback)", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/multiple-style-blocks.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: multiple style blocks" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "16px" },
+        { "type": "selector-count", "selector": "style", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/not-specificity.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: :not specificity" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "red" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "15px" },
+        { "type": "selector-count", "selector": "p:not(#never)", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/property-name-normalization.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: property name normalization" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "Red" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "12PX" },
+        { "type": "computed-style", "selector": "#target", "property": "margin-left", "expected": "5px" },
+        { "type": "body-contains", "expected": "Property normalization" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/type-universal-specificity.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: type and universal specificity" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "inline" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "13px" },
+        { "type": "selector-count", "selector": "*", "expected": 6 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/where-zero-specificity.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: :where zero specificity" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "14px" },
+        { "type": "selector-count", "selector": ":where(#target)", "expected": 1 },
+        { "type": "body-contains", "expected": "Where specificity" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/custom-properties.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: custom properties" },
+        { "type": "computed-style", "selector": "#target", "property": "--ThemeColor", "expected": "blue" },
+        { "type": "computed-style", "selector": "#target", "property": "--gap", "expected": "10px" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "blue" },
+        { "type": "body-contains", "expected": "Custom properties" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/comment-whitespace.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: comments and whitespace" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "red" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "computed-style", "selector": "#target", "property": "background-image", "expected": "url(\"a/*not-comment*/b\")" },
+        { "type": "body-contains", "expected": "Comments and whitespace" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/nested-selector-list.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: nested selector lists" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "orange" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "computed-style", "selector": "#container", "property": "background-color", "expected": "#ffeeaa" },
+        { "type": "selectors-exact", "selector": ":is(.primary, .secondary)", "expected": ["target"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/id-class-conflict.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: id class conflict" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "blue" },
+        { "type": "computed-style", "selector": "#peer", "property": "color", "expected": "red" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "12px" },
+        { "type": "selector-count", "selector": ".card.featured", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/important-specificity.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: important specificity" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "margin-left", "expected": "6px" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "selector-count", "selector": ".item", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/important-source-order.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: important source order" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "14px" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "body-contains", "expected": "Important source order" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/inline-source-order.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: inline source order" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "blue" },
+        { "type": "computed-style", "selector": "#target", "property": "margin-left", "expected": "1px" },
+        { "type": "computed-style", "selector": "#target", "property": "--Local", "expected": "B" },
+        { "type": "selector-count", "selector": "p[style]", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/child-combinator-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: child combinator" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "18px" },
+        { "type": "computed-style", "selector": "#nested", "property": "color", "expected": "gray" },
+        { "type": "selector-count", "selector": "main > section > p", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/sibling-combinator-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: sibling combinators" },
+        { "type": "computed-style", "selector": "#first", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#first", "property": "font-size", "expected": "13px" },
+        { "type": "computed-style", "selector": "#second", "property": "font-size", "expected": "13px" },
+        { "type": "selectors-exact", "selector": "h2 ~ p", "expected": ["first", "second"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/attribute-operators-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: attribute operators" },
+        { "type": "computed-style", "selector": "#doc", "property": "color", "expected": "blue" },
+        { "type": "computed-style", "selector": "#doc", "property": "font-size", "expected": "12px" },
+        { "type": "computed-style", "selector": "#doc", "property": "display", "expected": "block" },
+        { "type": "selectors-exact", "selector": "[data-state~='selected']", "expected": ["doc"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/link-pseudo-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: link pseudos" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "orange" },
+        { "type": "computed-style", "selector": "#plain", "property": "color", "expected": "purple" },
+        { "type": "computed-style", "selector": "#placeholder", "property": "color", "expected": "gray" },
+        { "type": "selectors-exact", "selector": "a:any-link", "expected": ["target", "plain"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/form-pseudo-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: form pseudos" },
+        { "type": "computed-style", "selector": "#req", "property": "color", "expected": "red" },
+        { "type": "computed-style", "selector": "#off", "property": "color", "expected": "gray" },
+        { "type": "computed-style", "selector": "#check", "property": "background-color", "expected": "#ccffcc" },
+        { "type": "selectors-exact", "selector": "input:checked", "expected": ["check"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/structural-pseudo-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: structural pseudos" },
+        { "type": "computed-style", "selector": "#i1", "property": "color", "expected": "red" },
+        { "type": "computed-style", "selector": "#i2", "property": "color", "expected": "blue" },
+        { "type": "computed-style", "selector": "#only", "property": "font-size", "expected": "20px" },
+        { "type": "selectors-exact", "selector": "li:last-child", "expected": ["i3"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/root-empty-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: root empty" },
+        { "type": "computed-style", "selector": ":root", "property": "--RootToken", "expected": "ready" },
+        { "type": "computed-style", "selector": "#container", "property": "background-color", "expected": "#f0f0f0" },
+        { "type": "computed-style", "selector": "#empty", "property": "display", "expected": "block" },
+        { "type": "selector-count", "selector": "#empty:empty", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/not-where-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: not and where" },
+        { "type": "computed-style", "selector": "#active", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#disabled", "property": "color", "expected": "red" },
+        { "type": "computed-style", "selector": "#active", "property": "font-size", "expected": "16px" },
+        { "type": "selectors-exact", "selector": ".item:not(.disabled)", "expected": ["active"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/is-specificity-list.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: is specificity list" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#fallback", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "18px" },
+        { "type": "selector-count", "selector": ":is(.fallback, #target)", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/custom-property-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: custom property cascade" },
+        { "type": "computed-style", "selector": "#target", "property": "--accent", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "--gap", "expected": "8px" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "body-contains", "expected": "Custom property cascade" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/quoted-values.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: quoted values" },
+        { "type": "computed-style", "selector": "#target", "property": "content", "expected": "\"a;b:c\"" },
+        { "type": "computed-style", "selector": "#target", "property": "font-family", "expected": "\"A;B\", sans-serif" },
+        { "type": "computed-style", "selector": "#target", "property": "background-image", "expected": "url(\"data:image/svg+xml,%7Bbox%7D\")" },
+        { "type": "body-contains", "expected": "Quoted values" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/color-value-forms.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: color value forms" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "hsl(120 100% 25%)" },
+        { "type": "computed-style", "selector": "#target", "property": "background-color", "expected": "rgba(10, 20, 30, 0.5)" },
+        { "type": "computed-style", "selector": "#target", "property": "border-color", "expected": "currentColor" },
+        { "type": "computed-style", "selector": "#target", "property": "outline-color", "expected": "color-mix(in srgb, red, blue)" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/calc-min-max-clamp.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: calc min max clamp" },
+        { "type": "computed-style", "selector": "#target", "property": "width", "expected": "min(100%, 20rem)" },
+        { "type": "computed-style", "selector": "#target", "property": "height", "expected": "max(10px, 2em)" },
+        { "type": "computed-style", "selector": "#target", "property": "margin-left", "expected": "clamp(1rem, 5vw, 3rem)" },
+        { "type": "computed-style", "selector": "#target", "property": "padding-left", "expected": "calc((100% - 2rem) / 2)" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/gradient-list-values.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: gradient lists" },
+        { "type": "computed-style", "selector": "#target", "property": "background-image", "expected": "linear-gradient(red, blue), radial-gradient(circle at center, white, black)" },
+        { "type": "computed-style", "selector": "#target", "property": "background-color", "expected": "#fff" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "black" },
+        { "type": "body-contains", "expected": "Gradient list values" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/transform-list-values.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: transform lists" },
+        { "type": "computed-style", "selector": "#target", "property": "transform", "expected": "translate3d(10px, 20px, 0) rotate(45deg) scale(1.5)" },
+        { "type": "computed-style", "selector": "#target", "property": "transform-origin", "expected": "50% 50%" },
+        { "type": "computed-style", "selector": "#target", "property": "perspective", "expected": "500px" },
+        { "type": "body-contains", "expected": "Transform lists" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/shorthand-value-preservation.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: shorthand preservation" },
+        { "type": "computed-style", "selector": "#target", "property": "margin", "expected": "1px 2px 3px 4px" },
+        { "type": "computed-style", "selector": "#target", "property": "padding", "expected": "calc(1px + 1px) 4px" },
+        { "type": "computed-style", "selector": "#target", "property": "border", "expected": "1px solid red" },
+        { "type": "computed-style", "selector": "#target", "property": "list-style", "expected": "square inside" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/case-insensitive-important.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: case insensitive important" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "red" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "12px" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "selector-count", "selector": ".item", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/selector-list-source-order.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: selector list source order" },
+        { "type": "computed-style", "selector": "#alpha", "property": "color", "expected": "blue" },
+        { "type": "computed-style", "selector": "#beta", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#beta", "property": "font-size", "expected": "12px" },
+        { "type": "selectors-exact", "selector": ".alpha, .beta", "expected": ["alpha", "beta"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/universal-descendant-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: universal descendant" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#outside", "property": "color", "expected": "gray" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "selector-count", "selector": "main *", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/descendant-specificity.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: descendant specificity" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "18px" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "selector-count", "selector": "article .note", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/complex-has-cascade.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: complex has" },
+        { "type": "computed-style", "selector": "#card", "property": "color", "expected": "teal" },
+        { "type": "computed-style", "selector": "#card", "property": "background-color", "expected": "#ffeeee" },
+        { "type": "computed-style", "selector": "#badge", "property": "display", "expected": "inline-block" },
+        { "type": "selectors-exact", "selector": ".card:has(> img[alt])", "expected": ["card"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/multiple-class-source-order.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: multiple class source order" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "blue" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "15px" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "selector-count", "selector": ".box.primary.accent", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/custom-property-case-sensitive.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: custom property case sensitive" },
+        { "type": "computed-style", "selector": "#target", "property": "--Token", "expected": "Upper" },
+        { "type": "computed-style", "selector": "#target", "property": "--token", "expected": "Lower" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "Upper" },
+        { "type": "body-contains", "expected": "Custom property case" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/declaration-error-recovery.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: declaration error recovery" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "red" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "13px" },
+        { "type": "computed-style", "selector": "#target", "property": "display", "expected": "block" },
+        { "type": "body-contains", "expected": "Declaration error recovery" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/mixed-specificity-list.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT cascade smoke: mixed specificity list" },
+        { "type": "computed-style", "selector": "#target", "property": "color", "expected": "green" },
+        { "type": "computed-style", "selector": "#peer", "property": "color", "expected": "red" },
+        { "type": "computed-style", "selector": "#target", "property": "font-size", "expected": "16px" },
+        { "type": "selectors-exact", "selector": "#target, .peer", "expected": ["target", "peer"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/css-cascade/nested-braces-values.html",
+      "category": "css-cascade/css-values",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT values smoke: nested braces values" },
+        { "type": "computed-style", "selector": "#target", "property": "content", "expected": "\"{x;y}\"" },
+        { "type": "computed-style", "selector": "#target", "property": "background-image", "expected": "url(\"data:image/svg+xml;utf8,<svg>{}</svg>\")" },
+        { "type": "computed-style", "selector": "#target", "property": "transform", "expected": "translate(calc(1px + 2px), 0)" },
+        { "type": "body-contains", "expected": "Nested braces values" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/query-selector-eval.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: querySelector eval" },
+        { "type": "js-eval", "expr": "document.querySelectorAll('li.item').length", "expected": "3" },
+        { "type": "js-eval", "expr": "document.querySelector('#lead').textContent", "expected": "Lead" },
+        { "type": "js-eval", "expr": "document.querySelector('#lead').getAttribute('data-role')", "expected": "intro" },
+        { "type": "js-eval", "expr": "document.querySelector('#lead').matches('p.note')", "expected": "true" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/get-element-by-id.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: getElementById" },
+        { "type": "js-eval", "expr": "document.getElementById('target').tagName", "expected": "SECTION" },
+        { "type": "js-eval", "expr": "document.getElementById('target').className", "expected": "card highlighted" },
+        { "type": "js-eval", "expr": "document.getElementById('target').hasAttribute('data-ready')", "expected": "true" },
+        { "type": "js-eval", "expr": "document.getElementById('missing') === null", "expected": "true" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/attributes.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: attributes" },
+        { "type": "selectors-exact", "selector": "[hidden]", "expected": ["dataset"] },
+        { "type": "element-attribute", "selector": "#link", "attribute": "href", "expected": "https://example.test/path" },
+        { "type": "js-eval", "expr": "document.querySelector('#link').getAttribute('rel')", "expected": "noopener noreferrer" },
+        { "type": "js-eval", "expr": "document.querySelector('#dataset').hasAttribute('hidden')", "expected": "true" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/text-content.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: text content" },
+        { "type": "js-eval", "expr": "document.querySelectorAll('p').length", "expected": "3" },
+        { "type": "js-eval", "expr": "document.querySelector('#second').textContent", "expected": "Beta" },
+        { "type": "selector-count", "selector": "main > p", "expected": 3 },
+        { "type": "body-contains", "expected": "Gamma" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/null-and-matches.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: null and matches" },
+        { "type": "js-eval", "expr": "document.querySelector('.missing') === null", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#story').matches('article.featured')", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#note').matches('article')", "expected": "false" },
+        { "type": "js-eval", "expr": "document.querySelectorAll('.entry').length", "expected": "2" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/controls-basic.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: controls basic" },
+        { "type": "selectors-exact", "selector": ":required", "expected": ["email"] },
+        { "type": "selectors-exact", "selector": ":optional", "expected": ["agree", "disabled", "name", "submit"] },
+        { "type": "selectors-exact", "selector": ":disabled", "expected": ["disabled"] },
+        { "type": "selectors-exact", "selector": ":checked", "expected": ["agree"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/labels-buttons.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: labels buttons" },
+        { "type": "element-attribute", "selector": "#email-label", "attribute": "for", "expected": "email" },
+        { "type": "selectors-exact", "selector": ":checked", "expected": ["news"] },
+        { "type": "selectors-exact", "selector": "button:disabled", "expected": ["reset"] },
+        { "type": "selectors-exact", "selector": "button:enabled", "expected": ["save"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/form-attributes.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: form attributes" },
+        { "type": "element-attribute", "selector": "#profile", "attribute": "enctype", "expected": "multipart/form-data" },
+        { "type": "selector-count", "selector": "textarea:required", "expected": 1 },
+        { "type": "element-attribute", "selector": "#avatar", "attribute": "type", "expected": "file" },
+        { "type": "selectors-exact", "selector": "option[selected]", "expected": ["admin"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/layout/block-flow.html",
+      "category": "layout block/inline/position",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT layout smoke: block flow" },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 30.0] },
+        { "type": "layout-box", "selector": "#a", "expected": [0.0, 0.0, 100.0, 20.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [10.0, 20.0, 50.0, 10.0] },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/layout/margin-padding.html",
+      "category": "layout block/inline/position",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT layout smoke: margin padding border" },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 24.0] },
+        { "type": "layout-box", "selector": "#outer", "expected": [0.0, 0.0, 114.0, 24.0] },
+        { "type": "layout-box", "selector": "#child", "expected": [7.0, 7.0, 20.0, 10.0] },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/layout/positioned-basic.html",
+      "category": "layout block/inline/position",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT layout smoke: positioned basic" },
+        { "type": "layout-box", "selector": "#container", "expected": [0.0, 0.0, 200.0, 100.0] },
+        { "type": "layout-box", "selector": "#abs", "expected": [20.0, 10.0, 50.0, 20.0] },
+        { "type": "layout-box", "selector": "#rel", "expected": [5.0, 3.0, 40.0, 10.0] },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 100.0] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/layout/block-auto-margin.html",
+      "category": "layout block/inline/position",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT layout smoke: block auto margins" },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 20.0] },
+        { "type": "layout-box", "selector": "#outer", "expected": [0.0, 0.0, 200.0, 20.0] },
+        { "type": "layout-box", "selector": "#center", "expected": [50.0, 0.0, 100.0, 10.0] },
+        { "type": "layout-box", "selector": "#next", "expected": [0.0, 10.0, 20.0, 10.0] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/layout/border-box-sizing.html",
+      "category": "layout block/inline/position",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT layout smoke: border-box sizing" },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 41.0] },
+        { "type": "layout-box", "selector": "#box", "expected": [3.0, 3.0, 80.0, 30.0] },
+        { "type": "layout-box", "selector": "#after", "expected": [0.0, 36.0, 10.0, 5.0] },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/layout/inline-flow.html",
+      "category": "layout block/inline/position",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT layout smoke: inline flow" },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 70.2] },
+        { "type": "layout-box", "selector": "#wrap", "expected": [10.0, 10.0, 170.0, 50.2] },
+        { "type": "layout-box", "selector": "#one", "expected": [15.0, 15.0, 14.0, 25.2] },
+        { "type": "layout-box", "selector": "#block", "expected": [15.0, 45.2, 20.0, 10.0] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/flexbox/flex-row-basic.html",
+      "category": "flexbox",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT flexbox smoke: row basic" },
+        { "type": "layout-box", "selector": "#flex", "expected": [0.0, 0.0, 300.0, 40.0] },
+        { "type": "layout-box", "selector": "#a", "expected": [0.0, 0.0, 50.0, 20.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [50.0, 0.0, 83.3, 20.0], "tolerance": 0.2 },
+        { "type": "layout-box", "selector": "#c", "expected": [133.3, 0.0, 166.7, 20.0], "tolerance": 0.2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/flexbox/flex-column-basic.html",
+      "category": "flexbox",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT flexbox smoke: column basic" },
+        { "type": "layout-box", "selector": "#flex", "expected": [0.0, 0.0, 100.0, 90.0] },
+        { "type": "layout-box", "selector": "#a", "expected": [0.0, 0.0, 100.0, 20.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [0.0, 20.0, 100.0, 23.3], "tolerance": 0.2 },
+        { "type": "layout-box", "selector": "#c", "expected": [0.0, 43.3, 100.0, 46.7], "tolerance": 0.2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/flexbox/flex-row-gap-padding.html",
+      "category": "flexbox",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT flexbox smoke: row gap padding" },
+        { "type": "layout-box", "selector": "#flex", "expected": [10.0, 10.0, 312.0, 52.0] },
+        { "type": "layout-box", "selector": "#fixed", "expected": [16.0, 16.0, 50.0, 20.0] },
+        { "type": "layout-box", "selector": "#grow1", "expected": [76.0, 16.0, 76.7, 30.0], "tolerance": 0.2 },
+        { "type": "layout-box", "selector": "#grow2", "expected": [162.7, 16.0, 153.3, 40.0], "tolerance": 0.2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/flexbox/flex-row-reverse.html",
+      "category": "flexbox",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT flexbox smoke: row reverse" },
+        { "type": "layout-box", "selector": "#flex", "expected": [0.0, 0.0, 300.0, 40.0] },
+        { "type": "layout-box", "selector": "#a", "expected": [250.0, 0.0, 50.0, 20.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [163.3, 0.0, 76.7, 20.0], "tolerance": 0.2 },
+        { "type": "layout-box", "selector": "#c", "expected": [0.0, 0.0, 153.3, 20.0], "tolerance": 0.2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/flexbox/flex-column-reverse.html",
+      "category": "flexbox",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT flexbox smoke: column reverse" },
+        { "type": "layout-box", "selector": "#flex", "expected": [0.0, 0.0, 100.0, 90.0] },
+        { "type": "layout-box", "selector": "#a", "expected": [0.0, 70.0, 100.0, 20.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [0.0, 45.0, 100.0, 20.0] },
+        { "type": "layout-box", "selector": "#c", "expected": [0.0, 0.0, 100.0, 40.0] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/grid/grid-basic.html",
+      "category": "grid",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT grid smoke: fractional tracks" },
+        { "type": "layout-box", "selector": "#grid", "expected": [0.0, 0.0, 300.0, 70.0] },
+        { "type": "layout-box", "selector": "#a", "expected": [0.0, 0.0, 100.0, 20.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [110.0, 0.0, 60.0, 20.0] },
+        { "type": "layout-box", "selector": "#c", "expected": [180.0, 0.0, 120.0, 20.0] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/grid/grid-fixed.html",
+      "category": "grid",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT grid smoke: fixed tracks" },
+        { "type": "layout-box", "selector": "#grid", "expected": [0.0, 0.0, 120.0, 57.0] },
+        { "type": "layout-box", "selector": "#a", "expected": [0.0, 0.0, 40.0, 20.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [45.0, 0.0, 60.0, 20.0] },
+        { "type": "layout-box", "selector": "#c", "expected": [0.0, 27.0, 40.0, 30.0] },
+        { "type": "layout-box", "selector": "#d", "expected": [45.0, 27.0, 60.0, 30.0] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/grid/grid-minmax-fr.html",
+      "category": "grid",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT grid smoke: minmax fr tracks" },
+        { "type": "layout-box", "selector": "#grid", "expected": [0.0, 0.0, 300.0, 20.0] },
+        { "type": "layout-box", "selector": "#a", "expected": [0.0, 0.0, 50.0, 20.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [60.0, 0.0, 110.0, 20.0] },
+        { "type": "layout-box", "selector": "#c", "expected": [180.0, 0.0, 120.0, 20.0] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/grid/grid-row-gap.html",
+      "category": "grid",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT grid smoke: row and column gaps" },
+        { "type": "layout-box", "selector": "#grid", "expected": [0.0, 0.0, 100.0, 70.0] },
+        { "type": "layout-box", "selector": "#a", "expected": [0.0, 0.0, 40.0, 10.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [50.0, 0.0, 40.0, 10.0] },
+        { "type": "layout-box", "selector": "#e", "expected": [0.0, 40.0, 40.0, 30.0] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/grid/grid-fr-rows-height.html",
+      "category": "grid",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT grid smoke: fr rows with height" },
+        { "type": "layout-box", "selector": "#grid", "expected": [0.0, 0.0, 100.0, 90.0] },
+        { "type": "layout-box", "selector": "#a", "expected": [0.0, 0.0, 100.0, 20.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [0.0, 25.0, 100.0, 20.0] },
+        { "type": "layout-box", "selector": "#c", "expected": [0.0, 50.0, 100.0, 40.0] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/paint/ref-background.html",
+      "category": "paint/ref-equivalent",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT paint smoke: background ref" },
+        { "type": "selector-count", "selector": "#box", "expected": 1 },
+        { "type": "ref-equivalent", "reference": "ref-background-ref.html" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/paint/ref-text.html",
+      "category": "paint/ref-equivalent",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT paint smoke: text ref" },
+        { "type": "body-contains", "expected": "Text reference" },
+        { "type": "ref-equivalent", "reference": "ref-text-ref.html" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/paint/ref-currentcolor.html",
+      "category": "paint/ref-equivalent",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT paint smoke: currentcolor ref" },
+        { "type": "selector-count", "selector": "#box", "expected": 1 },
+        { "type": "ref-equivalent", "reference": "ref-currentcolor-ref.html" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/paint/ref-overflow-clip.html",
+      "category": "paint/ref-equivalent",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT paint smoke: overflow clip ref" },
+        { "type": "selector-count", "selector": "#clip", "expected": 1 },
+        { "type": "ref-equivalent", "reference": "ref-overflow-clip-ref.html" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/paint/ref-positioned.html",
+      "category": "paint/ref-equivalent",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT paint smoke: positioned ref" },
+        { "type": "selector-count", "selector": "#root > div", "expected": 2 },
+        { "type": "ref-equivalent", "reference": "ref-positioned-ref.html" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/paint/ref-flex.html",
+      "category": "paint/ref-equivalent",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT paint smoke: flex ref" },
+        { "type": "selector-count", "selector": "#flex > div", "expected": 3 },
+        { "type": "ref-equivalent", "reference": "ref-flex-ref.html" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/paint/ref-grid.html",
+      "category": "paint/ref-equivalent",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT paint smoke: grid ref" },
+        { "type": "selector-count", "selector": "#grid > div", "expected": 3 },
+        { "type": "ref-equivalent", "reference": "ref-grid-ref.html" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/paint/ref-nested-background.html",
+      "category": "paint/ref-equivalent",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT paint smoke: nested background ref" },
+        { "type": "selector-count", "selector": "#outer #inner", "expected": 1 },
+        { "type": "ref-equivalent", "reference": "ref-nested-background-ref.html" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/attribute-case-flags.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: attribute case flags" },
+        { "type": "selectors-exact", "selector": "[data-state='ready' i]", "expected": ["lower", "mixed", "upper"] },
+        { "type": "selectors-exact", "selector": "[data-state='ready']", "expected": ["lower"] },
+        { "type": "selector-count", "selector": "[data-state='READY' i]", "expected": 3 },
+        { "type": "selectors-exact", "selector": "[data-state='pending' i]", "expected": ["other"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/attribute-token-list.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: attribute token list" },
+        { "type": "selectors-exact", "selector": "[data-tags~='beta']", "expected": ["space"] },
+        { "type": "selectors-exact", "selector": "[lang|='en']", "expected": ["dash"] },
+        { "type": "selectors-exact", "selector": "[data-code^='AB']", "expected": ["prefix"] },
+        { "type": "selectors-exact", "selector": "[data-file$='.pdf'], [data-path*='icons']", "expected": ["substring", "suffix"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/structural-empty.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: structural empty" },
+        { "type": "selectors-exact", "selector": "main > :empty", "expected": ["empty", "template"] },
+        { "type": "selectors-exact", "selector": "main > :not(:empty)", "expected": ["child", "space"] },
+        { "type": "selector-count", "selector": "*:empty", "expected": 3 },
+        { "type": "selectors-exact", "selector": "div:has(> :empty)", "expected": ["child"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/structural-nth-range.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: structural nth ranges" },
+        { "type": "selectors-exact", "selector": "#items > li:nth-child(even)", "expected": ["i2", "i4", "i6"] },
+        { "type": "selectors-exact", "selector": "#items > li:nth-child(3n+1)", "expected": ["i1", "i4"] },
+        { "type": "selectors-exact", "selector": "#items > li:nth-last-child(-n+2)", "expected": ["i5", "i6"] },
+        { "type": "selector-count", "selector": "#items > li:nth-child(n+4)", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/link-any-link.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: any-link" },
+        { "type": "selectors-exact", "selector": ":any-link", "expected": ["external", "home", "map"] },
+        { "type": "selectors-exact", "selector": ":link", "expected": ["external", "home", "map"] },
+        { "type": "selectors-exact", "selector": "a:not(:any-link)", "expected": ["placeholder"] },
+        { "type": "selector-count", "selector": "nav :is(a, area)", "expected": 4 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/form-readwrite-placeholder.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: readwrite placeholder" },
+        { "type": "selectors-exact", "selector": ":placeholder-shown", "expected": ["search"] },
+        { "type": "selectors-exact", "selector": "input:read-only", "expected": ["locked"] },
+        { "type": "selectors-exact", "selector": ":read-write", "expected": ["edit", "editable", "search"] },
+        { "type": "selectors-exact", "selector": ":read-only", "expected": ["locked", "readonly"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/compound-negation.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: compound negation" },
+        { "type": "selectors-exact", "selector": "div.card:not(.disabled):not([hidden])", "expected": ["active"] },
+        { "type": "selectors-exact", "selector": ".card.primary:not(div)", "expected": ["section"] },
+        { "type": "selector-count", "selector": ".card:not(.missing)", "expected": 4 },
+        { "type": "selectors-exact", "selector": "main > :not([hidden]):not(.disabled)", "expected": ["active", "section"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/has-nested.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: nested has" },
+        { "type": "selectors-exact", "selector": "section:has(article img[alt])", "expected": ["featured"] },
+        { "type": "selectors-exact", "selector": "main:has(> section.featured)", "expected": ["root"] },
+        { "type": "selectors-exact", "selector": "section:not(:has(img))", "expected": ["plain"] },
+        { "type": "selector-count", "selector": "article:has(figure > img)", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/sibling-chains.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: sibling chains" },
+        { "type": "selectors-exact", "selector": "li.first + li", "expected": ["two"] },
+        { "type": "selectors-exact", "selector": "li.first + li + li", "expected": ["three"] },
+        { "type": "selectors-exact", "selector": "li.first ~ li.selected", "expected": ["three"] },
+        { "type": "selector-count", "selector": "li.selected ~ li", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/group-document-order.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: group document order" },
+        { "type": "selector-match", "selector": "article, aside, footer", "expected": ["article", "aside", "article", "footer"] },
+        { "type": "selectors-exact", "selector": ".item.special, footer", "expected": ["aside", "footer", "second"] },
+        { "type": "selector-count", "selector": "main > :is(article, aside).special", "expected": 2 },
+        { "type": "selector-count", "selector": "main > :where(article, aside, footer)", "expected": 4 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/attribute-presence-empty.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: attribute presence empty" },
+        { "type": "selectors-exact", "selector": "[data-flag]", "expected": ["empty", "value"] },
+        { "type": "selectors-exact", "selector": "[data-flag='']", "expected": ["empty"] },
+        { "type": "selector-count", "selector": "[value='']", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/attribute-prefix-suffix-mixed.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: attribute prefix suffix mixed" },
+        { "type": "selectors-exact", "selector": "a[href^='https']", "expected": ["secure"] },
+        { "type": "selectors-exact", "selector": "[data-file$='.pdf']", "expected": ["download"] },
+        { "type": "selector-count", "selector": "[data-path*='icons']", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/attribute-dash-token-edge.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: attribute dash token edge" },
+        { "type": "selectors-exact", "selector": "[lang|='en']", "expected": ["lang-en", "lang-us"] },
+        { "type": "selectors-exact", "selector": "[data-tags~='beta']", "expected": ["tags"] },
+        { "type": "selector-count", "selector": "[data-tags~='delta']", "expected": 0 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/class-whitespace-dedup.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: class whitespace dedup" },
+        { "type": "selectors-exact", "selector": ".alpha", "expected": ["multi", "single"] },
+        { "type": "selectors-exact", "selector": ".beta.gamma", "expected": ["multi"] },
+        { "type": "selector-count", "selector": ".Alpha", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/id-hyphen-underscore.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: id hyphen underscore" },
+        { "type": "selectors-exact", "selector": "#foo-bar", "expected": ["foo-bar"] },
+        { "type": "selectors-exact", "selector": "#foo_bar.token", "expected": ["foo_bar"] },
+        { "type": "selector-count", "selector": "[id^='foo']", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/universal-document-order.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: universal document order" },
+        { "type": "selectors-exact", "selector": "main *", "expected": ["article", "copy", "aside"] },
+        { "type": "selectors-exact", "selector": "main > *", "expected": ["article", "aside"] },
+        { "type": "selector-count", "selector": "main, main *", "expected": 4 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/descendant-depth.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: descendant depth" },
+        { "type": "selectors-exact", "selector": "section article .leaf", "expected": ["target"] },
+        { "type": "selectors-exact", "selector": "section .leaf", "expected": ["target", "sibling"] },
+        { "type": "selector-count", "selector": "section article div span", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/child-list-chains.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: child list chains" },
+        { "type": "selectors-exact", "selector": "#list > li > span", "expected": ["s1", "s2"] },
+        { "type": "selectors-exact", "selector": "#list > li:first-child > span", "expected": ["s1"] },
+        { "type": "selector-count", "selector": "#list > li", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/adjacent-sibling-forms.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: adjacent sibling forms" },
+        { "type": "selectors-exact", "selector": "label + input", "expected": ["i1", "i2"] },
+        { "type": "selectors-exact", "selector": "label:has(+ input:checked)", "expected": ["l1"] },
+        { "type": "selector-count", "selector": "input + span", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/general-sibling-mixed.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: general sibling mixed" },
+        { "type": "selectors-exact", "selector": "h2 ~ p", "expected": ["p1", "p2", "p3"] },
+        { "type": "selectors-exact", "selector": ".note ~ p", "expected": ["p2", "p3"] },
+        { "type": "selector-count", "selector": "div ~ p.note", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/structural-only-type.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: structural only type" },
+        { "type": "selectors-exact", "selector": "section > h2:only-of-type", "expected": ["h1"] },
+        { "type": "selectors-exact", "selector": "section > p:first-of-type", "expected": ["p1"] },
+        { "type": "selector-count", "selector": "div > :only-of-type", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/structural-nth-of-type.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: structural nth of type" },
+        { "type": "selectors-exact", "selector": "article > p:nth-of-type(2)", "expected": ["p2"] },
+        { "type": "selectors-exact", "selector": "article > div:nth-of-type(2)", "expected": ["d2"] },
+        { "type": "selector-count", "selector": "article > p:nth-of-type(odd)", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/structural-nth-last.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: structural nth last" },
+        { "type": "selectors-exact", "selector": "li:nth-last-child(1)", "expected": ["i5"] },
+        { "type": "selectors-exact", "selector": "li:nth-last-child(n+4)", "expected": ["i1", "i2"] },
+        { "type": "selector-count", "selector": "li:nth-child(-n+3)", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/empty-whitespace.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: empty whitespace" },
+        { "type": "selectors-exact", "selector": "main > :empty", "expected": ["empty", "tpl"] },
+        { "type": "selectors-exact", "selector": "main > :not(:empty)", "expected": ["child", "space"] },
+        { "type": "selector-count", "selector": "*:empty", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/defined-autofill.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: defined autofill" },
+        { "type": "selectors-exact", "selector": "x-widget:defined", "expected": ["custom"] },
+        { "type": "selectors-exact", "selector": "input:autofill", "expected": ["saved"] },
+        { "type": "selector-count", "selector": "main > :defined", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/form-enabled-disabled-scope.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: form enabled disabled scope" },
+        { "type": "selectors-exact", "selector": ":enabled", "expected": ["enabled-button", "enabled-input"] },
+        { "type": "selectors-exact", "selector": ":disabled", "expected": ["disabled-input", "disabled-select"] },
+        { "type": "selector-count", "selector": "input:enabled", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/readwrite-contenteditable.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: readwrite contenteditable" },
+        { "type": "selectors-exact", "selector": ":read-write", "expected": ["edit", "rw", "ta"] },
+        { "type": "selectors-exact", "selector": ":read-only", "expected": ["locked", "ro"] },
+        { "type": "selector-count", "selector": "input:read-only", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/any-link-area.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: any-link area" },
+        { "type": "selectors-exact", "selector": ":any-link", "expected": ["map-area", "home"] },
+        { "type": "selectors-exact", "selector": "area:any-link", "expected": ["map-area"] },
+        { "type": "selector-count", "selector": "a:not(:any-link)", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/is-where-nested.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: is where nested" },
+        { "type": "selectors-exact", "selector": ":is(article, aside).card", "expected": ["article", "aside"] },
+        { "type": "selectors-exact", "selector": ":where(.card, .panel)", "expected": ["article", "aside", "panel"] },
+        { "type": "selector-count", "selector": "main > :is(article.primary, section.panel)", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/not-list-complex.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: not list complex" },
+        { "type": "selectors-exact", "selector": ".card:not(.disabled, section)", "expected": ["active"] },
+        { "type": "selectors-exact", "selector": "main > :not(.card)", "expected": ["aside"] },
+        { "type": "selector-count", "selector": ".card:not(.missing)", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/has-multiple-levels.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: has multiple levels" },
+        { "type": "selectors-exact", "selector": "section:has(article figure img[alt])", "expected": ["featured"] },
+        { "type": "selectors-exact", "selector": "main:has(section#featured img)", "expected": ["root"] },
+        { "type": "selector-count", "selector": "section:not(:has(img))", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/has-adjacent-sibling.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: has adjacent sibling" },
+        { "type": "selectors-exact", "selector": "li:has(+ li.done)", "expected": ["a"] },
+        { "type": "selectors-exact", "selector": "li.todo:has(+ li)", "expected": ["a", "c"] },
+        { "type": "selector-count", "selector": "li:not(:has(+ li))", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/has-general-sibling.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: has general sibling" },
+        { "type": "selectors-exact", "selector": "h2:has(~ p.warning)", "expected": ["heading"] },
+        { "type": "selectors-exact", "selector": "p.lead:has(~ .warning)", "expected": ["lead"] },
+        { "type": "selector-count", "selector": "section:has(.lead ~ .warning)", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/group-list-duplicates.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: group list duplicates" },
+        { "type": "selectors-exact", "selector": ".item, article", "expected": ["a", "b", "c"] },
+        { "type": "selectors-exact", "selector": "article, .special, article.special", "expected": ["a", "b"] },
+        { "type": "selector-count", "selector": ".item, .item", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/selectors/document-order-deep.html",
+      "category": "selectors",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT selector smoke: document order deep" },
+        { "type": "selectors-exact", "selector": ".hit", "expected": ["a1", "span1", "aside", "p2"] },
+        { "type": "selectors-exact", "selector": "section .hit, aside.hit", "expected": ["a1", "span1", "aside", "p2"] },
+        { "type": "selector-count", "selector": "main > section .hit", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/document-elements.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: document elements" },
+        { "type": "js-eval", "expr": "document.documentElement.tagName", "expected": "HTML" },
+        { "type": "js-eval", "expr": "document.head.tagName", "expected": "HEAD" },
+        { "type": "js-eval", "expr": "document.body.tagName", "expected": "BODY" },
+        { "type": "js-eval", "expr": "document.querySelector('main').parentElement.tagName", "expected": "BODY" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/collections-basic.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: collections basic" },
+        { "type": "js-eval", "expr": "document.getElementsByTagName('p').length", "expected": "2" },
+        { "type": "js-eval", "expr": "document.getElementsByTagName('section').length", "expected": "1" },
+        { "type": "js-eval", "expr": "document.getElementsByClassName('item').length", "expected": "3" },
+        { "type": "js-eval", "expr": "document.getElementsByClassName('featured').length", "expected": "2" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/tree-children.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: tree children" },
+        { "type": "js-eval", "expr": "document.querySelector('#root').childElementCount", "expected": "3" },
+        { "type": "js-eval", "expr": "document.querySelector('#root').children.length", "expected": "3" },
+        { "type": "js-eval", "expr": "document.querySelector('#root').firstElementChild.id", "expected": "head" },
+        { "type": "js-eval", "expr": "document.querySelector('#root').lastElementChild.id", "expected": "foot" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/tree-siblings.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: tree siblings" },
+        { "type": "js-eval", "expr": "document.querySelector('#two').previousElementSibling.id", "expected": "one" },
+        { "type": "js-eval", "expr": "document.querySelector('#two').nextElementSibling.id", "expected": "three" },
+        { "type": "js-eval", "expr": "document.querySelector('#one').previousElementSibling === null", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#three').nextElementSibling === null", "expected": "true" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/tree-parent.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: tree parent" },
+        { "type": "js-eval", "expr": "document.querySelector('#leaf').parentElement.id", "expected": "section" },
+        { "type": "js-eval", "expr": "document.querySelector('#section').parentElement.id", "expected": "story" },
+        { "type": "js-eval", "expr": "document.querySelector('#story').parentElement.tagName", "expected": "BODY" },
+        { "type": "js-eval", "expr": "document.querySelector('#leaf').parentElement.parentElement.id", "expected": "story" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/text-descendants.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: text descendants" },
+        { "type": "js-eval", "expr": "document.querySelector('#mixed').textContent", "expected": "Alpha Beta Gamma" },
+        { "type": "js-eval", "expr": "document.querySelector('#mixed').firstElementChild.textContent", "expected": "Beta" },
+        { "type": "js-eval", "expr": "document.querySelector('#plain').textContent", "expected": "Delta" },
+        { "type": "body-contains", "expected": "Gamma" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/null-relations.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: null relations" },
+        { "type": "js-eval", "expr": "document.querySelector('#only').firstElementChild === null", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#only').lastElementChild === null", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#only').nextElementSibling !== null", "expected": "false" },
+        { "type": "js-eval", "expr": "document.querySelector('#root').firstElementChild !== null", "expected": "true" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/forms-collection.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: forms collection" },
+        { "type": "js-eval", "expr": "document.forms.length", "expected": "2" },
+        { "type": "selector-count", "selector": "form", "expected": 2 },
+        { "type": "js-eval", "expr": "document.querySelector('#login').firstElementChild.tagName", "expected": "INPUT" },
+        { "type": "js-eval", "expr": "document.querySelector('#search').previousElementSibling.id", "expected": "login" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/query-matches-has.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: matches has" },
+        { "type": "js-eval", "expr": "document.querySelector('#media').matches('section:has(img[alt])')", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#text').matches('section:has(img)')", "expected": "false" },
+        { "type": "js-eval", "expr": "document.querySelectorAll('section:has(article)').length", "expected": "2" },
+        { "type": "selectors-exact", "selector": "section:has(img[alt])", "expected": ["media"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/attribute-null.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: attribute null" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').getAttribute('data-present')", "expected": "yes" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').getAttribute('missing')", "expected": "null" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').hasAttribute('missing')", "expected": "false" },
+        { "type": "js-eval", "expr": "document.getElementById('target').hasAttribute('data-present')", "expected": "true" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/query-all-length.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: query all length" },
+        { "type": "js-eval", "expr": "document.querySelectorAll('.item').length", "expected": "3" },
+        { "type": "js-eval", "expr": "document.querySelectorAll('#root > p').length", "expected": "3" },
+        { "type": "js-eval", "expr": "document.querySelector('.featured').textContent", "expected": "two" },
+        { "type": "selector-count", "selector": ".item.featured", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/tagname-collection.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: tag collections" },
+        { "type": "js-eval", "expr": "document.getElementsByTagName('article').length", "expected": "2" },
+        { "type": "js-eval", "expr": "document.getElementsByTagName('p').length", "expected": "2" },
+        { "type": "js-eval", "expr": "document.querySelector('#note').tagName", "expected": "ASIDE" },
+        { "type": "selector-count", "selector": "main > article", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/classname-collection.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: class collections" },
+        { "type": "js-eval", "expr": "document.getElementsByClassName('card').length", "expected": "3" },
+        { "type": "js-eval", "expr": "document.getElementsByClassName('primary').length", "expected": "1" },
+        { "type": "js-eval", "expr": "document.querySelector('.secondary').tagName", "expected": "SECTION" },
+        { "type": "selector-count", "selector": ".note.card", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/document-members-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: document members extra" },
+        { "type": "js-eval", "expr": "document.documentElement.tagName", "expected": "HTML" },
+        { "type": "js-eval", "expr": "document.head.tagName", "expected": "HEAD" },
+        { "type": "js-eval", "expr": "document.body.firstElementChild.id", "expected": "content" },
+        { "type": "selector-count", "selector": "html > body > main", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/body-text-aggregation.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: body text aggregation" },
+        { "type": "js-eval", "expr": "document.body.textContent", "expected": "Alpha BetaGamma\n" },
+        { "type": "js-eval", "expr": "document.querySelector('#story').textContent", "expected": "Alpha BetaGamma" },
+        { "type": "js-eval", "expr": "document.querySelector('#story').childElementCount", "expected": "2" },
+        { "type": "selector-count", "selector": "#story p", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/element-id-class-tag.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: element id class tag" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').id", "expected": "target" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').className", "expected": "card featured primary" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').tagName", "expected": "ARTICLE" },
+        { "type": "selector-count", "selector": "article.card.featured", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/child-counts-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: child counts extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#list').childElementCount", "expected": "3" },
+        { "type": "js-eval", "expr": "document.querySelector('#list').children.length", "expected": "3" },
+        { "type": "js-eval", "expr": "document.querySelector('#empty').childElementCount", "expected": "0" },
+        { "type": "selector-count", "selector": "#list > li", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/first-last-child-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: first last child extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#panel').firstElementChild.id", "expected": "heading" },
+        { "type": "js-eval", "expr": "document.querySelector('#panel').lastElementChild.id", "expected": "foot" },
+        { "type": "js-eval", "expr": "document.querySelector('#heading').nextElementSibling.id", "expected": "copy" },
+        { "type": "selector-count", "selector": "#panel > *", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/sibling-walk-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: sibling walk extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#i2').previousElementSibling.id", "expected": "i1" },
+        { "type": "js-eval", "expr": "document.querySelector('#i2').nextElementSibling.id", "expected": "i3" },
+        { "type": "js-eval", "expr": "document.querySelector('#i3').nextElementSibling === null", "expected": "true" },
+        { "type": "selector-count", "selector": "#items > li + li", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/parent-walk-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: parent walk extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#leaf').parentElement.id", "expected": "article" },
+        { "type": "js-eval", "expr": "document.querySelector('#article').parentElement.id", "expected": "section" },
+        { "type": "js-eval", "expr": "document.querySelector('#section').parentElement.id", "expected": "root" },
+        { "type": "selector-count", "selector": "#root #leaf", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/nested-relations-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: nested relations extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#root').firstElementChild.firstElementChild.id", "expected": "article" },
+        { "type": "js-eval", "expr": "document.querySelector('#section').firstElementChild.firstElementChild.id", "expected": "leaf" },
+        { "type": "js-eval", "expr": "document.querySelector('#leaf').parentElement.parentElement.id", "expected": "section" },
+        { "type": "selector-count", "selector": "main > section > article > span", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/null-missing-query-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: null missing query extra" },
+        { "type": "js-eval", "expr": "document.querySelector('.missing') === null", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#present') !== null", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#present').nextElementSibling === null", "expected": "true" },
+        { "type": "selector-count", "selector": ".missing", "expected": 0 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/null-missing-id-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: null missing id extra" },
+        { "type": "js-eval", "expr": "document.getElementById('missing') === null", "expected": "true" },
+        { "type": "js-eval", "expr": "document.getElementById('present') !== null", "expected": "true" },
+        { "type": "js-eval", "expr": "document.getElementById('present').id", "expected": "present" },
+        { "type": "selector-count", "selector": "#present", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/getattribute-present-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: getAttribute present extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#link').getAttribute('href')", "expected": "https://example.test/path" },
+        { "type": "js-eval", "expr": "document.querySelector('#link').getAttribute('rel')", "expected": "noopener" },
+        { "type": "js-eval", "expr": "document.querySelector('#link').getAttribute('data-token')", "expected": "alpha beta" },
+        { "type": "selector-count", "selector": "a[rel='noopener']", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/getattribute-missing-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: getAttribute missing extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').getAttribute('data-present')", "expected": "yes" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').getAttribute('data-missing')", "expected": "null" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').hasAttribute('data-missing')", "expected": "false" },
+        { "type": "selector-count", "selector": "[data-present]", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/hasattribute-booleans-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: hasAttribute booleans extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#button').hasAttribute('disabled')", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#button').disabled", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#button').hasAttribute('hidden')", "expected": "false" },
+        { "type": "selector-count", "selector": "button:disabled", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/matches-basic-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: matches basic extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').matches('article.card')", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').matches('.missing')", "expected": "false" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').matches('main > article.featured')", "expected": "true" },
+        { "type": "selector-count", "selector": "article.card.featured", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/matches-logical-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: matches logical extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').matches(':is(article, aside).card')", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#note').matches(':where(article, aside).card')", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').matches('article:not(.secondary)')", "expected": "true" },
+        { "type": "selector-count", "selector": ":is(article, aside).card", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/matches-has-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: matches has extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#media').matches('section:has(img[alt])')", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#plain').matches('section:has(img)')", "expected": "false" },
+        { "type": "js-eval", "expr": "document.querySelector('#hero').matches('figure > img[alt]')", "expected": "true" },
+        { "type": "selector-count", "selector": "section:has(img[alt])", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/text-content-nested-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: text content nested extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#story').textContent", "expected": "Alpha Beta Gamma" },
+        { "type": "js-eval", "expr": "document.querySelector('#story').innerText", "expected": "Alpha Beta Gamma" },
+        { "type": "js-eval", "expr": "document.querySelector('#story').childElementCount", "expected": "2" },
+        { "type": "selector-count", "selector": "#story > *", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/text-content-inline-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: text content inline extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#copy').textContent", "expected": "ABC" },
+        { "type": "js-eval", "expr": "document.querySelector('#copy').firstElementChild.textContent", "expected": "A" },
+        { "type": "js-eval", "expr": "document.querySelector('#copy').lastElementChild.textContent", "expected": "C" },
+        { "type": "selector-count", "selector": "#copy > *", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/document-body-innertext-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: body innerText extra" },
+        { "type": "js-eval", "expr": "document.body.innerText", "expected": "Visible texthidden()\n" },
+        { "type": "js-eval", "expr": "document.body.textContent", "expected": "Visible texthidden()\n" },
+        { "type": "js-eval", "expr": "document.querySelector('script') === null", "expected": "false" },
+        { "type": "selector-count", "selector": "main > p", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/document-url-location.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: document URL location" },
+        { "type": "js-eval", "expr": "document.URL", "expected": "fixtures/imported/wpt/dom-core/document-url-location.html" },
+        { "type": "js-eval", "expr": "location.href", "expected": "fixtures/imported/wpt/dom-core/document-url-location.html" },
+        { "type": "js-eval", "expr": "window.location.href", "expected": "fixtures/imported/wpt/dom-core/document-url-location.html" },
+        { "type": "selector-count", "selector": "#root", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/forms-length-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: forms length extra" },
+        { "type": "js-eval", "expr": "document.forms.length", "expected": "2" },
+        { "type": "js-eval", "expr": "document.querySelectorAll('form').length", "expected": "2" },
+        { "type": "js-eval", "expr": "document.querySelector('#one').tagName", "expected": "FORM" },
+        { "type": "selector-count", "selector": "form", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/input-reflection-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: input reflection extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#email').value", "expected": "ada@example.test" },
+        { "type": "js-eval", "expr": "document.querySelector('#email').name", "expected": "email" },
+        { "type": "js-eval", "expr": "document.querySelector('#email').required", "expected": "true" },
+        { "type": "selector-count", "selector": "input:required", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/select-option-reflection-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: select option reflection extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#roles').multiple", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#admin').selected", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#user').selected", "expected": "false" },
+        { "type": "selector-count", "selector": "option[selected]", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/form-reflection-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: form reflection extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#profile').method", "expected": "post" },
+        { "type": "js-eval", "expr": "document.querySelector('#profile').enctype", "expected": "multipart/form-data" },
+        { "type": "js-eval", "expr": "document.querySelector('#profile').action", "expected": "/submit" },
+        { "type": "selector-count", "selector": "form[method='POST']", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/attribute-case-preservation.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: attribute case preservation" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').getAttribute('data-token')", "expected": "A:B" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').getAttribute('aria-label')", "expected": "Name" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').hasAttribute('aria-label')", "expected": "true" },
+        { "type": "selector-count", "selector": "[aria-label='Name']", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/class-name-whitespace.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: class name whitespace" },
+        { "type": "js-eval", "expr": "document.querySelector('#target').className", "expected": "alpha beta gamma" },
+        { "type": "js-eval", "expr": "document.getElementsByClassName('alpha').length", "expected": "2" },
+        { "type": "js-eval", "expr": "document.querySelector('#peer').className", "expected": "alpha" },
+        { "type": "selector-count", "selector": ".alpha.beta", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/query-selector-order.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: query selector order" },
+        { "type": "js-eval", "expr": "document.querySelector('.item').id", "expected": "first" },
+        { "type": "js-eval", "expr": "document.querySelector('.special').previousElementSibling.id", "expected": "first" },
+        { "type": "js-eval", "expr": "document.querySelectorAll('.item').length", "expected": "3" },
+        { "type": "selector-count", "selector": ".item", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/document-element-relations.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: document element relations" },
+        { "type": "js-eval", "expr": "document.documentElement.firstElementChild.tagName", "expected": "HEAD" },
+        { "type": "js-eval", "expr": "document.head.nextElementSibling.id", "expected": "body" },
+        { "type": "js-eval", "expr": "document.body.parentElement.tagName", "expected": "HTML" },
+        { "type": "selector-count", "selector": "html > body#body", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/root-parent-null.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: root parent null" },
+        { "type": "js-eval", "expr": "document.documentElement.parentElement === null", "expected": "true" },
+        { "type": "js-eval", "expr": "document.body.parentElement.id", "expected": "html-root" },
+        { "type": "js-eval", "expr": "document.querySelector('#content').parentElement.tagName", "expected": "BODY" },
+        { "type": "selector-count", "selector": ":root", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/body-child-relations.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: body child relations" },
+        { "type": "js-eval", "expr": "document.body.firstElementChild.id", "expected": "head-el" },
+        { "type": "js-eval", "expr": "document.body.lastElementChild.id", "expected": "foot-el" },
+        { "type": "js-eval", "expr": "document.querySelector('#main-el').previousElementSibling.id", "expected": "head-el" },
+        { "type": "selector-count", "selector": "body > *", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/deep-next-sibling-null.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: deep next sibling null" },
+        { "type": "js-eval", "expr": "document.querySelector('#last').nextElementSibling === null", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#first').previousElementSibling === null", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#section').lastElementChild.id", "expected": "last" },
+        { "type": "selector-count", "selector": "#section > p", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/dom-core/wildcard-collection-extra.html",
+      "category": "dom-core",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT DOM smoke: wildcard collection extra" },
+        { "type": "js-eval", "expr": "document.getElementsByTagName('*').length", "expected": "8" },
+        { "type": "js-eval", "expr": "document.querySelectorAll('*').length", "expected": "8" },
+        { "type": "js-eval", "expr": "document.querySelector('#root').childElementCount", "expected": "2" },
+        { "type": "selector-count", "selector": "main *", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/reflected-input.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: reflected input" },
+        { "type": "js-eval", "expr": "document.querySelector('#email').type", "expected": "text" },
+        { "type": "js-eval", "expr": "document.querySelector('#email').name", "expected": "email" },
+        { "type": "js-eval", "expr": "document.querySelector('#email').value", "expected": "a@example.test" },
+        { "type": "js-eval", "expr": "document.querySelector('#email').required", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#email').placeholder", "expected": "you@example.test" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/reflected-checkbox.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: reflected checkbox" },
+        { "type": "js-eval", "expr": "document.querySelector('#agree').checked", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#agree').disabled", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#plain').checked", "expected": "false" },
+        { "type": "selectors-exact", "selector": ":checked", "expected": ["agree"] },
+        { "type": "selectors-exact", "selector": ":disabled", "expected": ["agree"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/reflected-form.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: reflected form" },
+        { "type": "js-eval", "expr": "document.forms.length", "expected": "1" },
+        { "type": "js-eval", "expr": "document.querySelector('#profile').method", "expected": "post" },
+        { "type": "js-eval", "expr": "document.querySelector('#profile').enctype", "expected": "multipart/form-data" },
+        { "type": "js-eval", "expr": "document.querySelector('#profile').action", "expected": "/submit" },
+        { "type": "selector-count", "selector": "form > input", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/reflected-label.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: reflected label" },
+        { "type": "js-eval", "expr": "document.querySelector('#email-label').htmlFor", "expected": "email" },
+        { "type": "element-attribute", "selector": "#email-label", "attribute": "for", "expected": "email" },
+        { "type": "js-eval", "expr": "document.querySelector('#email').type", "expected": "text" },
+        { "type": "selector-count", "selector": "label + input", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/textarea-readonly.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: textarea readonly" },
+        { "type": "js-eval", "expr": "document.querySelector('#bio').readOnly", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#bio').name", "expected": "bio" },
+        { "type": "js-eval", "expr": "document.querySelector('#editable').readOnly", "expected": "false" },
+        { "type": "selectors-exact", "selector": "textarea:read-only", "expected": ["bio"] },
+        { "type": "selectors-exact", "selector": "textarea:read-write", "expected": ["editable"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/select-option.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: select option" },
+        { "type": "js-eval", "expr": "document.querySelector('#roles').multiple", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#roles').name", "expected": "role" },
+        { "type": "js-eval", "expr": "document.querySelector('#admin').selected", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#user').selected", "expected": "false" },
+        { "type": "selectors-exact", "selector": "option[selected]", "expected": ["admin"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/button-defaults.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: button defaults" },
+        { "type": "js-eval", "expr": "document.querySelector('#save').type", "expected": "submit" },
+        { "type": "js-eval", "expr": "document.querySelector('#reset').type", "expected": "reset" },
+        { "type": "js-eval", "expr": "document.querySelector('#reset').disabled", "expected": "true" },
+        { "type": "selectors-exact", "selector": "button:enabled", "expected": ["save"] },
+        { "type": "selectors-exact", "selector": "button:disabled", "expected": ["reset"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/input-defaults.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: input defaults" },
+        { "type": "js-eval", "expr": "document.querySelector('#default').type", "expected": "text" },
+        { "type": "js-eval", "expr": "document.querySelector('#default').name", "expected": "" },
+        { "type": "js-eval", "expr": "document.querySelector('#password').type", "expected": "password" },
+        { "type": "js-eval", "expr": "document.querySelector('#password').name", "expected": "pw" },
+        { "type": "selector-count", "selector": "input", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/required-optional.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: required optional" },
+        { "type": "js-eval", "expr": "document.querySelector('#email').required", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#notes').required", "expected": "false" },
+        { "type": "js-eval", "expr": "document.querySelector('#choice').required", "expected": "true" },
+        { "type": "selectors-exact", "selector": ":required", "expected": ["choice", "email"] },
+        { "type": "selectors-exact", "selector": ":optional", "expected": ["notes"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/form-tree.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: form tree" },
+        { "type": "js-eval", "expr": "document.querySelector('#wizard').childElementCount", "expected": "1" },
+        { "type": "js-eval", "expr": "document.querySelector('#step').firstElementChild.id", "expected": "label" },
+        { "type": "js-eval", "expr": "document.querySelector('#label').nextElementSibling.id", "expected": "name" },
+        { "type": "js-eval", "expr": "document.querySelector('#name').value", "expected": "Ada" },
+        { "type": "selector-count", "selector": "form fieldset input[name='name']", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/form-defaults.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: form defaults" },
+        { "type": "js-eval", "expr": "document.forms.length", "expected": "2" },
+        { "type": "js-eval", "expr": "document.querySelector('#search').method", "expected": "get" },
+        { "type": "js-eval", "expr": "document.querySelector('#search').enctype", "expected": "application/x-www-form-urlencoded" },
+        { "type": "selector-count", "selector": "form", "expected": 2 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/input-types.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: input types" },
+        { "type": "js-eval", "expr": "document.querySelector('#default').type", "expected": "text" },
+        { "type": "js-eval", "expr": "document.querySelector('#email').type", "expected": "email" },
+        { "type": "js-eval", "expr": "document.querySelector('#password').name", "expected": "pw" },
+        { "type": "selectors-exact", "selector": "input[type='color']", "expected": ["color"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/input-booleans.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: input booleans" },
+        { "type": "js-eval", "expr": "document.querySelector('#req').required", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#off').disabled", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#ro').readOnly", "expected": "true" },
+        { "type": "selectors-exact", "selector": ":placeholder-shown", "expected": ["hint"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/radio-checkbox.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: radio checkbox" },
+        { "type": "selectors-exact", "selector": ":checked", "expected": ["agree", "yes"] },
+        { "type": "selectors-exact", "selector": ":disabled", "expected": ["agree"] },
+        { "type": "js-eval", "expr": "document.querySelector('#yes').checked", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#no').checked", "expected": "false" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/select-disabled-options.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: select disabled options" },
+        { "type": "js-eval", "expr": "document.querySelector('#roles').disabled", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#admin').selected", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#admin').disabled", "expected": "true" },
+        { "type": "selectors-exact", "selector": ":disabled", "expected": ["admin", "roles"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/label-nesting.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: label nesting" },
+        { "type": "js-eval", "expr": "document.querySelector('#wrap').htmlFor", "expected": "" },
+        { "type": "js-eval", "expr": "document.querySelector('#explicit').htmlFor", "expected": "email" },
+        { "type": "js-eval", "expr": "document.querySelector('#wrap').firstElementChild.id", "expected": "email" },
+        { "type": "selector-count", "selector": "label > input", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/button-types-extra.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: button types extra" },
+        { "type": "js-eval", "expr": "document.querySelector('#save2').type", "expected": "submit" },
+        { "type": "js-eval", "expr": "document.querySelector('#plain').type", "expected": "button" },
+        { "type": "js-eval", "expr": "document.querySelector('#reset2').disabled", "expected": "true" },
+        { "type": "selectors-exact", "selector": "button:enabled", "expected": ["plain", "save2"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/textarea-text.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: textarea text" },
+        { "type": "js-eval", "expr": "document.querySelector('#bio').textContent", "expected": "hello world" },
+        { "type": "js-eval", "expr": "document.querySelector('#bio').readOnly", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#notes').readOnly", "expected": "false" },
+        { "type": "selectors-exact", "selector": "textarea:read-only", "expected": ["bio"] }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/form-tree-deep.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: form tree deep" },
+        { "type": "js-eval", "expr": "document.querySelector('#survey').childElementCount", "expected": "1" },
+        { "type": "js-eval", "expr": "document.querySelector('#group').firstElementChild.id", "expected": "legend" },
+        { "type": "js-eval", "expr": "document.querySelector('#legend').nextElementSibling.id", "expected": "l1" },
+        { "type": "selector-count", "selector": "fieldset input:required", "expected": 1 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/form-associated-names.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: associated names" },
+        { "type": "selectors-exact", "selector": "input[name='tag']", "expected": ["t1", "t2"] },
+        { "type": "js-eval", "expr": "document.querySelector('#t1').name", "expected": "tag" },
+        { "type": "js-eval", "expr": "document.querySelector('#t2').value", "expected": "beta" },
+        { "type": "selector-count", "selector": "#tags > input", "expected": 3 }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/form-case-normalization.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: form case normalization" },
+        { "type": "js-eval", "expr": "document.querySelector('#upper').method", "expected": "get" },
+        { "type": "js-eval", "expr": "document.querySelector('#upper').enctype", "expected": "text/plain" },
+        { "type": "js-eval", "expr": "document.querySelector('#post').method", "expected": "post" },
+        { "type": "js-eval", "expr": "document.querySelector('#post').enctype", "expected": "multipart/form-data" }
+      ]
+    },
+    {
+      "url": "fixtures/imported/wpt/forms/form-has-selector.html",
+      "category": "forms",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT forms smoke: form has selector" },
+        { "type": "selectors-exact", "selector": "form:has(input:required)", "expected": ["login"] },
+        { "type": "selectors-exact", "selector": "form:has(button)", "expected": ["login"] },
+        { "type": "selectors-exact", "selector": "form:not(:has(input, button))", "expected": ["empty"] },
+        { "type": "js-eval", "expr": "document.querySelector('#login').childElementCount", "expected": "2" }
       ]
     }
   ]

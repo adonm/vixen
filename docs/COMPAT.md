@@ -10,39 +10,47 @@ feature.
 
 ## Current measured local fixture baseline
 
-As of 2026-07-07, `fixtures/manifest.json` contains:
+As of 2026-07-07, `fixtures/manifest.json` contains 51 local fixtures plus
+199 imported smoke fixtures:
 
 | Category | Fixtures |
 |----------|---------:|
-| css      | 16 |
+| css      | 17 |
+| css-cascade/css-values | 50 |
 | dom      | 10 |
-| forms    | 2 |
+| dom-core | 50 |
+| flexbox | 5 |
+| forms    | 27 |
+| grid | 5 |
 | layout   | 8 |
+| layout block/inline/position | 6 |
 | network  | 2 |
 | paint    | 4 |
+| paint/ref-equivalent | 8 |
 | security | 8 |
-| **Total** | **50** |
+| selectors | 50 |
+| **Total** | **250** |
 
-Total manifest checks: **590**.
+Total manifest checks: **1568**.
 
 Current check mix:
 
 | Check type | Count |
 |------------|------:|
-| `selector-count` | 243 |
-| `element-attribute` | 127 |
-| `selectors-exact` | 49 |
-| `title` | 49 |
-| `body-contains` | 48 |
-| `computed-style` | 11 |
-| `layout-box` | 41 |
-| `no-critical-diagnostics` | 14 |
-| `ref-equivalent` | 3 |
+| `selector-count` | 363 |
+| `selectors-exact` | 223 |
+| `title` | 249 |
+| `js-eval` | 227 |
+| `computed-style` | 170 |
+| `element-attribute` | 132 |
+| `layout-box` | 103 |
+| `body-contains` | 65 |
+| `no-critical-diagnostics` | 19 |
+| `ref-equivalent` | 11 |
 | `display-list-contains` | 1 |
 | `dom-nodes-range` | 1 |
-| `js-eval` | 1 |
 | `min-nodes` | 1 |
-| `selector-match` | 1 |
+| `selector-match` | 3 |
 
 This local fixture set is release-blocking and must remain **100 % green**.
 The layout category currently includes normal-flow, inline-flow, positioned,
@@ -51,7 +59,34 @@ and `display-list-contains` assertions. The paint category includes three local
 `ref-equivalent` smoke fixtures against the stable display-list render
 projection. The harness now reports overall, per-category, and local/imported
 pass rates; imported upstream WPT layout/paint coverage is still tracked
-separately below and remains at zero until the curated profile lands.
+separately below. Imported selector smoke has reached the 50-fixture target,
+including focused `:has()` child/descendant/adjacent-sibling/general-sibling and
+selector-list smoke plus attribute operators/flags, class/id matching,
+structural and typed structural pseudos, link/form/read-write/autofill/defined
+pseudos, negation/list pseudos, grouping de-duplication, and document-order
+coverage. Local CSS computed-style coverage now includes the Milestone 1
+advanced cascade seam: `@media`, `@supports`, `@layer`, inherited custom
+properties, `var()` fallback, and CSS-wide keyword projection through `Page`.
+Imported css-cascade/css-values smoke has reached the
+50-fixture target, including specificity/source order, important and inline
+precedence, combinator/attribute-operator matching, structural/link/form pseudo
+selectors in cascade, `:is()`/`:where()`/`:not()`/`:has()` selectors,
+selector-list splitting, custom properties, declaration recovery, comments,
+math/color/gradient/transform/shorthand values, and quoted/nested/function
+declaration values. Imported DOM-core smoke has reached the 50-fixture target,
+including query/getElementById/querySelectorAll, document/root/body access,
+tag/class/wildcard collections, attributes, reflected host properties, text
+aggregation, parent/child/sibling traversal, null relation checks, document URL,
+forms collection length, `matches()`, logical selectors, and `:has()`-backed
+matching. Imported forms smoke has reached the 25-fixture target across reflected/default
+form/control properties, labels, radio/checkbox/select states, textarea text,
+form tree traversal, repeated names, and `:has()` form selectors. Imported smoke
+fixtures now also seed block/inline/position layout, flexbox, grid, and
+display-list `ref-equivalent` paint; imported layout smoke covers auto margins,
+border-box sizing, inline flow, flex reverse/gaps, and grid
+`minmax()`/fractional row/gap cases. Imported paint smoke now covers
+currentcolor, overflow clipping, positioned boxes, flex/grid backgrounds, and
+nested background/text display-list equivalence.
 
 ---
 
@@ -59,9 +94,12 @@ separately below and remains at zero until the curated profile lands.
 
 Full upstream WPT is too broad to summarize honestly with one percentage at
 v1.0. The release contract is a curated, imported WPT profile with measured
-pass counts by category. Imported WPT fixtures should live beside Vixen fixtures
-and be recorded in `fixtures/manifest.json` so `vixen-wpt` reports the same
-check types for local and upstream-derived tests.
+pass counts by category. Small, Vixen-minimized upstream-derived smoke fixtures
+may live beside local fixtures and remain recorded in `fixtures/manifest.json`.
+Larger upstream slices should use committed WPT profile JSON plus an ignored,
+pinned upstream checkout (for example `.tmp/wpt/`) so review diffs contain only
+the selected paths/checks/provenance, not vendored WPT source files. Both paths
+feed the same `vixen-wpt` check types and reporting.
 
 | Area | v1.0 target | Expected achievability | Notes |
 |------|-------------|------------------------|-------|
@@ -108,14 +146,14 @@ pass table below must be filled from `vixen-wpt` output as the fixtures land.
 
 | Imported WPT area | Fixtures run | Checks run | Passed | Pass rate | Notes |
 |-------------------|-------------:|-----------:|-------:|----------:|-------|
-| selectors | 0 | 0 | 0 | n/a | Not imported yet. |
-| css-cascade/css-values | 0 | 0 | 0 | n/a | Not imported yet. |
-| dom-core | 0 | 0 | 0 | n/a | Not imported yet. |
-| forms | 0 | 0 | 0 | n/a | Not imported yet. |
-| layout block/inline/position | 0 | 0 | 0 | n/a | Not imported yet. |
-| flexbox | 0 | 0 | 0 | n/a | Not imported yet. |
-| grid | 0 | 0 | 0 | n/a | Not imported yet. |
-| paint/ref-equivalent | 0 | 0 | 0 | n/a | Not imported yet. |
+| selectors | 50 | 232 | 232 | 100.0% | Target reached: `:has()` child/descendant/adjacent-sibling/general-sibling and selector-list smoke, attribute operators/flags, class/id matching, structural and typed structural pseudos, link/form/read-write/autofill/defined pseudos, negation/list pseudos, grouping de-duplication, and document-order coverage. |
+| css-cascade/css-values | 50 | 250 | 250 | 100.0% | Target reached: specificity/source order, importance/inline, combinator/attribute operator matching, structural/link/form pseudo cascade, functional pseudo specificity, selector-list splitting, custom properties, declaration recovery, comments, math/color/gradient/transform/shorthand values, and quoted/nested/function declaration values. |
+| dom-core | 50 | 250 | 250 | 100.0% | Target reached: query/getElementById/querySelectorAll, document/root/body access, tag/class/wildcard collections, attributes, reflected host properties, text aggregation, parent/child/sibling traversal, null relation checks, document URL, forms collection length, `matches()`, logical selectors, and `:has()`-backed matching. |
+| forms | 25 | 134 | 134 | 100.0% | Required/optional/disabled/checked controls, labels/buttons/form attributes, reflected/default input/form/select/option properties, textarea text, tree traversal, repeated names, and `:has()` form selectors. |
+| layout block/inline/position | 6 | 30 | 30 | 100.0% | Block flow, margin/padding/border, auto margins, border-box sizing, inline flow, and relative/absolute positioned smoke. |
+| flexbox | 5 | 25 | 25 | 100.0% | Row/column grow-basis, gap/padding, and reverse-axis smoke. |
+| grid | 5 | 26 | 26 | 100.0% | Fixed, fractional, `minmax()`, row/column gap, and fixed-height fractional-row smoke. |
+| paint/ref-equivalent | 8 | 24 | 24 | 100.0% | Display-list reference-equivalent background/text, currentcolor, overflow clipping, positioned, flex/grid, and nested-background smoke. |
 
 ---
 

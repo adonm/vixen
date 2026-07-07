@@ -40,6 +40,9 @@ pub mod config {
     pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 }
 
+#[cfg(feature = "gtk-shell")]
+pub mod surface;
+
 /// GUI entry point. The thin `vixen` binary calls this.
 ///
 /// Without the `gtk-shell` feature this is a documented no-op so the

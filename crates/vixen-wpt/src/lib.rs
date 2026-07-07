@@ -8,15 +8,18 @@
 //! The 15 check types (14 inherited from upstream WPT + `ref-equivalent`,
 //! Vixen's addition) are all defined. `ref-equivalent` compares the stable
 //! display-list render projection through [`HarnessEngine`]; `visual-hash`
-//! remains skipped until the offscreen pixel path lands.
+//! hashes RGBA screenshots once an adapter can provide offscreen pixels and
+//! remains skipped for adapters that cannot.
 
 #![forbid(unsafe_code)]
 
 pub mod check;
 pub mod harness;
 pub mod manifest;
+pub mod profile;
 pub mod visual_hash;
 
 pub use check::{Check, Outcome};
-pub use harness::{HarnessEngine, Report, run_fixture, run_manifest};
+pub use harness::{HarnessEngine, Report, RgbaScreenshot, run_fixture, run_manifest};
 pub use manifest::{Fixture, Manifest, ManifestError};
+pub use profile::{ProfileError, WptProfile, WptProfileFixture, WptUpstream};

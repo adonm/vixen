@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT flexbox smoke: column reverse</title>
+  <style>
+    body { margin: 0; }
+    #flex { display: flex; flex-direction: column-reverse; width: 100px; height: 90px; gap: 5px; }
+    #a { height: 20px; }
+    #b { flex-grow: 1; flex-basis: 0px; }
+    #c { flex-grow: 2; flex-basis: 0px; }
+  </style>
+</head>
+<body><div id="flex"><div id="a">A</div><div id="b">B</div><div id="c">C</div></div></body>
+</html>

@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: nested selector lists</title>
+  <style>
+    :is(.primary, .secondary), section > #target { color: orange; }
+    section:has(#target), aside { background-color: #ffeeaa; }
+    #target { display: block; }
+  </style>
+</head>
+<body>
+  <section id="container"><p id="target" class="primary">Nested selector lists</p></section>
+  <aside id="side">Aside</aside>
+</body>
+</html>

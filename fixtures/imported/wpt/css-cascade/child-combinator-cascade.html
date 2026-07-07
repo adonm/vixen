@@ -1,0 +1,20 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: child combinator</title>
+  <style>
+    section p { color: gray; }
+    main > section > p { color: green; }
+    section > p.lead { font-size: 18px; }
+    p.lead { font-size: 14px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section>
+      <p id="target" class="lead">Direct child</p>
+      <div><p id="nested" class="lead">Nested child</p></div>
+    </section>
+  </main>
+</body>
+</html>

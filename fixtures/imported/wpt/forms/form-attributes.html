@@ -1,0 +1,11 @@
+<!doctype html>
+<html>
+<head><title>WPT forms smoke: form attributes</title></head>
+<body>
+  <form id="profile" method="post" action="/submit" enctype="multipart/form-data">
+    <input id="avatar" type="file" name="avatar">
+    <textarea id="bio" name="bio" required>hello</textarea>
+    <select id="role" name="role"><option id="admin" value="admin" selected>Admin</option></select>
+  </form>
+</body>
+</html>

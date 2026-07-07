@@ -1,0 +1,15 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: universal descendant</title>
+  <style>
+    * { color: gray; }
+    main * { color: green; }
+    main > .target { display: block; }
+  </style>
+</head>
+<body>
+  <main><p id="target" class="target">Inside</p></main>
+  <p id="outside">Outside</p>
+</body>
+</html>

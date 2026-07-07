@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: source order</title>
+  <style>
+    .box { color: red; display: block; }
+    .box { color: green; background-color: rgb(0, 0, 255); }
+  </style>
+</head>
+<body>
+  <div id="target" class="box">Later rule wins</div>
+</body>
+</html>

@@ -1,0 +1,13 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: declaration order</title>
+  <style>
+    #target { color: red; color: green; display: inline; display: block; }
+    #target { margin-left: 4px; margin-left: 6px; }
+  </style>
+</head>
+<body>
+  <p id="target">Declaration order</p>
+</body>
+</html>

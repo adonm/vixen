@@ -33,22 +33,22 @@ stub `lib.rs` so the workspace compiles.
    idioms should be set in Phase 0, not retrofitted later.
 4. `vixen-net`, `vixen-store`, `vixen-wpt`, `vixen-headless`, `vixen-engine`
    all empty with `pub mod placeholder;` stubs.
-5. `justfile` adapted: `check-all-host` builds the workspace; `test-host`
-   runs `vixen-api` tests (the only crate with logic yet — the other
-   crates are stubs at this point).
+5. `justfile` adapted: `check-all-host` builds the workspace; `test-api`
+   runs the API crate; `gate-phase0` bundles the phase's executable proof.
 6. `.gitignore`, `LICENSE` (Apache 2.0), `data/`, `build-aux/` skeleton,
    `fixtures/` (empty), `benches/` (empty).
-7. `.mise.toml` pins the dev toolchain (`rust = latest`, `just`,
-   `cargo-binstall`) so `mise bootstrap --yes` converges a fresh machine.
-   The library MSRV (1.88) is in each crate's `rust-version`; the dev
-   toolchain floats to latest stable. The **GNOME 50 SDK is not installed
+7. `.mise.toml` pins the dev toolchain (`rust`, `just`, `cargo-binstall`) so
+   `mise bootstrap --yes` converges a fresh machine by delegating project work
+   to `just setup`. The library MSRV (1.88) is in each crate's
+   `rust-version`; the developer toolchain is pinned in `.mise.toml`. The
+   **GNOME 50 SDK is not installed
    on the host** — it is managed inside a flatpak-builder container
    (`just flatpak-update-sdk` / `just flatpak-build`); see
    [`docs/guidance/gnome-sdk-flatpak-builder.md`](guidance/gnome-sdk-flatpak-builder.md)
    and [`mise bootstrap`](https://mise.jdx.dev/bootstrap.html).
 
-**Gate:** `cargo check --workspace` passes. `cargo test -p vixen-api`
-passes (the trait shape compiles, basic DTO tests pass). The shell's
+**Gate:** `just gate-phase0` passes (the workspace builds and `vixen-api` DTO /
+trait tests pass). The shell's
 empty `App` launches and renders an empty window.
 
 ---
@@ -78,9 +78,8 @@ Rust with no upstream-crate dependencies.
    partitioning, schema per `docs/ARCHITECTURE.md` "App ID and profile
    paths".
 
-**Gate:** `cargo test -p vixen-net -p vixen-store` green. `cargo audit`
-clean. Fuzz `url_policy::validate_http_url` and `csp::parse` for 1 M
-iterations each without panic.
+**Gate:** `just gate-phase1` passes (`vixen-net` / `vixen-store`, `just audit`,
+and the `just fuzz-security` 1 M iteration targets).
 
 ---
 
@@ -102,9 +101,9 @@ Stand up the JS engine.
 4. Rooting discipline: every `JS::Value` / `JSObject*` goes through
    `mozjs::rust::RootedGuard`. No naked handles.
 
-**Gate:** `vixen-headless --url file:///.../hello.html --eval '1+2'`
-returns `3`. `cargo test -p vixen-engine` green (basic eval tests).
-Binary size recorded.
+**Gate:** `just gate-phase2` passes (basic engine tests and
+`vixen-headless --url file:///.../hello.html --eval '1+2'` returns `3`). Binary
+size recorded.
 
 ---
 
@@ -125,12 +124,14 @@ Wire up HTML parsing and CSS cascade.
    The shared `vixen-engine::page::Page` facade now owns URL + parsed document
    state for headless and WPT; cascade/layout/paint slices extend that facade
    in order.
-3. **Computed-style cascade projection (done) — `Page::computed_style`** maps
-   the stable selector `node_id` back to the element and returns a compact
-   author/inline cascade. `vixen-engine::style_cascade` loads `<style>` blocks,
-   matches selectors through Stylo's selector engine, applies specificity,
-   source order, and author/inline `!important`, and keeps the WPT
-   `computed-style` check vertical behind `Page`.
+3. **Milestone 1 computed-style cascade projection (done) —
+   `Page::computed_style`** maps the stable selector `node_id` back to the
+   element and returns a compact author/inline cascade. `vixen-engine::style_cascade`
+   loads `<style>` blocks, matches selectors through Stylo's selector engine,
+   applies specificity, source order, cascade layers, media/supports conditions,
+   custom-property `var()` resolution, inherited custom properties, CSS-wide
+   keywords, and author/inline `!important`, and keeps the WPT `computed-style`
+   check vertical behind `Page`.
 4. `vixen-engine/src/style.rs` (next slice): replace the compact projection
    with full Stylo style data: load `<style>` / `<link rel=stylesheet>` into
    `Stylesheet` list → `Stylist::update_stylist`
@@ -141,9 +142,11 @@ Wire up HTML parsing and CSS cascade.
    `.tmp/ref/firefox/dom/base/` for DOM API behavior and
    `.tmp/ref/firefox/servo/components/style/dom.rs` for the Stylo trait
    definitions being implemented.
-5. CSS-wide keywords, `@layer`, `@property`, `@import`, `@supports`,
-   `@media`, `@keyframes`, custom properties + `var()` all come free
-   from Stylo. Verify via WPT fixtures.
+5. CSS-wide keywords, `@layer`, `@supports`, `@media`, and custom properties +
+   `var()` are now covered in the compact `Page::computed_style` projection for
+   the v1 layout/paint seam. Full Stylo still owns the long tail (`@property`,
+   `@import`, `@keyframes`, shorthand expansion, full computed-value
+   serialisation). Verify via WPT fixtures.
 
 **Pure-logic foundation landed (testing-strategy item).**
 `vixen-engine::length` implements CSS Values 4 `<length>` parsing + the
@@ -184,11 +187,11 @@ WebRender plug in).
 "needs a Servo git dependency" caveat from earlier revisions of this
 plan no longer applies. See ADR-011.
 
-**Gate:** `vixen-headless --url fixtures/css/at-property.html
---extract-selector '[style]'` returns correctly cascaded styles.
-vixen-wpt runs the CSS fixtures; pass rate recorded as baseline.
-(Selector and compact cascade surfaces green today; full Stylo computed values
-pending step 4.)
+**Gate:** `just gate-phase3` passes; `fixtures/css/computed-advanced.html`
+proves the Milestone 1 cascade seam (`@media`, `@supports`, `@layer`, inherited
+custom properties, `var()` fallback, and CSS-wide keywords) through the WPT
+`computed-style` check. Full Stylo computed values remain the implementation
+replacement behind the same `Page` facade (step 4), not a new public seam.
 
 ---
 
@@ -420,6 +423,13 @@ to two `GlContext` implementations.
    wraps it as `GlAreaSurface` (the shell's `GlContext` impl), and
    returns it as the content widget alongside the tab's `EngineWorker`.
    The worker's engine renders to the screen via that `GlContext`.
+
+   **Surface scaffolding landed.** `vixen-shell::surface::GlAreaSurface`
+   (behind `gtk-shell`) and `vixen_headless::surface::SurfacelessSurface` now
+   implement `vixen_api::GlContext`. Headless construction still fails closed
+   with `unsupported.screenshot` until EGL context creation, WebRender command
+   submission, `glReadPixels`, and PNG encoding land; no CPU fallback or second
+   paint path was introduced.
 6. CI: verify `LIBGL_ALWAYS_SOFTWARE=1` produces working screenshots
    via `llvmpipe` so headless runs anywhere.
 
@@ -1258,7 +1268,7 @@ Wire every trust boundary from `docs/ARCHITECTURE.md`.
    XHR.
 4. Origin isolation confirmed across storage, scripts, cookies.
 5. Permissions API behaves per spec.
-6. `cargo audit` clean. `cargo deny` checks pass.
+6. `just audit` passes.
 7. Fuzz targets: `url_policy`, `csp::parse`, `html5ever` parse, the
    cookie parser. Each runs 1 M iterations without panic.
 
@@ -1500,7 +1510,7 @@ accepting a string. `#![forbid(unsafe_code)]`, Rust-unit-tested.
 [`evaluate_sink`]: ../../crates/vixen-net/src/trusted_types.rs
 
 **Gate:** Every security test in `vixen-net` and `vixen-engine` green.
-Zero `cargo audit` advisories. Fuzz targets stable.
+`just audit` passes. Fuzz targets stable.
 
 ---
 
@@ -1626,13 +1636,13 @@ previous release.
 
 | Phase                             | Gate                                                                                             |
 |-----------------------------------|--------------------------------------------------------------------------------------------------|
-| 0 — Scaffolding                   | `cargo check --workspace` passes; `cargo test -p vixen-api` passes                               |
-| 1 — Net + store crown jewels      | `cargo test -p vixen-net -p vixen-store` green; fuzz 1 M iters stable                            |
-| 2 — SpiderMonkey                  | `vixen-headless --url <file> --eval '1+2'` returns `3`                                            |
+| 0 — Scaffolding                   | `just gate-phase0` passes                                                                         |
+| 1 — Net + store crown jewels      | `just gate-phase1` passes                                                                         |
+| 2 — SpiderMonkey                  | `just gate-phase2` passes                                                                         |
 | 3 — HTML + Stylo                  | WPT CSS fixtures pass; cascade output correct                                                    |
 | 4 — Layout                        | 20+ visual-hash fixtures match reference                                                         |
 | 5 — Paint                         | `just run` shows a page; headless PNG within 1 % of GUI on 5 fixtures                            |
 | 6 — Host bindings                 | `fixtures/{dom,events,forms,storage,network}/` all pass                                          |
-| 7 — Security                      | `cargo audit` clean; all security tests green; fuzz stable                                       |
+| 7 — Security                      | `just audit` clean; all security tests green; fuzz stable                                        |
 | 8 — Headless CDP                  | Every CLI flag works; CDP responds to required methods                                           |
 | 9 — Release                       | All `docs/ACCEPTANCE.md` gates green; tag `v1.0.0`                                               |

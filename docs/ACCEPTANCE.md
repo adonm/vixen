@@ -28,8 +28,8 @@ actual contracts).
       are published for every supported category
 - [ ] Binary sizes meet §"Binary size gates" below
 - [ ] `docs/COMPAT.md` published with honest capability matrix
-- [ ] `cargo audit` clean; `cargo deny` checks pass
-- [ ] `just check-all-host` passes
+- [ ] `just audit` passes (`cargo audit` + `cargo deny check`)
+- [ ] `just check` passes
 - [ ] No non-test module > 1,000 lines
 - [ ] All fuzz targets stable at 1 M iterations
 
@@ -134,6 +134,8 @@ drop the flag.
 **Done when** `vixen-wpt`:
 
 - Runs the full `fixtures/manifest.json`
+- Runs pinned external WPT profiles without vendoring their upstream HTML into
+  the repo
 - Every check type in `SPEC.md` passes its existing assertions
 - The new `ref-equivalent` check works against at least 3 fixtures
 - Reports pass count/rate per category and overall
@@ -176,14 +178,14 @@ Restated from `PLAN.md` as the per-phase acceptance check.
 
 | Phase                             | Gate                                                                                  |
 |-----------------------------------|---------------------------------------------------------------------------------------|
-| 0 — Scaffolding                   | `cargo check --workspace` passes; `cargo test -p vixen-api` passes                    |
-| 1 — Net + store crown jewels      | `cargo test -p vixen-net -p vixen-store` green; fuzz 1 M iters stable                 |
+| 0 — Scaffolding                   | `just gate-phase0` passes                                                             |
+| 1 — Net + store crown jewels      | `just gate-phase1` passes                                                             |
 | 2 — SpiderMonkey                  | `just gate-phase2` (`vixen-headless --url <file> --eval '1+2'` returns `3`)           |
 | 3 — HTML + Stylo                  | `just gate-phase3`; then WPT CSS fixtures pass with cascade output correct            |
 | 4 — Vixen-owned layout            | `just gate-phase4`; then the v1 WPT layout target profile in `docs/COMPAT.md` is green |
 | 5 — Paint                         | `just gate-phase5`; then `just run` shows a page and headless PNG diff ≤ 1 %          |
 | 6 — Host bindings                 | `just gate-phase6`; then `fixtures/{dom,events,forms,storage,network}/` all pass      |
-| 7 — Security                      | `cargo audit` clean; all security tests green; fuzz stable                            |
+| 7 — Security                      | `just audit` clean; all security tests green; fuzz stable                             |
 | 8 — Headless CDP                  | Every CLI flag works; CDP responds to required methods                                |
 | 9 — Release                       | `just gate-smoke` and all gates above green; tag `v1.0.0`                             |
 

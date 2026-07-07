@@ -1,0 +1,14 @@
+<!doctype html>
+<html>
+<head>
+  <title>WPT cascade smoke: specificity</title>
+  <style>
+    .item { color: red; font-size: 12px; }
+    main .item { color: green; }
+    #target { color: blue; }
+  </style>
+</head>
+<body>
+  <main><p id="target" class="item">Target</p><p id="other" class="item">Other</p></main>
+</body>
+</html>
