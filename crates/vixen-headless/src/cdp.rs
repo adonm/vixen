@@ -37,7 +37,7 @@ type BoxError = Box<dyn std::error::Error + Send + Sync>;
 /// CDP server entry point. Binds `127.0.0.1:{port}` and serves the
 /// WebSocket CDP protocol until the process is killed.
 ///
-/// **Single-threaded.** SpiderMonkey is `!Send + !Sync`, so the whole
+/// **Single-threaded.** `deno_core::JsRuntime` is `!Send + !Sync`, so the whole
 /// server runs on one tokio `LocalSet`. Connections are handled serially:
 /// CDP clients (Chrome DevTools, Puppeteer, Playwright) maintain a single
 /// WebSocket per browser instance, so this is not a bottleneck in practice.
@@ -100,7 +100,7 @@ async fn handle_connection(
 }
 
 /// All per-process CDP state — the dispatcher and a runtime that backs
-/// `Runtime.evaluate`. Lives behind `Rc<RefCell<>>` because SpiderMonkey is
+/// `Runtime.evaluate`. Lives behind `Rc<RefCell<>>` because the JS runtime is
 /// `!Send + !Sync`; the whole server runs on a single `LocalSet`.
 #[derive(Default)]
 pub struct CdpState {
@@ -175,7 +175,7 @@ impl CdpState {
             "product": format!("Vixen/{}", env!("CARGO_PKG_VERSION")),
             "revision": "@vixen-headless@",
             "userAgent": format!("Vixen/{}", env!("CARGO_PKG_VERSION")),
-            "jsVersion": "SpiderMonkey (mozjs)"
+            "jsVersion": "V8 (deno_core)"
         })
     }
 
@@ -254,7 +254,7 @@ impl CdpState {
             }
         };
         if crate::looks_like_dom_eval(&expr)
-            && !crate::uses_spidermonkey_dom_eval(&expr)
+            && !crate::uses_runtime_dom_eval(&expr)
             && let Some(page) = self.targets.first().and_then(|target| target.page.as_ref())
             && let Some(result) = page.evaluate_dom_expression(&expr)
         {
@@ -276,7 +276,7 @@ impl CdpState {
             match JsRuntime::new() {
                 Ok(rt) => self.js = Some(rt),
                 Err(e) => {
-                    return CdpDispatch::error(-32603, format!("SpiderMonkey init failed: {e}"));
+                    return CdpDispatch::error(-32603, format!("JS runtime init failed: {e}"));
                 }
             }
         }
@@ -352,7 +352,7 @@ impl CdpState {
 
 impl CdpState {
     /// Construct a state pre-seeded with a JS runtime (used by tests so they
-    /// don't pay SpiderMonkey init cost on every call).
+    /// don't pay JS runtime init cost on every call).
     pub fn with_runtime(rt: JsRuntime) -> Self {
         Self {
             next_target_id: AtomicU64::new(0),
@@ -482,9 +482,8 @@ mod tests {
         state.dispatch(&req).response.expect("success response")
     }
 
-    /// All CDP dispatcher checks except SpiderMonkey-backed `Runtime.evaluate`,
-    /// which lives in `tests/cdp_runtime.rs` to avoid the process-singleton
-    /// conflict with the `eval_gate_returns_three` test in this binary.
+    /// All CDP dispatcher checks except runtime-backed `Runtime.evaluate`,
+    /// which lives in `tests/cdp_runtime.rs` for focused end-to-end coverage.
     #[test]
     fn cdp_dispatcher_surface() {
         // No JsRuntime: the dispatcher lazily inits one when first needed,
@@ -495,7 +494,7 @@ mod tests {
         let v = dispatch_one(&mut s, "Browser.getVersion", json!({}));
         assert_eq!(v["protocolVersion"], "1.3");
         assert!(v["product"].as_str().unwrap().starts_with("Vixen/"));
-        assert_eq!(v["jsVersion"], "SpiderMonkey (mozjs)");
+        assert_eq!(v["jsVersion"], "V8 (deno_core)");
 
         // Target.createTarget — returns a targetId.
         let v = dispatch_one(

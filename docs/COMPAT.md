@@ -101,9 +101,10 @@ MutationObserver lifecycle, TreeWalker/NodeIterator traversal, `Headers`
 iteration, `Blob`/`File`, read-only `Request`/`Response` state with forbidden
 header filtering, `Response.error()` / `Response.redirect()` / `Response.json()`,
 `AbortSignal`, `URLPattern`, Performance timing shape, and
-`matchMedia()` before the remaining SpiderMonkey host-object swap; Encoding API
-constructors plus the first focused `document`/`Element` snapshot host-object
-evals are also exercised directly through the SpiderMonkey runtime. Imported
+`matchMedia()` before the remaining host-object swap; Encoding API constructors,
+focused `document`/`Element` snapshot host-object evals, and read-only
+`DOMTokenList`/`DOMStringMap` property reads are also exercised directly through
+the `deno_core` runtime seam. Imported
 smoke fixtures now also seed
 block/inline/position layout, flexbox, grid, and display-list `ref-equivalent`
 paint; imported layout smoke covers auto margins, border-box sizing, inline
@@ -132,9 +133,9 @@ feed the same `vixen-wpt` check types and reporting.
 | CSS layout: block/inline | v1 visual/ref subset green | Medium | Vixen-owned layout; start with normal flow, margin/border/padding, inline line boxes. |
 | CSS layout: flex/grid | Useful common-case subset green | Medium | Pure helpers exist; full WPT edge coverage is post-v1. |
 | CSS layout: tables/floats/fragmentation | Not v1 release-blocking | Low for v1 | Document as unsupported/partial until implemented. |
-| DOM Core | Traversal, attributes, token lists, ranges, mutation observer subset green | Medium | Vixen-owned Web APIs over SpiderMonkey bindings. |
+| DOM Core | Traversal, attributes, token lists, ranges, mutation observer subset green | Medium | Vixen-owned Web APIs over `deno_core` host extensions after the ADR-014 migration. |
 | Events/forms/history/storage | Selected behavioral subset green | Medium | Gate by fixtures from SPEC invariants and imported WPT cases. |
-| JS language | Use SpiderMonkey/test262, not WPT percentage | High for language | Web API exposure remains Vixen-owned and separately gated. |
+| JS language | Use V8/`deno_core` language coverage, not WPT percentage | High for language | Web API exposure remains Vixen-owned and separately gated. |
 | Paint/ref tests | Display-list + WebRender visual subset green | Medium | One paint path; correctness depends on layout fragments and WebRender mapping. |
 | Media/WebGPU/WebRTC/service workers | Out of scope for v1 | Not targeted | Deferred by ADRs / acceptance post-v1 scope. |
 

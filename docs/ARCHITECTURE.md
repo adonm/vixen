@@ -31,7 +31,8 @@ vixen/                                  # workspace root
 │   │       ├── engine.rs                # Engine: load lifecycle, history
 │   │       ├── doc.rs                   # Document impl of Stylo TNode/TElement
 │   │       ├── style.rs                 # Stylo cascade driver
-│   │       ├── script.rs                # mozjs runtime + compartment per origin
+│   │       ├── script.rs                # JS runtime seam backed by deno_core/V8
+│   │       ├── script/                  # host modules: ops/resources/bootstrap JS
 │   │       ├── layout.rs                # Vixen-owned Rust layout entry point
 │   │       ├── layout_tree.rs           # styled DOM → arena-backed layout tree
 │   │       ├── formatting_context.rs    # block/inline/flex/grid layout algorithms
@@ -93,10 +94,10 @@ vixen/                                  # workspace root
    ┌──────────────────────┼────────────────┬──────────────────┐
    │                      │                │                  │
 vixen-shell           vixen-engine        vixen-wpt       vixen-headless
-(GTK4 + Relm4; owns   (Stylo, mozjs,    (manifest +     (CLI + CDP; EGL
- gtk4::GLArea as       webrender,        runner;          surfaceless
- GlAreaSurface;        html5ever,        consumes         SurfacelessSurface;
- EngineWorker/tab)     Vixen layout)     EngineInspector  dev-dep: vixen-wpt)
+(GTK4 + Relm4; owns   (Stylo, deno_core, (manifest +     (CLI + CDP; EGL
+ gtk4::GLArea as       WebRender,         runner;          surfaceless
+ GlAreaSurface;        html5ever, layout) consumes         SurfacelessSurface;
+ EngineWorker/tab)                        EngineInspector  dev-dep: vixen-wpt)
                           │
                           ▼
                        vixen-net   (leaf — HTTP, cookies, CSP,
@@ -121,7 +122,7 @@ dependencies on other vixen crates.
 | `vixen-api`          | `Engine` trait, DTOs, diagnostics shape      | Any concrete engine dep                |
 | `vixen-net`          | HTTP, cookies, CSP, URL policy, permissions   | GTK, JS engine, DOM, layout            |
 | `vixen-store`        | redb-backed persistence                       | Anything networked                     |
-| `vixen-engine`         | Stylo + mozjs + layout + paint glue           | GTK, EGL, CLI arg parsing (GL comes in via the `GlContext` trait) |
+| `vixen-engine`         | Stylo + `deno_core` JS runtime + layout + paint glue | GTK, EGL, CLI arg parsing (GL comes in via the `GlContext` trait) |
 | `vixen-shell`        | Browser chrome, Relm4/libadwaita, `GlAreaSurface` (`GlContext` impl) | Engine internals (only via `Engine`) |
 | `vixen-headless`     | CLI args, screenshot/dump/CDP entry points, `SurfacelessSurface` (`GlContext` impl) | GTK, libadwaita                        |
 | `vixen-wpt`          | WPT manifest + runner + check types           | Engine internals                       |
@@ -177,6 +178,17 @@ styled DOM into layout nodes, then block/inline/flex/grid formatting contexts
 produce geometry. Internally the Vixen implementation stays data-oriented
 (stable node ids, arenas, explicit invalidation bits) rather than exposing a
 pointer-heavy object graph across crates.
+
+JS internals use `deno_core` per ADR-014. Do not add an internal JS-engine
+abstraction: host modules should use `deno_core` concepts directly (extensions,
+ops, resources, module loaders).
+The stable boundary is Vixen's product seam (`JsRuntime`, `JsValue`, headless
+`--eval`, CDP `Runtime.evaluate`), not portability between JS engines. Host APIs
+should be packaged as Deno-style feature modules with explicit extension/op
+registration, local JS bootstrap, pure Rust operation/data surfaces, resource
+handles for long-lived host state, and permission checks near the host boundary.
+Firefox remains a DOM/Web API semantic reference; Deno/`deno_core` is the JS
+runtime substrate.
 
 ---
 

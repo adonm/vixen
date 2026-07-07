@@ -1,16 +1,15 @@
 # Vixen
 
-A small, GNOME-native web browser built in Rust on Firefox-family
-components. Targets Firefox-grade compatibility with the smallest credible
-binary.
+A small, GNOME-native web browser built in Rust from browser-grade components.
+Targets Firefox-grade Web compatibility with the smallest credible binary.
 
-The hard, spec-heavy, easy-to-get-wrong subsystems (CSS cascade, HTML
-parsing, JS, selector matching, GPU paint) are delegated to the same
-Mozilla crates Firefox and Servo use — **Stylo** for CSS, **SpiderMonkey**
-for JS, **WebRender** for paint, **html5ever** for HTML. Vixen itself is
-the product glue: a libadwaita shell, a networking/security layer, a
-persistence layer, headless tooling, and the integration code that wires
-the upstream crates together.
+The hard, spec-heavy, easy-to-get-wrong subsystems are delegated to proven
+browser/runtime components: **Stylo** for CSS, **deno_core/V8** for JS,
+**WebRender** for paint, and **html5ever** for HTML. Vixen itself is the
+product glue: a libadwaita shell, a networking/security layer, a persistence
+layer, headless tooling, and the integration code that wires the upstream crates
+together. ADR-014 keeps Vixen's public `JsRuntime` seam small while using
+`deno_core` APIs directly inside the engine.
 
 ---
 
@@ -20,9 +19,9 @@ Pre-v1.0. This repository contains the specification, architecture, plan,
 and reference material, plus:
 - **Phase 0** — scaffolding (workspace + 7 crates).
 - **Phase 1** — networking/security "crown jewels" (`vixen-net`, `vixen-store`).
-- **Phase 2** — the SpiderMonkey runtime (`vixen-engine::script`) and the
-  `vixen-headless` CLI; the gate `vixen-headless --url <file> --eval '1+2'` →
-  `3` passes.
+- **Phase 2** — the `deno_core` JS runtime seam (`vixen-engine::script`) and the
+  `vixen-headless` CLI; `vixen-headless --url <file> --eval '1+2'` → `3` passes
+  behind the stable `JsRuntime`/`JsValue` seam.
 - **Phase 3 (in progress)** — HTML parsing (`vixen-engine::doc`,
   html5ever → RcDom) with `--dump-dom`/`--extract-text`; **selector matching
   via Stylo** (`vixen-engine::style_dom` implementing `selectors::Element` over
@@ -136,8 +135,11 @@ and reference material, plus:
   (`DOMPoint`/`DOMRect`/`DOMQuad`/`DOMMatrix`), `DOMParser`, and `atob` / `btoa`
   are also projected through `Page::evaluate_dom_expression`, while the first
   focused document/query/element evals (`document.title`, simple
-  `querySelector`/`getElementById`, `querySelectorAll().length`) now run through
-  a SpiderMonkey `document` snapshot host-object seam; the network
+  `querySelector`/`getElementById`, `querySelectorAll().length`) plus read-only
+  `classList`/`relList`/`sandbox` and `dataset` property reads now run through a
+  `deno_core` `document` snapshot host-object seam; the next JS-runtime milestone
+  moves these bootstrap surfaces to explicit `deno_core` op/resource extensions.
+  The network
   host-hook family: `vixen-engine::url_search_params` (WHATWG URL Standard
   `URLSearchParams` parse/serialize + the full mutating surface; both now feed
   Page-backed `URL.canParse()` / `new URL()` / `URLSearchParams` constructor,
@@ -146,7 +148,7 @@ and reference material, plus:
   `essence()`), and `vixen-engine::text_codec` (WHATWG Encoding API
   `TextEncoder`/`TextDecoder` with constructor label/options, `encodeInto`, the
   `fatal` flag, BOM sniff, and § 7.1 line-break normalisation, now exposed
-  through the Page-backed Encoding API eval seam and SpiderMonkey global
+  through the Page-backed Encoding API eval seam and `deno_core` global
   constructors). `vixen-engine::headers`,
   `abort`, `mime`, and `url_pattern` now also feed Page-backed `Headers`
   iteration, `Blob`/`File`,
@@ -163,7 +165,8 @@ and reference material, plus:
   `toggle`/`replace`/`contains` with the spec's atomic validate-then-mutate
   rule, the supported-tokens surface for `<link>.relList`) backs every
   `element.classList` / `relList` / `sandbox` host-hook reflection and now
-  feeds the Page-backed `classList` / `relList` / `sandbox` eval seam. Security
+  feeds the Page-backed WPT adapter plus focused `deno_core` `classList` /
+  `relList` / `sandbox` evals. Security
   meta `content` / `charset` reflection is likewise covered by Page-backed
   eval checks before CSP/referrer enforcement consumes it. The CSS
   Values 4 dimension family (`length`,

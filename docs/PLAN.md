@@ -86,23 +86,23 @@ and the `just fuzz-security` 1 M iteration targets).
 
 ---
 
-## Phase 2 — SpiderMonkey runtime (≈ 1 week)
+## Phase 2 — JavaScript runtime (≈ 1 week)
 
 Stand up the JS engine.
 
 **Steps:**
 
-1. Add `mozjs` to `vixen-engine/Cargo.toml`. Per ADR-005, default to
-   static link for development; system-link in the production Flatpak
-   manifest.
-2. `vixen-engine/src/script.rs`: `JsRuntime` owning a
-   `mozjs::rust::Runtime`, with `compartment_for_origin(&Origin)` and
-   `evaluate(&mut self, origin, src) -> Result<JsValue>`.
-   3. Host hook registration, minimum viable: `console.log`, `fetch`
+1. **`deno_core` implementation landed:** `deno_core`/V8 powers
+   `vixen-engine::script::JsRuntime` and the Phase 2 eval gate.
+2. **Stable Vixen seam:** keep the public `JsRuntime` / `JsValue` seam so
+   headless, CDP, and Page tests do not depend on runtime internals.
+3. Host hook registration, minimum viable: `console.log`, `fetch`
    (delegating to `vixen-net::Network`), `document.title` getter.
    Defer the full DOM/Event/Storage surface to Phase 6.
-4. Rooting discipline: every `JS::Value` / `JSObject*` goes through
-   `mozjs::rust::RootedGuard`. No naked handles.
+4. Host internals follow ADR-014: package Vixen-owned Web API bindings as
+   `deno_core` extensions — small feature modules, explicit registration, local
+   JS bootstrap, resource/permission boundaries, and focused tests per host
+   family.
 
 **Gate:** `just gate-phase2` passes (basic engine tests and
 `vixen-headless --url file:///.../hello.html --eval '1+2'` returns `3`). Binary
@@ -518,8 +518,8 @@ subset of the matrix surface).
   `getClientRects().length` reports whether layout produced a box. It also
   projects the read-only Geometry Interfaces value constructors
   (`DOMPoint`, `DOMRect.fromRect()`, `DOMQuad.fromRect()` / `getBounds()`, and
-  `DOMMatrix` transform/`transformPoint()` smoke) until real SpiderMonkey
-  wrappers replace the string projection.
+  `DOMMatrix` transform/`transformPoint()` smoke) until real JS host wrappers
+  replace the string projection.
 
 [`DOMPoint`]: ../../crates/vixen-engine/src/geometry.rs
 [`DOMRect`]: ../../crates/vixen-engine/src/geometry.rs
@@ -760,14 +760,15 @@ Each family lands with its WPT fixtures passing before moving on.
   validation boundary the persistent host object will use. The DOM query seam
   now also covers core node/ancestry properties (`nodeName`/`nodeType`,
   `isConnected`, `ownerDocument`, and `Element.closest()`) before full Node /
-  Element SpiderMonkey wrappers replace the string projection.
+  Element JS host wrappers replace the string projection.
 - `vixen-engine::script::JsRuntime::evaluate_with_page` now installs the first
-  SpiderMonkey `document` snapshot host-object seam for focused evals:
+  `deno_core` `document` snapshot host-object seam for focused evals:
   `document.title`, `document.body.textContent`, simple
   `querySelector`/`getElementById` element properties and attributes, and
-  `querySelectorAll().length`. The remaining broad DOM smoke surface still
-  fails closed through `Page::evaluate_dom_expression` until each family moves
-  behind real wrappers.
+  `querySelectorAll().length`, plus read-only `DOMTokenList` (`classList` /
+  `relList` / `sandbox`) and `DOMStringMap` (`dataset`) property reads. The
+  remaining broad DOM smoke surface still fails closed through
+  `Page::evaluate_dom_expression` until each family moves behind real wrappers.
 - `Page::evaluate_dom_expression` now projects constructor smoke for `Event` /
   `CustomEvent` and element `dispatchEvent(new Event(...))` so event-object and
   EventTarget wiring has fixture coverage before listener queues and full capture
@@ -786,10 +787,10 @@ Each family lands with its WPT fixtures passing before moving on.
 - `vixen-engine::dataset` — WHATWG HTML § 3.2.6.9 `data-*` attribute ↔ dataset
   property-name bidirectional mapping (deserialise, serialise, collect),
   with the anti-collision rule (`-` followed by uppercase ⇒ not exposed).
-- `Page::evaluate_dom_expression` now uses that same dataset mapper for the
-  read-only smoke surface (`element.dataset.fooBar` / bracket access) proven by
-  `fixtures/dom/dataset.html` `js-eval` checks until real SpiderMonkey
-  `DOMStringMap` host objects replace the string projection.
+- `Page::evaluate_dom_expression` and the transitional `document` snapshot now
+  use that same dataset mapper for the read-only smoke surface
+  (`element.dataset.fooBar` / bracket access), proven by `fixtures/dom/dataset.html`
+  `js-eval` checks while the WPT adapter continues to use the Page projection.
 - `Page::evaluate_dom_expression` also projects `ValidityState` flags,
   `willValidate`, and `checkValidity()` / `reportValidity()` from the pure
   forms module for fixture smoke coverage until the Phase 6 form host objects
@@ -829,11 +830,13 @@ Each family lands with its WPT fixtures passing before moving on.
   patterns the host-hook layer reflects (duplicate-token collapse,
   whitespace-run collapse, the case-sensitive `Foo`/`foo`/`FOO`
   distinction, the multi-value `<link rel>` form) and now asserts the
-  Page-backed `classList` / `relList` eval seam; wired into
-  `fixtures/manifest.json`.
+  read-only `classList` / `relList` eval seam; headless/CDP focused evals run
+  through the current JS runtime seam while the WPT adapter continues to use the Page
+  projection; wired into `fixtures/manifest.json`.
 - `fixtures/security/sandbox.html` now also asserts the Page-backed
-  `iframe.sandbox` DOMTokenList projection (`length`/`contains`/`item`) before
-  the real framed-document sandbox enforcement consumes the same tokens.
+  `iframe.sandbox` DOMTokenList projection (`length`/`contains`/`item`), with
+  focused headless/CDP evals now backed by runtime `DOMTokenList` snapshots,
+  before real framed-document sandbox enforcement consumes the same tokens.
 
 **Pure-logic foundation landed for Network host hooks (Phase 6 prep).**
 - `vixen-engine::url_search_params` — WHATWG URL Standard `URLSearchParams`
@@ -857,8 +860,8 @@ Each family lands with its WPT fixtures passing before moving on.
   `<object>`/`<embed>` plugin negotiation consults this one parser.
 - `vixen-engine::text_codec` — WHATWG Encoding API (`TextEncoder` +
   `TextDecoder`). `encode_into` reports UTF-16-code-unit `read` + byte
-  `written` without splitting a scalar value; the Page seam and the first
-  SpiderMonkey global host-constructor pilot both parse the `TextDecoder`
+  `written` without splitting a scalar value; the Page seam and the current
+  runtime host-constructor pilot both parse the `TextDecoder`
   constructor label/options dictionary (`fatal`, `ignoreBOM`); `decode` does
   the BOM sniff (`ignoreBOM` opt-out), the `fatal`-flag UTF-8 validation, the
   WHATWG § 4.6 one-U+FFFD-per-maximal-subpart replacement (via
@@ -869,9 +872,18 @@ Each family lands with its WPT fixtures passing before moving on.
   `TextDecoder`, `atob`/`btoa`, and `DOMParser.parseFromString(..., "text/html")`
   smoke seams (`encoding`, encoded byte length, `encodeInto` `read`/`written`,
   `TextDecoder` label/options, decode, base64 round-trip, parsed document query)
-  while `vixen-headless --eval` / CDP `Runtime.evaluate` now exercise the real
-  SpiderMonkey `TextEncoder` / `TextDecoder` constructors plus focused
-  `document` / `Element` snapshot objects backed by the same Page data.
+  while `vixen-headless --eval` / CDP `Runtime.evaluate` now exercise
+  op-backed runtime `TextEncoder` / `TextDecoder` constructors plus focused
+  `document` / `Element` / read-only `DOMTokenList` / `DOMStringMap` snapshot
+  extension objects backed by the same Page data. The DOM snapshot data now
+  crosses the `deno_core` op boundary via `op_vixen_dom_snapshot`; selector
+  lookup and `Element.matches()` now use finer-grained DOM ops, and element
+  record data is loaded through `op_vixen_dom_element_snapshot`. Element
+  text/attribute reads plus read-only DOMTokenList/dataset data now use focused
+  DOM ops. Focused `CSS.supports`, `getComputedStyle`, and
+  CSSStyleSheet/CSSRule smoke evals now use the op-backed `script::cssom`
+  extension, leaving geometry/forms/events/history/storage/fetch as the next
+  host-object replacement targets.
 
 **Pure-logic foundation landed for the fetch host-hook data model (Phase 6 prep).**
 The `Headers` object, `Blob`/`File` metadata, read-only `Request`/`Response`
@@ -1687,8 +1699,9 @@ Final tock before v1.0.
 
 Concrete levers, in priority order:
 
-1. **System-link libmozjs** in the production Flatpak. Saves ~3 MiB
-   stripped. Per ADR-005.
+1. **Re-measure with the ADR-014 `deno_core` runtime.** V8 packaging changed the
+   pre-migration size assumptions; current release promises must come from
+   measured binaries.
 2. **`[profile.release]`** is already optimal (see `docs/ARCHITECTURE.md`).
 3. **Feature-gate aggressively**: CDP, devtools UI, keychain integration.
    Each behind a feature. Default build includes none of them.
@@ -1702,10 +1715,10 @@ Concrete levers, in priority order:
 
 **Targets:**
 
-| Binary              | Target (system mozjs) | Target (static mozjs) |
-|---------------------|-----------------------|-----------------------|
-| `vixen` (GUI)       | ≤ 10 MiB              | ≤ 14 MiB              |
-| `vixen-headless`    | ≤ 8 MiB               | ≤ 14 MiB              |
+| Binary              | Target |
+|---------------------|--------|
+| `vixen` (GUI)       | TBD after `deno_core`/V8 measurement |
+| `vixen-headless`    | TBD after `deno_core`/V8 measurement |
 
 ---
 
@@ -1737,11 +1750,11 @@ previous release.
 | Risk                                              | Likelihood | Impact | Mitigation                                                                          |
 |---------------------------------------------------|:----------:|:------:|-------------------------------------------------------------------------------------|
 | Stylo integration harder than estimated           | Medium     | High   | Time-box Phase 3 to 2 weeks; if traversal conformance blocks, narrow v1.0 CSS scope and document gaps in `docs/COMPAT.md`. |
-| `mozjs` build complexity                          | Medium     | High   | Use system libmozjs where possible. Vendor mozjs as a Flatpak module (ADR-005).     |
+| `deno_core` / V8 packaging size and cache churn   | Medium     | High   | Keep `JsRuntime` seam stable, measure release binaries with V8, and document cache/pinning in guidance. |
 | EGL surfaceless unavailable on some CI runners    | Low        | Medium | `LIBGL_ALWAYS_SOFTWARE=1` + Mesa `llvmpipe` covers every Linux runner.              |
 | `gtk4::GLArea` context sharing with WebRender     | Medium     | High   | Validate in Phase 5 first week. Fallback: render to FBO, blit to GLArea with a tex. |
 | Vixen-owned layout takes longer than planned      | High       | High   | Keep Phase 4 vertical through `Page`; ship only the WPT-profiled v1 subset and document gaps in `docs/COMPAT.md` (ADR-013). |
-| SpiderMonkey GC + Rust ownership friction         | Medium     | Medium | Follow `.tmp/ref/firefox/js/public/` and `.tmp/ref/firefox/dom/bindings/` patterns. |
+| JS host-extension churn                           | Medium     | Medium | Keep the public `JsRuntime`/`JsValue` seam stable while converting bootstrap surfaces to `deno_core` ops/resources; cite `.tmp/ref/deno/core/`, `.tmp/ref/deno/runtime/`, and `.tmp/ref/deno/ext/`. |
 | Real-world pages regress vs Servo/Firefox         | Low        | Medium | Upstream issues; report and work around. Document in `docs/COMPAT.md`.              |
 | WPT migration backlog grows during build          | Medium     | Medium | Per-phase gate: each phase deletes Rust tests at the rate it adds WPT fixtures.     |
 | Relm4 breaking change in `Factory`/`Worker` API   | Low        | Medium | Pin Relm4 version per release; consult `.tmp/ref/relm4/` on upgrades.               |
@@ -1754,7 +1767,7 @@ previous release.
 |-----------------------------------|--------------------------------------------------------------------------------------------------|
 | 0 — Scaffolding                   | `just gate-phase0` passes                                                                         |
 | 1 — Net + store crown jewels      | `just gate-phase1` passes                                                                         |
-| 2 — SpiderMonkey                  | `just gate-phase2` passes                                                                         |
+| 2 — JS runtime                    | `just gate-phase2` passes; runtime is `deno_core` per ADR-014                         |
 | 3 — HTML + Stylo                  | WPT CSS fixtures pass; cascade output correct                                                    |
 | 4 — Layout                        | 20+ visual-hash fixtures match reference                                                         |
 | 5 — Paint                         | `just run` shows a page; headless PNG within 1 % of GUI on 5 fixtures                            |

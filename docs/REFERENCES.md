@@ -21,6 +21,7 @@ tree state.
 | **GNOME Web (Epiphany)** | `https://gitlab.gnome.org/GNOME/epiphany.git`            | `21e02b9a272d`     | `main` | GTK4/libadwaita shell patterns, WebKitGTK embedding, GSettings usage, Flatpak manifest conventions. |
 | **Obscura**    | `https://github.com/h4ckf0r0day/obscura.git`                      | `ca71ce3c2da9`     | `main` | Headless CLI design, CDP server patterns, single-binary distribution. |
 | **Relm4**      | `https://github.com/Relm4/relm4.git`                              | `1ee9b5208b8b`     | `main` | Relm4 component patterns, factory widgets, async actions. The `examples/` and `relm4-components/` directories are the primary value. |
+| **Deno / deno_core** | `https://github.com/denoland/deno.git`                     | `83c50b1da61e`     | `main` | **Primary JS runtime packaging reference.** `deno_core` embedding, extension/op boundaries, bootstrap JS packaging, resource tables, permissions, and test layout. |
 
 ---
 
@@ -37,7 +38,6 @@ firefox/servo/components/style/                    ← Stylo. Read this for CSS 
 firefox/servo/components/selectors/                ← selector engine used by Stylo.
 firefox/gfx/wr/webrender_api/src/                  ← WebRender display-list API.
 firefox/gfx/webrender_bindings/                    ← Firefox ↔ WebRender transaction/builder bridge.
-firefox/js/public/                                 ← SpiderMonkey rooting/realm APIs.
 firefox/dom/bindings/                              ← WebIDL binding and wrapping discipline.
 firefox/dom/webidl/                                ← DOM API surface contracts.
 firefox/dom/base/                                  ← DOM API behavior and selector delegation.
@@ -100,6 +100,22 @@ relm4/relm4-components/                            ← reusable widgets
 relm4/relm4/src/                                   ← factory, actions, message passing
 ```
 
+### Deno (`deno/`)
+
+Consult Deno for **JS runtime embedding and Rust host packaging**, per ADR-014.
+The target crate is [`deno_core`](https://crates.io/crates/deno_core). Use this
+tree for extension/op organization, resource-table shape, permission checks near
+host boundaries, bootstrap script packaging, and feature-family test layout. Do
+not cite Deno for DOM/Web API semantics over Firefox/specs; Deno is the runtime
+substrate reference, while Web-facing behavior remains WPT/spec-gated.
+
+```
+deno/core/                                         ← op/extension/runtime core patterns
+deno/runtime/                                      ← permissions, workers, bootstrap packaging
+deno/ext/                                          ← feature-family JS/Rust extension layout
+deno/cli/                                          ← integration tests and permission plumbing examples
+```
+
 ---
 
 ## Re-cloning fresh
@@ -127,6 +143,10 @@ git -C obscura checkout ca71ce3c2da9
 git clone --depth 1 --filter=blob:none --sparse --branch main https://github.com/Relm4/relm4.git
 git -C relm4 sparse-checkout set examples relm4-components relm4/src
 git -C relm4 checkout 1ee9b5208b8b
+
+git clone --depth 1 --filter=blob:none --sparse --branch main https://github.com/denoland/deno.git
+git -C deno sparse-checkout set core runtime ext cli
+git -C deno checkout 83c50b1da61e
 ```
 
 Disk budget depends on sparse settings. Keep the checkouts in `.tmp/ref/`

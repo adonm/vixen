@@ -89,8 +89,8 @@ writing, fragmentation/pagination, and advanced intrinsic sizing.
 
 - `vixen-headless --url fixtures/dom/basic.html --eval 'document.title'`
   returns the document title
-- SpiderMonkey's bundled test262 passes its default subset against the
-  embedded runtime
+- The `deno_core`/V8-backed embedded runtime passes the JS smoke/test262 subset
+  selected for release
 - Every fixture in `fixtures/dom/`, `fixtures/forms/`,
   `fixtures/network/`, `fixtures/storage/` passes
 - Form-validation edge cases from `SPEC.md` enforced exactly (email
@@ -162,10 +162,10 @@ drop the flag.
 
 Stripped release builds must meet:
 
-| Binary              | System mozjs | Static mozjs |
-|---------------------|-------------:|-------------:|
-| `vixen` (GUI)       | ≤ 10 MiB     | ≤ 14 MiB     |
-| `vixen-headless`    | ≤ 8 MiB      | ≤ 14 MiB     |
+| Binary              | Target |
+|---------------------|-------:|
+| `vixen` (GUI)       | remeasure with `deno_core`/V8 before release |
+| `vixen-headless`    | remeasure with `deno_core`/V8 before release |
 
 Measured via `just size-fp`. Any change exceeding +50 KiB must document
 justification in the commit message.
@@ -180,7 +180,7 @@ Restated from `PLAN.md` as the per-phase acceptance check.
 |-----------------------------------|---------------------------------------------------------------------------------------|
 | 0 — Scaffolding                   | `just gate-phase0` passes                                                             |
 | 1 — Net + store crown jewels      | `just gate-phase1` passes                                                             |
-| 2 — SpiderMonkey                  | `just gate-phase2` (`vixen-headless --url <file> --eval '1+2'` returns `3`)           |
+| 2 — JS runtime                    | `just gate-phase2` (`vixen-headless --url <file> --eval '1+2'` returns `3`); runtime is `deno_core` per ADR-014 |
 | 3 — HTML + Stylo                  | `just gate-phase3`; then WPT CSS fixtures pass with cascade output correct            |
 | 4 — Vixen-owned layout            | `just gate-phase4`; then the v1 WPT layout target profile in `docs/COMPAT.md` is green |
 | 5 — Paint                         | `just gate-phase5`; then `just run` shows a page and headless PNG diff ≤ 1 %          |

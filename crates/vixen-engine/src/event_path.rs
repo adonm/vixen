@@ -7,7 +7,7 @@
 //!    focus`, where `focusout`/`focusin` bubble and `blur`/`focus` do not.
 //!
 //! The full DOM event-dispatch machinery (capture/target/bubble retargeting,
-//! listener invocation) lives in the SpiderMonkey host-hook layer (Phase 6).
+//! listener invocation) lives in the JS runtime host-hook layer (Phase 6).
 //! What lives here is the *ordering* and *path-shape* logic, which is pure
 //! over a parent-pointer tree and therefore Rust-unit-tested (docs/PLAN.md
 //! "Testing strategy": Rust tests cover pure logic).

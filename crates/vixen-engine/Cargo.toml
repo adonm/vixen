@@ -1,6 +1,5 @@
-# vixen-engine — engine integration glue (Stylo + mozjs + layout + paint).
-# Phase 2 adds the SpiderMonkey runtime (mozjs). mozjs downloads a prebuilt
-# static SpiderMonkey by default — see docs/guidance/mozjs.md.
+# vixen-engine — engine integration glue (Stylo + JS runtime + layout + paint).
+# ADR-014 uses deno_core/V8 directly behind vixen-engine::script's product seam.
 [package]
 name = "vixen-engine"
 version = "0.1.0"
@@ -13,7 +12,7 @@ publish = false
 [dependencies]
 vixen-api = { path = "../vixen-api" }
 vixen-net = { path = "../vixen-net" }
-mozjs = "0.16"
+deno_core = "0.406.0"
 thiserror = "2"
 html5ever = "0.39"
 markup5ever = "0.39"

@@ -1,7 +1,7 @@
 # Build auxiliary
 
 Flatpak manifests and distribution packaging live here
-(docs/ARCHITECTURE.md, docs/DECISIONS.md ADR-005).
+(docs/ARCHITECTURE.md, docs/DECISIONS.md).
 
 Contents:
 
@@ -11,11 +11,10 @@ Contents:
   the flatpak-builder container: `just flatpak-build`
   (see [../docs/guidance/gnome-sdk-flatpak-builder.md](../docs/guidance/gnome-sdk-flatpak-builder.md)).
 - `org.vixen.Vixen.Devel.json` — devel manifest (TODO)
-- `modules/` — vendored Flatpak modules (mozjs per ADR-005; TODO)
+- `modules/` — vendored Flatpak modules (runtime deps as needed; TODO)
 - `_build/`, `_repo/` — flatpak-builder outputs (gitignored)
 
-Per ADR-005, the production Flatpak links a shared libmozjs module vendored
-into the manifest; devel/CI builds use static mozjs.
+ADR-014 makes `deno_core`/V8 the JS runtime; release sizing must be measured
+against the current V8-backed binaries.
 
 Build artifacts (`_build/`, `_repo/`) are generated — keep them out of git.
-

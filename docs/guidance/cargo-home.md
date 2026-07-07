@@ -53,7 +53,7 @@ cargo config get          # honors CARGO_HOME from the env
 
 ## Disk
 
-The cache for Vixen's dep tree (Stylo + mozjs + reqwest + …) is several
+The cache for Vixen's dep tree (Stylo + JS runtime artifacts + reqwest + …) is several
 hundred MiB. It's all under `.cargo/` and git-ignored, so it costs nothing
 in the repo; treat it like `target/`. `rm -rf .cargo` is safe and Cargo
 will repopulate on the next build.

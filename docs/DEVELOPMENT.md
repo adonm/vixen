@@ -27,7 +27,7 @@ Every alpha slice should satisfy these rules:
    only when the next visible seam is named in the same change or docs.
 2. **One trust boundary at a time.** For security-sensitive paths, name the
    boundary, validate near it, fail closed, and surface stable error codes.
-3. **Reuse pure modules.** SpiderMonkey host objects, Page projections, CLI, and
+3. **Reuse pure modules.** JS host objects, Page projections, CLI, and
    CDP should call the same Rust implementation instead of growing parallel
    behavior.
 4. **Partial APIs must be explicit.** A subset may ship in alpha if unsupported
@@ -77,8 +77,8 @@ Alpha speed is acceptable only while these budgets stay visible:
   moving fast, create the split in the next tock before widening the feature.
 - Prefer boring data flow over framework gravity: DTOs in `vixen-api`, pipeline
   state in `Page`, browser-facing adapters in headless/CDP/shell.
-- Avoid duplicate parsers/matchers. If a Page string projection and a
-  SpiderMonkey host object both need behavior, extract or call the same Rust
+- Avoid duplicate parsers/matchers. If a Page string projection and a JS host
+  object both need behavior, extract or call the same Rust
   module.
 - Remove obsolete string-smoke shims as host objects replace them. Do not leave
   two authoritative paths for the same supported expression.

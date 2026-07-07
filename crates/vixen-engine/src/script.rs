@@ -1,61 +1,26 @@
-//! SpiderMonkey runtime — the script execution boundary
-//! (docs/SPEC.md, docs/ARCHITECTURE.md "Trust boundaries"; ADR-004/ADR-005).
+//! `deno_core` runtime — the script execution boundary.
 //!
-//! `unsafe` is confined to this module: the SpiderMonkey FFI (`mozjs`) is C,
-//! and GC rooting is enforced via mozjs's `rooted!` macro — no naked handles
-//! (docs/PLAN.md Phase 2 step 4). Phase 2 implements the runtime + `evaluate`;
-//! host hooks (`console.log`, `fetch`→`vixen-net`) and broader per-origin
-//! compartments land with the DOM (Phase 6). The first focused `document` /
-//! `Element` snapshot objects now install at this boundary.
-//!
-//! Engine lifetime: SpiderMonkey is a process-singleton — `JS_Init`/`JS_ShutDown`
-//! run once per process. [`JsRuntime`] therefore owns the `JSEngine` (so a
-//! single runtime + clean shutdown works in any one process). A process-global
-//! engine shared by many runtimes is the natural follow-up (Phase 6, with host
-//! hooks); it needs a `Sync` wrapper around `JSEngine` and explicit shutdown.
-//! `vixen-headless` creates one runtime per invocation, which is all the
-//! Phase 2 gate needs.
+//! The public Vixen-facing seam stays small (`JsRuntime`, `JsValue`, eval
+//! methods), but the implementation uses `deno_core`/V8 directly per ADR-014.
+//! Host surfaces are installed from focused bootstrap modules before the caller's
+//! script runs. Each evaluation uses a fresh JS runtime today to preserve the
+//! earlier Phase 2 semantics: `--eval` sees a clean global, and `document` only
+//! exists for `evaluate_with_page`.
 
-#![allow(unsafe_code)] // SpiderMonkey FFI boundary.
-#![allow(
-    non_upper_case_globals,
-    non_snake_case,
-    non_camel_case_types,
-    improper_ctypes
-)]
-
-use std::ffi::CString;
-use std::fmt::Write as _;
-use std::ptr;
-use std::ptr::NonNull;
-
-use mozjs::context::{JSContext, RawJSContext};
-use mozjs::conversions::jsstr_to_string;
-use mozjs::conversions::{ConversionResult, FromJSValConvertible, ToJSValConvertible};
-use mozjs::jsapi::{CallArgs, JS_ReportErrorUTF8, JSObject, OnNewGlobalHookOption, Value};
-use mozjs::jsval::{Int32Value, ObjectValue, UndefinedValue};
-use mozjs::realm::AutoRealm;
-use mozjs::rooted;
-use mozjs::rust::wrappers2::{JS_DefineFunction, JS_NewGlobalObject, JS_NewPlainObject};
-use mozjs::rust::{
-    CompileOptionsWrapper, Handle, JSEngine, RealmOptions, Runtime, SIMPLE_GLOBAL_CLASS,
-    evaluate_script,
-};
-use mozjs::typedarray::{CreateWith, Uint8Array};
+#![forbid(unsafe_code)]
 
 use crate::engine_error::{EngineError, codes};
 use crate::page::Page;
-use crate::text_codec::{TextDecoder, TextEncoder};
 
-/// A SpiderMonkey JS runtime. Owns the engine + `mozjs::rust::Runtime`.
-/// Create one per process (SpiderMonkey is a process-singleton).
-pub struct JsRuntime {
-    // Field order matters: `rt` must drop before `_engine`.
-    rt: Runtime,
-    _engine: JSEngine,
-}
+mod cssom;
+mod dom;
+mod encoding;
+mod runtime;
 
-/// A safe subset of a JS value returned across the FFI boundary.
+/// Vixen's JavaScript runtime seam, backed by `deno_core`/V8.
+pub struct JsRuntime;
+
+/// A safe subset of a JS value returned across the runtime boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsValue {
     Int32(i32),
@@ -93,36 +58,19 @@ fn format_number(n: f64) -> String {
 }
 
 impl JsRuntime {
-    /// Initialise SpiderMonkey. At most one `JsRuntime` may exist per process.
+    /// Initialise the V8 platform through `deno_core`.
     pub fn new() -> Result<Self, EngineError> {
-        let engine = JSEngine::init().map_err(|_| EngineError::Other {
-            code: codes::SCRIPT_OOM,
-            message: "SpiderMonkey engine initialisation failed".into(),
-        })?;
-        let rt = Runtime::new(engine.handle());
-        Ok(Self {
-            rt,
-            _engine: engine,
-        })
+        let _ = runtime::new_deno_runtime(None)?;
+        Ok(Self)
     }
 
-    /// Evaluate `src` in a fresh simple global and return the result.
-    ///
-    /// Per docs/PLAN.md Phase 2 the v1 target is one default compartment;
-    /// `compartment_for_origin(&Origin)` lands with the host bindings
-    /// (Phase 6). Correctness over efficiency for now: the gate
-    /// (`--eval '1+2'` → `3`) needs only a working eval.
+    /// Evaluate `src` in a fresh JS global and return the result.
     pub fn evaluate(&mut self, src: &str) -> Result<JsValue, EngineError> {
         self.evaluate_with_page_context(src, None)
     }
 
-    /// Evaluate `src` in a fresh simple global with read-only DOM host objects
+    /// Evaluate `src` in a fresh JS global with read-only DOM host objects
     /// projected from `page`.
-    ///
-    /// This is the Phase 6 DOM-host backbone: the loaded page crosses into the
-    /// script boundary as a deterministic snapshot, then `document` /
-    /// `Element` methods execute inside SpiderMonkey rather than the older
-    /// headless string-smoke matcher.
     pub fn evaluate_with_page(&mut self, src: &str, page: &Page) -> Result<JsValue, EngineError> {
         self.evaluate_with_page_context(src, Some(page))
     }
@@ -132,639 +80,27 @@ impl JsRuntime {
         src: &str,
         page: Option<&Page>,
     ) -> Result<JsValue, EngineError> {
-        let options = RealmOptions::default();
-        let filename: CString = c"inline.js".to_owned();
-        let cx = self.rt.cx();
-        rooted!(&in(cx) let global = unsafe {
-            JS_NewGlobalObject(
-                cx,
-                &SIMPLE_GLOBAL_CLASS,
-                ptr::null_mut(),
-                OnNewGlobalHookOption::FireOnNewGlobalHook,
-                &*options,
-            )
-        });
-        let mut realm = AutoRealm::new_from_handle(cx, global.handle());
-        let (global_handle, realm) = realm.global_and_reborrow();
-        let cx = realm;
+        let mut runtime = runtime::new_deno_runtime(page)?;
 
-        install_encoding_api(cx, global_handle)?;
-        if let Some(page) = page {
-            install_dom_api(cx, global_handle, page)?;
-        }
-
-        let compile = CompileOptionsWrapper::new(cx, filename, 1);
-
-        rooted!(&in(cx) let mut rval = UndefinedValue());
-        let ok = evaluate_script(cx, global_handle, src, rval.handle_mut(), compile);
-
-        if ok.is_err() {
-            // SpiderMonkey reports the exception to the runtime's error hook;
-            // vixen surfaces a stable code. Full message extraction
-            // (JS_GetPendingException) lands with the host hooks (Phase 6).
-            return Err(EngineError::script(
-                codes::SCRIPT_EVAL,
-                "script evaluation raised an exception",
-            ));
-        }
-
-        // Read the rooted Value into the safe JsValue subset. The Value type
-        // is private to mozjs, so operate on it by inference — no annotation.
-        let v = rval.get();
-        if v.is_undefined() {
-            Ok(JsValue::Undefined)
-        } else if v.is_null() {
-            Ok(JsValue::Null)
-        } else if v.is_boolean() {
-            Ok(JsValue::Bool(v.to_boolean()))
-        } else if v.is_int32() {
-            Ok(JsValue::Int32(v.to_int32()))
-        } else if v.is_double() {
-            Ok(JsValue::Number(v.to_double()))
-        } else if v.is_string() {
-            // SAFETY: `to_string()` yields a valid `JSString*` rooted for the
-            // current stack frame; `jsstr_to_string` copies it into a Rust
-            // `String` before we return.
-            unsafe {
-                let jsstr = v.to_string();
-                match ptr::NonNull::new(jsstr) {
-                    Some(s) => Ok(JsValue::String(jsstr_to_string(cx, s))),
-                    None => Ok(JsValue::Null),
-                }
-            }
-        } else {
-            Ok(JsValue::Object)
-        }
-    }
-}
-
-fn install_dom_api(
-    cx: &mut JSContext,
-    global: mozjs::rust::HandleObject,
-    page: &Page,
-) -> Result<(), EngineError> {
-    let bootstrap = dom_api_bootstrap(page).map_err(|err| {
-        EngineError::script(
-            codes::SCRIPT_EVAL,
-            format!("failed to build DOM host snapshot: {err}"),
-        )
-    })?;
-    rooted!(&in(cx) let mut rval = UndefinedValue());
-    let compile = CompileOptionsWrapper::new(cx, c"vixen-dom-api.js".to_owned(), 1);
-    evaluate_script(cx, global, &bootstrap, rval.handle_mut(), compile).map_err(|_| {
-        EngineError::script(codes::SCRIPT_EVAL, "failed to install DOM host objects")
-    })?;
-    Ok(())
-}
-
-fn dom_api_bootstrap(page: &Page) -> Result<String, String> {
-    let mut script = String::new();
-    script.push_str("(() => {\nconst data = ");
-    script.push_str(&dom_snapshot_literal(page)?);
-    script.push_str(";\n");
-    script.push_str(DOM_API_BOOTSTRAP_BODY);
-    Ok(script)
-}
-
-fn dom_snapshot_literal(page: &Page) -> Result<String, String> {
-    let elements = page.query_selector_all("*")?;
-    let mut out = String::new();
-    out.push_str("{title:");
-    out.push_str(&js_string_literal(
-        &page.document().title().unwrap_or_default(),
-    ));
-    out.push_str(",url:");
-    out.push_str(&js_string_literal(page.url()));
-    out.push_str(",elements:[");
-    for (index, info) in elements.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        out.push_str("{nodeId:");
-        out.push_str(&info.node_id.to_string());
-        out.push_str(",tag:");
-        out.push_str(&js_string_literal(&info.tag));
-        out.push_str(",id:");
-        if let Some(id) = &info.id {
-            out.push_str(&js_string_literal(id));
-        } else {
-            out.push_str("null");
-        }
-        out.push_str(",classes:");
-        write_js_string_array(&mut out, &info.classes);
-        out.push_str(",attrs:[");
-        for (attr_index, (name, value)) in info.attributes.iter().enumerate() {
-            if attr_index > 0 {
-                out.push(',');
-            }
-            out.push('[');
-            out.push_str(&js_string_literal(name));
-            out.push(',');
-            out.push_str(&js_string_literal(value));
-            out.push(']');
-        }
-        out.push_str("],textContent:");
-        let text_content = page
-            .document()
-            .element_text_content(info.node_id)
-            .unwrap_or_else(|| info.text.clone());
-        out.push_str(&js_string_literal(&text_content));
-        out.push('}');
-    }
-    out.push_str("]}");
-    Ok(out)
-}
-
-fn write_js_string_array(out: &mut String, values: &[String]) {
-    out.push('[');
-    for (index, value) in values.iter().enumerate() {
-        if index > 0 {
-            out.push(',');
-        }
-        out.push_str(&js_string_literal(value));
-    }
-    out.push(']');
-}
-
-fn js_string_literal(input: &str) -> String {
-    let mut out = String::with_capacity(input.len() + 2);
-    out.push('"');
-    for ch in input.chars() {
-        match ch {
-            '"' => out.push_str("\\\""),
-            '\\' => out.push_str("\\\\"),
-            '\n' => out.push_str("\\n"),
-            '\r' => out.push_str("\\r"),
-            '\t' => out.push_str("\\t"),
-            '\u{08}' => out.push_str("\\b"),
-            '\u{0c}' => out.push_str("\\f"),
-            '\u{2028}' => out.push_str("\\u2028"),
-            '\u{2029}' => out.push_str("\\u2029"),
-            c if c < ' ' => {
-                write!(&mut out, "\\u{:04X}", c as u32).expect("write to String cannot fail");
-            }
-            c => out.push(c),
-        }
-    }
-    out.push('"');
-    out
-}
-
-const DOM_API_BOOTSTRAP_BODY: &str = r#"
-  const byId = new Map();
-  for (const record of data.elements) {
-    if (record.id !== null && !byId.has(record.id)) {
-      byId.set(record.id, record);
-    }
-  }
-
-  function unsupportedSelector(selector) {
-    throw new TypeError('Vixen DOM host currently supports simple #id, .class, tag, and * selectors: ' + selector);
-  }
-
-  function parseSimpleSelector(selector) {
-    const raw = String(selector).trim();
-    if (raw === '*') return { kind: 'all', value: '*' };
-    if (/^#[A-Za-z_][A-Za-z0-9_-]*$/.test(raw)) return { kind: 'id', value: raw.slice(1) };
-    if (/^\.[A-Za-z_][A-Za-z0-9_-]*$/.test(raw)) return { kind: 'class', value: raw.slice(1) };
-    if (/^[A-Za-z][A-Za-z0-9_-]*$/.test(raw)) return { kind: 'tag', value: raw.toLowerCase() };
-    unsupportedSelector(raw);
-  }
-
-  function recordMatches(record, parsed) {
-    switch (parsed.kind) {
-      case 'all': return true;
-      case 'id': return record.id === parsed.value;
-      case 'class': return record.classes.includes(parsed.value);
-      case 'tag': return record.tag.toLowerCase() === parsed.value;
-      default: return false;
-    }
-  }
-
-  function findAll(selector) {
-    const parsed = parseSimpleSelector(selector);
-    return data.elements.filter((record) => recordMatches(record, parsed));
-  }
-
-  function attrPair(record, name) {
-    const raw = String(name);
-    const lower = raw.toLowerCase();
-    return record.attrs.find(([attr]) => attr === raw || attr === lower) || null;
-  }
-
-  function wrapElement(record) {
-    if (record == null) return null;
-    if (!record.__vixenObject) {
-      Object.defineProperty(record, '__vixenObject', {
-        value: new VixenElement(record),
-        configurable: false,
-      });
-    }
-    return record.__vixenObject;
-  }
-
-  class VixenElement {
-    constructor(record) {
-      Object.defineProperty(this, '__vixenRecord', {
-        value: record,
-        enumerable: false,
-      });
-    }
-    get id() { return this.__vixenRecord.id || ''; }
-    get className() { return this.__vixenRecord.classes.join(' '); }
-    get tagName() { return this.__vixenRecord.tag.toUpperCase(); }
-    get nodeName() { return this.tagName; }
-    get localName() { return this.__vixenRecord.tag; }
-    get nodeType() { return 1; }
-    get isConnected() { return true; }
-    get ownerDocument() { return vixenDocument; }
-    get textContent() { return this.__vixenRecord.textContent; }
-    get innerText() { return this.__vixenRecord.textContent; }
-    getAttribute(name) {
-      const pair = attrPair(this.__vixenRecord, name);
-      return pair ? pair[1] : null;
-    }
-    hasAttribute(name) { return attrPair(this.__vixenRecord, name) !== null; }
-    matches(selector) { return recordMatches(this.__vixenRecord, parseSimpleSelector(selector)); }
-  }
-
-  const vixenDocument = {};
-  Object.defineProperties(vixenDocument, {
-    title: { get() { return data.title; }, enumerable: true, configurable: true },
-    URL: { get() { return data.url; }, enumerable: true, configurable: true },
-    documentURI: { get() { return data.url; }, enumerable: true, configurable: true },
-    readyState: { get() { return 'complete'; }, enumerable: true, configurable: true },
-    body: {
-      get() { return wrapElement(data.elements.find((record) => record.tag.toLowerCase() === 'body') || null); },
-      enumerable: true,
-      configurable: true,
-    },
-    documentElement: {
-      get() { return wrapElement(data.elements.find((record) => record.tag.toLowerCase() === 'html') || null); },
-      enumerable: true,
-      configurable: true,
-    },
-  });
-  Object.defineProperties(vixenDocument, {
-    querySelector: {
-      value(selector) { return wrapElement(findAll(selector)[0] || null); },
-      enumerable: true,
-      configurable: true,
-    },
-    querySelectorAll: {
-      value(selector) { return findAll(selector).map(wrapElement); },
-      enumerable: true,
-      configurable: true,
-    },
-    getElementById: {
-      value(id) { return wrapElement(byId.get(String(id)) || null); },
-      enumerable: true,
-      configurable: true,
-    },
-  });
-  Object.defineProperty(globalThis, 'document', {
-    value: vixenDocument,
-    writable: true,
-    configurable: true,
-  });
-})();
-"#;
-
-fn install_encoding_api(
-    cx: &mut JSContext,
-    global: mozjs::rust::HandleObject,
-) -> Result<(), EngineError> {
-    unsafe {
-        for (name, callback, nargs) in [
-            (
-                c"__vixen_text_encoder_encode".as_ptr(),
-                Some(text_encoder_encode as unsafe extern "C" fn(_, _, _) -> _),
-                1,
-            ),
-            (
-                c"__vixen_text_encoder_encode_into".as_ptr(),
-                Some(text_encoder_encode_into as unsafe extern "C" fn(_, _, _) -> _),
-                2,
-            ),
-            (
-                c"__vixen_text_decoder_validate".as_ptr(),
-                Some(text_decoder_validate as unsafe extern "C" fn(_, _, _) -> _),
-                3,
-            ),
-            (
-                c"__vixen_text_decoder_decode".as_ptr(),
-                Some(text_decoder_decode as unsafe extern "C" fn(_, _, _) -> _),
-                4,
-            ),
-        ] {
-            let function = JS_DefineFunction(cx, global, name, callback, nargs, 0);
-            if function.is_null() {
-                return Err(EngineError::script(
-                    codes::SCRIPT_OOM,
-                    "failed to install Encoding API native hook",
-                ));
-            }
-        }
-    }
-
-    rooted!(&in(cx) let mut rval = UndefinedValue());
-    let compile = CompileOptionsWrapper::new(cx, c"vixen-encoding-api.js".to_owned(), 1);
-    evaluate_script(
-        cx,
-        global,
-        ENCODING_API_BOOTSTRAP,
-        rval.handle_mut(),
-        compile,
-    )
-    .map_err(|_| {
-        EngineError::script(
-            codes::SCRIPT_EVAL,
-            "failed to install Encoding API host constructors",
-        )
-    })?;
-    Ok(())
-}
-
-const ENCODING_API_BOOTSTRAP: &str = r#"
-(() => {
-  const encoderEncode = globalThis.__vixen_text_encoder_encode;
-  const encoderEncodeInto = globalThis.__vixen_text_encoder_encode_into;
-  const decoderValidate = globalThis.__vixen_text_decoder_validate;
-  const decoderDecode = globalThis.__vixen_text_decoder_decode;
-
-  class TextEncoder {
-    get encoding() { return 'utf-8'; }
-    encode(input = '') { return encoderEncode(String(input)); }
-    encodeInto(input = '', destination) {
-      if (!(destination instanceof Uint8Array)) {
-        throw new TypeError('TextEncoder.encodeInto destination must be a Uint8Array');
-      }
-      return encoderEncodeInto(String(input), destination);
-    }
-  }
-
-  class TextDecoder {
-    constructor(label = 'utf-8', options = {}) {
-      const opts = options == null ? {} : Object(options);
-      this.__vixenLabel = decoderValidate(String(label), !!opts.fatal, !!opts.ignoreBOM);
-      this.__vixenFatal = !!opts.fatal;
-      this.__vixenIgnoreBOM = !!opts.ignoreBOM;
-    }
-    get encoding() { return 'utf-8'; }
-    get fatal() { return this.__vixenFatal; }
-    get ignoreBOM() { return this.__vixenIgnoreBOM; }
-    decode(input = new Uint8Array()) {
-      const bytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-      return decoderDecode(this.__vixenLabel, this.__vixenFatal, this.__vixenIgnoreBOM, bytes);
-    }
-  }
-
-  Object.defineProperty(globalThis, 'TextEncoder', {
-    value: TextEncoder,
-    writable: true,
-    configurable: true,
-  });
-  Object.defineProperty(globalThis, 'TextDecoder', {
-    value: TextDecoder,
-    writable: true,
-    configurable: true,
-  });
-
-  delete globalThis.__vixen_text_encoder_encode;
-  delete globalThis.__vixen_text_encoder_encode_into;
-  delete globalThis.__vixen_text_decoder_validate;
-  delete globalThis.__vixen_text_decoder_decode;
-})();
-"#;
-
-unsafe extern "C" fn text_encoder_encode(
-    raw_cx: *mut RawJSContext,
-    argc: u32,
-    vp: *mut Value,
-) -> bool {
-    let Some(mut cx) = callback_context(raw_cx) else {
-        return false;
-    };
-    let args = unsafe { CallArgs::from_vp(vp, argc) };
-    let input = match arg_string(&mut cx, &args, 0, "TextEncoder.encode input") {
-        Some(input) => input,
-        None => return false,
-    };
-    let bytes = TextEncoder.encode(&input);
-
-    rooted!(&in(cx) let mut array = ptr::null_mut::<JSObject>());
-    if unsafe { Uint8Array::create(cx.raw_cx(), CreateWith::Slice(&bytes), array.handle_mut()) }
-        .is_err()
-    {
-        report_error(&mut cx, "TextEncoder.encode failed to allocate Uint8Array");
-        return false;
-    }
-    args.rval().set(ObjectValue(array.get()));
-    true
-}
-
-unsafe extern "C" fn text_encoder_encode_into(
-    raw_cx: *mut RawJSContext,
-    argc: u32,
-    vp: *mut Value,
-) -> bool {
-    let Some(mut cx) = callback_context(raw_cx) else {
-        return false;
-    };
-    let args = unsafe { CallArgs::from_vp(vp, argc) };
-    let input = match arg_string(&mut cx, &args, 0, "TextEncoder.encodeInto input") {
-        Some(input) => input,
-        None => return false,
-    };
-    let Some(dest_value) = arg_handle(&args, 1) else {
-        report_error(&mut cx, "TextEncoder.encodeInto destination is required");
-        return false;
-    };
-    if !dest_value.get().is_object() {
-        report_error(
-            &mut cx,
-            "TextEncoder.encodeInto destination must be a Uint8Array",
-        );
-        return false;
-    }
-    let mut dest = match Uint8Array::from(dest_value.get().to_object()) {
-        Ok(dest) => dest,
-        Err(()) => {
-            report_error(
-                &mut cx,
-                "TextEncoder.encodeInto destination must be a Uint8Array",
-            );
-            return false;
-        }
-    };
-    let result = unsafe { TextEncoder.encode_into(&input, dest.as_mut_slice()) };
-
-    rooted!(&in(cx) let object = unsafe { JS_NewPlainObject(&mut cx) });
-    if object.get().is_null() {
-        report_error(
-            &mut cx,
-            "TextEncoder.encodeInto failed to allocate result object",
-        );
-        return false;
-    }
-    rooted!(&in(cx) let read = Int32Value(result.read_utf16 as i32));
-    rooted!(&in(cx) let written = Int32Value(result.written as i32));
-    let ok = unsafe {
-        mozjs::rust::wrappers2::JS_DefineProperty(
-            &mut cx,
-            object.handle(),
-            c"read".as_ptr(),
-            read.handle(),
-            0,
-        ) && mozjs::rust::wrappers2::JS_DefineProperty(
-            &mut cx,
-            object.handle(),
-            c"written".as_ptr(),
-            written.handle(),
-            0,
-        )
-    };
-    if !ok {
-        report_error(
-            &mut cx,
-            "TextEncoder.encodeInto failed to define result fields",
-        );
-        return false;
-    }
-    args.rval().set(ObjectValue(object.get()));
-    true
-}
-
-unsafe extern "C" fn text_decoder_validate(
-    raw_cx: *mut RawJSContext,
-    argc: u32,
-    vp: *mut Value,
-) -> bool {
-    let Some(mut cx) = callback_context(raw_cx) else {
-        return false;
-    };
-    let args = unsafe { CallArgs::from_vp(vp, argc) };
-    let label = match arg_string(&mut cx, &args, 0, "TextDecoder label") {
-        Some(label) => label,
-        None => return false,
-    };
-    let fatal = arg_bool(&args, 1);
-    let ignore_bom = arg_bool(&args, 2);
-    if let Err(err) = TextDecoder::new(&label, fatal, ignore_bom) {
-        report_error(&mut cx, &err.to_string());
-        return false;
-    }
-    rooted!(&in(cx) let mut value = UndefinedValue());
-    unsafe {
-        "utf-8".to_jsval(cx.raw_cx(), value.handle_mut());
-    }
-    args.rval().set(value.get());
-    true
-}
-
-unsafe extern "C" fn text_decoder_decode(
-    raw_cx: *mut RawJSContext,
-    argc: u32,
-    vp: *mut Value,
-) -> bool {
-    let Some(mut cx) = callback_context(raw_cx) else {
-        return false;
-    };
-    let args = unsafe { CallArgs::from_vp(vp, argc) };
-    let label = match arg_string(&mut cx, &args, 0, "TextDecoder label") {
-        Some(label) => label,
-        None => return false,
-    };
-    let fatal = arg_bool(&args, 1);
-    let ignore_bom = arg_bool(&args, 2);
-    let Some(bytes_value) = arg_handle(&args, 3) else {
-        report_error(&mut cx, "TextDecoder.decode input bytes are required");
-        return false;
-    };
-    if !bytes_value.get().is_object() {
-        report_error(&mut cx, "TextDecoder.decode input must be a Uint8Array");
-        return false;
-    }
-    let bytes = match Uint8Array::from(bytes_value.get().to_object()) {
-        Ok(bytes) => bytes.to_vec(),
-        Err(()) => {
-            report_error(&mut cx, "TextDecoder.decode input must be a Uint8Array");
-            return false;
-        }
-    };
-    let decoder = match TextDecoder::new(&label, fatal, ignore_bom) {
-        Ok(decoder) => decoder,
-        Err(err) => {
-            report_error(&mut cx, &err.to_string());
-            return false;
-        }
-    };
-    let output = match decoder.decode(&bytes) {
-        Ok(output) => output,
-        Err(err) => {
-            report_error(&mut cx, &err.to_string());
-            return false;
-        }
-    };
-    rooted!(&in(cx) let mut value = UndefinedValue());
-    unsafe {
-        output.to_jsval(cx.raw_cx(), value.handle_mut());
-    }
-    args.rval().set(value.get());
-    true
-}
-
-fn callback_context(raw_cx: *mut RawJSContext) -> Option<JSContext> {
-    NonNull::new(raw_cx).map(|cx| unsafe { JSContext::from_ptr(cx) })
-}
-
-fn arg_handle(args: &CallArgs, index: u32) -> Option<mozjs::rust::HandleValue<'_>> {
-    (index < args.argc_).then(|| unsafe { Handle::from_raw(args.get(index)) })
-}
-
-fn arg_string(cx: &mut JSContext, args: &CallArgs, index: u32, name: &str) -> Option<String> {
-    let Some(value) = arg_handle(args, index) else {
-        report_error(cx, &format!("{name} is required"));
-        return None;
-    };
-    match String::safe_from_jsval(cx, value, ()) {
-        Ok(ConversionResult::Success(value)) => Some(value),
-        Ok(ConversionResult::Failure(_)) => {
-            report_error(cx, &format!("{name} must be string-convertible"));
-            None
-        }
-        Err(()) => None,
-    }
-}
-
-fn arg_bool(args: &CallArgs, index: u32) -> bool {
-    arg_handle(args, index)
-        .map(|value| unsafe { mozjs::rust::ToBoolean(value) })
-        .unwrap_or(false)
-}
-
-fn report_error(cx: &mut JSContext, message: &str) {
-    let Ok(message) = CString::new(message) else {
-        unsafe {
-            JS_ReportErrorUTF8(cx.raw_cx(), c"script host error".as_ptr());
-        }
-        return;
-    };
-    unsafe {
-        JS_ReportErrorUTF8(cx.raw_cx(), c"%s".as_ptr(), message.as_ptr());
+        let result = runtime
+            .execute_script("inline.js", src.to_owned())
+            .map_err(|_| {
+                EngineError::script(codes::SCRIPT_EVAL, "script evaluation raised an exception")
+            })?;
+        runtime::js_value_from_global(&mut runtime, result)
     }
 }
 
 impl Default for JsRuntime {
     fn default() -> Self {
-        Self::new().expect("SpiderMonkey engine must initialise")
+        Self::new().expect("deno_core runtime must initialise")
     }
 }
 
 /// Evaluate `src` as an **inline script** only if `csp` permits it
 /// (docs/SPEC.md "CSP enforcement points", docs/PLAN.md Phase 7 step 1).
 /// This is the trust boundary between untrusted page script and the engine:
-/// CSP is checked *before* `EvaluateScript`. Fail closed: no CSP ⇒ allow
+/// CSP is checked *before* script execution. Fail closed: no CSP ⇒ allow
 /// (no restriction); a CSP that doesn't explicitly permit the inline script
 /// (via `'unsafe-inline'`, a matching nonce, or a matching sha256 hash) ⇒
 /// [`EngineError`] with the stable [`codes::SCRIPT_CSP_BLOCKED`] code.
@@ -792,10 +128,6 @@ pub fn evaluate_inline_script(
 mod tests {
     use super::*;
 
-    // SpiderMonkey is a process-singleton (one JS_Init/JS_ShutDown per
-    // process), so all eval assertions share a single JsRuntime in one test.
-    // (mozjs's own tests achieve one-engine-per-process by placing each test
-    // in its own `tests/*.rs` binary.)
     #[test]
     fn eval_runs() {
         let mut rt = JsRuntime::new().expect("engine init");
@@ -818,9 +150,7 @@ mod tests {
         assert_eq!(rt.evaluate("undefined").unwrap(), JsValue::Undefined);
         assert!(matches!(rt.evaluate("({})").unwrap(), JsValue::Object));
 
-        // Phase 6 pilot: Encoding API constructors live in the SpiderMonkey
-        // global and call back into vixen-engine::text_codec, not the Page
-        // string-smoke matcher.
+        // Phase 6 pilot: Encoding API constructors live in the deno_core global.
         assert_eq!(
             rt.evaluate("new TextEncoder().encoding").unwrap(),
             JsValue::String("utf-8".to_owned())
@@ -872,10 +202,11 @@ mod tests {
         );
 
         // Phase 6 DOM host-object backbone: page DOM data is projected into the
-        // SpiderMonkey global as `document` / read-only `Element` objects.
+        // deno_core global as `document` / read-only `Element` / DOMTokenList /
+        // DOMStringMap objects.
         let page = Page::from_html(
             "file:///dom-host.html",
-            "<html><head><title>DOM host</title></head><body><p id='lead' class='note' data-role='copy'>Hello <b>world</b></p></body></html>",
+            "<html><head><title>DOM host</title><style>#lead { color: blue; font-size: 20px !important; --Token: A:B; } p { margin-left: 4px; }</style><link id='theme' rel='stylesheet alternate'></head><body><p id='lead' class='note note callout' data-role='copy' data-author-name='ada' style='font-size: 18px; margin-left: 10px'>Hello <b>world</b></p><iframe id='frame' sandbox='allow-scripts allow-same-origin'></iframe></body></html>",
         )
         .unwrap();
         assert_eq!(
@@ -892,6 +223,11 @@ mod tests {
             JsValue::String("Hello world".to_owned())
         );
         assert_eq!(
+            rt.evaluate_with_page("document.body === document.querySelector('body')", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
             rt.evaluate_with_page("document.querySelector('#lead').textContent", &page)
                 .unwrap(),
             JsValue::String("Hello world".to_owned())
@@ -902,12 +238,25 @@ mod tests {
             JsValue::String("P".to_owned())
         );
         assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#lead').className", &page)
+                .unwrap(),
+            JsValue::String("note note callout".to_owned())
+        );
+        assert_eq!(
             rt.evaluate_with_page(
                 "document.getElementById('lead').getAttribute('data-role')",
                 &page
             )
             .unwrap(),
             JsValue::String("copy".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.getElementById('lead').hasAttribute('DATA-ROLE')",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
         );
         assert_eq!(
             rt.evaluate_with_page(
@@ -923,9 +272,196 @@ mod tests {
             JsValue::Int32(1)
         );
         assert_eq!(
+            rt.evaluate_with_page("document.querySelectorAll('.note').length", &page)
+                .unwrap(),
+            JsValue::Int32(1)
+        );
+        assert_eq!(
             rt.evaluate_with_page("document.querySelector('#missing') === null", &page)
                 .unwrap(),
             JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('.callout') === document.getElementById('lead')",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('p').matches('.note')", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('p.note')", &page)
+                .unwrap_err()
+                .code(),
+            codes::SCRIPT_EVAL
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#lead').classList.length", &page)
+                .unwrap(),
+            JsValue::Int32(2)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#lead').classList.item(1)", &page)
+                .unwrap(),
+            JsValue::String("callout".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead').classList.contains('note')",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#lead').classList.value", &page)
+                .unwrap(),
+            JsValue::String("note callout".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#theme').relList.contains('alternate')",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#frame').sandbox.length", &page)
+                .unwrap(),
+            JsValue::Int32(2)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#frame').sandbox.item(0)", &page)
+                .unwrap(),
+            JsValue::String("allow-scripts".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#lead').dataset.role", &page)
+                .unwrap(),
+            JsValue::String("copy".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead').dataset['authorName']",
+                &page
+            )
+            .unwrap(),
+            JsValue::String("ada".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#lead').dataset.missing", &page)
+                .unwrap(),
+            JsValue::Undefined
+        );
+        assert_eq!(
+            rt.evaluate_with_page("CSS.supports('display', 'grid')", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("CSS.supports('(unknown-prop: yes)')", &page)
+                .unwrap(),
+            JsValue::Bool(false)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "getComputedStyle(document.querySelector('#lead')).color",
+                &page
+            )
+            .unwrap(),
+            JsValue::String("blue".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "window.getComputedStyle(document.querySelector('#lead')).fontSize",
+                &page
+            )
+            .unwrap(),
+            JsValue::String("20px".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "getComputedStyle(document.querySelector('#lead')).getPropertyValue('margin-left')",
+                &page
+            )
+            .unwrap(),
+            JsValue::String("10px".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "getComputedStyle(document.querySelector('#lead')).getPropertyValue('--Token')",
+                &page
+            )
+            .unwrap(),
+            JsValue::String("A:B".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.styleSheets.length", &page)
+                .unwrap(),
+            JsValue::Int32(1)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.styleSheets[0].cssRules.length", &page)
+                .unwrap(),
+            JsValue::Int32(2)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.styleSheets[0].href === null", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.styleSheets[0].cssRules[0].selectorText", &page)
+                .unwrap(),
+            JsValue::String("#lead".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.styleSheets[0].cssRules[0].style.length", &page)
+                .unwrap(),
+            JsValue::Int32(3)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.styleSheets[0].cssRules[0].style.getPropertyValue('font-size')",
+                &page
+            )
+            .unwrap(),
+            JsValue::String("20px".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.styleSheets[0].cssRules[1].style[0]", &page)
+                .unwrap(),
+            JsValue::String("margin-left".to_owned())
+        );
+
+        let unicode_page = Page::from_html(
+            "file:///dom-host-unicode.html",
+            "<html><head><title>é—😀</title></head><body><p id='lead' data-emoji='é'>body é—😀</p></body></html>",
+        )
+        .unwrap();
+        assert_eq!(
+            rt.evaluate_with_page("document.title", &unicode_page)
+                .unwrap(),
+            JsValue::String("é—😀".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#lead').textContent", &unicode_page)
+                .unwrap(),
+            JsValue::String("body é—😀".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead').dataset.emoji",
+                &unicode_page
+            )
+            .unwrap(),
+            JsValue::String("é".to_owned())
         );
 
         // Errors surface a stable code.

@@ -110,7 +110,7 @@ impl Page {
     }
 
     /// Minimal DOM-backed JS expression projection for host-binding smoke
-    /// checks while full SpiderMonkey DOM objects are still landing. This is a
+    /// checks while full JS runtime DOM objects are still landing. This is a
     /// deliberately tiny, fail-closed subset: callers get `None` for unsupported
     /// expressions and can fall back to the real JS runtime.
     pub fn evaluate_dom_expression(&self, expr: &str) -> Option<Result<String, String>> {

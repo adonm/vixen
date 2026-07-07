@@ -28,7 +28,7 @@ crates Firefox and Servo use:
 | CSS cascade      | `style` (Stylo)                    |
 | Selector matching| `selectors`                        |
 | String interning | `string_cache`, `servo_arc`        |
-| JS engine        | `mozjs` (SpiderMonkey Rust bindings) |
+| JS engine        | `deno_core` / V8 embedding           |
 | Layout           | Servo `layout_2020` crate          |
 | Paint            | `webrender` + `gleam` + `euclid`   |
 
@@ -53,8 +53,8 @@ tooling.
 - Vixen tracks Servo crate releases. Major upstream API changes
   (e.g. Stylo `TElement` trait evolution) require integration updates,
   typically every 6–12 months.
-- Binary size grows by the volume of these crates. ADR-005 controls this
-  via system-linking mozjs where possible.
+- Binary size grows by the volume of these crates. Runtime packaging and size
+  are remeasured against the active `deno_core`/V8 dependency.
 
 ---
 
@@ -142,14 +142,13 @@ rasterizer, no CPU paint path.
 **Status:** accepted
 
 **Context.** A previous design used a process-per-origin JS sandbox
-(spawned binaries communicating over IPC) for isolation. SpiderMonkey
-already provides compartment-based isolation in-process, and
-out-of-process isolation (proper OOPIF) is a separate, much larger
-effort.
+(spawned binaries communicating over IPC) for isolation. The embedded JS runtime
+already provides in-process context isolation, and out-of-process isolation
+(proper OOPIF) is a separate, much larger effort.
 
-**Decision.** Single-process engine. JS isolation is via SpiderMonkey
-compartments (one per origin). No `JsSandbox`, no `JsSandboxPool`, no
-`process_pool`, no `ipc` module.
+**Decision.** Single-process engine. JS isolation is via runtime contexts (one
+per origin once host bindings are widened). No `JsSandbox`, no `JsSandboxPool`,
+no `process_pool`, no `ipc` module.
 
 **Alternatives considered.**
 
@@ -169,37 +168,28 @@ compartments (one per origin). No `JsSandbox`, no `JsSandboxPool`, no
 
 ---
 
-## ADR-005: System mozjs by default, static fallback for distribution
+## ADR-005: JS runtime packaging size gate
 
-**Status:** accepted
+**Status:** superseded by ADR-014
 
-**Context.** SpiderMonkey is the largest single contributor to binary
-size (~3–5 MiB stripped static). Most Linux distributions package
-libmozjs (e.g. Fedora `mozjs102`, Debian `libmozjs-102-0`). GNOME
-Flatpak manifests can vendor it as a shared module.
+**Context.** The old runtime-packaging decision optimized around shared/static
+packaging for the previous JS engine. ADR-014 changed the active runtime to
+`deno_core`/V8, so those package-specific details are no longer active guidance.
 
-**Decision.**
-
-- **Production Flatpak** (`org.vixen.Vixen`): link to a shared libmozjs
-  module vendored into the Flatpak manifest. Binary ~10 MiB.
-- **Headless CI / standalone distribution**: static mozjs. Binary ~14 MiB.
-- **Development builds**: static mozjs (simpler, no system dependency). In
-  practice the `mozjs`/`mozjs_sys` crate **downloads a prebuilt** static
-  SpiderMonkey from `servo/mozjs` GitHub Releases by default (no from-source
-  build); `MOZJS_ARCHIVE` pins/offline-mirrors it. See
-  [`docs/guidance/mozjs.md`](guidance/mozjs.md).
+**Decision.** Re-measure release binaries with the active `deno_core`/V8
+dependency. Do not carry forward pre-ADR-014 runtime size assumptions as release
+promises.
 
 **Alternatives considered.**
 
-- *Static mozjs everywhere.* Rejected: +4 MiB on the production binary
-  for no functional gain where the distro provides libmozjs.
+- *Keep historical runtime-packaging guidance around for builds.* Rejected: it
+  no longer matches the dependency graph and creates false release expectations.
 
 **Consequences.**
 
-- Production binary carries a runtime dependency on libmozjs. Flatpak
-  handles this transparently; native packages declare it.
-- SpiderMonkey version follows what the Flatpak manifest vendors. Major
-  SM upgrades (every 6–12 months) require a manifest bump.
+- `just size-fp` is the source of truth for current binary-size budgets.
+- Distribution guidance should discuss `deno_core`/V8 artifacts and cache
+  behavior, not removed runtime dependencies.
 
 ---
 
@@ -510,8 +500,8 @@ inline, flex, grid, and table algorithms, and `Libraries/LibWeb/Painting/`
 keeps paint/display-list construction behind a later seam.
 
 **Decision.** Vixen owns its layout engine in Rust. Stylo remains the CSS
-cascade/computed-value source, SpiderMonkey remains the JS engine, and
-WebRender remains the only paint backend. The layout layer follows Ladybird's
+cascade/computed-value source, `deno_core` remains the JS runtime, and WebRender
+remains the only paint backend. The layout layer follows Ladybird's
 architecture but uses Rust/data-oriented internals: stable `NodeId` /
 `LayoutNodeId` handles, arenas, compact structs/enums, explicit dirty bits,
 cached intrinsic sizes, and deterministic formatting-context passes.
@@ -548,3 +538,85 @@ WPT/real-site evidence.
   `46e9f12a8f9b` for computed values and rendering contracts.
 - `docs/COMPAT.md` is release-blocking and must state the WPT profile, achieved
   pass rates, and known layout gaps honestly.
+
+---
+
+## ADR-014: Move JS runtime to `deno_core`
+
+**Status:** accepted
+
+**Supersedes:** ADR-001's JS-engine row, ADR-004's SpiderMonkey compartment
+wording, and ADR-005's mozjs packaging decision.
+
+**Context.** The first Phase 2 implementation used `mozjs` because the original
+plan optimized for Firefox-family components end-to-end. The later Phase 6 work
+showed that Vixen's actual risk is the Rust-side host API layer: object
+registration, bootstrap JS packaging, resource/permission boundaries, testing,
+and long-term maintenance of many Web API families. The `deno_core` crate solves
+that packaging problem directly. It brings a well-maintained Rust embedding layer
+for V8, explicit extension/op registration, module loading, resource tables,
+structured errors, and the runtime architecture Deno uses to expose large Web API
+surfaces from Rust.
+
+`deno_core` does mean Vixen no longer uses a Firefox-family JS engine. That is an
+acceptable trade: JS language compatibility comes from V8, Web API compatibility
+remains Vixen-owned and fixture/WPT-gated, and Rust host-layer velocity matters
+more for alpha progress than preserving SpiderMonkey specifically.
+
+**Decision.** Migrate Vixen's JS runtime from `mozjs`/SpiderMonkey to
+`deno_core`/V8 and use `deno_core` directly inside `vixen-engine::script`. Do
+not introduce a generic JS-engine abstraction or a `dyn JavaScriptRuntime` layer:
+Vixen has one JS runtime target, and `deno_core` already provides the embedding
+API shape we want. The migration has landed behind the existing
+`JsRuntime`/`JsValue`, headless `--eval`, and CDP `Runtime.evaluate` seams.
+
+The target JS architecture is Deno-shaped:
+
+- Host API families live in small modules under `vixen-engine::script` or pure
+  sibling modules, not as one ever-growing `script.rs` file.
+- Each family has a Rust op/resource surface, a JS bootstrap surface, and
+  focused tests. The Rust side owns validation and stable errors; JS glue owns
+  Web-shaped object ergonomics only.
+- Registration uses a Deno-style extension list: ordered, explicit, testable,
+  and feature-family scoped (`encoding`, `dom`, `url`, `fetch`, `storage`, etc.).
+- Long-lived host state should use explicit resource IDs/handles and permission
+  checks near the op boundary, following `deno_core`/Deno resource-table and
+  permissions patterns rather than ad-hoc globals.
+- Bootstrap JS is packaged as static assets or generated strings owned by the
+  feature module, with Rust tests proving the installed surface.
+
+**Alternatives considered.**
+
+- *Stay on SpiderMonkey and only mimic Deno packaging.* Rejected: it keeps the
+  hard part — building and maintaining a browser-scale Rust host layer — while
+  missing the maintained `deno_core` abstractions that solve that exact problem.
+- *Abstract over `mozjs` and `deno_core` behind an internal JS-engine trait.*
+  Rejected: it would preserve two runtime mental models, hide useful
+  `deno_core` concepts like extensions/resources/ops behind a leaky common
+  denominator, and create a test matrix Vixen does not intend to support.
+- *Keep all host glue inside `script.rs`.* Rejected: it does not scale past the
+  first few host-object slices and hides feature-family boundaries.
+- *Adopt Deno wholesale, including CLI/npm/Node compatibility.* Rejected: Vixen
+  needs `deno_core`, not the Deno product surface. Node/npm semantics are not
+  part of the browser runtime.
+- *Copy Firefox WebIDL binding generation immediately.* Deferred: Firefox's
+  binding stack is authoritative for many DOM semantics, but `deno_core` is the
+  better Rust embedding/runtime substrate for Vixen.
+
+**Consequences.**
+
+- `deno_core` is the `vixen-engine::script` dependency; `mozjs` is no longer in
+  the active engine dependency graph.
+- Internal host modules may depend on `deno_core` APIs directly. The stable seam
+  is the Vixen product API (`JsRuntime`, `JsValue`, headless/CDP behavior), not a
+  portable JS-engine adapter.
+- Binary-size gates must be remeasured for V8. The old system/static mozjs split
+  no longer applies.
+- `docs/REFERENCES.md` pins Deno as the primary JS runtime/host packaging
+  reference. Firefox remains a DOM/Web API semantic reference, but not the JS
+  engine target.
+- New JS host families should be reviewed for module size, bootstrap locality,
+  explicit registration, and permission/resource boundaries.
+- Existing Page string-smoke projections and bootstrap snapshot pilots should
+  migrate into explicit `deno_core` op/resource extensions one family at a time,
+  while still reusing the same pure Rust modules.

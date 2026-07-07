@@ -12,11 +12,11 @@ rules live in [`DEVELOPMENT.md`](DEVELOPMENT.md).
 |---------|--------------|--------------|
 | `just gate-alpha` | fmt, clippy, workspace check, and committed fixture manifest runner | fast alpha-slice baseline before relevant phase gate |
 | `just gate-smoke` | fmt, clippy, all host tests | reviewer baseline before commit/push |
-| `just gate-phase2` | `vixen-headless --eval '1+2'` through SpiderMonkey | DOM/document host bindings |
+| `just gate-phase2` | `vixen-headless --eval '1+2'` through the `deno_core` JS runtime seam | grow host modules behind the same `JsRuntime`/`JsValue` seam |
 | `just gate-phase3` | HTML parse + Stylo selector matching + author/inline computed-style cascade through `Page` + WPT fixtures | full Stylo `Stylist`/computed values behind `Page::computed_style` |
 | `just gate-phase4` | layout pure-logic prep + Page-backed layout tree / text line boxes plus `layout-box` fixture assertions | richer inline/flex/grid formatting contexts |
 | `just gate-phase5` | display-list + paint prep + Page-backed layout-tree display list/stats through `vixen-headless --dump-display-list` + `--paint-stats` | WebRender screenshot path through `Page` |
-| `just gate-phase6` | DOM/forms/network-host pure prep plus Page-backed getComputedStyle/CSSOM/CSSStyleRule/viewport/DOMRect/Geometry Interfaces/document/navigator/storage/events/DOMTokenList/dataset/validity/FormData/URL/encoding/serialization/currentSrc/range/history/traversal/mutation/fetch `Blob`/`File`/`Request`/`Response`/performance/media eval projections, with Encoding API constructors and the first focused `document`/`Element` evals now in SpiderMonkey | remaining SpiderMonkey host objects, event dispatch, storage persistence |
+| `just gate-phase6` | DOM/forms/network-host pure prep plus Page-backed getComputedStyle/CSSOM/CSSStyleRule/viewport/DOMRect/Geometry Interfaces/document/navigator/storage/events/DOMTokenList/dataset/validity/FormData/URL/encoding/serialization/currentSrc/range/history/traversal/mutation/fetch `Blob`/`File`/`Request`/`Response`/performance/media eval projections, with Encoding API constructors plus focused `document`/`Element`/read-only DOMTokenList/dataset evals on the `deno_core` runtime seam | convert bootstrap host objects to explicit `deno_core` op/resource extensions, then widen CSSOM/geometry/forms/events/history/storage/fetch |
 
 ## Six-milestone execution roadmap
 
@@ -41,8 +41,9 @@ slot or date.
    one WebRender path over `vixen_api::GlContext`; make headless
    `--screenshot` write PNGs and keep GUI/headless on the same path. Proof:
    `just gate-phase5`, screenshot/visual-hash fixtures, and `just gate-smoke`.
-4. **Milestone 4 — Real DOM host bindings.** Replace string-smoke DOM evals
-   with SpiderMonkey host objects for document/query/element attributes,
+4. **Milestone 4 — JS host bindings.** The runtime is now `deno_core`; replace
+   string-smoke DOM evals with explicit `deno_core` extensions for
+   document/query/element attributes,
    DOMTokenList/dataset, events/forms/history, fetch/cookie, and storage. The
    first compatibility seam now reflects `getComputedStyle()`, document/navigator
    state, empty Web Storage, viewport/window state,
@@ -60,9 +61,16 @@ slot or date.
    `Request`/`Response` state, static `Response.error()` / `Response.redirect()` / `Response.json()`,
    `AbortSignal`, `URLPattern`, Performance timing shape, and
    `matchMedia()` through `Page::evaluate_dom_expression`
-   against WPT manifest `js-eval` checks, while focused `document.title`, simple
-   `querySelector`/`getElementById`, and `querySelectorAll().length` evals have
-   moved onto the first SpiderMonkey `document` / `Element` snapshot objects.
+   against WPT manifest `js-eval` checks, while TextEncoder/TextDecoder now run
+   through the first op-backed `deno_core` host extension. Focused
+   `document.title`, simple `querySelector`/`getElementById`,
+   `querySelectorAll().length`, and read-only DOMTokenList/dataset evals run on
+   the `deno_core` DOM snapshot extension with page data crossing an explicit
+   op boundary. Selector lookup and `Element.matches()` now cross finer-grained
+   ops, element record data is loaded through an element snapshot op, and
+   text/attribute/token/dataset reads now delegate through focused DOM ops.
+   Focused `CSS.supports`, `getComputedStyle`, and CSSStyleSheet/CSSRule evals
+   now run through an explicit CSSOM extension/op boundary too.
    Proof: `just gate-phase6`, relevant WPT fixtures, and `just gate-smoke`.
 5. **Milestone 5 — Browser shell vertical.** Wire URL entry, one-tab navigation,
    reload/stop/back/forward, visible page content, and tab diagnostics through
@@ -109,7 +117,10 @@ same rule as above: one Page/headless-visible seam, one fixture path, one gate.
    WebRender behind `Page::render(&dyn GlContext)` and make headless
    `--screenshot` produce PNGs. Proof:
    `just gate-phase5 && just gate-smoke`.
-4. **Host-object replacement slice** — `Page::evaluate_dom_expression` now
+4. **Host-object replacement slice** — `JsRuntime` is now backed by `deno_core`
+   while keeping `JsRuntime`/`JsValue`, headless `--eval`, CDP `Runtime.evaluate`,
+   Encoding API constructors, and the current focused document/DOMTokenList/dataset
+   evals green. Continue host-object replacement. `Page::evaluate_dom_expression` now
    projects the `getComputedStyle()`, document/navigator state, empty Web
    Storage, viewport/window state, Event/CustomEvent/dispatch smoke, CSSOM
    `CSS.supports()` / `document.styleSheets` / CSSStyleRule shape, DOMRect
@@ -126,10 +137,15 @@ same rule as above: one Page/headless-visible seam, one fixture path, one gate.
     AbortSignal,
    URLPattern, Performance, and matchMedia smoke
    surfaces from the same pure modules that Phase 6 host objects will use. The
-   Encoding API constructors and focused document/query/element evals now run in
-   SpiderMonkey against those pure-module/Page snapshots. Next: widen the
-   replacement across DOMTokenList/dataset/CSSOM/geometry/forms/events/history/
-   storage/fetch.
+   Encoding API constructors now run through an op-backed `deno_core` extension;
+   focused document/query/element evals and read-only DOMTokenList/dataset
+   property reads run against a DOM snapshot extension whose Page data is served
+   by `op_vixen_dom_snapshot`, with selector lookup and `Element.matches()` now
+   delegated through explicit DOM ops and element data loaded through
+   `op_vixen_dom_element_snapshot`; text/attribute/token/dataset reads also
+   cross focused DOM ops. Focused `CSS.supports`, `getComputedStyle`, and
+   CSSStyleSheet/CSSRule evals now run against `script::cssom` ops. Next: widen
+   the replacement across geometry, forms, events, history, storage, and fetch.
    Proof: `just gate-phase6`, relevant WPT fixtures, and `just gate-smoke`.
 5. **Browser shell vertical slice** — once screenshots and host objects have a
    shared Page seam, wire URL entry, reload/stop/back/forward, one-tab lifecycle,

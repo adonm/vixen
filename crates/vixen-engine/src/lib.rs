@@ -1,13 +1,10 @@
 //! vixen-engine — engine integration glue.
 //!
-//! Phase 2 stands up the SpiderMonkey runtime here (`script.rs`). Phase 3
+//! Phase 2 stands up the `deno_core` runtime here (`script.rs`). Phase 3
 //! adds HTML parse + Stylo cascade, Phase 4 layout, Phase 5 the single
 //! WebRender paint path consuming `vixen_api::GlContext`.
-//!
-//! `unsafe` is confined to `script` — the SpiderMonkey FFI (mozjs) is C, and
-//! GC rooting is enforced via mozjs's `rooted!` macro. Every other module
-//! stays `forbid(unsafe_code)`. The crate uses `deny(unsafe_code)` so the
-//! boundary is explicit and locally allowed.
+//! The crate uses `deny(unsafe_code)`; JS embedding goes through safe
+//! `deno_core`/V8 APIs.
 
 #![deny(unsafe_code)]
 

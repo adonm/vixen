@@ -106,7 +106,7 @@ gate-phase0: check-all-host test-api
 # fuzz targets at their planned iteration count.
 gate-phase1: test-net test-store audit fuzz-security
 
-# Phase 2 vertical gate: engine tests plus SpiderMonkey eval through headless.
+# Phase 2 vertical gate: engine tests plus deno_core eval through headless.
 gate-phase2: test-engine
     test "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/dom/basic.html --eval '1+2')" = "3"
 
@@ -214,11 +214,11 @@ size-fp: build-release
         printf '%s %s bytes\n' "$headless" "$headless_bytes"; \
         failed=0; \
         if [ "$gui_bytes" -gt "$gui_limit" ]; then \
-            echo "vixen exceeds static mozjs size target ($gui_bytes > $gui_limit bytes)" >&2; \
+            echo "vixen exceeds JS-runtime size target ($gui_bytes > $gui_limit bytes)" >&2; \
             failed=1; \
         fi; \
         if [ "$headless_bytes" -gt "$headless_limit" ]; then \
-            echo "vixen-headless exceeds static mozjs size target ($headless_bytes > $headless_limit bytes)" >&2; \
+            echo "vixen-headless exceeds JS-runtime size target ($headless_bytes > $headless_limit bytes)" >&2; \
             failed=1; \
         fi; \
         exit "$failed"

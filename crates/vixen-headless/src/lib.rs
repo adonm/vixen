@@ -1,11 +1,11 @@
 //! vixen-headless — headless CLI + CDP server.
 //!
 //! Phase 2 implements the CLI flag surface (docs/SPEC.md "Headless CLI
-//! surface") and wires `--url`/`--eval` to the SpiderMonkey runtime
+//! surface") and wires `--url`/`--eval` to the `deno_core` runtime
 //! (`vixen-engine::script`). Phase 3+ DOM/selector/layout/paint paths run
 //! through `vixen_engine::page::Page`; broad host-binding smoke still uses that
 //! facade while the first focused `document` / `Element` evals run in
-//! SpiderMonkey with a Page snapshot.
+//! the JS runtime with a Page snapshot.
 //! Renderer/CDP-only flags keep the stable error codes (`unsupported.screenshot`,
 //! `invalid-selector`) until their later phases land.
 
@@ -210,7 +210,7 @@ pub fn run(cli: Cli) -> ExitCode {
 /// `--cdp [--cdp-port N]`: run the CDP WebSocket server on 127.0.0.1:N.
 /// Blocks until interrupted; exit code 1 on bind failure (e.g. port in use).
 ///
-/// SpiderMonkey is `!Send + !Sync`, so the server runs on a single-threaded
+/// `deno_core::JsRuntime` is `!Send + !Sync`, so the server runs on a single-threaded
 /// tokio runtime + `LocalSet`. CDP clients keep one long-lived WebSocket
 /// connection per browser instance, so single-threaded serving is not a
 /// bottleneck in practice.
@@ -464,8 +464,8 @@ fn run_eval(url: &str, js: &str) -> ExitCode {
     };
 
     // `--url` is the page context. Legacy broad DOM smoke expressions are
-    // handled above; the first DOM host-object slice falls through here so
-    // SpiderMonkey sees a real `document` snapshot in the global.
+    // handled above; the first DOM host-object slice falls through here so the
+    // JS runtime sees a real `document` snapshot in the global.
     match rt.evaluate_with_page(js, &page) {
         Ok(value) => {
             println!("{}", value.to_display());
@@ -490,7 +490,7 @@ fn run_dom_eval(url: &str, js: &str) -> Option<Result<String, String>> {
 }
 
 fn run_dom_eval_on_page(page: &Page, js: &str) -> Option<Result<String, String>> {
-    if uses_spidermonkey_dom_eval(js) {
+    if uses_runtime_dom_eval(js) {
         return None;
     }
     if !looks_like_dom_eval(js) {
@@ -499,14 +499,25 @@ fn run_dom_eval_on_page(page: &Page, js: &str) -> Option<Result<String, String>>
     page.evaluate_dom_expression(js)
 }
 
-pub(crate) fn uses_spidermonkey_dom_eval(js: &str) -> bool {
+pub(crate) fn uses_runtime_dom_eval(js: &str) -> bool {
     let js = js.trim_start();
     matches!(
         js,
-        "document.title" | "document.body.textContent" | "document.body.innerText"
+        "document.title" | "document.URL" | "document.documentURI" | "document.readyState"
     ) || simple_query_selector_eval(js, "document.querySelector(")
         || simple_get_element_by_id_eval(js)
         || simple_query_selector_all_length_eval(js)
+        || simple_document_element_eval(js, "document.body")
+        || simple_document_element_eval(js, "document.documentElement")
+        || simple_get_computed_style_eval(js)
+        || simple_cssom_eval(js)
+}
+
+fn simple_document_element_eval(js: &str, prefix: &str) -> bool {
+    let Some(member) = js.strip_prefix(prefix) else {
+        return false;
+    };
+    is_simple_dom_host_member(member)
 }
 
 pub(crate) fn looks_like_dom_eval(js: &str) -> bool {
@@ -563,6 +574,64 @@ fn simple_query_selector_all_length_eval(js: &str) -> bool {
     tail == ").length" && is_simple_dom_host_selector(selector)
 }
 
+fn simple_get_computed_style_eval(js: &str) -> bool {
+    ["getComputedStyle(", "window.getComputedStyle("]
+        .iter()
+        .any(|prefix| {
+            let Some(rest) = js.strip_prefix(prefix) else {
+                return false;
+            };
+            let Some((selector, tail)) =
+                single_string_arg_call_tail(rest, "document.querySelector(")
+            else {
+                return false;
+            };
+            let Some(member) = tail.strip_prefix("))") else {
+                return false;
+            };
+            is_simple_dom_host_selector(selector) && is_simple_computed_style_member(member)
+        })
+}
+
+fn is_simple_computed_style_member(member: &str) -> bool {
+    if simple_dom_host_string_method(member, ".getPropertyValue(") {
+        return true;
+    }
+    if let Some(property) = member.strip_prefix('.') {
+        return is_simple_dom_host_dataset_ident(property);
+    }
+    false
+}
+
+fn simple_cssom_eval(js: &str) -> bool {
+    if matches!(
+        js,
+        "document.styleSheets.length"
+            | "document.styleSheets[0].disabled"
+            | "document.styleSheets[0].href === null"
+            | "document.styleSheets[0].ownerNode.tagName"
+            | "document.styleSheets[0].cssRules.length"
+    ) {
+        return true;
+    }
+    let Some(rest) = js.strip_prefix("document.styleSheets[0].cssRules[") else {
+        return false;
+    };
+    let Some((index, member)) = rest.split_once(']') else {
+        return false;
+    };
+    is_ascii_usize(index.trim()) && is_simple_css_rule_member(member)
+}
+
+fn is_simple_css_rule_member(member: &str) -> bool {
+    matches!(member, ".selectorText" | ".cssText" | ".style.length")
+        || simple_dom_host_string_method(member, ".style.getPropertyValue(")
+        || simple_dom_host_usize_method(member, ".style.item(")
+        || member
+            .strip_prefix(".style")
+            .is_some_and(simple_dom_host_usize_index)
+}
+
 fn is_simple_dom_host_member(member: &str) -> bool {
     matches!(
         member,
@@ -580,6 +649,11 @@ fn is_simple_dom_host_member(member: &str) -> bool {
             | ".innerText"
     ) || simple_dom_host_string_method(member, ".getAttribute(")
         || simple_dom_host_string_method(member, ".hasAttribute(")
+        || simple_dom_host_selector_method(member, ".matches(")
+        || simple_dom_token_list_member(member, ".classList")
+        || simple_dom_token_list_member(member, ".relList")
+        || simple_dom_token_list_member(member, ".sandbox")
+        || simple_dataset_member(member)
 }
 
 fn simple_dom_host_string_method(member: &str, prefix: &str) -> bool {
@@ -587,6 +661,60 @@ fn simple_dom_host_string_method(member: &str, prefix: &str) -> bool {
         return false;
     };
     tail == ")" && is_simple_dom_host_name(name)
+}
+
+fn simple_dom_host_selector_method(member: &str, prefix: &str) -> bool {
+    let Some((selector, tail)) = single_string_arg_call_tail(member, prefix) else {
+        return false;
+    };
+    tail == ")" && is_simple_dom_host_selector(selector)
+}
+
+fn simple_dom_token_list_member(member: &str, prefix: &str) -> bool {
+    let Some(rest) = member.strip_prefix(prefix) else {
+        return false;
+    };
+    matches!(rest, ".length" | ".value" | ".toString()")
+        || simple_dom_host_string_method(rest, ".contains(")
+        || simple_dom_host_usize_method(rest, ".item(")
+        || simple_dom_host_usize_index(rest)
+}
+
+fn simple_dom_host_usize_method(member: &str, prefix: &str) -> bool {
+    let Some(inner) = member
+        .strip_prefix(prefix)
+        .and_then(|rest| rest.strip_suffix(')'))
+    else {
+        return false;
+    };
+    is_ascii_usize(inner.trim())
+}
+
+fn simple_dom_host_usize_index(member: &str) -> bool {
+    let Some(inner) = member
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+    else {
+        return false;
+    };
+    is_ascii_usize(inner.trim())
+}
+
+fn is_ascii_usize(input: &str) -> bool {
+    !input.is_empty() && input.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn simple_dataset_member(member: &str) -> bool {
+    let Some(rest) = member.strip_prefix(".dataset") else {
+        return false;
+    };
+    if let Some(property) = rest.strip_prefix('.') {
+        return is_simple_dom_host_dataset_ident(property);
+    }
+    if let Some((property, tail)) = single_string_arg_call_tail(rest, "[") {
+        return tail == "]" && is_simple_dom_host_dataset_name(property);
+    }
+    false
 }
 
 fn single_string_arg_call_tail<'a>(input: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
@@ -646,6 +774,23 @@ fn is_simple_dom_host_name(name: &str) -> bool {
         && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
+}
+
+fn is_simple_dom_host_dataset_ident(name: &str) -> bool {
+    let Some(first) = name.bytes().next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == b'_')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+fn is_simple_dom_host_dataset_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
 }
 
 /// `--dump-dom` / `--extract-text` / `--dump-layout-tree` / `--dump-lines` /
@@ -1016,38 +1161,86 @@ mod tests {
     }
 
     #[test]
-    fn focused_document_eval_uses_spidermonkey_host_objects() {
+    fn focused_document_eval_uses_runtime_host_objects() {
         let dir = tempfile::tempdir().unwrap();
         let html = dir.path().join("title.html");
         std::fs::write(
             &html,
-            "<html><head><title>DOM title</title></head><body><p id='lead'>body</p></body></html>",
+            "<html><head><title>DOM title</title><style>#lead { color: blue; }</style><link id='theme' rel='stylesheet alternate'></head><body><p id='lead' class='note callout' data-author-name='ada'>body</p><iframe id='frame' sandbox='allow-scripts'></iframe></body></html>",
         )
         .unwrap();
         let url = format!("file://{}", html.display());
         assert!(looks_like_dom_eval("document.title"));
-        assert!(uses_spidermonkey_dom_eval("document.title"));
-        assert!(uses_spidermonkey_dom_eval(
+        assert!(uses_runtime_dom_eval("document.title"));
+        assert!(uses_runtime_dom_eval("document.readyState"));
+        assert!(uses_runtime_dom_eval("document.URL"));
+        assert!(uses_runtime_dom_eval("document.documentElement.tagName"));
+        assert!(uses_runtime_dom_eval(
             "document.querySelector('#lead').textContent"
         ));
-        assert!(uses_spidermonkey_dom_eval(
+        assert!(uses_runtime_dom_eval(
             "document.getElementById('lead').tagName"
         ));
-        assert!(uses_spidermonkey_dom_eval(
+        assert!(uses_runtime_dom_eval(
             "document.querySelectorAll('p').length"
         ));
-        assert!(!uses_spidermonkey_dom_eval(
+        assert!(uses_runtime_dom_eval(
+            "document.querySelector('#lead').matches('.note')"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "document.querySelector('#lead').classList.contains('note')"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "document.querySelector('#theme').relList.contains('alternate')"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "document.querySelector('#frame').sandbox.length"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "document.querySelector('#lead').dataset.authorName"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "document.querySelector('#lead').dataset['authorName']"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "getComputedStyle(document.querySelector('#lead')).color"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "window.getComputedStyle(document.querySelector('#lead')).getPropertyValue('color')"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "document.styleSheets[0].cssRules[0].selectorText"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "document.styleSheets[0].cssRules[0].style.getPropertyValue('color')"
+        ));
+        assert!(!uses_runtime_dom_eval(
             "document.querySelector('#lead').getBoundingClientRect().x"
         ));
+        assert!(!uses_runtime_dom_eval(
+            "document.querySelector('#lead').classList.add('new')"
+        ));
         assert_eq!(run_dom_eval(&url, "document.title"), None);
+        assert_eq!(run_dom_eval(&url, "document.readyState"), None);
         assert_eq!(
-            run_dom_eval(&url, "document.readyState"),
-            Some(Ok("complete".into()))
+            run_dom_eval(&url, "document.querySelector('#lead').matches('.note')"),
+            None
+        );
+        assert_eq!(
+            run_dom_eval(
+                &url,
+                "getComputedStyle(document.querySelector('#lead')).color"
+            ),
+            None
+        );
+        assert_eq!(
+            run_dom_eval(&url, "document.styleSheets[0].cssRules[0].selectorText"),
+            None
         );
     }
 
     #[test]
-    fn encoding_eval_uses_spidermonkey_host_constructors() {
+    fn encoding_eval_uses_runtime_host_constructors() {
         assert!(!looks_like_dom_eval("new TextEncoder().encoding"));
         assert!(!looks_like_dom_eval(
             "new TextDecoder('utf-8', { fatal: true }).fatal"

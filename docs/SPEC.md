@@ -14,7 +14,7 @@ What this document deliberately does **not** capture:
 
 - Restatement of web-platform specs. CSS cascade/selectors, HTML parsing,
   ES execution, and paint are delegated to Firefox-family crates/components
-  where possible (Stylo, `selectors`, SpiderMonkey, `html5ever`, WebRender —
+  where possible (Stylo, `selectors`, `deno_core`/V8, `html5ever`, WebRender —
   see [`DECISIONS.md`](DECISIONS.md) ADR-001 / ADR-011). Layout is
   Vixen-owned Rust code per ADR-013, with Ladybird used as the architecture
   reference. Behavioural parity is measured by the WPT profile documented in
