@@ -74,6 +74,10 @@ impl SupportsCondition {
     }
 }
 
+pub(super) fn supports_condition(input: &str) -> bool {
+    SupportsCondition::parse(input).matches()
+}
+
 fn parse_supports_condition(input: &str) -> SupportsCondition {
     let input = input.trim();
     if input.is_empty() {

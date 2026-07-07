@@ -31,7 +31,8 @@ and reference material, plus:
   inline `style` declarations now project through `Page::computed_style(node_id)`
   with specificity/source-order/`!important`, cascade layers, `@media`,
   `@supports`, inherited custom properties, `var()` fallback, and CSS-wide
-  keyword coverage through WPT `computed-style` checks; and the **WPT harness**
+  keyword coverage through WPT `computed-style` checks plus a Page-backed
+  `getComputedStyle()` eval smoke seam; and the **WPT harness**
   (`vixen-wpt`: manifest + runner + all 15 check types). The full Stylo cascade
   (`TNode`/`TElement`/`TDocument` + `Stylist::update_stylist` +
   `computed_values_for(node_id)`) remains the implementation replacement behind
@@ -60,15 +61,16 @@ and reference material, plus:
   (`start`/`end`/`center` per axis, clamped to the scrollable range) + the
   `scroll-snap-type` axis/strictness + `scroll-snap-align`/`scroll-snap-stop`
   model the scroll layer's snap targeting reduces to. All six ready for
-  `layout_2020` to feed off. The first vertical layout surface is live:
+  `layout_2020` to feed off. The vertical layout surface is live:
   `vixen-engine::line_layout` + `Page::dump_lines` power
-  `vixen-headless --dump-lines` with deterministic body-text line boxes until
-  the full positioned box tree replaces the text-width estimate.
+  `vixen-headless --dump-lines`, and `Page::layout_fragments(viewport)` now
+  projects block backgrounds plus wrapped text lines into paint-consumable
+  fragments until the full formatter replaces the deterministic text metric.
 - **Phase 5 prep** — `vixen-engine::display_list` (all eight `SPEC.md`
   display-list invariants) now has its first vertical surface:
-  `Page::display_list` turns line boxes into invariant-enforced paint commands
-  and `vixen-headless --dump-display-list` dumps them; `--paint-stats` reports
-  command counts and painted area from the same stream. The paint-geometry
+  `Page::display_list` turns layout fragments into invariant-enforced paint
+  commands and `vixen-headless --dump-display-list` dumps them; `--paint-stats`
+  reports command counts and painted area from the same stream. The paint-geometry
   family it will consume:
   `vixen-engine::transform` (CSS Transforms 1 § 13 2D affine algebra +
   list parser), `vixen-engine::border_radius` (CSS Backgrounds 3 § 5.5
@@ -115,26 +117,55 @@ and reference material, plus:
   `#![forbid(unsafe_code)]` and Rust-unit-tested.
 - **Phase 6 prep** — pure form-constraint validation in `vixen-engine::forms`
   (email/URL formats, step arithmetic, range/length flags) ready for the
-  script-layer host hooks; `vixen-engine::form_submission` (the three WHATWG
-  HTML § 4.10.21 encoders: `application/x-www-form-urlencoded`,
-  `multipart/form-data`, `text/plain`); `vixen-engine::dataset` (WHATWG HTML
+  script-layer host hooks and now projected through `Page::evaluate_dom_expression`
+  for `ValidityState` / `checkValidity()` smoke checks;
+  `vixen-engine::form_submission` (the three WHATWG HTML § 4.10.21 encoders:
+  `application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`,
+  now also feeding the Page-backed `FormData` entry-list + iterator smoke seam);
+  `vixen-engine::dataset` (WHATWG HTML
   § 3.2.6.9 `data-*` ↔ `dataset` property-name bidirectional mapping, with
-  the anti-collision rule); `vixen-engine::storage_key` (Web Storage key/value
-  validation + origin-partitioned redb keys + the 5 MiB quota); the network
+  the anti-collision rule, now reflected by the Page-backed `dataset` eval
+  seam); `vixen-engine::storage_key` (Web Storage key/value
+  validation + origin-partitioned redb keys + the 5 MiB quota, now used by the
+  Page-backed empty `localStorage` / `sessionStorage` smoke seam); document and
+  navigator state, DOM ancestry/core-node shape (`closest()`, `nodeName` /
+  `nodeType`, `ownerDocument`), plus `Event` / `CustomEvent` / `dispatchEvent()`
+  smoke, CSSOM `CSS.supports()` / `document.styleSheets` / CSSStyleRule shape,
+  viewport/window state (`innerWidth`, `visualViewport`, `screen`), DOMRect
+  geometry via `getBoundingClientRect()`, Geometry Interfaces value constructors
+  (`DOMPoint`/`DOMRect`/`DOMQuad`/`DOMMatrix`), `DOMParser`, and `atob` / `btoa`
+  are also projected through `Page::evaluate_dom_expression`, while the first
+  focused document/query/element evals (`document.title`, simple
+  `querySelector`/`getElementById`, `querySelectorAll().length`) now run through
+  a SpiderMonkey `document` snapshot host-object seam; the network
   host-hook family: `vixen-engine::url_search_params` (WHATWG URL Standard
-  `URLSearchParams` parse/serialize + the full mutating surface),
+  `URLSearchParams` parse/serialize + the full mutating surface; both now feed
+  Page-backed `URL.canParse()` / `new URL()` / `URLSearchParams` constructor,
+  lookup, and iterator eval smoke checks),
   `vixen-engine::mime` (WHATWG MIME Sniffing § 2.1/§ 2.2 parse/serialize +
-  `essence()`), and   `vixen-engine::text_codec` (WHATWG Encoding API
-  `TextEncoder`/`TextDecoder` with the `fatal` flag, BOM sniff, and § 7.1
-  line-break normalisation). The DOM-serialisation surface:
+  `essence()`), and `vixen-engine::text_codec` (WHATWG Encoding API
+  `TextEncoder`/`TextDecoder` with constructor label/options, `encodeInto`, the
+  `fatal` flag, BOM sniff, and § 7.1 line-break normalisation, now exposed
+  through the Page-backed Encoding API eval seam and SpiderMonkey global
+  constructors). `vixen-engine::headers`,
+  `abort`, `mime`, and `url_pattern` now also feed Page-backed `Headers`
+  iteration, `Blob`/`File`,
+  read-only `Request`/`Response` state with forbidden-header filtering, static
+  `Response.error()` / `Response.redirect()` / `Response.json()`,
+  `AbortController`/`AbortSignal`, and `URLPattern` eval smoke checks. The
+  DOM-serialisation surface:
   `vixen-engine::html_serialize` (WHATWG HTML § 13.2.9 fragment serialisation
   — the `Element.innerHTML` / `outerHTML` / `document.write` getter pipeline,
-  with the void-element + raw-text + text-escape + attribute-escape tables).
+  with the void-element + raw-text + text-escape + attribute-escape tables,
+  now projected through `innerHTML` / `outerHTML` eval smoke checks).
   The `vixen-engine::class_list` (WHATWG HTML
   § 4.6.4 `DOMTokenList` + § 2.7.3 ordered-set parser: `add`/`remove`/
   `toggle`/`replace`/`contains` with the spec's atomic validate-then-mutate
   rule, the supported-tokens surface for `<link>.relList`) backs every
-  `element.classList` / `relList` / `sandbox` host-hook reflection. The CSS
+  `element.classList` / `relList` / `sandbox` host-hook reflection and now
+  feeds the Page-backed `classList` / `relList` / `sandbox` eval seam. Security
+  meta `content` / `charset` reflection is likewise covered by Page-backed
+  eval checks before CSP/referrer enforcement consumes it. The CSS
   Values 4 dimension family (`length`,
   `color`, `angle`, `time`, `resolution`) — the value primitives the
   cascade/layout/paint resolves against — is now complete for v1.0; `<length>`
@@ -149,7 +180,9 @@ and reference material, plus:
   `print` output contexts and `any-hover` / `any-pointer` aggregate input
   devices), the `<img sizes>` source-size-list parser, and the § 4.8.4.8
   density-based source selection (incl. the `<picture>`/`<source media>`
-  art-direction walk). The
+  art-direction walk) and now backs the Page-projected `<img>.currentSrc` and
+  `matchMedia()` eval seams for plain `srcset`/`sizes` images and
+  MediaQueryList smoke checks. The
   value-resolution primitives `calc` (CSS Values 4 § 10 `calc()`/`min()`/
   `max()`/`clamp()` with full § 10.7 dimension type-checking) and `easing`
   (CSS Easing 1 `cubic-bezier`/`steps`/`linear` timing functions) cover the
@@ -159,23 +192,31 @@ and reference material, plus:
   § 9.5.2 entangled port pair `postMessage()` / `new MessageChannel()` /
   worker messaging reduce to, with the transfer-list validation
   (duplicate/ unreachable/detached rejection) and the `SharedArrayBuffer`
-  cross-origin-isolation gate.   The Range/Selection family (`range`)
+  cross-origin-isolation gate, now exposed through `structuredClone()` eval
+  smoke checks for primitives, arrays/objects, Date, Map, Set, and Error shape.
+  The Range/Selection family (`range`)
   models the DOM § 5.2 boundary-point pair + § 5.4 direction-aware
   selection (`add_range`/`collapse_to`/`extend_to`, the forward/backward
-  direction) the editing commands and user-selection reflection reduce to.
+  direction) the editing commands and user-selection reflection reduce to,
+  now projected through read-only `document.createRange()` /
+  `getSelection()` eval smoke checks.
   The session-history family (`history`) models the HTML § 7.1 entry-stack
   + the `history.pushState`/`replaceState`/`back`/`forward`/`go` surface +
   the `scrollRestoration` mode the `History` host hook + the navigation
-  layer reduce to.   The MutationObserver family (`mutation_observer`)
+  layer reduce to, now projected through read-only `history.length` / `state`
+  / `scrollRestoration` eval smoke checks.   The MutationObserver family
+  (`mutation_observer`)
   models the DOM § 4.3 mutation-queue + the § 4.3.1 match predicate
   (childList/attributes/characterData + the subtree/attributeFilter
   options) + the microtask-delivery batch the `MutationObserver` host
-  hook reduces to.   The traversal family (`traversal`) models the DOM § 6
+  hook reduces to, now projected through `MutationObserver` lifecycle eval
+  smoke checks.   The traversal family (`traversal`) models the DOM § 6
   `TreeWalker` + `NodeIterator` filtered preorder traversal (`whatToShow`
   bitmask + the `FILTER_ACCEPT`/`REJECT`/`SKIP` distinction — REJECT skips a
   subtree for TreeWalker, REJECT == SKIP for NodeIterator) + the
   node-removal reference adjustment, over a `Tree` trait the host hook
-  implements on the real DOM. The WHATWG URL parser (`whatwg_url`) models
+  implements on the real DOM, now projected through Page-backed TreeWalker /
+  NodeIterator eval smoke checks. The WHATWG URL parser (`whatwg_url`) models
   the URL Standard § 4 parse + serialize + relative-resolution + the
   § 4.5 origin tuple the `new URL()` host hook + the fetch / navigation /
   storage layers consult.
@@ -291,6 +332,7 @@ MSRV is 1.88 (let-chains); the developer toolchain is pinned in
 | [`docs/SPEC.md`](docs/SPEC.md)              | **What Vixen must do.** Capabilities, CLI, behaviour contracts. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | **How Vixen is structured.** Crates, data flow, trust boundaries, trait APIs. |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md)    | **Why these choices.** ADR-style records for the major decisions. |
+| [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | **How to move fast safely.** Alpha/dev workflow, gate tiers, maintainability budget. |
 | [`docs/PLAN.md`](docs/PLAN.md)              | **How to build it.** Phased execution runbook with phase gates. |
 | [`docs/REFERENCES.md`](docs/REFERENCES.md)  | **Where to look for truth.** Pinned reference trees + how to consult each. |
 | [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)  | **When it's done.** Release gates per capability. |
@@ -305,10 +347,11 @@ If executing the build:
 
 1. `docs/SPEC.md` — the contract
 2. `docs/ARCHITECTURE.md` — the shape
-3. `docs/DECISIONS.md` — confirm the choices
-4. `docs/PLAN.md` — the runbook
-5. `docs/REFERENCES.md` — consult as integration questions arise
-6. `docs/ACCEPTANCE.md` — check against, every phase
+3. `docs/DEVELOPMENT.md` — choose the dev/alpha workflow and gates
+4. `docs/DECISIONS.md` — confirm the choices
+5. `docs/PLAN.md` — the runbook
+6. `docs/REFERENCES.md` — consult as integration questions arise
+7. `docs/ACCEPTANCE.md` — check against, every phase
 
 If evaluating the project: read `docs/SPEC.md` and
 `docs/DECISIONS.md`, then sample `docs/PLAN.md`.

@@ -12,6 +12,9 @@ for the per-phase gates.
 For the executable vertical slice order, use [`docs/MILESTONES.md`](MILESTONES.md):
 large browser features should extend `vixen_engine::page::Page` and prove the
 slice with a `just gate-*` command, not land only as isolated prep modules.
+For larger alpha/dev batches, follow [`docs/DEVELOPMENT.md`](DEVELOPMENT.md):
+partial capability is acceptable only when it is visible, tested, fail-closed,
+and bounded by a named maintainability follow-up.
 
 ---
 
@@ -129,9 +132,13 @@ Wire up HTML parsing and CSS cascade.
    element and returns a compact author/inline cascade. `vixen-engine::style_cascade`
    loads `<style>` blocks, matches selectors through Stylo's selector engine,
    applies specificity, source order, cascade layers, media/supports conditions,
-   custom-property `var()` resolution, inherited custom properties, CSS-wide
-   keywords, and author/inline `!important`, and keeps the WPT `computed-style`
-   check vertical behind `Page`.
+    custom-property `var()` resolution, inherited custom properties, CSS-wide
+    keywords, and author/inline `!important`, and keeps the WPT `computed-style`
+    check vertical behind `Page`. `Page::evaluate_dom_expression` also projects
+    small CSSOM smoke seams for `getComputedStyle(document.querySelector(...))`,
+    `CSS.supports()`, `document.styleSheets`, and read-only
+    CSSStyleRule/CSSStyleDeclaration state while full computed values and
+    stylesheet host objects land.
 4. `vixen-engine/src/style.rs` (next slice): replace the compact projection
    with full Stylo style data: load `<style>` / `<link rel=stylesheet>` into
    `Stylesheet` list → `Stylist::update_stylist`
@@ -226,7 +233,7 @@ Defer text-specific crates (`rustybuzz`, `fontdb`, `unicode-linebreak`,
 Do not use generic UI layout engines (`taffy`, `stretch`, etc.) for CSS layout
 without a new ADR.
 
-**Vertical layout-tree slice landed.** `vixen-engine::layout_tree` now builds
+**Vertical layout-tree + fragment slice landed.** `vixen-engine::layout_tree` now builds
 the first arena-backed Vixen layout tree behind `Page::layout_tree`, and
 `vixen-headless --dump-layout-tree` exposes a deterministic dump. The first
 block formatting-context slice consumes cascade-projected `width`/`height`,
@@ -234,8 +241,11 @@ block formatting-context slice consumes cascade-projected `width`/`height`,
 existing `box_model` resolver, so authored block dimensions now affect node
 boxes. The existing `Page::dump_lines` projection derives visible text from the
 tree instead of raw body text, keeping the line-layout and paint surfaces on the
-same spine. Next slices replace the text-width estimate with styled
-inline/flex/grid formatting-context fragments without changing the CLI seam.
+same spine. `Page::layout_fragments(viewport)` now projects block backgrounds
+and wrapped text lines from that tree into paint-consumable fragments; the
+display-list builder consumes that seam instead of re-walking layout nodes.
+Next slices replace the deterministic average-width text metric with styled
+glyph fragments and enrich grid/inline placement without changing the CLI seam.
 
 **Gate:** Visual-hash WPT check on 20+ fixtures matches reference
 baseline within tolerance. Specifically, nested-flex/grid + padding +
@@ -413,8 +423,8 @@ to two `GlContext` implementations.
    consumes that stream; the invariant logic is done and Rust-unit-tested.
 
    **Vertical display-list slice landed.** `Page::display_list` now turns the
-   Phase 4 layout tree into the single `DisplayListBuilder` command stream:
-   viewport background first, then layout-box-backed backgrounds/text commands,
+   Phase 4 layout fragments into the single `DisplayListBuilder` command stream:
+   viewport background first, then fragment-backed backgrounds/text commands,
    exposed through `vixen-headless --dump-display-list`. `--paint-stats` now
    aggregates command counts and painted area from that same stream. This is not
    a renderer or CPU paint fallback; WebRender consumes the same `PaintCommand`
@@ -502,6 +512,14 @@ subset of the matrix surface).
   animation interpolation layer reduces to) and the full `transform`
   property parser land with the 3D WebRender plumbing; this module is the
   arithmetic those slices reduce to.
+- `Page::evaluate_dom_expression` now exposes the first geometry host seam:
+  `Element.getBoundingClientRect()` returns the Page layout box as a DOMRect
+  projection (`x`/`y`/`width`/`height`/`left`/`top`/`right`/`bottom`), and
+  `getClientRects().length` reports whether layout produced a box. It also
+  projects the read-only Geometry Interfaces value constructors
+  (`DOMPoint`, `DOMRect.fromRect()`, `DOMQuad.fromRect()` / `getBounds()`, and
+  `DOMMatrix` transform/`transformPoint()` smoke) until real SpiderMonkey
+  wrappers replace the string projection.
 
 [`DOMPoint`]: ../../crates/vixen-engine/src/geometry.rs
 [`DOMRect`]: ../../crates/vixen-engine/src/geometry.rs
@@ -735,6 +753,25 @@ Each family lands with its WPT fixtures passing before moving on.
   `StoragePartition` key the `vixen-store` redb tables partition under, plus
   the per-partition `StorageQuota` (5 MiB / 8 192 entries) the host hooks
   report `QuotaExceededError` against.
+- `Page::evaluate_dom_expression` now projects the read-only document/navigator
+  state shape (`readyState`, `compatMode`, visibility, `documentURI`/`baseURI`,
+  focus/active element, viewport/window/screen state, language/userAgent) plus
+  an empty `localStorage`/`sessionStorage` smoke seam through the same storage-key
+  validation boundary the persistent host object will use. The DOM query seam
+  now also covers core node/ancestry properties (`nodeName`/`nodeType`,
+  `isConnected`, `ownerDocument`, and `Element.closest()`) before full Node /
+  Element SpiderMonkey wrappers replace the string projection.
+- `vixen-engine::script::JsRuntime::evaluate_with_page` now installs the first
+  SpiderMonkey `document` snapshot host-object seam for focused evals:
+  `document.title`, `document.body.textContent`, simple
+  `querySelector`/`getElementById` element properties and attributes, and
+  `querySelectorAll().length`. The remaining broad DOM smoke surface still
+  fails closed through `Page::evaluate_dom_expression` until each family moves
+  behind real wrappers.
+- `Page::evaluate_dom_expression` now projects constructor smoke for `Event` /
+  `CustomEvent` and element `dispatchEvent(new Event(...))` so event-object and
+  EventTarget wiring has fixture coverage before listener queues and full capture
+  / bubble dispatch land.
 - `vixen-engine::form_submission` — the three WHATWG HTML § 4.10.21 form-
   submission encoders (`application/x-www-form-urlencoded`,
   `multipart/form-data`, `text/plain`) plus the `FormEntry` / `FormEntryValue`
@@ -742,17 +779,39 @@ Each family lands with its WPT fixtures passing before moving on.
   space→`+` + uppercase-hex percent-encoding; the multipart encoder handles
   RFC 7578 § 4.2 `Content-Disposition` quoting + `filename` + `Content-Type`
   per part, with CRLF discipline; the boundary generator is RFC 2046-capped.
+- `Page::evaluate_dom_expression` now reuses the same form entry-list builder
+  for a read-only `FormData(form)` smoke seam (`get`/`getAll`/`has`, iterator
+  first-entry shape, plus file `name`/`type`/`size`) before mutable `FormData`
+  and submitter-aware form host objects land.
 - `vixen-engine::dataset` — WHATWG HTML § 3.2.6.9 `data-*` attribute ↔ dataset
   property-name bidirectional mapping (deserialise, serialise, collect),
   with the anti-collision rule (`-` followed by uppercase ⇒ not exposed).
+- `Page::evaluate_dom_expression` now uses that same dataset mapper for the
+  read-only smoke surface (`element.dataset.fooBar` / bracket access) proven by
+  `fixtures/dom/dataset.html` `js-eval` checks until real SpiderMonkey
+  `DOMStringMap` host objects replace the string projection.
+- `Page::evaluate_dom_expression` also projects `ValidityState` flags,
+  `willValidate`, and `checkValidity()` / `reportValidity()` from the pure
+  forms module for fixture smoke coverage until the Phase 6 form host objects
+  land.
+- `Page::evaluate_dom_expression` projects `Element.innerHTML` / `outerHTML`
+  getters through `vixen-engine::html_serialize`, proving the HTML
+  serialisation host-object seam with WPT `js-eval` checks before mutation
+  setters and Trusted Types enforcement land.
+- `Page::evaluate_dom_expression` also reflects simple security-relevant element
+  properties (`HTMLMetaElement.content` / `.charset`) so CSP/referrer meta
+  fixtures cover the DOM host seam before Phase 7 enforcement consumes those
+  declarations.
 - `fixtures/forms/validation.html` — exercises every form pseudo-class
   `style_dom` resolves today (`:checked`/`:disabled`/`:enabled`/`:required`/
-  `:optional`/`:read-only`/`:read-write`); wired into `fixtures/manifest.json`.
+  `:optional`/`:read-only`/`:read-write`) plus the Page-backed validity eval
+  seam; wired into `fixtures/manifest.json`.
 - `fixtures/dom/dataset.html` — exercises the canonical `data-foo-bar` →
   `fooBar` surface the host-hook layer will reflect; wired into
   `fixtures/manifest.json`.
 - `fixtures/forms/submission.html` — fixes the form-DOM input shape the
-  three encoders will walk; wired into `fixtures/manifest.json`.
+  three encoders and `FormData` projection walk; wired into
+  `fixtures/manifest.json`.
 
 **Pure-logic foundation landed for the `DOMTokenList` surface (Phase 6 prep).**
 - `vixen-engine::class_list` — WHATWG HTML § 4.6.4 `DOMTokenList` + the
@@ -769,8 +828,12 @@ Each family lands with its WPT fixtures passing before moving on.
 - `fixtures/dom/class-list.html` — exercises the canonical classList
   patterns the host-hook layer reflects (duplicate-token collapse,
   whitespace-run collapse, the case-sensitive `Foo`/`foo`/`FOO`
-  distinction, the multi-value `<link rel>` form); wired into
+  distinction, the multi-value `<link rel>` form) and now asserts the
+  Page-backed `classList` / `relList` eval seam; wired into
   `fixtures/manifest.json`.
+- `fixtures/security/sandbox.html` now also asserts the Page-backed
+  `iframe.sandbox` DOMTokenList projection (`length`/`contains`/`item`) before
+  the real framed-document sandbox enforcement consumes the same tokens.
 
 **Pure-logic foundation landed for Network host hooks (Phase 6 prep).**
 - `vixen-engine::url_search_params` — WHATWG URL Standard `URLSearchParams`
@@ -781,6 +844,11 @@ Each family lands with its WPT fixtures passing before moving on.
   percent-decode with U+FFFD on ill-formed UTF-8, and empty-tuple dropping;
   the serializer shares the `application/x-www-form-urlencoded` byte set with
   `form_submission::encode_urlencoded` (kept separate because the specs are).
+- `Page::evaluate_dom_expression` now exposes a read-only `URL.canParse()` /
+  `new URL()` / `URLSearchParams` smoke seam (`href`/`origin`/components /
+  `toString()` / `searchParams`, record-list constructor, two-argument `has`,
+  and first iterator entry/key/value shape) from `whatwg_url` +
+  `url_search_params`, proven by `fixtures/network/url-parsing.html`.
 - `vixen-engine::mime` — WHATWG MIME Sniffing § 2.1 `MimeType::parse` + § 2.2
   `serialize` + the `essence()` accessor. Tolerant whitespace + case handling,
   quoted-string parameter values (RFC 9110 § 3.2.6 backslash-pair escaping),
@@ -789,16 +857,28 @@ Each family lands with its WPT fixtures passing before moving on.
   `<object>`/`<embed>` plugin negotiation consults this one parser.
 - `vixen-engine::text_codec` — WHATWG Encoding API (`TextEncoder` +
   `TextDecoder`). `encode_into` reports UTF-16-code-unit `read` + byte
-  `written` without splitting a scalar value; `decode` does the BOM sniff
-  (`ignoreBOM` opt-out), the `fatal`-flag UTF-8 validation, the WHATWG § 4.6
-  one-U+FFFD-per-maximal-subpart replacement (via `from_utf8_lossy`, which
-  agrees with the WHATWG count), and the § 7.1 `CRLF`/lone-`CR` → `LF` line-
-  break normalisation. v1 ships UTF-8 only; unknown labels fail closed.
+  `written` without splitting a scalar value; the Page seam and the first
+  SpiderMonkey global host-constructor pilot both parse the `TextDecoder`
+  constructor label/options dictionary (`fatal`, `ignoreBOM`); `decode` does
+  the BOM sniff (`ignoreBOM` opt-out), the `fatal`-flag UTF-8 validation, the
+  WHATWG § 4.6 one-U+FFFD-per-maximal-subpart replacement (via
+  `from_utf8_lossy`, which agrees with the WHATWG count), and the § 7.1
+  `CRLF`/lone-`CR` → `LF` line-break normalisation. v1 ships UTF-8 only;
+  unknown labels fail closed.
+- The same fixture set now asserts the Page-backed `TextEncoder` /
+  `TextDecoder`, `atob`/`btoa`, and `DOMParser.parseFromString(..., "text/html")`
+  smoke seams (`encoding`, encoded byte length, `encodeInto` `read`/`written`,
+  `TextDecoder` label/options, decode, base64 round-trip, parsed document query)
+  while `vixen-headless --eval` / CDP `Runtime.evaluate` now exercise the real
+  SpiderMonkey `TextEncoder` / `TextDecoder` constructors plus focused
+  `document` / `Element` snapshot objects backed by the same Page data.
 
 **Pure-logic foundation landed for the fetch host-hook data model (Phase 6 prep).**
-The `Headers` object + `AbortController`/`AbortSignal` primitives the
-`fetch()` / `XMLHttpRequest` / streaming host hooks reduce to. Both
-`#![forbid(unsafe_code)]`, Rust-unit-tested.
+The `Headers` object, `Blob`/`File` metadata, read-only `Request`/`Response`
+state, static `Response.error()` / `Response.redirect()`, and
+`AbortController`/`AbortSignal` primitives are the sync data surfaces the
+`fetch()` / `XMLHttpRequest` / streaming host hooks reduce to. The pure modules
+remain `#![forbid(unsafe_code)]`, Rust-unit-tested.
 - `vixen-engine::headers` — Fetch § 3.2.2 `Headers` object data model:
   [`validate_header_name`] (RFC 9110 § 5.5 `token` + lowercasing) +
   [`validate_header_value`] (OWS trim, NUL/CRLF rejection, code-point-`≤ U+00FF`
@@ -819,6 +899,12 @@ The `Headers` object + `AbortController`/`AbortSignal` primitives the
   host-hook event-loop layer's job), and [`TimeoutSignal`] (§ 8.1.3.2
   `AbortSignal.timeout(ms)` request record with the zero-delay-aborts-
   synchronously rule).
+- `Page::evaluate_dom_expression` now projects read-only `Headers`,
+  `Blob`/`File`, `Request`, `Response`, `AbortController`/`AbortSignal`, and
+  `URLPattern` smoke seams from these pure modules (`get`/`has`, iterator shape,
+  forbidden-header filtering in Request/Response init, byte-size/type/name/
+  method/status/header state, `Response.json()`, timeout/any snapshots, pathname
+  test/exec groups) while mutable fetch and routing host objects land.
 
 [`validate_header_name`]: ../../crates/vixen-engine/src/headers.rs
 [`validate_header_value`]: ../../crates/vixen-engine/src/headers.rs
@@ -841,6 +927,10 @@ the timing host hooks and the mobile layout layer reduce to. Both
   § 4.4 [`coarsen`] effective-time-value coarsening (floor to `100µs` unless
   cross-origin isolated), and the `performance.now()` → Unix-epoch conversion
   (`timeOrigin + now`) the legacy `PerformanceTiming` surface reduces to.
+- `Page::evaluate_dom_expression` now projects Performance API smoke checks for
+  `typeof performance.now()`, non-negative `performance.now()`, and monotonic
+  `timeOrigin + now` shape through this pure clock model while the real
+  per-global timer host object lands.
 - `vixen-engine::viewport_meta` — WHATWG HTML § 9.3 `<meta name="viewport">`
   `content` parser: the comma-separated `<name>=<value>` declaration set
   (`width`/`height` device-keyword or CSS-px number, `initial-scale`/
@@ -868,6 +958,8 @@ the timing host hooks and the mobile layout layer reduce to. Both
   joined by `/`). The `protocol`/`hostname`/`port`/`search`/`hash` components
   + full-regex custom params (`:name(\\d+)`) land with the host hook; the
   named/`*` subset covers real routing.
+- The Page eval seam exposes that pathname subset through `new URLPattern({
+  pathname })` `test()` / `exec().pathname.groups` smoke checks.
 
 [`URLPattern::compile`]: ../../crates/vixen-engine/src/url_pattern.rs
 [`URLPattern::match_pathname`]: ../../crates/vixen-engine/src/url_pattern.rs
@@ -950,6 +1042,11 @@ family is now complete end-to-end.
   min/max-width, orientation, output-context, and aggregate input-device media
   queries); wired into
   `fixtures/manifest.json`.
+- `Page::evaluate_dom_expression` now projects the read-only `<img>.currentSrc`
+  smoke surface for plain `srcset`/`sizes` images from `responsive_select` plus
+  a `matchMedia()` `.matches` / `.media` seam from `media_query`, proving
+  selected-image URL reflection and MediaQueryList shape until the full
+  `HTMLImageElement` / `MediaQueryList` host objects and resource fetch path land.
 
 **Pure-logic foundation landed for CSS value-resolution + easing (Phase 3/6 prep).**
 The calculation + timing-function primitives the cascade (`calc()` reduction,
@@ -1049,6 +1146,10 @@ exposure.
   / [`MessagePort::drain`] are the receiver-side inbox + the event-loop
   hand-off; `start()` / `close()` carry the § 9.5.3 / § 9.5.5 lifecycle (a
   detached port drops `postMessage` and drains nothing).
+- `Page::evaluate_dom_expression` now projects a small `structuredClone()`
+  smoke seam for primitive strings, arrays, shallow objects, Date, Map, Set, and
+  Error name/message shape through the same clone function that `postMessage()` /
+  history state will call.
 
 [`StructuredCloneValue`]: ../../crates/vixen-engine/src/structured_clone.rs
 [`ErrorKind`]: ../../crates/vixen-engine/src/structured_clone.rs
@@ -1089,6 +1190,10 @@ reduce to. `#![forbid(unsafe_code)]`, Rust-unit-tested.
   selection state). The live tree mutation (`surroundContents` /
   `insertNode` / `extractContents` — the § 5.3 algorithms) is the host
   hook; this module is the pure boundary model.
+- `Page::evaluate_dom_expression` now projects the read-only initial Range /
+  Selection smoke seam (`document.createRange().collapsed` / offsets and
+  empty `getSelection()` accessors) through this pure model while the live DOM
+  mutation and selection host objects remain the Phase 6 swap-in.
 
 [`NodeRef`]: ../../crates/vixen-engine/src/range.rs
 [`DocumentOrder`]: ../../crates/vixen-engine/src/range.rs
@@ -1127,6 +1232,10 @@ Rust-unit-tested.
   structured-clone serialisation of the `state` value stay in the
   navigation layer / host hook (the host hook serialises via
   [`crate::structured_clone`] before calling `pushState`).
+- `Page::evaluate_dom_expression` now projects the read-only initial History
+  smoke seam (`history.length`, `history.state`, `history.scrollRestoration`)
+  from `SessionHistory::new(HistoryEntry::navigation(_))` before mutable
+  `pushState`/traversal host objects land.
 
 [`ScrollRestoration`]: ../../crates/vixen-engine/src/history.rs
 [`HistoryEntry`]: ../../crates/vixen-engine/src/history.rs
@@ -1152,6 +1261,9 @@ The DOM § 4.3 mutation-queue + the § 4.3.1 match predicate the
   microtask-checkpoint batch). The live-DOM-tree relation classification +
   the microtask checkpoint scheduling + the callback invocation stay in the
   host hook / event-loop layer.
+- `Page::evaluate_dom_expression` now projects the initial MutationObserver
+  lifecycle smoke seam (`takeRecords().length`, `disconnect()`) through this
+  pure queue model while live DOM mutation delivery remains in the host hook.
 
 [`MutationType`]: ../../crates/vixen-engine/src/mutation_observer.rs
 [`MutationRecord`]: ../../crates/vixen-engine/src/mutation_observer.rs
@@ -1179,6 +1291,10 @@ trait the host hook implements on the real DOM.
   from the tree (the reference moves to the removed subtree's previous
   sibling's last descendant, else the parent). The real-DOM tree walk +
   the JS `NodeFilter` callback invocation stay in the host hook.
+- `Page::evaluate_dom_expression` now projects the whatToShow-only element
+  traversal smoke seam for `document.createTreeWalker()` and
+  `document.createNodeIterator()` by adapting the parsed document to the
+  traversal module's `Tree` trait.
 
 [`NodeType`]: ../../crates/vixen-engine/src/traversal.rs
 [`WhatToShow`]: ../../crates/vixen-engine/src/traversal.rs

@@ -773,6 +773,34 @@ impl Document {
         Some(descendant_text(arena.node(idx)))
     }
 
+    /// HTML serialisation of an element's children (`Element.innerHTML`) by
+    /// stable 1-based document-order `node_id`.
+    pub fn element_inner_html(&self, node_id: usize) -> Option<String> {
+        let idx = node_id.checked_sub(1)?;
+        let arena = ElementArena::build(&self.dom.document);
+        if idx >= arena.len() {
+            return None;
+        }
+        Some(crate::html_serialize::serialize_children_to_string(
+            &arena.nodes[idx],
+            crate::html_serialize::Scripting::Enabled,
+        ))
+    }
+
+    /// HTML serialisation of an element and its descendants
+    /// (`Element.outerHTML`) by stable 1-based document-order `node_id`.
+    pub fn element_outer_html(&self, node_id: usize) -> Option<String> {
+        let idx = node_id.checked_sub(1)?;
+        let arena = ElementArena::build(&self.dom.document);
+        if idx >= arena.len() {
+            return None;
+        }
+        Some(crate::html_serialize::serialize_to_string(
+            &arena.nodes[idx],
+            crate::html_serialize::Scripting::Enabled,
+        ))
+    }
+
     /// Immediate element-child count for read-only DOM host projections.
     pub fn element_child_count(&self, node_id: usize) -> Option<usize> {
         let idx = node_id.checked_sub(1)?;

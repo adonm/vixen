@@ -17,11 +17,13 @@ use crate::grid_resolve::GridTrack;
 mod build;
 mod dump;
 mod flow;
+mod fragments;
 mod style;
 
 pub use build::build_layout_tree;
 pub use dump::dump_layout_tree;
 pub use flow::line_boxes_from_tree;
+pub use fragments::{LayoutFragment, LayoutFragmentKind, layout_fragments_from_tree};
 
 /// Stable index into a [`LayoutTree`] arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

@@ -21,9 +21,9 @@ fn dispatch_one(state: &mut CdpState, method: &str, params: Value) -> Value {
         "params": params,
     });
     let lines = state.handle_text_sync(&req.to_string());
-    // Last line is the response (notifications, if any, come first).
-    let last = lines.last().expect("at least one response line");
-    let v: Value = serde_json::from_str(last).unwrap();
+    // First line is the response; notifications, if any, follow it.
+    let first = lines.first().expect("at least one response line");
+    let v: Value = serde_json::from_str(first).unwrap();
     v["result"].clone()
 }
 
@@ -48,6 +48,62 @@ fn runtime_evaluate_surface() {
     );
     assert_eq!(v["result"]["type"], "string");
     assert_eq!(v["result"]["value"], "hello world");
+
+    // Phase 6 pilot host constructors: CDP Runtime.evaluate reaches the real
+    // SpiderMonkey global, whose Encoding API methods call vixen-engine's
+    // text_codec module.
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "new TextEncoder().encode('é').length" }),
+    );
+    assert_eq!(v["result"]["type"], "number");
+    assert_eq!(v["result"]["value"], 2);
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "new TextDecoder('UTF-8', { fatal: true }).fatal" }),
+    );
+    assert_eq!(v["result"]["type"], "boolean");
+    assert_eq!(v["result"]["value"], true);
+
+    // Phase 6 DOM host-object backbone: after navigation, Runtime.evaluate runs
+    // against SpiderMonkey with a real `document` snapshot in the global.
+    let dir = tempfile::tempdir().unwrap();
+    let html = dir.path().join("cdp-dom-host.html");
+    std::fs::write(
+        &html,
+        "<html><head><title>CDP DOM</title></head><body><p id='lead' data-role='copy'>Hello <b>CDP</b></p></body></html>",
+    )
+    .unwrap();
+    let url = format!("file://{}", html.display());
+    let v = dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
+    assert_eq!(v["frameId"], "main");
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.title" }),
+    );
+    assert_eq!(v["result"]["type"], "string");
+    assert_eq!(v["result"]["value"], "CDP DOM");
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.querySelector('#lead').textContent" }),
+    );
+    assert_eq!(v["result"]["type"], "string");
+    assert_eq!(v["result"]["value"], "Hello CDP");
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.getElementById('lead').getAttribute('data-role')" }),
+    );
+    assert_eq!(v["result"]["type"], "string");
+    assert_eq!(v["result"]["value"], "copy");
 
     // Script error carries the stable code. (Phase 6 will surface the
     // actual exception message via `JS_GetPendingException`; until then

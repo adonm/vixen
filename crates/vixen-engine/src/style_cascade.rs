@@ -46,6 +46,18 @@ impl AuthorStylesheet {
         self.rules.is_empty()
     }
 
+    pub fn rule_count(&self) -> usize {
+        self.rules.len()
+    }
+
+    /// Read-only CSSOM-style view of one parsed style rule. This is intentionally
+    /// small and stable: `Page::evaluate_dom_expression` uses it for
+    /// `document.styleSheets[0].cssRules[n]` smoke checks until real CSSRule /
+    /// CSSStyleDeclaration host objects replace the projection.
+    pub fn rule(&self, index: usize) -> Option<AuthorStyleRule<'_>> {
+        self.rules.get(index).map(|rule| AuthorStyleRule { rule })
+    }
+
     /// Compute the current cascade projection for one element.
     pub fn computed_style(&self, document: &Document, node_id: usize) -> Vec<(String, String)> {
         self.computed_style_for_viewport(document, node_id, DEFAULT_VIEWPORT)
@@ -154,6 +166,7 @@ impl AuthorStylesheet {
                 if let Ok(selector) = Selector::parse(selector_text) {
                     self.rules.push(StyleRule {
                         selector,
+                        selector_text: selector_text.to_owned(),
                         specificity: Specificity::parse(selector_text),
                         layer,
                         conditions: conditions.to_vec(),
@@ -231,9 +244,66 @@ impl AuthorStylesheet {
     }
 }
 
+pub fn css_supports(input: &str) -> bool {
+    conditions::supports_condition(input)
+}
+
+/// Borrowed CSSOM-style view of a parsed author rule.
+#[derive(Debug, Clone, Copy)]
+pub struct AuthorStyleRule<'a> {
+    rule: &'a StyleRule,
+}
+
+impl<'a> AuthorStyleRule<'a> {
+    pub fn selector_text(&self) -> &'a str {
+        &self.rule.selector_text
+    }
+
+    pub fn declaration_count(&self) -> usize {
+        self.rule.declarations.len()
+    }
+
+    pub fn declaration_property(&self, index: usize) -> Option<&'a str> {
+        self.rule
+            .declarations
+            .get(index)
+            .map(|declaration| declaration.property.as_str())
+    }
+
+    pub fn get_property_value(&self, property: &str) -> Option<&'a str> {
+        self.rule
+            .declarations
+            .iter()
+            .find(|declaration| declaration.property == property)
+            .map(|declaration| declaration.value.as_str())
+    }
+
+    pub fn css_text(&self) -> String {
+        let declarations = self
+            .rule
+            .declarations
+            .iter()
+            .map(|declaration| {
+                let important = if declaration.important {
+                    " !important"
+                } else {
+                    ""
+                };
+                format!(
+                    "{}: {}{};",
+                    declaration.property, declaration.value, important
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        format!("{} {{ {} }}", self.selector_text(), declarations)
+    }
+}
+
 #[derive(Debug, Clone)]
 struct StyleRule {
     selector: Selector,
+    selector_text: String,
     specificity: Specificity,
     layer: Option<u16>,
     conditions: Vec<RuleCondition>,
@@ -938,6 +1008,23 @@ mod tests {
         assert_eq!(sheet.rules[0].specificity, sp(1, 0, 0));
         assert_eq!(sheet.rules[1].specificity, sp(0, 1, 0));
         assert_eq!(sheet.rules[2].specificity, sp(0, 0, 1));
+    }
+
+    #[test]
+    fn stylesheet_exposes_cssom_rule_view() {
+        let sheet = AuthorStylesheet::from_blocks(&[String::from(
+            "#a { color: red; display: block !important } .b { color: blue }",
+        )]);
+        let rule = sheet.rule(0).unwrap();
+        assert_eq!(rule.selector_text(), "#a");
+        assert_eq!(rule.declaration_count(), 2);
+        assert_eq!(rule.declaration_property(0), Some("color"));
+        assert_eq!(rule.get_property_value("display"), Some("block"));
+        assert_eq!(
+            rule.css_text(),
+            "#a { color: red; display: block !important; }"
+        );
+        assert!(sheet.rule(2).is_none());
     }
 
     #[test]

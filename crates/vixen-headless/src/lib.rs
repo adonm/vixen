@@ -3,8 +3,9 @@
 //! Phase 2 implements the CLI flag surface (docs/SPEC.md "Headless CLI
 //! surface") and wires `--url`/`--eval` to the SpiderMonkey runtime
 //! (`vixen-engine::script`). Phase 3+ DOM/selector/layout/paint paths run
-//! through `vixen_engine::page::Page`; the host-binding smoke subset for
-//! `document.title` is served by the same facade until full DOM objects land.
+//! through `vixen_engine::page::Page`; broad host-binding smoke still uses that
+//! facade while the first focused `document` / `Element` evals run in
+//! SpiderMonkey with a Page snapshot.
 //! Renderer/CDP-only flags keep the stable error codes (`unsupported.screenshot`,
 //! `invalid-selector`) until their later phases land.
 
@@ -462,10 +463,10 @@ fn run_eval(url: &str, js: &str) -> ExitCode {
         }
     };
 
-    // `--url` is accepted as the page context (validated earlier). DOM smoke
-    // expressions are handled above; remaining JS runs in a fresh global until
-    // full DOM object bindings land.
-    match rt.evaluate(js) {
+    // `--url` is the page context. Legacy broad DOM smoke expressions are
+    // handled above; the first DOM host-object slice falls through here so
+    // SpiderMonkey sees a real `document` snapshot in the global.
+    match rt.evaluate_with_page(js, &page) {
         Ok(value) => {
             println!("{}", value.to_display());
             ExitCode::SUCCESS
@@ -489,15 +490,162 @@ fn run_dom_eval(url: &str, js: &str) -> Option<Result<String, String>> {
 }
 
 fn run_dom_eval_on_page(page: &Page, js: &str) -> Option<Result<String, String>> {
+    if uses_spidermonkey_dom_eval(js) {
+        return None;
+    }
     if !looks_like_dom_eval(js) {
         return None;
     }
     page.evaluate_dom_expression(js)
 }
 
+pub(crate) fn uses_spidermonkey_dom_eval(js: &str) -> bool {
+    let js = js.trim_start();
+    matches!(
+        js,
+        "document.title" | "document.body.textContent" | "document.body.innerText"
+    ) || simple_query_selector_eval(js, "document.querySelector(")
+        || simple_get_element_by_id_eval(js)
+        || simple_query_selector_all_length_eval(js)
+}
+
 pub(crate) fn looks_like_dom_eval(js: &str) -> bool {
     let js = js.trim_start();
-    js.starts_with("document.") || js.starts_with("location.") || js.starts_with("window.location.")
+    js.starts_with("document.")
+        || js.starts_with("location.")
+        || js.starts_with("window.location.")
+        || js.starts_with("history.")
+        || js.starts_with("window.history.")
+        || js.starts_with("getComputedStyle(")
+        || js.starts_with("window.getComputedStyle(")
+        || js.starts_with("performance.")
+        || js.starts_with("window.performance.")
+        || js.starts_with("typeof performance.")
+        || js.starts_with("typeof window.performance.")
+        || js.starts_with("matchMedia(")
+        || js.starts_with("window.matchMedia(")
+        || js.starts_with("window.getSelection()")
+        || js.starts_with("structuredClone(")
+        || js.starts_with("new MutationObserver(")
+        || js.starts_with("new Headers(")
+        || js.starts_with("new AbortController()")
+        || js.starts_with("AbortSignal.")
+        || js.starts_with("new URL(")
+        || js.starts_with("new URLPattern(")
+        || js.starts_with("new URLSearchParams(")
+}
+
+fn simple_query_selector_eval(js: &str, prefix: &str) -> bool {
+    let Some((selector, tail)) = single_string_arg_call_tail(js, prefix) else {
+        return false;
+    };
+    let Some(member) = tail.strip_prefix(')') else {
+        return false;
+    };
+    is_simple_dom_host_selector(selector) && is_simple_dom_host_member(member)
+}
+
+fn simple_get_element_by_id_eval(js: &str) -> bool {
+    let Some((id, tail)) = single_string_arg_call_tail(js, "document.getElementById(") else {
+        return false;
+    };
+    let Some(member) = tail.strip_prefix(')') else {
+        return false;
+    };
+    is_simple_dom_host_name(id) && is_simple_dom_host_member(member)
+}
+
+fn simple_query_selector_all_length_eval(js: &str) -> bool {
+    let Some((selector, tail)) = single_string_arg_call_tail(js, "document.querySelectorAll(")
+    else {
+        return false;
+    };
+    tail == ").length" && is_simple_dom_host_selector(selector)
+}
+
+fn is_simple_dom_host_member(member: &str) -> bool {
+    matches!(
+        member,
+        " === null"
+            | " !== null"
+            | ".id"
+            | ".className"
+            | ".tagName"
+            | ".nodeName"
+            | ".localName"
+            | ".nodeType"
+            | ".isConnected"
+            | ".ownerDocument === document"
+            | ".textContent"
+            | ".innerText"
+    ) || simple_dom_host_string_method(member, ".getAttribute(")
+        || simple_dom_host_string_method(member, ".hasAttribute(")
+}
+
+fn simple_dom_host_string_method(member: &str, prefix: &str) -> bool {
+    let Some((name, tail)) = single_string_arg_call_tail(member, prefix) else {
+        return false;
+    };
+    tail == ")" && is_simple_dom_host_name(name)
+}
+
+fn single_string_arg_call_tail<'a>(input: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
+    let rest = input.strip_prefix(prefix)?;
+    let bytes = rest.as_bytes();
+    let quote = *bytes.first()?;
+    if quote != b'\'' && quote != b'"' {
+        return None;
+    }
+    let mut escaped = false;
+    for index in 1..bytes.len() {
+        let byte = bytes[index];
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if byte == b'\\' {
+            escaped = true;
+            continue;
+        }
+        if byte == quote {
+            return Some((&rest[1..index], &rest[index + 1..]));
+        }
+    }
+    None
+}
+
+fn is_simple_dom_host_selector(selector: &str) -> bool {
+    if selector == "*" {
+        return true;
+    }
+    if let Some(id) = selector.strip_prefix('#') {
+        return is_simple_dom_host_selector_atom(id);
+    }
+    if let Some(class) = selector.strip_prefix('.') {
+        return is_simple_dom_host_selector_atom(class);
+    }
+    is_simple_dom_host_selector_atom(selector)
+        && selector
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphabetic())
+}
+
+fn is_simple_dom_host_selector_atom(name: &str) -> bool {
+    let Some(first) = name.bytes().next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == b'_')
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+}
+
+fn is_simple_dom_host_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
 }
 
 /// `--dump-dom` / `--extract-text` / `--dump-layout-tree` / `--dump-lines` /
@@ -868,23 +1016,42 @@ mod tests {
     }
 
     #[test]
-    fn eval_document_title_runs_through_page_facade() {
+    fn focused_document_eval_uses_spidermonkey_host_objects() {
         let dir = tempfile::tempdir().unwrap();
         let html = dir.path().join("title.html");
         std::fs::write(
             &html,
-            "<html><head><title>DOM title</title></head><body><p>body</p></body></html>",
+            "<html><head><title>DOM title</title></head><body><p id='lead'>body</p></body></html>",
         )
         .unwrap();
         let url = format!("file://{}", html.display());
+        assert!(looks_like_dom_eval("document.title"));
+        assert!(uses_spidermonkey_dom_eval("document.title"));
+        assert!(uses_spidermonkey_dom_eval(
+            "document.querySelector('#lead').textContent"
+        ));
+        assert!(uses_spidermonkey_dom_eval(
+            "document.getElementById('lead').tagName"
+        ));
+        assert!(uses_spidermonkey_dom_eval(
+            "document.querySelectorAll('p').length"
+        ));
+        assert!(!uses_spidermonkey_dom_eval(
+            "document.querySelector('#lead').getBoundingClientRect().x"
+        ));
+        assert_eq!(run_dom_eval(&url, "document.title"), None);
         assert_eq!(
-            run_dom_eval(&url, "document.title"),
-            Some(Ok("DOM title".into()))
+            run_dom_eval(&url, "document.readyState"),
+            Some(Ok("complete".into()))
         );
-        assert_eq!(
-            run_dom_eval(&url, "document.querySelectorAll('p').length"),
-            Some(Ok("1".into()))
-        );
+    }
+
+    #[test]
+    fn encoding_eval_uses_spidermonkey_host_constructors() {
+        assert!(!looks_like_dom_eval("new TextEncoder().encoding"));
+        assert!(!looks_like_dom_eval(
+            "new TextDecoder('utf-8', { fatal: true }).fatal"
+        ));
     }
 
     #[test]

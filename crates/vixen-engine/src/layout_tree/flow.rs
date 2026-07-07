@@ -537,23 +537,89 @@ fn layout_inline_sequence(
     let mut cursor_x = x;
     let mut line_y = y;
     let mut line_h: f32 = 0.0;
-    let mut total_h: f32 = 0.0;
+    let mut max_bottom = y;
 
     for child in children {
+        if tree.node(*child).kind == LayoutNodeKind::Text {
+            let text = tree.node(*child).text.clone().unwrap_or_default();
+            let unwrapped_w = inline_text_extent(&text, config).0;
+            if cursor_x > x && unwrapped_w > line_right - cursor_x {
+                line_y = max_bottom;
+                cursor_x = x;
+                line_h = 0.0;
+            }
+            let placement = place_wrapped_text_item(
+                tree,
+                *child,
+                cursor_x,
+                line_y,
+                line_right - cursor_x,
+                config,
+            );
+            if placement.line_count > 1 {
+                line_y += (placement.line_count - 1) as f32 * config.line_height_px;
+                cursor_x = x + placement.last_line_width;
+            } else {
+                cursor_x += placement.last_line_width;
+            }
+            line_h = line_h.max(placement.last_line_height);
+            max_bottom = max_bottom.max(line_y + line_h);
+            continue;
+        }
+
         let (item_w, item_h) = inline_outer_size(tree, *child, config);
         if cursor_x > x && item_w > 0.0 && cursor_x + item_w > line_right {
             let advance = line_h.max(config.line_height_px);
             line_y += advance;
-            total_h += advance;
             cursor_x = x;
             line_h = 0.0;
         }
         place_inline_item(tree, *child, cursor_x, line_y, config);
         cursor_x += item_w;
         line_h = line_h.max(item_h);
+        max_bottom = max_bottom.max(line_y + line_h);
     }
 
-    total_h + line_h.max(config.line_height_px)
+    (max_bottom - y).max(config.line_height_px)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct TextPlacement {
+    line_count: usize,
+    last_line_width: f32,
+    last_line_height: f32,
+}
+
+fn place_wrapped_text_item(
+    tree: &mut LayoutTree,
+    id: LayoutNodeId,
+    x: f32,
+    y: f32,
+    available_width: f32,
+    config: LineLayoutConfig,
+) -> TextPlacement {
+    let text = tree.node(id).text.clone().unwrap_or_default();
+    let lines = layout_text_lines(
+        &text,
+        LineLayoutConfig {
+            viewport_width: available_width.round().max(1.0) as u32,
+            margin_px: 0.0,
+            line_height_px: config.line_height_px,
+            average_char_width_px: config.average_char_width_px,
+        },
+    );
+
+    let line_count = lines.len().max(1);
+    let last_line_width = lines.last().map(|line| line.w).unwrap_or(0.0);
+    let width = lines.iter().map(|line| line.w).fold(0.0, f32::max);
+    let height = line_count as f32 * config.line_height_px;
+    set_node_rect(tree, id, Rect::new(x, y, width, height));
+
+    TextPlacement {
+        line_count,
+        last_line_width,
+        last_line_height: config.line_height_px,
+    }
 }
 
 fn inline_outer_size(tree: &LayoutTree, id: LayoutNodeId, config: LineLayoutConfig) -> (f32, f32) {

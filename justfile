@@ -11,6 +11,7 @@
 # duplicating `cargo ...` command lines in docs, mise tasks, or CI.
 
 alias check := check-all-host
+alias alpha := gate-alpha
 alias smoke := gate-smoke
 alias test := test-host
 
@@ -89,6 +90,11 @@ clippy:
 # --- Executable gates --------------------------------------------------------
 # These are current, runnable milestone gates. They complement (not replace)
 # the broader release acceptance checks in docs/ACCEPTANCE.md.
+
+# Fast alpha-slice gate: pair this with focused tests and the relevant phase
+# gate. It is not a substitute for reviewer smoke before commit/push.
+gate-alpha: fmt-check clippy check-all-host
+    cargo test -p vixen-headless --test wpt_runner
 
 # Reviewer smoke: formatting, linting, and all host-runnable tests.
 gate-smoke: fmt-check clippy check-all-host test-host

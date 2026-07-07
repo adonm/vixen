@@ -10,7 +10,7 @@ feature.
 
 ## Current measured local fixture baseline
 
-As of 2026-07-07, `fixtures/manifest.json` contains 51 local fixtures plus
+As of 2026-07-07, `fixtures/manifest.json` contains 52 local fixtures plus
 199 imported smoke fixtures:
 
 | Category | Fixtures |
@@ -22,44 +22,45 @@ As of 2026-07-07, `fixtures/manifest.json` contains 51 local fixtures plus
 | flexbox | 5 |
 | forms    | 27 |
 | grid | 5 |
-| layout   | 8 |
+| layout   | 9 |
 | layout block/inline/position | 6 |
 | network  | 2 |
 | paint    | 4 |
 | paint/ref-equivalent | 8 |
 | security | 8 |
 | selectors | 50 |
-| **Total** | **250** |
+| **Total** | **251** |
 
-Total manifest checks: **1568**.
+Total manifest checks: **1816**.
 
 Current check mix:
 
 | Check type | Count |
 |------------|------:|
-| `selector-count` | 363 |
+| `selector-count` | 364 |
 | `selectors-exact` | 223 |
-| `title` | 249 |
-| `js-eval` | 227 |
+| `title` | 250 |
+| `js-eval` | 468 |
 | `computed-style` | 170 |
 | `element-attribute` | 132 |
-| `layout-box` | 103 |
-| `body-contains` | 65 |
-| `no-critical-diagnostics` | 19 |
+| `layout-box` | 104 |
+| `body-contains` | 66 |
+| `no-critical-diagnostics` | 20 |
 | `ref-equivalent` | 11 |
-| `display-list-contains` | 1 |
+| `display-list-contains` | 3 |
 | `dom-nodes-range` | 1 |
 | `min-nodes` | 1 |
 | `selector-match` | 3 |
 
 This local fixture set is release-blocking and must remain **100 % green**.
 The layout category currently includes normal-flow, inline-flow, positioned,
-flex row/column, grid, and overflow coordinate/paint fixtures with `layout-box`
-and `display-list-contains` assertions. The paint category includes three local
-`ref-equivalent` smoke fixtures against the stable display-list render
-projection. The harness now reports overall, per-category, and local/imported
-pass rates; imported upstream WPT layout/paint coverage is still tracked
-separately below. Imported selector smoke has reached the 50-fixture target,
+flex row/column, grid, overflow coordinate/paint, and fragment-backed text paint
+fixtures with `layout-box` and `display-list-contains` assertions. The paint
+category includes three local `ref-equivalent` smoke fixtures against the stable
+display-list render projection. The harness now reports overall, per-category,
+and local/imported pass rates; imported upstream WPT layout/paint coverage is
+still tracked separately below. Imported selector smoke has reached the
+50-fixture target,
 including focused `:has()` child/descendant/adjacent-sibling/general-sibling and
 selector-list smoke plus attribute operators/flags, class/id matching,
 structural and typed structural pseudos, link/form/read-write/autofill/defined
@@ -78,15 +79,37 @@ including query/getElementById/querySelectorAll, document/root/body access,
 tag/class/wildcard collections, attributes, reflected host properties, text
 aggregation, parent/child/sibling traversal, null relation checks, document URL,
 forms collection length, `matches()`, logical selectors, and `:has()`-backed
-matching. Imported forms smoke has reached the 25-fixture target across reflected/default
-form/control properties, labels, radio/checkbox/select states, textarea text,
-form tree traversal, repeated names, and `:has()` form selectors. Imported smoke
-fixtures now also seed block/inline/position layout, flexbox, grid, and
-display-list `ref-equivalent` paint; imported layout smoke covers auto margins,
-border-box sizing, inline flow, flex reverse/gaps, and grid
-`minmax()`/fractional row/gap cases. Imported paint smoke now covers
-currentcolor, overflow clipping, positioned boxes, flex/grid backgrounds, and
-nested background/text display-list equivalence.
+matching. Imported forms smoke has reached the 25-fixture target across
+reflected/default form/control properties, labels, radio/checkbox/select states,
+textarea text, form tree traversal, repeated names, and `:has()` form selectors.
+Local Phase 6 fixtures now also assert Page-backed `js-eval` projections for
+`getComputedStyle()`, document/navigator state (`documentURI`/`baseURI`,
+focus, and active-element shape included), empty Web Storage,
+`Event`/`CustomEvent`/`dispatchEvent()` smoke, CSSOM `CSS.supports()` /
+`document.styleSheets` plus CSSStyleRule / CSSStyleDeclaration read-only shape,
+viewport/window state, DOMRect geometry via `getBoundingClientRect()`,
+Geometry Interfaces value constructors (`DOMPoint`/`DOMRect`/`DOMQuad`/
+`DOMMatrix`), DOM ancestry/core-node projections (`closest()`, `nodeName`/
+`nodeType`, `ownerDocument`), `DOMParser`, `atob`/`btoa`, `classList`/
+`relList`/`sandbox`, `dataset`, `ValidityState`/`checkValidity()`, `FormData`
+entry-list and iterator projection, meta/content reflection, `innerHTML`/`outerHTML`,
+`URL.canParse()`, `data:` URL parsing, `new URL()`/`URLSearchParams` constructor and iterator seams,
+`TextEncoder`/`TextDecoder` (`encodeInto` and constructor options included),
+`<img>.currentSrc`, initial `Range`/`Selection`, read-only `history` accessors,
+`structuredClone`,
+MutationObserver lifecycle, TreeWalker/NodeIterator traversal, `Headers`
+iteration, `Blob`/`File`, read-only `Request`/`Response` state with forbidden
+header filtering, `Response.error()` / `Response.redirect()` / `Response.json()`,
+`AbortSignal`, `URLPattern`, Performance timing shape, and
+`matchMedia()` before the remaining SpiderMonkey host-object swap; Encoding API
+constructors plus the first focused `document`/`Element` snapshot host-object
+evals are also exercised directly through the SpiderMonkey runtime. Imported
+smoke fixtures now also seed
+block/inline/position layout, flexbox, grid, and display-list `ref-equivalent`
+paint; imported layout smoke covers auto margins, border-box sizing, inline
+flow, flex reverse/gaps, and grid `minmax()`/fractional row/gap cases. Imported
+paint smoke now covers currentcolor, overflow clipping, positioned boxes,
+flex/grid backgrounds, and nested background/text display-list equivalence.
 
 ---
 

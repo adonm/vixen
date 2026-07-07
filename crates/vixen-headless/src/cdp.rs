@@ -254,6 +254,7 @@ impl CdpState {
             }
         };
         if crate::looks_like_dom_eval(&expr)
+            && !crate::uses_spidermonkey_dom_eval(&expr)
             && let Some(page) = self.targets.first().and_then(|target| target.page.as_ref())
             && let Some(result) = page.evaluate_dom_expression(&expr)
         {
@@ -279,8 +280,14 @@ impl CdpState {
                 }
             }
         }
+        let page = self.targets.first().and_then(|target| target.page.as_ref());
         let rt = self.js.as_mut().expect("just-initialised");
-        match rt.evaluate(&expr) {
+        let result = if let Some(page) = page {
+            rt.evaluate_with_page(&expr, page)
+        } else {
+            rt.evaluate(&expr)
+        };
+        match result {
             Ok(value) => {
                 let type_str = match &value {
                     JsValue::Int32(_) | JsValue::Number(_) => "number",
@@ -475,9 +482,9 @@ mod tests {
         state.dispatch(&req).response.expect("success response")
     }
 
-    /// All CDP dispatcher checks (except `Runtime.evaluate`, which lives in
-    /// `tests/cdp_runtime.rs` to avoid the SpiderMonkey process-singleton
-    /// conflict with the `eval_gate_returns_three` test in this binary).
+    /// All CDP dispatcher checks except SpiderMonkey-backed `Runtime.evaluate`,
+    /// which lives in `tests/cdp_runtime.rs` to avoid the process-singleton
+    /// conflict with the `eval_gate_returns_three` test in this binary.
     #[test]
     fn cdp_dispatcher_surface() {
         // No JsRuntime: the dispatcher lazily inits one when first needed,
@@ -556,7 +563,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_evaluate_can_read_navigated_page_dom() {
+    fn runtime_evaluate_can_read_navigated_page_dom_facade_fallback() {
         let dir = tempfile::tempdir().unwrap();
         let html = dir.path().join("cdp-title.html");
         std::fs::write(&html, "<title>CDP title</title><p>Body</p>").unwrap();
@@ -578,12 +585,12 @@ mod tests {
             &json!({
                 "id": 2,
                 "method": "Runtime.evaluate",
-                "params": { "expression": "document.title" }
+                "params": { "expression": "document.readyState" }
             })
             .to_string(),
         );
         let response: Value = serde_json::from_str(&eval[0]).unwrap();
         assert_eq!(response["result"]["result"]["type"], "string");
-        assert_eq!(response["result"]["result"]["value"], "CDP title");
+        assert_eq!(response["result"]["result"]["value"], "complete");
     }
 }
