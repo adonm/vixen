@@ -5,11 +5,10 @@
 //! vixen-wpt-local trait composing `vixen_api` DTOs — never engine internals
 //! (docs/ARCHITECTURE.md "Boundary rules": `vixen-wpt → vixen-api only`).
 //!
-//! The 13 check types (12 inherited from upstream WPT + `ref-equivalent`,
-//! Vixen's addition) are all defined; the ones that map to the current
-//! [`HarnessEngine`] surface are implemented, and the two that need an
-//! offscreen renderer (`visual-hash`, `ref-equivalent`) return
-//! [`Outcome::Skipped`] until the paint path lands (Phase 5).
+//! The 15 check types (14 inherited from upstream WPT + `ref-equivalent`,
+//! Vixen's addition) are all defined. `ref-equivalent` compares the stable
+//! display-list render projection through [`HarnessEngine`]; `visual-hash`
+//! remains skipped until the offscreen pixel path lands.
 
 #![forbid(unsafe_code)]
 

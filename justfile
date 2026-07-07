@@ -89,7 +89,7 @@ gate-phase4:
     cargo test -p vixen-engine writing_modes
     cargo test -p vixen-engine multicol
     cargo test -p vixen-engine scroll_snap
-    case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/layout/boxes.html --viewport 120x200 --dump-layout-tree)" in *"# layout-tree"*"tag=main id=root"*"tag=div id=a"*"w=100.0 h=100.0"*) true;; *) false;; esac
+    case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/layout/flex-row.html --viewport 360x200 --dump-layout-tree)" in *"# layout-tree"*"tag=section id=flex"*"tag=div id=grow2"*"w=153.3 h=40.0"*) true;; *) false;; esac
     case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/layout/boxes.html --viewport 120x200 --dump-lines)" in *"line 1:"*) true;; *) false;; esac
 
 # Phase 5 current gate: display-list contract + paint-geometry/compositing prep,
@@ -186,4 +186,5 @@ flatpak-build:
 # Requires `cargo install cargo-audit cargo-deny`.
 audit:
     cargo audit
-    cargo deny check 2>/dev/null || echo "cargo-deny not installed; skipping"
+    command -v cargo-deny >/dev/null || { echo "cargo-deny not installed" >&2; exit 1; }
+    cargo deny check

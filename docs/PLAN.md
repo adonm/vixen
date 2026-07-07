@@ -410,12 +410,12 @@ to two `GlContext` implementations.
    consumes that stream; the invariant logic is done and Rust-unit-tested.
 
    **Vertical display-list slice landed.** `Page::display_list` now turns the
-   Phase 4 line boxes into the single `DisplayListBuilder` command stream:
-   viewport background first, then clipped text commands, exposed through
-   `vixen-headless --dump-display-list`. `--paint-stats` now aggregates command
-   counts and painted area from that same stream. This is not a renderer or CPU
-   paint fallback; WebRender consumes the same `PaintCommand` stream once the GL
-   surfaces land.
+   Phase 4 layout tree into the single `DisplayListBuilder` command stream:
+   viewport background first, then layout-box-backed backgrounds/text commands,
+   exposed through `vixen-headless --dump-display-list`. `--paint-stats` now
+   aggregates command counts and painted area from that same stream. This is not
+   a renderer or CPU paint fallback; WebRender consumes the same `PaintCommand`
+   stream once the GL surfaces land.
 5. `vixen-shell/src/engine_factory.rs`: creates the `gtk4::GLArea`,
    wraps it as `GlAreaSurface` (the shell's `GlContext` impl), and
    returns it as the content widget alongside the tab's `EngineWorker`.
@@ -1590,10 +1590,10 @@ fixture in `fixtures/`, not a Rust unit test. Rust tests cover only pure
 logic (CSS length arithmetic, URL parsing, cookie validation, CSP
 parsing, redb storage round-trip).
 
-**13 check types** in `vixen-wpt` (per `docs/SPEC.md`): 12 inherited
-from the upstream WPT assertion model plus `ref-equivalent`, the 13th —
-Vixen's addition: a rendered page compared against a reference HTML
-fixture, like upstream WPT reftests.
+**WPT-style check types** in `vixen-wpt` (per `docs/SPEC.md`): DOM/style
+assertions, `layout-box` coordinate assertions, `display-list-contains` paint
+dump assertions, visual hashes, and `ref-equivalent` rendered-page comparisons
+against reference HTML fixtures.
 
 **Snapshot tests against Firefox reference.** A `fixtures/reftest-baseline/`
 directory contains reference renderings. Each visual WPT fixture

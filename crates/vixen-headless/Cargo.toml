@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 vixen-api = { path = "../vixen-api" }
 vixen-engine = { path = "../vixen-engine" }
+vixen-net = { path = "../vixen-net" }
 clap = { version = "4", features = ["derive"] }
 url = "2"
 serde = { version = "1", features = ["derive"] }

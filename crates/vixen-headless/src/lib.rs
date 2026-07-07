@@ -2,15 +2,15 @@
 //!
 //! Phase 2 implements the CLI flag surface (docs/SPEC.md "Headless CLI
 //! surface") and wires `--url`/`--eval` to the SpiderMonkey runtime
-//! (`vixen-engine::script`). Phase 3 DOM/selector paths run through
-//! `vixen_engine::page::Page`. The first layout/paint projections are exposed
-//! through `--dump-layout-tree`, `--dump-lines`, `--dump-display-list`, and `--paint-stats`;
-//! renderer/CDP-only flags keep the stable error codes (`unsupported.screenshot`,
+//! (`vixen-engine::script`). Phase 3+ DOM/selector/layout/paint paths run
+//! through `vixen_engine::page::Page`; the host-binding smoke subset for
+//! `document.title` is served by the same facade until full DOM objects land.
+//! Renderer/CDP-only flags keep the stable error codes (`unsupported.screenshot`,
 //! `invalid-selector`) until their later phases land.
 
 #![forbid(unsafe_code)]
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -18,8 +18,10 @@ use clap::Parser;
 use vixen_engine::engine_error::codes;
 use vixen_engine::page::Page;
 use vixen_engine::script::JsRuntime;
+use vixen_net::{CookieJar, Method, Network};
 
 pub mod cdp;
+mod interactions;
 
 /// The `vixen-headless` CLI (docs/SPEC.md "Headless CLI surface").
 /// Flags and stable error codes are a public contract — automation depends on them.
@@ -105,10 +107,9 @@ pub struct Cli {
 
 /// Run the CLI. Returns a process exit code.
 pub fn run(cli: Cli) -> ExitCode {
-    // `--list-fonts` short-circuits and needs no URL (Phase 8 wires fontconfig).
+    // `--list-fonts` short-circuits and needs no URL.
     if cli.list_fonts {
-        eprintln!("--list-fonts: not implemented yet (Phase 8)");
-        return ExitCode::from(2);
+        return run_list_fonts();
     }
 
     // `--url` is required otherwise (docs/SPEC.md).
@@ -123,14 +124,39 @@ pub fn run(cli: Cli) -> ExitCode {
         return ExitCode::from(2);
     }
 
+    // --screenshot requires the offscreen renderer (Phase 5). Without it the
+    // stable code `unsupported.screenshot` is returned (docs/SPEC.md). Check it
+    // before all other page actions so combinations fail closed consistently.
+    if cli.screenshot.is_some() {
+        eprintln!("{}", codes::UNSUPPORTED_SCREENSHOT);
+        return ExitCode::FAILURE;
+    }
+
+    if cli.memory_stats && !has_non_memory_action(&cli) {
+        return run_memory_stats();
+    }
+
+    // `--incremental` needs the offscreen screenshot path. Keep it explicit so
+    // combinations like `--incremental --eval` do not silently ignore the flag.
+    if cli.incremental {
+        eprintln!("requested feature is not implemented yet (Phase 5 offscreen renderer)");
+        return ExitCode::from(2);
+    }
+
+    if has_interaction_action(&cli) {
+        let code = interactions::run(url, &cli);
+        if code != ExitCode::SUCCESS || !has_non_interaction_action(&cli) {
+            return code;
+        }
+    }
+
     // --eval: the Phase 2 gate path.
     if let Some(js) = cli.eval.as_deref() {
         return run_eval(js, &cli);
     }
 
     // --dump-dom / --extract-text / --dump-layout-tree / --dump-lines /
-    // --dump-display-list / --paint-stats: parse the URL's HTML and print.
-    // (file:// only for now — HTTP fetch lands with the engine pipeline.)
+    // --dump-display-list / --paint-stats: load the URL's HTML and print.
     if cli.dump_dom
         || cli.extract_text
         || cli.dump_layout_tree
@@ -141,31 +167,11 @@ pub fn run(cli: Cli) -> ExitCode {
         return run_dom_outputs(url, &cli);
     }
 
-    // --screenshot requires the offscreen renderer (Phase 5). Without it the
-    // stable code `unsupported.screenshot` is returned (docs/SPEC.md).
-    if cli.screenshot.is_some() {
-        eprintln!("{}", codes::UNSUPPORTED_SCREENSHOT);
-        return ExitCode::FAILURE;
-    }
-
     // --extract-selector: validate the selector first (`invalid-selector` on
     // malformed input — docs/SPEC.md), then walk the parsed DOM and print
     // each match as JSON. Selector matching runs through Stylo (Phase 3).
     if let Some(sel) = cli.extract_selector.as_deref() {
         return run_extract_selector(url, sel);
-    }
-
-    // Remaining flags need the DOM/layout/paint stack (Phases 3–8).
-    let unimplemented = [
-        cli.click_at.is_some(),
-        cli.focus.is_some(),
-        cli.submit_form.is_some(),
-        cli.incremental,
-        cli.memory_stats,
-    ];
-    if unimplemented.iter().any(|&f| f) {
-        eprintln!("requested feature is not implemented yet (Phases 3–8)");
-        return ExitCode::from(2);
     }
 
     // `--cdp` starts the WebSocket CDP server (Phase 8 step 4). It runs
@@ -205,6 +211,131 @@ fn run_cdp_server(port: u16) -> ExitCode {
             eprintln!("error: CDP server failed: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+fn has_non_memory_action(cli: &Cli) -> bool {
+    cli.screenshot.is_some()
+        || cli.extract_text
+        || cli.extract_selector.is_some()
+        || cli.eval.is_some()
+        || cli.dump_dom
+        || cli.dump_display_list
+        || cli.dump_lines
+        || cli.dump_layout_tree
+        || cli.click_at.is_some()
+        || cli.focus.is_some()
+        || cli.submit_form.is_some()
+        || cli.paint_stats
+        || cli.incremental
+        || cli.cdp
+}
+
+fn has_interaction_action(cli: &Cli) -> bool {
+    cli.click_at.is_some() || cli.focus.is_some() || cli.submit_form.is_some()
+}
+
+fn has_non_interaction_action(cli: &Cli) -> bool {
+    cli.extract_text
+        || cli.extract_selector.is_some()
+        || cli.eval.is_some()
+        || cli.dump_dom
+        || cli.dump_display_list
+        || cli.dump_lines
+        || cli.dump_layout_tree
+        || cli.paint_stats
+        || cli.cdp
+}
+
+fn run_list_fonts() -> ExitCode {
+    for path in collect_font_files() {
+        println!("{}", path.display());
+    }
+    ExitCode::SUCCESS
+}
+
+fn collect_font_files() -> Vec<PathBuf> {
+    let mut roots = vec![
+        PathBuf::from("/usr/share/fonts"),
+        PathBuf::from("/usr/local/share/fonts"),
+    ];
+    if let Some(home) = std::env::var_os("HOME") {
+        roots.push(PathBuf::from(home).join(".local/share/fonts"));
+    }
+
+    let mut fonts = Vec::new();
+    for root in roots {
+        collect_font_files_under(&root, 0, &mut fonts);
+    }
+    fonts.sort();
+    fonts.dedup();
+    fonts
+}
+
+fn collect_font_files_under(root: &Path, depth: u8, fonts: &mut Vec<PathBuf>) {
+    if depth > 8 {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            collect_font_files_under(&path, depth + 1, fonts);
+        } else if is_font_file(&path) {
+            fonts.push(path);
+        }
+    }
+}
+
+fn is_font_file(path: &Path) -> bool {
+    path.extension()
+        .and_then(|ext| ext.to_str())
+        .map(str::to_ascii_lowercase)
+        .is_some_and(|ext| matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "woff" | "woff2"))
+}
+
+#[derive(serde::Serialize)]
+struct MemoryStats {
+    rss_bytes: Option<u64>,
+    virtual_bytes: Option<u64>,
+}
+
+fn run_memory_stats() -> ExitCode {
+    let stats = memory_stats();
+    match serde_json::to_string(&stats) {
+        Ok(json) => {
+            println!("{json}");
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            eprintln!("error: failed to serialize memory stats: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn memory_stats() -> MemoryStats {
+    // Linux `/proc/self/statm` reports page counts: total program size then RSS.
+    const PAGE_SIZE_BYTES: u64 = 4096;
+    let Some((virtual_pages, rss_pages)) = std::fs::read_to_string("/proc/self/statm")
+        .ok()
+        .and_then(|statm| {
+            let mut fields = statm.split_whitespace();
+            let virtual_pages = fields.next()?.parse::<u64>().ok()?;
+            let rss_pages = fields.next()?.parse::<u64>().ok()?;
+            Some((virtual_pages, rss_pages))
+        })
+    else {
+        return MemoryStats {
+            rss_bytes: None,
+            virtual_bytes: None,
+        };
+    };
+    MemoryStats {
+        rss_bytes: rss_pages.checked_mul(PAGE_SIZE_BYTES),
+        virtual_bytes: virtual_pages.checked_mul(PAGE_SIZE_BYTES),
     }
 }
 
@@ -257,11 +388,19 @@ fn run_extract_selector(url: &str, sel: &str) -> ExitCode {
 
 /// `--url file://… --eval '1+2'` → prints `3` (the Phase 2 gate).
 fn run_eval(js: &str, cli: &Cli) -> ExitCode {
-    // If a screenshot was also requested without a renderer, that still fails
-    // with the stable code.
-    if cli.screenshot.is_some() {
-        eprintln!("{}", codes::UNSUPPORTED_SCREENSHOT);
-        return ExitCode::FAILURE;
+    let url = cli.url.as_deref().expect("--url validated before eval");
+
+    if let Some(result) = run_dom_eval(url, js) {
+        return match result {
+            Ok(value) => {
+                println!("{value}");
+                ExitCode::SUCCESS
+            }
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
+        };
     }
 
     let mut rt = match JsRuntime::new() {
@@ -272,8 +411,9 @@ fn run_eval(js: &str, cli: &Cli) -> ExitCode {
         }
     };
 
-    // `--url` is accepted as the page context (validated earlier); the JS runs
-    // in a fresh global. Full DOM/`document` wiring lands in Phase 6.
+    // `--url` is accepted as the page context (validated earlier). DOM smoke
+    // expressions are handled above; remaining JS runs in a fresh global until
+    // full DOM object bindings land.
     match rt.evaluate(js) {
         Ok(value) => {
             println!("{}", value.to_display());
@@ -286,10 +426,24 @@ fn run_eval(js: &str, cli: &Cli) -> ExitCode {
     }
 }
 
+fn run_dom_eval(url: &str, js: &str) -> Option<Result<String, String>> {
+    if !looks_like_dom_eval(js) {
+        return None;
+    }
+    match load_page(url) {
+        Ok(page) => page.evaluate_dom_expression(js),
+        Err(e) => Some(Err(e)),
+    }
+}
+
+fn looks_like_dom_eval(js: &str) -> bool {
+    let js = js.trim_start();
+    js.starts_with("document.") || js.starts_with("location.") || js.starts_with("window.location.")
+}
+
 /// `--dump-dom` / `--extract-text` / `--dump-layout-tree` / `--dump-lines` /
-/// `--dump-display-list` / `--paint-stats`: parse the URL's HTML and print the requested
-/// DOM/layout/paint projections. `file://` only — HTTP fetch lands with the
-/// engine pipeline (Phase 6).
+/// `--dump-display-list` / `--paint-stats`: load the URL's HTML and print the requested
+/// DOM/layout/paint projections.
 fn run_dom_outputs(url: &str, cli: &Cli) -> ExitCode {
     let page = match load_page(url) {
         Ok(p) => p,
@@ -357,32 +511,65 @@ fn parse_viewport(input: &str) -> Result<(u32, u32), String> {
 }
 
 /// Load and parse a page through the shared engine facade. This is the single
-/// vertical integration entry for headless DOM/selector surfaces until the full
+/// vertical integration entry for headless DOM/selector surfaces while the full
 /// network/style/layout/paint pipeline grows behind `vixen_engine::page::Page`.
 fn load_page(url: &str) -> Result<Page, String> {
-    let html = load_url_source(url)?;
-    Page::from_html(url.to_owned(), &html).map_err(|e| format!("parse failed: {e}"))
+    let source = load_url_source(url)?;
+    Page::from_html(source.final_url, &source.html).map_err(|e| format!("parse failed: {e}"))
 }
 
-/// Read a page's source. Only `file://` is supported until the networked
-/// engine pipeline lands (Phase 6).
-fn load_url_source(url: &str) -> Result<String, String> {
+#[derive(Debug)]
+struct LoadedSource {
+    final_url: String,
+    html: String,
+}
+
+/// Read a page's source. `file://` is direct filesystem I/O; HTTP(S) crosses
+/// the `vixen-net` trust boundary so URL policy, redirects, cookies, timeouts,
+/// and body-size limits are all enforced in one place.
+fn load_url_source(url: &str) -> Result<LoadedSource, String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
     match parsed.scheme() {
         "file" => parsed
             .to_file_path()
             .map_err(|_| "file:// URL has no local path".to_string())
             .and_then(|p| {
-                std::fs::read_to_string(&p).map_err(|e| format!("read {}: {e}", p.display()))
+                let html = std::fs::read_to_string(&p)
+                    .map_err(|e| format!("read {}: {e}", p.display()))?;
+                Ok(LoadedSource {
+                    final_url: parsed.to_string(),
+                    html,
+                })
             }),
+        "http" | "https" => fetch_http_source(parsed),
         scheme => Err(format!(
-            "{scheme}: URLs are not supported yet (Phase 6 fetch)"
+            "{scheme}: URLs are not supported by the headless source loader"
         )),
     }
 }
 
+fn fetch_http_source(url: url::Url) -> Result<LoadedSource, String> {
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| format!("network runtime failed: {e}"))?;
+    rt.block_on(async move {
+        let mut network =
+            Network::with_defaults().map_err(|e| format!("network client failed: {e}"))?;
+        let mut jar = CookieJar::default();
+        let response = network
+            .get_text_with_cookies(&mut jar, &url, false, Method::Get)
+            .await
+            .map_err(|e| format!("fetch {url}: {e}"))?;
+        Ok(LoadedSource {
+            final_url: response.final_url,
+            html: response.body,
+        })
+    })
+}
+
 /// Minimal URL validation. Network policy (SSRF/private-IP) is enforced in
-/// `vixen-net` once fetches exist; here we only check the scheme is present.
+/// `vixen-net` for HTTP(S); here we only check the scheme is present.
 fn validate_url(url: &str) -> Result<(), String> {
     let scheme = url.split("://").next().unwrap_or("");
     if scheme.is_empty() || scheme == url {
@@ -446,6 +633,18 @@ mod tests {
         // No URL, no --list-fonts → error exit 2.
         let cli = parse(&["--eval", "1+2"]);
         assert_eq!(run(cli), ExitCode::from(2));
+    }
+
+    #[test]
+    fn list_fonts_needs_no_url() {
+        let cli = parse(&["--list-fonts"]);
+        assert_eq!(run(cli), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn memory_stats_runs_as_standalone_action() {
+        let cli = parse(&["--url", "file:///dev/null", "--memory-stats"]);
+        assert_eq!(run(cli), ExitCode::SUCCESS);
     }
 
     #[test]
@@ -567,6 +766,54 @@ mod tests {
     }
 
     #[test]
+    fn interaction_flags_run_through_page_facade() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("interactions.html");
+        std::fs::write(
+            &html,
+            "<style>body { margin: 0; } #hit { width: 40px; height: 20px; }</style>\
+             <button id='hit'>Click</button>\
+             <form id='contact' action='/submit' method='post'>\
+               <input id='name' name='name' value='Ada'>\
+               <textarea name='body'>Hello</textarea>\
+             </form>",
+        )
+        .unwrap();
+        let url = format!("file://{}", html.display());
+        let cli = parse(&[
+            "--url",
+            url.as_str(),
+            "--viewport",
+            "120x80",
+            "--click-at",
+            "10,10",
+            "--focus",
+            "name",
+            "--submit-form",
+            "contact",
+        ]);
+        assert_eq!(run(cli), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn click_at_rejects_malformed_coordinates() {
+        let cli = parse(&["--url", "file:///dev/null", "--click-at", "10"]);
+        assert_eq!(run(cli), ExitCode::from(2));
+    }
+
+    #[test]
+    fn incremental_is_not_silently_ignored_when_eval_is_present() {
+        let cli = parse(&[
+            "--url",
+            "file:///dev/null",
+            "--eval",
+            "1+2",
+            "--incremental",
+        ]);
+        assert_eq!(run(cli), ExitCode::from(2));
+    }
+
+    #[test]
     fn viewport_parser_rejects_bad_dimensions() {
         assert_eq!(parse_viewport("800x600").unwrap(), (800, 600));
         assert_eq!(parse_viewport("800X600").unwrap(), (800, 600));
@@ -580,6 +827,49 @@ mod tests {
         // The Phase 2 gate: --eval '1+2' prints 3 and exits 0.
         let cli = parse(&["--url", "file:///dev/null", "--eval", "1+2"]);
         assert_eq!(run(cli), ExitCode::SUCCESS);
+    }
+
+    #[test]
+    fn eval_document_title_runs_through_page_facade() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("title.html");
+        std::fs::write(
+            &html,
+            "<html><head><title>DOM title</title></head><body><p>body</p></body></html>",
+        )
+        .unwrap();
+        let url = format!("file://{}", html.display());
+        assert_eq!(
+            run_dom_eval(&url, "document.title"),
+            Some(Ok("DOM title".into()))
+        );
+        assert_eq!(
+            run_dom_eval(&url, "document.querySelectorAll('p').length"),
+            Some(Ok("1".into()))
+        );
+    }
+
+    #[test]
+    fn load_url_source_reads_file_with_final_url() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("source.html");
+        std::fs::write(&html, "<title>file source</title>").unwrap();
+        let url = format!("file://{}", html.display());
+
+        let source = load_url_source(&url).unwrap();
+
+        assert_eq!(source.final_url, url);
+        assert_eq!(source.html, "<title>file source</title>");
+    }
+
+    #[test]
+    fn http_loads_fail_closed_on_private_hosts() {
+        let err = load_url_source("http://127.0.0.1/").unwrap_err();
+
+        assert!(
+            err.contains("URL rejected by policy"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]

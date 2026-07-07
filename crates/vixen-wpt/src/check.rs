@@ -1,7 +1,7 @@
-//! The 13 WPT check types (docs/SPEC.md "WPT harness — check types") and the
+//! The WPT check types (docs/SPEC.md "WPT harness — check types") and the
 //! per-check runner. Checks map to [`HarnessEngine`]'s inspection surface;
-//! `visual-hash`/`ref-equivalent` need the offscreen renderer (Phase 5) and
-//! are skipped until then.
+//! `ref-equivalent` compares the stable display-list render projection until
+//! the offscreen pixel path is available for `visual-hash`.
 
 use serde::{Deserialize, Serialize};
 use vixen_api::PageSnapshot;
@@ -63,6 +63,15 @@ pub enum Check {
     ElementAttribute {
         selector: String,
         attribute: String,
+        expected: String,
+    },
+    LayoutBox {
+        selector: String,
+        expected: [f64; 4],
+        #[serde(default = "default_layout_tolerance")]
+        tolerance: f64,
+    },
+    DisplayListContains {
         expected: String,
     },
     DomNodesRange {
@@ -214,19 +223,59 @@ impl Check {
                 }
                 None => Outcome::Fail("element-attribute: selector matched nothing".into()),
             },
+            Check::LayoutBox {
+                selector,
+                expected,
+                tolerance,
+            } => match first_match_info(engine, selector) {
+                Some(info) => match info.bbox {
+                    Some(got) if box_matches(got, *expected, *tolerance) => Outcome::Pass,
+                    Some(got) => Outcome::Fail(format!(
+                        "layout-box: expected {:?} ±{}, got {:?}",
+                        expected, tolerance, got
+                    )),
+                    None => Outcome::Fail("layout-box: element has no layout bbox".into()),
+                },
+                None => Outcome::Fail("layout-box: selector matched nothing".into()),
+            },
             Check::JsEval { expr, expected } => match engine.eval(expr) {
                 Ok(got) if got == *expected => Outcome::Pass,
                 Ok(got) => Outcome::Fail(format!("js-eval: expected {expected:?}, got {got:?}")),
                 Err(e) => Outcome::Fail(format!("js-eval: {e}")),
             },
+            Check::DisplayListContains { expected } => match engine.display_list(VW, VH) {
+                Ok(dump) if dump.contains(expected) => Outcome::Pass,
+                Ok(_) => Outcome::Fail("display-list does not contain expected substring".into()),
+                Err(e) => Outcome::Fail(format!("display-list: {e}")),
+            },
             Check::VisualHash { .. } => {
                 Outcome::Skipped("needs offscreen renderer (Phase 5)".into())
             }
-            Check::RefEquivalent { .. } => {
-                Outcome::Skipped("needs offscreen renderer (Phase 5)".into())
-            }
+            Check::RefEquivalent { reference } => match (
+                engine.display_list(VW, VH),
+                engine.reference_display_list(reference, VW, VH),
+            ) {
+                (Ok(got), Ok(expected)) if render_dumps_match(&got, &expected) => Outcome::Pass,
+                (Ok(got), Ok(expected)) => Outcome::Fail(format!(
+                    "ref-equivalent {reference}: render dumps differ ({})",
+                    first_render_dump_difference(&got, &expected)
+                )),
+                (Err(e), _) => Outcome::Fail(format!("ref-equivalent: {e}")),
+                (_, Err(e)) => Outcome::Fail(format!("ref-equivalent reference {reference}: {e}")),
+            },
         }
     }
+}
+
+fn default_layout_tolerance() -> f64 {
+    0.1
+}
+
+fn box_matches(got: (f64, f64, f64, f64), expected: [f64; 4], tolerance: f64) -> bool {
+    let got = [got.0, got.1, got.2, got.3];
+    got.iter()
+        .zip(expected)
+        .all(|(got, expected)| (got - expected).abs() <= tolerance)
 }
 
 /// First match's node id for `selector`, if any.
@@ -241,6 +290,23 @@ fn first_match(engine: &dyn HarnessEngine, selector: &str) -> Option<usize> {
 
 fn first_match_info(engine: &dyn HarnessEngine, selector: &str) -> Option<vixen_api::ElementInfo> {
     engine.query_selector_all(selector).ok()?.into_iter().next()
+}
+
+fn render_dumps_match(got: &str, expected: &str) -> bool {
+    got.trim_end() == expected.trim_end()
+}
+
+fn first_render_dump_difference(got: &str, expected: &str) -> String {
+    for (line, (got, expected)) in got.lines().zip(expected.lines()).enumerate() {
+        if got != expected {
+            return format!("line {}: got {got:?}, expected {expected:?}", line + 1);
+        }
+    }
+    format!(
+        "line count differs: got {}, expected {}",
+        got.lines().count(),
+        expected.lines().count()
+    )
 }
 
 // `PageSnapshot` is referenced in trait bounds/docs; keep the import live.
@@ -332,7 +398,7 @@ mod tests {
                     classes: vec![],
                     attributes: vec![("data-k".into(), "v".into())],
                     text: "".into(),
-                    bbox: None,
+                    bbox: Some((10.0, 20.0, 30.0, 40.0)),
                 },
                 ElementInfo {
                     node_id: 2,
@@ -389,14 +455,41 @@ mod tests {
             .run(&e),
             Outcome::Pass
         );
+        assert_eq!(
+            Check::LayoutBox {
+                selector: "div".into(),
+                expected: [10.0, 20.0, 30.0, 40.0],
+                tolerance: 0.1,
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+        assert!(
+            Check::LayoutBox {
+                selector: "div".into(),
+                expected: [10.0, 20.0, 31.0, 40.0],
+                tolerance: 0.1,
+            }
+            .run(&e)
+            .is_fail()
+        );
     }
 
     #[test]
-    fn js_eval_and_render_skips() {
-        let e = MockEngine {
+    fn js_eval_display_list_and_ref_equivalent() {
+        let mut e = MockEngine {
             eval_result: Some(Ok("3".into())),
+            display_list: Some(Ok("cmd 1: text x=0.0 y=0.0 w=40.0 h=10.0".into())),
             ..Default::default()
         };
+        e.reference_display_lists.insert(
+            "same.html".into(),
+            Ok("cmd 1: text x=0.0 y=0.0 w=40.0 h=10.0".into()),
+        );
+        e.reference_display_lists.insert(
+            "different.html".into(),
+            Ok("cmd 1: text x=0.0 y=0.0 w=41.0 h=10.0".into()),
+        );
         assert_eq!(
             Check::JsEval {
                 expr: "1+2".into(),
@@ -405,16 +498,30 @@ mod tests {
             .run(&e),
             Outcome::Pass
         );
+        assert_eq!(
+            Check::DisplayListContains {
+                expected: "w=40.0 h=10.0".into()
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+        assert_eq!(
+            Check::RefEquivalent {
+                reference: "same.html".into()
+            }
+            .run(&e),
+            Outcome::Pass
+        );
+        assert!(
+            Check::RefEquivalent {
+                reference: "different.html".into()
+            }
+            .run(&e)
+            .is_fail()
+        );
         assert!(matches!(
             Check::VisualHash {
                 expected: "x".into()
-            }
-            .run(&e),
-            Outcome::Skipped(_)
-        ));
-        assert!(matches!(
-            Check::RefEquivalent {
-                reference: "r.html".into()
             }
             .run(&e),
             Outcome::Skipped(_)
@@ -436,6 +543,8 @@ mod tests {
             r#"{"type":"selector-match","selector":"div","expected":["div"]}"#,
             r##"{"type":"computed-style","selector":"#x","property":"color","expected":"red"}"##,
             r##"{"type":"element-attribute","selector":"#x","attribute":"data-k","expected":"v"}"##,
+            r##"{"type":"layout-box","selector":"#x","expected":[1.0,2.0,3.0,4.0]}"##,
+            r#"{"type":"display-list-contains","expected":"cmd 1"}"#,
             r#"{"type":"dom-nodes-range","min":1,"max":5}"#,
             r#"{"type":"ref-equivalent","reference":"r.html"}"#,
         ];

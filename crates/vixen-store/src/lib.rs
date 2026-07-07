@@ -12,10 +12,12 @@
 use std::path::Path;
 
 use redb::{Database, ReadableTable, TableDefinition};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 // One table per concern (docs/ARCHITECTURE.md profile layout). Keys are
-// `&[u8]` prefixed with the origin partition key; values are bincode bytes.
+// `&[u8]` prefixed with the origin partition key; values are bounded JSON
+// serde bytes.
 const COOKIES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("cookies");
 const FETCH_CACHE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("fetch-cache");
 const HISTORY: TableDefinition<&[u8], &[u8]> = TableDefinition::new("history");
@@ -44,7 +46,7 @@ pub enum StoreError {
     #[error("database open error: {0}")]
     DatabaseOpen(Box<redb::DatabaseError>),
     #[error("serialization error: {0}")]
-    Serde(#[from] bincode::Error),
+    Serde(#[from] serde_json::Error),
     #[error("table {0} not found")]
     MissingTable(&'static str),
 }
@@ -104,7 +106,7 @@ impl Store {
     /// Insert/overwrite a cookie under `origin_key`.
     pub fn put_cookie(&self, origin_key: &str, rec: &CookieRecord) -> Result<()> {
         let key = namespaced_key(origin_key, &rec.name);
-        let val = bincode::serialize(rec)?;
+        let val = encode(rec)?;
         let w = self.db.begin_write()?;
         {
             let mut t = w.open_table(COOKIES)?;
@@ -132,7 +134,7 @@ impl Store {
             if let Some(idx) = k.iter().position(|&b| b == 0) {
                 let _name = &k[idx + 1..];
             }
-            if let Ok(rec) = bincode::deserialize::<CookieRecord>(v.value()) {
+            if let Ok(rec) = decode::<CookieRecord>(v.value()) {
                 out.push(rec);
             }
         }
@@ -155,7 +157,7 @@ impl Store {
 
     pub fn put_cache(&self, origin_key: &str, url: &str, entry: &CacheEntry) -> Result<()> {
         let key = namespaced_key(origin_key, url);
-        let val = bincode::serialize(entry)?;
+        let val = encode(entry)?;
         let w = self.db.begin_write()?;
         {
             let mut t = w.open_table(FETCH_CACHE)?;
@@ -172,7 +174,7 @@ impl Store {
             .map_err(|_| StoreError::MissingTable("fetch-cache"))?;
         let key = namespaced_key(origin_key, url);
         match t.get(key.as_slice())? {
-            Some(v) => Ok(Some(bincode::deserialize(v.value())?)),
+            Some(v) => Ok(Some(decode(v.value())?)),
             None => Ok(None),
         }
     }
@@ -187,13 +189,13 @@ impl Store {
             let mut t = w.open_table(HISTORY)?;
             let visits = match t.get(key.as_slice())? {
                 Some(v) => {
-                    let mut v: Vec<i64> = bincode::deserialize(v.value())?;
+                    let mut v: Vec<i64> = decode(v.value())?;
                     v.push(ts);
                     v
                 }
                 None => vec![ts],
             };
-            let val = bincode::serialize(&visits)?;
+            let val = encode(&visits)?;
             t.insert(key.as_slice(), val.as_slice())?;
         }
         w.commit()?;
@@ -207,7 +209,7 @@ impl Store {
             .map_err(|_| StoreError::MissingTable("history"))?;
         let key = namespaced_key(origin_key, url);
         match t.get(key.as_slice())? {
-            Some(v) => Ok(bincode::deserialize(v.value())?),
+            Some(v) => Ok(decode(v.value())?),
             None => Ok(Vec::new()),
         }
     }
@@ -216,7 +218,7 @@ impl Store {
 
     /// Persist the list of open-tab URLs (session restore).
     pub fn save_session(&self, tabs: &[String]) -> Result<()> {
-        let val = bincode::serialize(tabs)?;
+        let val = encode(tabs)?;
         let w = self.db.begin_write()?;
         {
             let mut t = w.open_table(SESSION)?;
@@ -232,10 +234,18 @@ impl Store {
             .open_table(SESSION)
             .map_err(|_| StoreError::MissingTable("session"))?;
         match t.get(SESSION_KEY)? {
-            Some(v) => Ok(bincode::deserialize(v.value())?),
+            Some(v) => Ok(decode(v.value())?),
             None => Ok(Vec::new()),
         }
     }
+}
+
+fn encode<T: Serialize + ?Sized>(value: &T) -> Result<Vec<u8>> {
+    serde_json::to_vec(value).map_err(StoreError::from)
+}
+
+fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
+    serde_json::from_slice(bytes).map_err(StoreError::from)
 }
 
 /// Build `<origin_key> \x00 <name>` so origin partitions never collide.

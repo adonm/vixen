@@ -21,24 +21,27 @@ tooling — stays inside the workspace tree.
 
 - `.mise.toml` `[env]` exports:
   - `CARGO_HOME = "{{ config_root }}/.cargo"`
-  - `PATH = "{{ config_root }}/.cargo/bin:$PATH"` (so `cargo-audit`,
-    `cargo-deny`, `cargo-fuzz` installed by `mise bootstrap` are runnable
-    from `just audit` / `just fuzz-init`)
+  - `_.path = ["{{ config_root }}/.cargo/bin"]` (mise's PATH-prepend
+    directive, so Cargo itself plus `cargo-audit`, `cargo-deny`, and
+    `cargo-fuzz` installed by `mise bootstrap` are runnable from an activated
+    shell)
 - `.gitignore` ignores everything under `.cargo/` **except** `config.toml`,
   which is the project-pinned Cargo config and ships with the repo.
 - `.cargo/config.toml` is checked in. It doubles as the CARGO_HOME config
   (Cargo reads the same physical file in both roles) — keep it limited to
   project-pinned settings, never cache state.
 
-`mise` exports these vars to any mise-active shell. After `mise trust`
-the shell that ran `mise` (or was started via `mise shell`) sees them.
-`mise exec -- <cmd>` works for one-shot invocations.
+`mise` exports these vars to any mise-active shell. Use the workflow in
+[`mise.md`](mise.md): activate once per shell, then run `cargo` / `just`
+directly. Do not hard-code paths to Cargo or wrap every command in `mise exec`.
 
 ## Verifying it took effect
 
 ```sh
 mise trust
+eval "$(mise activate bash)"
 echo "$CARGO_HOME"        # → /path/to/vixen/.cargo
+command -v cargo           # → /path/to/vixen/.cargo/bin/cargo
 ls .cargo/                # → config.toml, plus registry/, bin/, ... after first build
 ```
 
@@ -62,7 +65,8 @@ will repopulate on the next build.
 in `.cargo/bin/`. To refresh:
 
 ```sh
-mise exec -- cargo binstall --no-confirm --force cargo-audit cargo-deny cargo-fuzz
+eval "$(mise activate bash)"
+cargo binstall --no-confirm --force cargo-audit cargo-deny cargo-fuzz
 ```
 
 or rerun `mise bootstrap --yes`.

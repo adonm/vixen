@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Positioned layout — Vixen fixture</title>
+  <style>
+    body { margin: 0; }
+    #container { position: relative; width: 200px; height: 100px; margin: 10px; padding: 5px; border: 2px solid black; }
+    #normal { width: 40px; height: 20px; margin-top: 3px; }
+    #rel { position: relative; left: 10px; top: 5px; width: 30px; height: 10px; margin-top: 4px; }
+    #abs { position: absolute; left: 60px; top: 15px; width: 50px; height: 20px; }
+    #after { width: 20px; height: 10px; }
+  </style>
+</head>
+<body>
+  <section id="container">
+    <div id="normal">Normal</div>
+    <div id="rel">Relative</div>
+    <div id="abs">Absolute</div>
+    <div id="after">After</div>
+  </section>
+</body>
+</html>

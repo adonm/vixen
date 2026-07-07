@@ -15,8 +15,47 @@ pub struct Manifest {
 pub struct Fixture {
     /// Workspace-relative path (or URL) the engine navigates to.
     pub url: String,
+    /// Fixture category used for pass-rate reporting. Defaults to the first
+    /// path segment below `fixtures/` (for example `fixtures/css/a.html` →
+    /// `css`) so existing manifests stay compact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    /// Whether this fixture is Vixen-authored or imported from upstream WPT.
+    /// Defaults to `local` for backward compatibility.
+    #[serde(default)]
+    pub source: FixtureSource,
     #[serde(default)]
     pub checks: Vec<Check>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum FixtureSource {
+    #[default]
+    Local,
+    Imported,
+}
+
+impl FixtureSource {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            FixtureSource::Local => "local",
+            FixtureSource::Imported => "imported",
+        }
+    }
+}
+
+impl Fixture {
+    pub fn category_name(&self) -> String {
+        if let Some(category) = self.category.as_deref() {
+            return category.to_owned();
+        }
+        let mut parts = self.url.split('/');
+        match (parts.next(), parts.next()) {
+            (Some("fixtures"), Some(category)) if !category.is_empty() => category.to_owned(),
+            _ => "uncategorized".to_owned(),
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -69,6 +108,27 @@ mod tests {
         let m = Manifest::from_json(json).unwrap();
         assert_eq!(m.fixtures.len(), 1);
         assert_eq!(m.fixtures[0].url, "fixtures/css/at-property.html");
+        assert_eq!(m.fixtures[0].category_name(), "css");
+        assert_eq!(m.fixtures[0].source, FixtureSource::Local);
         assert_eq!(m.fixtures[0].checks.len(), 3);
+    }
+
+    #[test]
+    fn fixture_metadata_overrides_defaults() {
+        let json = r#"{
+          "fixtures": [
+            {
+              "url": "external/wpt/css/a.html",
+              "category": "selectors",
+              "source": "imported",
+              "checks": []
+            }
+          ]
+        }"#;
+        let m = Manifest::from_json(json).unwrap();
+        let fixture = &m.fixtures[0];
+        assert_eq!(fixture.category_name(), "selectors");
+        assert_eq!(fixture.source, FixtureSource::Imported);
+        assert_eq!(fixture.source.as_str(), "imported");
     }
 }

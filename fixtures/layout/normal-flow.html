@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Normal flow layout — Vixen fixture</title>
+  <style>
+    body { margin: 0; }
+    #outer { width: 200px; margin: 10px; padding: 5px; border: 2px solid black; }
+    #inner { width: 50px; height: 20px; margin: 3px 0 4px 7px; padding: 1px 2px; border-width: 1px; }
+    #center { width: 100px; height: 10px; margin-left: auto; margin-right: auto; }
+    #borderbox { box-sizing: border-box; width: 80px; height: 30px; margin-top: 6px; padding: 5px; border-width: 2px; }
+    #gone { display: none; width: 999px; height: 999px; }
+  </style>
+</head>
+<body>
+  <main id="outer">
+    <div id="inner">Inner</div>
+    <div id="center">Center</div>
+    <div id="borderbox">Border box</div>
+    <div id="gone">Gone</div>
+  </main>
+</body>
+</html>

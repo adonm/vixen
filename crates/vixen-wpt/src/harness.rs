@@ -1,9 +1,11 @@
 //! The engine seam + the fixture/manifest runners.
 
+use std::collections::BTreeMap;
+
 use vixen_api::{ElementInfo, EngineDiagnostic, PageSnapshot};
 
 use crate::check::{Check, Outcome};
-use crate::manifest::Fixture;
+use crate::manifest::{Fixture, FixtureSource};
 
 /// The engine surface the harness needs. This is a vixen-wpt-local trait over
 /// `vixen_api` DTOs (the real engine implements it; tests use a mock). Per
@@ -21,12 +23,30 @@ pub trait HarnessEngine {
     /// Evaluate a JS expression, returning its stringified result. `Err` ⇒
     /// JS unavailable or evaluation threw.
     fn eval(&self, expr: &str) -> Result<String, String>;
+    /// Stable display-list text dump for paint/layout checks. Engines without
+    /// the Page paint seam should return `Err` so checks fail closed.
+    fn display_list(&self, vw: u32, vh: u32) -> Result<String, String>;
+    /// Stable display-list text dump for a reference HTML fixture resolved by
+    /// the engine adapter. This keeps `vixen-wpt` engine-agnostic while letting
+    /// `ref-equivalent` compare the same paint projection for the test page and
+    /// its reference. Adapters without reference loading return `Err` so the
+    /// check fails closed.
+    fn reference_display_list(
+        &self,
+        reference: &str,
+        _vw: u32,
+        _vh: u32,
+    ) -> Result<String, String> {
+        Err(format!("reference rendering not available for {reference}"))
+    }
 }
 
 /// Per-fixture results.
 #[derive(Debug, Clone)]
 pub struct FixtureReport {
     pub url: String,
+    pub category: String,
+    pub source: FixtureSource,
     pub results: Vec<(Check, Outcome)>,
     pub passed: usize,
     pub failed: usize,
@@ -36,16 +56,91 @@ pub struct FixtureReport {
 /// Aggregate report across a whole manifest.
 #[derive(Debug, Clone, Default)]
 pub struct Report {
+    pub fixtures_run: usize,
     pub total: usize,
     pub passed: usize,
     pub failed: usize,
     pub skipped: usize,
+    pub by_category: BTreeMap<String, ReportSummary>,
+    pub by_source: BTreeMap<String, ReportSummary>,
     pub fixtures: Vec<FixtureReport>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ReportSummary {
+    pub fixtures: usize,
+    pub total: usize,
+    pub passed: usize,
+    pub failed: usize,
+    pub skipped: usize,
+}
+
+impl ReportSummary {
+    pub fn pass_rate(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.passed as f64 / self.total as f64
+        }
+    }
+
+    fn add_fixture(&mut self, fixture: &FixtureReport) {
+        self.fixtures += 1;
+        self.total += fixture.results.len();
+        self.passed += fixture.passed;
+        self.failed += fixture.failed;
+        self.skipped += fixture.skipped;
+    }
 }
 
 impl Report {
     pub fn is_clean(&self) -> bool {
-        self.failed == 0
+        self.failed == 0 && self.skipped == 0
+    }
+
+    pub fn pass_rate(&self) -> f64 {
+        if self.total == 0 {
+            0.0
+        } else {
+            self.passed as f64 / self.total as f64
+        }
+    }
+
+    pub fn summary_text(&self) -> String {
+        let mut out = String::new();
+        out.push_str("# wpt-report\n");
+        out.push_str(&format!(
+            "overall fixtures={} checks={} passed={} failed={} skipped={} pass-rate={:.1}%\n",
+            self.fixtures_run,
+            self.total,
+            self.passed,
+            self.failed,
+            self.skipped,
+            self.pass_rate() * 100.0
+        ));
+        for (source, summary) in &self.by_source {
+            out.push_str(&format!(
+                "source {source}: fixtures={} checks={} passed={} failed={} skipped={} pass-rate={:.1}%\n",
+                summary.fixtures,
+                summary.total,
+                summary.passed,
+                summary.failed,
+                summary.skipped,
+                summary.pass_rate() * 100.0
+            ));
+        }
+        for (category, summary) in &self.by_category {
+            out.push_str(&format!(
+                "category {category}: fixtures={} checks={} passed={} failed={} skipped={} pass-rate={:.1}%\n",
+                summary.fixtures,
+                summary.total,
+                summary.passed,
+                summary.failed,
+                summary.skipped,
+                summary.pass_rate() * 100.0
+            ));
+        }
+        out
     }
 }
 
@@ -66,6 +161,8 @@ pub fn run_fixture(fixture: &Fixture, engine: &dyn HarnessEngine) -> FixtureRepo
     }
     FixtureReport {
         url: fixture.url.clone(),
+        category: fixture.category_name(),
+        source: fixture.source,
         results,
         passed,
         failed,
@@ -83,10 +180,21 @@ where
     for fixture in &manifest.fixtures {
         let engine = engine_for(&fixture.url);
         let fr = run_fixture(fixture, &*engine);
+        report.fixtures_run += 1;
         report.total += fr.results.len();
         report.passed += fr.passed;
         report.failed += fr.failed;
         report.skipped += fr.skipped;
+        report
+            .by_category
+            .entry(fr.category.clone())
+            .or_default()
+            .add_fixture(&fr);
+        report
+            .by_source
+            .entry(fr.source.as_str().to_owned())
+            .or_default()
+            .add_fixture(&fr);
         report.fixtures.push(fr);
     }
     report
@@ -107,6 +215,8 @@ pub(crate) mod test_support {
         pub styles: HashMap<usize, Vec<(String, String)>>,
         pub diagnostics: Vec<EngineDiagnostic>,
         pub eval_result: Option<Result<String, String>>,
+        pub display_list: Option<Result<String, String>>,
+        pub reference_display_lists: HashMap<String, Result<String, String>>,
     }
 
     impl HarnessEngine for MockEngine {
@@ -126,6 +236,24 @@ pub(crate) mod test_support {
             self.eval_result
                 .clone()
                 .unwrap_or(Err("JS not available".into()))
+        }
+        fn display_list(&self, _vw: u32, _vh: u32) -> Result<String, String> {
+            self.display_list
+                .clone()
+                .unwrap_or(Err("display-list not available".into()))
+        }
+        fn reference_display_list(
+            &self,
+            reference: &str,
+            _vw: u32,
+            _vh: u32,
+        ) -> Result<String, String> {
+            self.reference_display_lists
+                .get(reference)
+                .cloned()
+                .unwrap_or(Err(format!(
+                    "reference rendering not available for {reference}"
+                )))
         }
     }
 }
@@ -157,6 +285,8 @@ mod tests {
         };
         let fixture = Fixture {
             url: "a.html".into(),
+            category: None,
+            source: FixtureSource::Local,
             checks: vec![
                 Check::Title {
                     expected: "T".into(),
@@ -170,6 +300,8 @@ mod tests {
             ],
         };
         let fr = run_fixture(&fixture, &e);
+        assert_eq!(fr.category, "uncategorized");
+        assert_eq!(fr.source, FixtureSource::Local);
         assert_eq!(fr.passed, 1);
         assert_eq!(fr.failed, 1);
         assert_eq!(fr.skipped, 1);
@@ -195,9 +327,35 @@ mod tests {
             })
         });
         let _ = &e; // keep the typed mock example live
+        assert_eq!(report.fixtures_run, 2);
         assert_eq!(report.total, 3);
         assert_eq!(report.passed, 3);
         assert_eq!(report.failed, 0);
+        assert_eq!(report.skipped, 0);
         assert!(report.is_clean());
+        assert_eq!(report.by_source["local"].fixtures, 2);
+        assert_eq!(report.by_category["uncategorized"].fixtures, 2);
+        assert!(
+            report
+                .summary_text()
+                .contains("overall fixtures=2 checks=3")
+        );
+    }
+
+    #[test]
+    fn skipped_checks_make_report_unclean() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"fixtures":[{"url":"fixtures/dom/a.html","checks":[{"type":"visual-hash","expected":"h"}]}]}"#,
+        )
+        .unwrap();
+        let report = run_manifest(&manifest, |_| {
+            Box::new(MockEngine {
+                snapshot: snap(),
+                ..Default::default()
+            })
+        });
+        assert_eq!(report.failed, 0);
+        assert_eq!(report.skipped, 1);
+        assert!(!report.is_clean());
     }
 }

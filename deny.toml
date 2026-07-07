@@ -1,0 +1,23 @@
+# cargo-deny policy for Vixen release audits.
+# Keep this boring and explicit: only common permissive/copyleft-compatible
+# licenses used by the current dependency graph are allowed.
+
+[advisories]
+unmaintained = "all"
+
+[graph]
+all-features = true
+
+[bans]
+multiple-versions = "allow"
+wildcards = "allow"
+
+[licenses]
+confidence-threshold = 0.8
+allow = [
+    "Apache-2.0",
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

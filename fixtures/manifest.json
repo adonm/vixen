@@ -68,6 +68,8 @@
         { "type": "selector-count", "selector": "li", "expected": 3 },
         { "type": "selector-count", "selector": "#title", "expected": 1 },
         { "type": "selector-count", "selector": "ul > li", "expected": 3 },
+        { "type": "min-nodes", "min": 10 },
+        { "type": "dom-nodes-range", "min": 10, "max": 14 },
         { "type": "body-contains", "expected": "intro" },
         { "type": "selectors-exact", "selector": "p", "expected": ["intro", "outro"] }
       ]
@@ -113,8 +115,115 @@
         { "type": "selector-count", "selector": "#root > .row", "expected": 2 },
         { "type": "selector-count", "selector": ".box + .box", "expected": 3 },
         { "type": "selectors-exact", "selector": "div.box", "expected": ["a", "b", "c", "d"] },
+        { "type": "layout-box", "selector": "#root", "expected": [8.0, 8.0, 784.0, 219.2] },
+        { "type": "layout-box", "selector": "#a", "expected": [8.0, 8.0, 100.0, 100.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [108.0, 8.0, 100.0, 100.0] },
+        { "type": "layout-box", "selector": "#d", "expected": [8.0, 108.0, 100.0, 100.0] },
         { "type": "element-attribute", "selector": "#b", "attribute": "data-z", "expected": "-1" },
         { "type": "body-contains", "expected": "Nested flex/grid" }
+      ]
+    },
+    {
+      "url": "fixtures/layout/normal-flow.html",
+      "checks": [
+        { "type": "title", "expected": "Normal flow layout — Vixen fixture" },
+        { "type": "selector-count", "selector": "#outer > div", "expected": 4 },
+        { "type": "selector-count", "selector": "#gone", "expected": 1 },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 111.0] },
+        { "type": "layout-box", "selector": "#outer", "expected": [10.0, 10.0, 214.0, 91.0] },
+        { "type": "layout-box", "selector": "#inner", "expected": [24.0, 20.0, 56.0, 24.0] },
+        { "type": "layout-box", "selector": "#center", "expected": [67.0, 48.0, 100.0, 10.0] },
+        { "type": "layout-box", "selector": "#borderbox", "expected": [17.0, 64.0, 80.0, 30.0] },
+        { "type": "body-contains", "expected": "Border box" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/layout/inline-flow.html",
+      "checks": [
+        { "type": "title", "expected": "Inline flow layout — Vixen fixture" },
+        { "type": "selector-count", "selector": "#wrap > span", "expected": 3 },
+        { "type": "selector-count", "selector": "#wrap > div", "expected": 1 },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 70.2] },
+        { "type": "layout-box", "selector": "#wrap", "expected": [10.0, 10.0, 170.0, 50.2] },
+        { "type": "layout-box", "selector": "#one", "expected": [15.0, 15.0, 14.0, 25.2] },
+        { "type": "layout-box", "selector": "#two", "expected": [32.0, 15.0, 22.0, 21.2] },
+        { "type": "layout-box", "selector": "#three", "expected": [54.0, 15.0, 24.0, 19.2] },
+        { "type": "layout-box", "selector": "#block", "expected": [15.0, 45.2, 20.0, 10.0] },
+        { "type": "body-contains", "expected": "ABCDEF" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/layout/positioned.html",
+      "checks": [
+        { "type": "title", "expected": "Positioned layout — Vixen fixture" },
+        { "type": "selector-count", "selector": "#container > div", "expected": 4 },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 134.0] },
+        { "type": "layout-box", "selector": "#container", "expected": [10.0, 10.0, 214.0, 114.0] },
+        { "type": "layout-box", "selector": "#normal", "expected": [17.0, 20.0, 40.0, 20.0] },
+        { "type": "layout-box", "selector": "#rel", "expected": [27.0, 49.0, 30.0, 10.0] },
+        { "type": "layout-box", "selector": "#abs", "expected": [72.0, 27.0, 50.0, 20.0] },
+        { "type": "layout-box", "selector": "#after", "expected": [17.0, 54.0, 20.0, 10.0] },
+        { "type": "body-contains", "expected": "Absolute" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/layout/flex-row.html",
+      "checks": [
+        { "type": "title", "expected": "Flex row layout — Vixen fixture" },
+        { "type": "selector-count", "selector": "#flex > div", "expected": 3 },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 72.0] },
+        { "type": "layout-box", "selector": "#flex", "expected": [10.0, 10.0, 312.0, 52.0] },
+        { "type": "layout-box", "selector": "#fixed", "expected": [16.0, 16.0, 50.0, 20.0] },
+        { "type": "layout-box", "selector": "#grow1", "expected": [76.0, 16.0, 76.7, 30.0] },
+        { "type": "layout-box", "selector": "#grow2", "expected": [162.7, 16.0, 153.3, 40.0] },
+        { "type": "body-contains", "expected": "Grow two" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/layout/flex-column.html",
+      "checks": [
+        { "type": "title", "expected": "Flex column layout — Vixen fixture" },
+        { "type": "selector-count", "selector": "#flex > div", "expected": 3 },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 172.0] },
+        { "type": "layout-box", "selector": "#flex", "expected": [10.0, 10.0, 132.0, 152.0] },
+        { "type": "layout-box", "selector": "#fixed", "expected": [16.0, 16.0, 120.0, 20.0] },
+        { "type": "layout-box", "selector": "#grow1", "expected": [16.0, 46.0, 120.0, 33.3] },
+        { "type": "layout-box", "selector": "#grow2", "expected": [16.0, 89.3, 120.0, 66.7] },
+        { "type": "body-contains", "expected": "Grow two" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/layout/grid-basic.html",
+      "checks": [
+        { "type": "title", "expected": "Grid layout — Vixen fixture" },
+        { "type": "selector-count", "selector": "#grid > div", "expected": 5 },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 132.0] },
+        { "type": "layout-box", "selector": "#grid", "expected": [10.0, 10.0, 412.0, 112.0] },
+        { "type": "layout-box", "selector": "#a", "expected": [16.0, 16.0, 100.0, 30.0] },
+        { "type": "layout-box", "selector": "#b", "expected": [136.0, 16.0, 86.7, 30.0] },
+        { "type": "layout-box", "selector": "#c", "expected": [242.7, 16.0, 173.3, 30.0] },
+        { "type": "layout-box", "selector": "#d", "expected": [16.0, 56.0, 100.0, 60.0] },
+        { "type": "layout-box", "selector": "#e", "expected": [136.0, 56.0, 86.7, 60.0] },
+        { "type": "body-contains", "expected": "A" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/layout/overflow.html",
+      "checks": [
+        { "type": "title", "expected": "Overflow clipping — Vixen fixture" },
+        { "type": "selector-count", "selector": "#clip + #after", "expected": 1 },
+        { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 20.0] },
+        { "type": "layout-box", "selector": "#clip", "expected": [0.0, 0.0, 40.0, 10.0] },
+        { "type": "layout-box", "selector": "#after", "expected": [0.0, 10.0, 20.0, 10.0] },
+        { "type": "display-list-contains", "expected": "cmd 2: text x=0.0 y=0.0 w=40.0 h=10.0" },
+        { "type": "body-contains", "expected": "Overflowing text" },
+        { "type": "no-critical-diagnostics" }
       ]
     },
     {
@@ -317,6 +426,37 @@
         { "type": "selector-count", "selector": "#paint-root p", "expected": 2 },
         { "type": "selectors-exact", "selector": "#paint-root p", "expected": ["intro", "quote"] },
         { "type": "body-contains", "expected": "shared Page paint facade" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/paint/ref-block.html",
+      "checks": [
+        { "type": "title", "expected": "Ref equivalent block — Vixen fixture" },
+        { "type": "selector-count", "selector": "#root > #box", "expected": 1 },
+        { "type": "body-contains", "expected": "Block reference" },
+        { "type": "js-eval", "expr": "document.title", "expected": "Ref equivalent block — Vixen fixture" },
+        { "type": "ref-equivalent", "reference": "ref-block-ref.html" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/paint/ref-inline.html",
+      "checks": [
+        { "type": "title", "expected": "Ref equivalent inline — Vixen fixture" },
+        { "type": "selector-count", "selector": "#wrap > .token", "expected": 2 },
+        { "type": "body-contains", "expected": "Inline reference" },
+        { "type": "ref-equivalent", "reference": "ref-inline-ref.html" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/paint/ref-nested.html",
+      "checks": [
+        { "type": "title", "expected": "Ref equivalent nested — Vixen fixture" },
+        { "type": "selector-count", "selector": "#outer #inner", "expected": 1 },
+        { "type": "body-contains", "expected": "Nested reference" },
+        { "type": "ref-equivalent", "reference": "ref-nested-ref.html" },
         { "type": "no-critical-diagnostics" }
       ]
     },

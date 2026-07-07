@@ -58,7 +58,7 @@ vixen/                                  # workspace root
 │   │       └── modals/                  # about, preferences, shortcuts (relm4-components where possible)
 │   ├── vixen-wpt/                       # WPT harness
 │   │   └── src/
-│   │       ├── lib.rs                   # manifest, runner, 13 check types (12 inherited + ref-equivalent)
+│   │       ├── lib.rs                   # manifest, runner, WPT-style check types
 │   │       └── visual_hash.rs
 │   └── vixen-headless/                  # CLI
 │       └── src/

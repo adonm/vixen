@@ -90,6 +90,8 @@ check types below are the public contract for fixture authors.
 | `selector-match`        | Per-element selector match details                       |
 | `computed-style`        | Per-element computed style value matches expected        |
 | `element-attribute`     | Element attribute value matches expected                 |
+| `layout-box`            | Element border-box `(x, y, w, h)` matches expected       |
+| `display-list-contains` | Stable display-list dump contains a substring            |
 | `dom-nodes-range`       | DOM node count is within [min, max]                      |
 | `ref-equivalent`        | Rendered page matches a reference HTML fixture           |
 

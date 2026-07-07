@@ -21,10 +21,16 @@ use crate::display_list::{
     PaintStats, Rect, TextRun, dump_paint_commands, dump_paint_stats,
 };
 use crate::doc::{Document, ParseError};
-use crate::layout_tree::{LayoutTree, build_layout_tree, dump_layout_tree, line_boxes_from_tree};
+use crate::layout_tree::{
+    LayoutNode, LayoutNodeKind, LayoutTree, build_layout_tree, dump_layout_tree,
+    line_boxes_from_tree,
+};
 use crate::line_layout::{LineBox, dump_line_boxes};
 use crate::style_cascade::AuthorStylesheet;
 use crate::style_dom::Selector;
+
+mod interaction;
+pub use interaction::FormSubmissionSnapshot;
 
 /// A loaded page at the current vertical integration boundary.
 pub struct Page {
@@ -77,6 +83,33 @@ impl Page {
         self.document.text_content()
     }
 
+    /// Minimal DOM-backed JS expression projection for host-binding smoke
+    /// checks while full SpiderMonkey DOM objects are still landing. This is a
+    /// deliberately tiny, fail-closed subset: callers get `None` for unsupported
+    /// expressions and can fall back to the real JS runtime.
+    pub fn evaluate_dom_expression(&self, expr: &str) -> Option<Result<String, String>> {
+        let expr = expr.trim();
+        match expr {
+            "document.title" => return Some(Ok(self.document.title().unwrap_or_default())),
+            "document.URL" | "location.href" | "window.location.href" => {
+                return Some(Ok(self.url.clone()));
+            }
+            "document.body.textContent" | "document.body.innerText" => {
+                return Some(Ok(self.document.body_text_content()));
+            }
+            _ => {}
+        }
+
+        if let Some(selector) = query_selector_all_length_expr(expr) {
+            return Some(
+                self.query_selector_all(&selector)
+                    .map(|m| m.len().to_string()),
+            );
+        }
+
+        None
+    }
+
     /// First Vixen-owned layout tree slice: styled DOM projected into an
     /// arena-backed tree with stable layout-node ids.
     pub fn layout_tree(&self, viewport: (u32, u32)) -> LayoutTree {
@@ -101,14 +134,20 @@ impl Page {
         dump_line_boxes(&self.layout_lines(viewport), viewport)
     }
 
-    /// First executable Phase 5 paint slice: convert the Page-backed line boxes
+    /// First executable Phase 5 paint slice: convert the Page-backed layout tree
     /// into the single invariant-enforced display-list command stream.
     pub fn display_list(&self, viewport: (u32, u32)) -> Vec<PaintCommand> {
         let viewport_rect = Rect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32);
+        let tree = self.layout_tree(viewport);
         let mut builder = DisplayListBuilder::new();
         builder.push(viewport_background_item(viewport_rect));
-        for (idx, line) in self.layout_lines(viewport).iter().enumerate() {
-            builder.push(line_text_item(idx as u32 + 1, line, viewport_rect));
+        for node in &tree.nodes {
+            if node.id == tree.root {
+                continue;
+            }
+            if let Some(item) = layout_node_draw_item(&tree, node, viewport_rect) {
+                builder.push(item);
+            }
         }
         builder.build()
     }
@@ -142,18 +181,19 @@ impl Page {
     /// Query selector facade over the current DOM-backed selector surface.
     pub fn query_selector_all(&self, selector: &str) -> Result<Vec<ElementInfo>, String> {
         let parsed = Selector::parse(selector).map_err(|e| e.to_string())?;
+        let layout_tree = self.layout_tree((800, 600));
         Ok(self
             .document
             .query_all(&parsed)
             .into_iter()
             .map(|m| ElementInfo {
+                bbox: layout_bbox_for_node(&layout_tree, m.node_id),
                 node_id: m.node_id,
                 tag: m.tag,
                 id: m.id,
                 classes: m.classes,
                 attributes: m.attributes,
                 text: m.text,
-                bbox: None,
             })
             .collect())
     }
@@ -192,34 +232,129 @@ fn viewport_background_item(rect: Rect) -> DrawItem {
     }
 }
 
-fn line_text_item(order: u32, line: &LineBox, viewport: Rect) -> DrawItem {
-    let rect = Rect::new(line.x, line.y, line.w, line.h);
+fn layout_node_draw_item(tree: &LayoutTree, node: &LayoutNode, viewport: Rect) -> Option<DrawItem> {
+    let clip = clip_for_node(tree, node, viewport)?;
+    match node.kind {
+        LayoutNodeKind::Viewport => None,
+        LayoutNodeKind::Block => node
+            .style
+            .background_color
+            .map(|color| background_item(node, color, clip)),
+        LayoutNodeKind::Inline => None,
+        LayoutNodeKind::Text => node
+            .text
+            .as_ref()
+            .filter(|text| !text.is_empty())
+            .map(|text| text_item(node, text, inherited_text_color(tree, node), clip)),
+    }
+}
+
+fn clip_for_node(tree: &LayoutTree, node: &LayoutNode, viewport: Rect) -> Option<Rect> {
+    let mut clip = viewport;
+    let mut parent = node.parent;
+    while let Some(id) = parent {
+        let ancestor = tree.node(id);
+        if ancestor.style.overflow.clips_contents() {
+            clip = clip.intersect(ancestor.boxes.padding)?;
+        }
+        parent = ancestor.parent;
+    }
+    Some(clip)
+}
+
+fn background_item(node: &LayoutNode, color: Color, clip: Rect) -> DrawItem {
     DrawItem {
-        order,
+        order: node.id.index() as u32 + 1,
         z_index: 0,
         visibility: crate::display_list::Visibility::Visible,
         opacity: 1.0,
-        clip: Some(viewport),
+        clip: Some(clip),
         is_viewport_background: false,
-        border_box: rect,
-        padding_box: rect,
-        content_box: rect,
+        border_box: node.boxes.border,
+        padding_box: node.boxes.padding,
+        content_box: node.boxes.content,
+        background_clip: BackgroundBox::BorderBox,
+        background_origin: BackgroundBox::PaddingBox,
+        background_attachment: BackgroundAttachment::Scroll,
+        background: Some(color),
+        text: None,
+    }
+}
+
+fn text_item(node: &LayoutNode, text: &str, color: Color, clip: Rect) -> DrawItem {
+    DrawItem {
+        order: node.id.index() as u32 + 1,
+        z_index: 0,
+        visibility: crate::display_list::Visibility::Visible,
+        opacity: 1.0,
+        clip: Some(clip),
+        is_viewport_background: false,
+        border_box: node.boxes.border,
+        padding_box: node.boxes.padding,
+        content_box: node.boxes.content,
         background_clip: BackgroundBox::BorderBox,
         background_origin: BackgroundBox::ContentBox,
         background_attachment: BackgroundAttachment::Scroll,
         background: None,
         text: Some(TextRun {
-            color: Color::BLACK,
-            text: line.text.clone(),
+            color,
+            text: text.to_owned(),
         }),
     }
 }
 
+fn inherited_text_color(tree: &LayoutTree, node: &LayoutNode) -> Color {
+    let mut parent = node.parent;
+    while let Some(id) = parent {
+        let parent_node = tree.node(id);
+        if parent_node.dom_node_id.is_some() {
+            return parent_node.style.color;
+        }
+        parent = parent_node.parent;
+    }
+    Color::BLACK
+}
+
+fn layout_bbox_for_node(tree: &LayoutTree, node_id: usize) -> Option<(f64, f64, f64, f64)> {
+    tree.nodes
+        .iter()
+        .find(|node| node.dom_node_id == Some(node_id))
+        .map(|node| {
+            (
+                node.rect.x as f64,
+                node.rect.y as f64,
+                node.rect.w as f64,
+                node.rect.h as f64,
+            )
+        })
+}
+
+fn query_selector_all_length_expr(expr: &str) -> Option<String> {
+    let inner = expr
+        .strip_prefix("document.querySelectorAll(")?
+        .strip_suffix(").length")?;
+    js_string_literal(inner)
+}
+
+fn js_string_literal(input: &str) -> Option<String> {
+    let input = input.trim();
+    let bytes = input.as_bytes();
+    let quote = *bytes.first()?;
+    if bytes.len() < 2 || !matches!(quote, b'\'' | b'\"') || bytes.last().copied() != Some(quote) {
+        return None;
+    }
+    let inner = &input[1..input.len() - 1];
+    // This compatibility slice only accepts plain quoted selectors. Escaped JS
+    // strings will be handled by the real DOM-bound JS runtime.
+    if inner.contains('\\') {
+        return None;
+    }
+    Some(inner.to_owned())
+}
+
 impl EngineInspector for Page {
-    fn inspect_element_at(&self, _x: f64, _y: f64) -> Option<ElementInfo> {
-        // Hit-testing needs layout boxes (Phase 4). The inspector surface still
-        // exists so consumers can share this facade today.
-        None
+    fn inspect_element_at(&self, x: f64, y: f64) -> Option<ElementInfo> {
+        self.element_at((800, 600), x, y)
     }
 
     fn capture_snapshot(&self, vw: u32, vh: u32) -> PageSnapshot {
@@ -262,6 +397,32 @@ mod tests {
         assert_eq!(matches[0].id.as_deref(), Some("a"));
         assert_eq!(matches[0].tag, "p");
         assert!(page.query_selector_all("p >").is_err());
+    }
+
+    #[test]
+    fn page_evaluates_dom_expression_subset() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<html><head><title>T</title></head><body><p class='x'>one</p><p>two</p></body></html>",
+        )
+        .unwrap();
+        assert_eq!(
+            page.evaluate_dom_expression("document.title"),
+            Some(Ok("T".into()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelectorAll('p').length"),
+            Some(Ok("2".into()))
+        );
+        assert!(
+            page.evaluate_dom_expression("document.querySelectorAll('p >').length")
+                .is_some_and(|result| result.is_err())
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelectorAll(').length"),
+            None
+        );
+        assert_eq!(page.evaluate_dom_expression("1+2"), None);
     }
 
     #[test]
@@ -322,6 +483,19 @@ mod tests {
         let styles = page.computed_style(node_id);
         assert_eq!(style_value(&styles, "display"), Some("block"));
         assert_eq!(style_value(&styles, "color"), Some("blue"));
+    }
+
+    #[test]
+    fn computed_style_cascades_flex_longhands() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<style>#grow { flex-grow: 2; flex-basis: 0px; }</style><div id='grow'>x</div>",
+        )
+        .unwrap();
+        let node_id = page.query_selector_all("#grow").unwrap()[0].node_id;
+        let styles = page.computed_style(node_id);
+        assert_eq!(style_value(&styles, "flex-grow"), Some("2"));
+        assert_eq!(style_value(&styles, "flex-basis"), Some("0px"));
     }
 
     #[test]
@@ -392,11 +566,56 @@ mod tests {
         )
         .unwrap();
         let dump = page.dump_display_list((56, 200));
-        assert!(dump.contains("# display-list viewport=56x200 count=5"));
+        assert!(dump.contains("# display-list viewport=56x200 count=2"));
         assert!(dump.contains("cmd 0: background x=0.0 y=0.0 w=56.0 h=200.0"));
         assert!(dump.contains("cmd 1: text"));
-        assert!(dump.contains("text=\"one\""));
+        assert!(dump.contains("text=\"one two three four\""));
         assert!(!dump.contains("Hidden title"));
+    }
+
+    #[test]
+    fn display_list_uses_layout_tree_boxes_and_author_colours() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<style>#box { width: 40px; height: 20px; padding: 5px; border-width: 2px; background-color: #3366ff; color: white; }</style><div id='box'>Hi</div>",
+        )
+        .unwrap();
+        let dump = page.dump_display_list((120, 200));
+        assert!(dump.contains("cmd 1: background x=8.0 y=8.0 w=54.0 h=34.0 color=#3366ffff"));
+        assert!(dump.contains("cmd 2: text x=15.0 y=15.0"));
+        assert!(dump.contains("color=#ffffffff text=\"Hi\""));
+    }
+
+    #[test]
+    fn display_list_inherits_text_colour_and_currentcolor_background() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<style>body { margin: 0; } #parent { color: #123456; } #child { background-color: currentcolor; }</style><div id='parent'><span>Nested</span><div id='child'>Box</div></div>",
+        )
+        .unwrap();
+        let dump = page.dump_display_list((120, 200));
+        assert!(dump.contains("color=#123456ff text=\"Nested\""));
+        assert!(
+            dump.lines()
+                .any(|line| line.contains("background") && line.contains("color=#123456ff")),
+            "expected an inherited currentcolor background in:\n{dump}"
+        );
+        assert!(dump.contains("color=#123456ff text=\"Box\""));
+    }
+
+    #[test]
+    fn display_list_clips_descendants_to_overflow_scrollport() {
+        let page = Page::from_html(
+            "file:///fixture.html",
+            "<style>body { margin: 0; } #clip { width: 40px; height: 10px; overflow: hidden; }</style><div id='clip'>Overflowing text</div>",
+        )
+        .unwrap();
+        let dump = page.dump_display_list((120, 80));
+        assert!(
+            dump.contains("cmd 1: text x=0.0 y=0.0 w=40.0 h=10.0"),
+            "{dump}"
+        );
+        assert!(dump.contains("text=\"Overflowing text\""));
     }
 
     #[test]
@@ -408,11 +627,11 @@ mod tests {
         .unwrap();
         let stats = page.paint_stats((56, 200));
         assert_eq!(stats.backgrounds, 1);
-        assert_eq!(stats.text_runs, 2);
-        assert_eq!(stats.commands, 3);
+        assert_eq!(stats.text_runs, 1);
+        assert_eq!(stats.commands, 2);
         let dump = page.dump_paint_stats((56, 200));
-        assert!(dump.contains("# paint-stats viewport=56x200 commands=3"));
-        assert!(dump.contains("text-runs=2"));
+        assert!(dump.contains("# paint-stats viewport=56x200 commands=2"));
+        assert!(dump.contains("text-runs=1"));
     }
 
     fn style_value<'a>(styles: &'a [(String, String)], property: &str) -> Option<&'a str> {

@@ -31,7 +31,7 @@ and reference material, plus:
   inline `style` declarations now project through `Page::computed_style(node_id)`
   with specificity/source-order/`!important` cascade basics and WPT
   `computed-style` checks; and the **WPT harness** (`vixen-wpt`: manifest +
-  runner + all 13 check types). The full Stylo cascade (`TNode`/`TElement`/`TDocument` +
+  runner + all 15 check types). The full Stylo cascade (`TNode`/`TElement`/`TDocument` +
   `Stylist::update_stylist` + `computed_values_for(node_id)`) is the next
   slice; Stylo arrives via the crates.io-published `stylo` crate per
   ADR-011 (no Servo git dep).

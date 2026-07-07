@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Inline flow layout — Vixen fixture</title>
+  <style>
+    body { margin: 0; }
+    #wrap { width: 160px; margin: 10px; padding: 4px; border: 1px solid black; }
+    #one { padding: 2px; border-width: 1px; }
+    #two { margin-left: 3px; padding-left: 2px; padding-right: 2px; border-width: 1px; }
+    #block { width: 20px; height: 10px; margin-top: 5px; }
+  </style>
+</head>
+<body>
+  <div id="wrap"><span id="one">A</span><span id="two">BC</span><span id="three">DEF</span><div id="block">Block</div></div>
+</body>
+</html>

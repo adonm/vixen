@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Flex row layout — Vixen fixture</title>
+  <style>
+    body { margin: 0; }
+    #flex { display: flex; width: 300px; margin: 10px; padding: 5px; border: 1px solid black; gap: 10px; }
+    #fixed { width: 50px; height: 20px; }
+    #grow1 { flex-grow: 1; flex-basis: 0px; height: 30px; }
+    #grow2 { flex-grow: 2; flex-basis: 0px; height: 40px; }
+  </style>
+</head>
+<body>
+  <section id="flex">
+    <div id="fixed">Fixed</div>
+    <div id="grow1">Grow one</div>
+    <div id="grow2">Grow two</div>
+  </section>
+</body>
+</html>

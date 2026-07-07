@@ -10,35 +10,48 @@ feature.
 
 ## Current measured local fixture baseline
 
-As of 2026-07-06, `fixtures/manifest.json` contains:
+As of 2026-07-07, `fixtures/manifest.json` contains:
 
 | Category | Fixtures |
 |----------|---------:|
 | css      | 16 |
 | dom      | 10 |
 | forms    | 2 |
-| layout   | 1 |
+| layout   | 8 |
 | network  | 2 |
-| paint    | 1 |
+| paint    | 4 |
 | security | 8 |
-| **Total** | **40** |
+| **Total** | **50** |
 
-Total manifest checks: **500**.
+Total manifest checks: **590**.
 
 Current check mix:
 
 | Check type | Count |
 |------------|------:|
-| `selector-count` | 231 |
+| `selector-count` | 243 |
 | `element-attribute` | 127 |
 | `selectors-exact` | 49 |
-| `title` | 39 |
-| `body-contains` | 38 |
+| `title` | 49 |
+| `body-contains` | 48 |
 | `computed-style` | 11 |
-| `no-critical-diagnostics` | 4 |
+| `layout-box` | 41 |
+| `no-critical-diagnostics` | 14 |
+| `ref-equivalent` | 3 |
+| `display-list-contains` | 1 |
+| `dom-nodes-range` | 1 |
+| `js-eval` | 1 |
+| `min-nodes` | 1 |
 | `selector-match` | 1 |
 
 This local fixture set is release-blocking and must remain **100 % green**.
+The layout category currently includes normal-flow, inline-flow, positioned,
+flex row/column, grid, and overflow coordinate/paint fixtures with `layout-box`
+and `display-list-contains` assertions. The paint category includes three local
+`ref-equivalent` smoke fixtures against the stable display-list render
+projection. The harness now reports overall, per-category, and local/imported
+pass rates; imported upstream WPT layout/paint coverage is still tracked
+separately below and remains at zero until the curated profile lands.
 
 ---
 
