@@ -6,10 +6,10 @@
 //! through `vixen_engine::page::Page`; broad host-binding smoke still uses that
 //! facade while the first focused `document` / `Element` evals run in
 //! the JS runtime with a Page snapshot.
-//! Renderer/CDP-only flags keep the stable error codes (`unsupported.screenshot`,
-//! `invalid-selector`) until their later phases land.
+//! Renderer/CDP-only failures keep stable error codes (`unsupported.screenshot`,
+//! `invalid-selector`) at their trust boundaries.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -18,6 +18,7 @@ use clap::Parser;
 
 use vixen_engine::engine_error::codes;
 use vixen_engine::page::Page;
+use vixen_engine::paint::{self, RgbaFrame};
 use vixen_engine::script::JsRuntime;
 use vixen_net::{CookieJar, Method, Network};
 
@@ -138,22 +139,21 @@ pub fn run(cli: Cli) -> ExitCode {
         return run_memory_stats();
     }
 
-    // `--incremental` is a two-frame screenshot workflow. Validate the required
-    // flag combination now, then fail on the same stable renderer code as
-    // `--screenshot` until the Phase 5 offscreen path lands.
+    // `--incremental` is a two-frame screenshot workflow. The first executable
+    // slice shares the screenshot renderer and validates the required flags.
     if cli.incremental {
         if cli.screenshot.is_none() || cli.eval.is_none() {
             eprintln!("error: --incremental requires --screenshot and --eval");
             return ExitCode::from(2);
         }
-        return run_screenshot(url, viewport);
+        let path = cli.screenshot.as_deref().expect("checked above");
+        return run_screenshot(url, viewport, path);
     }
 
-    // --screenshot requires the offscreen renderer (Phase 5). Probe the
-    // concrete headless `GlContext` creation boundary before all other page
-    // actions so combinations fail closed consistently with the stable code.
-    if cli.screenshot.is_some() {
-        return run_screenshot(url, viewport);
+    // --screenshot requires the offscreen renderer (Phase 5) and short-circuits
+    // the textual DOM/layout output modes.
+    if let Some(path) = cli.screenshot.as_deref() {
+        return run_screenshot(url, viewport, path);
     }
 
     if has_interaction_action(&cli) {
@@ -239,19 +239,63 @@ fn run_cdp_server(initial_url: &str, port: u16) -> ExitCode {
     }
 }
 
-fn run_screenshot(_url: &str, viewport: (u32, u32)) -> ExitCode {
-    match surface::SurfacelessSurface::new(viewport) {
-        Ok(_surface) => {
-            // The EGL context constructor is the first Phase 5 boundary; PNG
-            // capture still waits for the single WebRender paint path.
-            eprintln!("{}", codes::UNSUPPORTED_SCREENSHOT);
-            ExitCode::FAILURE
+fn run_screenshot(url: &str, viewport: (u32, u32), output: &Path) -> ExitCode {
+    let page = match load_page(url) {
+        Ok(page) => page,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
         }
+    };
+    let surface = match surface::SurfacelessSurface::new(viewport) {
+        Ok(surface) => surface,
         Err(err) => {
-            eprintln!("{}", err.stable_code());
+            eprintln!("{}: {err}", err.stable_code());
+            return ExitCode::FAILURE;
+        }
+    };
+    let commands = page.display_list(viewport);
+    let frame = match paint::render_commands_to_rgba(&surface, &commands, viewport) {
+        Ok(frame) => frame,
+        Err(err) => {
+            eprintln!("{}: {err}", codes::UNSUPPORTED_SCREENSHOT);
+            return ExitCode::FAILURE;
+        }
+    };
+    match write_png(output, &frame) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(err) => {
+            eprintln!("error: {err}");
             ExitCode::FAILURE
         }
     }
+}
+
+fn write_png(path: &Path, frame: &RgbaFrame) -> Result<(), String> {
+    let expected_len = frame
+        .width
+        .checked_mul(frame.height)
+        .and_then(|px| px.checked_mul(4))
+        .ok_or_else(|| "PNG dimensions overflow RGBA buffer length".to_owned())?
+        as usize;
+    if frame.rgba.len() != expected_len {
+        return Err(format!(
+            "invalid RGBA buffer length: got {}, expected {expected_len}",
+            frame.rgba.len()
+        ));
+    }
+
+    let file =
+        std::fs::File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
+    let mut encoder = png::Encoder::new(file, frame.width, frame.height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder
+        .write_header()
+        .map_err(|e| format!("write PNG header {}: {e}", path.display()))?;
+    writer
+        .write_image_data(&frame.rgba)
+        .map_err(|e| format!("write PNG data {}: {e}", path.display()))
 }
 
 fn has_non_memory_action(cli: &Cli) -> bool {
@@ -504,13 +548,44 @@ pub(crate) fn uses_runtime_dom_eval(js: &str) -> bool {
     matches!(
         js,
         "document.title" | "document.URL" | "document.documentURI" | "document.readyState"
-    ) || simple_query_selector_eval(js, "document.querySelector(")
+    ) || runtime_web_api_eval(js)
+        || simple_query_selector_eval(js, "document.querySelector(")
         || simple_get_element_by_id_eval(js)
         || simple_query_selector_all_length_eval(js)
         || simple_document_element_eval(js, "document.body")
         || simple_document_element_eval(js, "document.documentElement")
         || simple_get_computed_style_eval(js)
         || simple_cssom_eval(js)
+}
+
+fn runtime_web_api_eval(js: &str) -> bool {
+    js.starts_with("document.createRange()")
+        || js.starts_with("document.createTreeWalker(")
+        || js.starts_with("document.createNodeIterator(")
+        || js.starts_with("document.getSelection()")
+        || js.starts_with("window.getSelection()")
+        || js.starts_with("structuredClone(")
+        || js.starts_with("new MutationObserver(")
+        || js.starts_with("new Headers(")
+        || js.starts_with("new AbortController()")
+        || js.starts_with("AbortSignal.")
+        || js.starts_with("new URL(")
+        || js.starts_with("URL.canParse(")
+        || js.starts_with("window.URL.canParse(")
+        || js.starts_with("new URLPattern(")
+        || js.starts_with("new URLSearchParams(")
+        || js.starts_with("performance.")
+        || js.starts_with("window.performance.")
+        || js.starts_with("typeof performance.")
+        || js.starts_with("typeof window.performance.")
+        || js.starts_with("navigator.")
+        || js.starts_with("window.navigator.")
+        || js.starts_with("localStorage.")
+        || js.starts_with("sessionStorage.")
+        || js.starts_with("history.")
+        || js.starts_with("window.history.")
+        || js.starts_with("matchMedia(")
+        || js.starts_with("window.matchMedia(")
 }
 
 fn simple_document_element_eval(js: &str, prefix: &str) -> bool {
@@ -632,6 +707,41 @@ fn is_simple_css_rule_member(member: &str) -> bool {
             .is_some_and(simple_dom_host_usize_index)
 }
 
+fn simple_dom_geometry_member(member: &str) -> bool {
+    if let Some(rest) = member.strip_prefix(".getBoundingClientRect()") {
+        return simple_dom_rect_member(rest);
+    }
+    if let Some(rest) = member.strip_prefix(".getClientRects()") {
+        return rest == ".length" || simple_dom_rect_list_member(rest);
+    }
+    false
+}
+
+fn simple_dom_rect_list_member(member: &str) -> bool {
+    if let Some(rest) = member.strip_prefix("[0]") {
+        return simple_dom_rect_member(rest);
+    }
+    if let Some((index, rest)) = dom_host_usize_method_tail(member, ".item(") {
+        return index == 0 && simple_dom_rect_member(rest);
+    }
+    false
+}
+
+fn simple_dom_rect_member(member: &str) -> bool {
+    let member = member.strip_prefix(".toJSON()").unwrap_or(member);
+    matches!(
+        member,
+        ".x" | ".y" | ".width" | ".height" | ".left" | ".top" | ".right" | ".bottom"
+    )
+}
+
+fn dom_host_usize_method_tail<'a>(member: &'a str, prefix: &str) -> Option<(usize, &'a str)> {
+    let rest = member.strip_prefix(prefix)?;
+    let (raw_index, tail) = rest.split_once(')')?;
+    let index = raw_index.trim().parse().ok()?;
+    Some((index, tail))
+}
+
 fn is_simple_dom_host_member(member: &str) -> bool {
     matches!(
         member,
@@ -654,6 +764,7 @@ fn is_simple_dom_host_member(member: &str) -> bool {
         || simple_dom_token_list_member(member, ".relList")
         || simple_dom_token_list_member(member, ".sandbox")
         || simple_dataset_member(member)
+        || simple_dom_geometry_member(member)
 }
 
 fn simple_dom_host_string_method(member: &str, prefix: &str) -> bool {
@@ -979,10 +1090,34 @@ mod tests {
     }
 
     #[test]
-    fn screenshot_without_renderer_returns_stable_code() {
-        let cli = parse(&["--url", "https://example.com", "--screenshot", "o.png"]);
-        let code = run(cli);
-        assert_eq!(code, ExitCode::FAILURE);
+    fn png_writer_persists_rgba_frames() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("shot.png");
+        let frame = RgbaFrame {
+            width: 1,
+            height: 1,
+            rgba: vec![0xff, 0x00, 0x00, 0xff],
+        };
+
+        write_png(&output, &frame).unwrap();
+
+        let bytes = std::fs::read(&output).unwrap();
+        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
+    }
+
+    #[test]
+    fn png_writer_rejects_bad_rgba_lengths() {
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("bad.png");
+        let frame = RgbaFrame {
+            width: 2,
+            height: 1,
+            rgba: vec![0; 4],
+        };
+
+        let err = write_png(&output, &frame).unwrap_err();
+
+        assert!(err.contains("invalid RGBA buffer length"));
     }
 
     #[test]
@@ -1214,8 +1349,32 @@ mod tests {
         assert!(uses_runtime_dom_eval(
             "document.styleSheets[0].cssRules[0].style.getPropertyValue('color')"
         ));
-        assert!(!uses_runtime_dom_eval(
+        assert!(uses_runtime_dom_eval(
             "document.querySelector('#lead').getBoundingClientRect().x"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "document.querySelector('#lead').getClientRects().length"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "document.querySelector('#lead').getClientRects().item(0).width"
+        ));
+        assert!(uses_runtime_dom_eval("document.createRange().collapsed"));
+        assert!(uses_runtime_dom_eval("window.getSelection().rangeCount"));
+        assert!(uses_runtime_dom_eval(
+            "document.createTreeWalker(document.getElementById('lead'), NodeFilter.SHOW_ELEMENT).root.id"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "new Headers([['X-Test', 'a']]).get('x-test')"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "structuredClone(new Map([['answer', 42]])).get('answer')"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "new URL('/other', 'https://example.com/app/page').href"
+        ));
+        assert!(uses_runtime_dom_eval("navigator.onLine"));
+        assert!(uses_runtime_dom_eval(
+            "matchMedia('(min-width: 800px)').matches"
         ));
         assert!(!uses_runtime_dom_eval(
             "document.querySelector('#lead').classList.add('new')"
@@ -1237,6 +1396,20 @@ mod tests {
             run_dom_eval(&url, "document.styleSheets[0].cssRules[0].selectorText"),
             None
         );
+        assert_eq!(
+            run_dom_eval(
+                &url,
+                "document.querySelector('#lead').getBoundingClientRect().x"
+            ),
+            None
+        );
+        assert_eq!(run_dom_eval(&url, "document.createRange().collapsed"), None);
+        assert_eq!(run_dom_eval(&url, "window.getSelection().rangeCount"), None);
+        assert_eq!(
+            run_dom_eval(&url, "new Headers([['X-Test', 'a']]).get('x-test')"),
+            None
+        );
+        assert_eq!(run_dom_eval(&url, "navigator.onLine"), None);
     }
 
     #[test]

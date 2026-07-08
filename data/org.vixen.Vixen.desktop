@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Vixen
+Comment=Minimal Rust browser for modern Linux
+Exec=vixen
+Icon=org.vixen.Vixen
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;
+StartupNotify=true
+Keywords=browser;web;internet;

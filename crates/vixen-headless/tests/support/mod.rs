@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use vixen_api::{ElementInfo, EngineDiagnostic, PageSnapshot};
 use vixen_engine::page::Page;
-use vixen_wpt::harness::HarnessEngine;
+use vixen_wpt::harness::{HarnessEngine, RgbaScreenshot};
 
 /// Shared Page-backed WPT harness adapter for committed manifests and optional
 /// external WPT profiles.
@@ -75,6 +75,23 @@ impl HarnessEngine for PageHarnessEngine {
         let page = Page::from_html(path.display().to_string(), &html)
             .map_err(|e| format!("parse reference {}: {e}", path.display()))?;
         Ok(page.dump_display_list((vw, vh)))
+    }
+
+    fn screenshot_rgba(&self, vw: u32, vh: u32) -> Result<RgbaScreenshot, String> {
+        let viewport = (vw, vh);
+        let surface = vixen_headless::surface::SurfacelessSurface::new(viewport)
+            .map_err(|e| e.to_string())?;
+        let frame = vixen_engine::paint::render_commands_to_rgba(
+            &surface,
+            &self.page.display_list(viewport),
+            viewport,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(RgbaScreenshot {
+            width: frame.width,
+            height: frame.height,
+            rgba: frame.rgba,
+        })
     }
 }
 

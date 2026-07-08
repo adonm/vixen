@@ -14,6 +14,8 @@ alias check := check-all-host
 alias alpha := gate-alpha
 alias smoke := gate-smoke
 alias test := test-host
+alias webidl := gate-webidl
+alias hooks := hooks-install
 
 # Container runtime + the flatpak-builder image that owns the GNOME SDK.
 # Bump these two together (and runtime-version in build-aux/*.json) to move SDK.
@@ -30,6 +32,11 @@ default:
 # Full project setup after `mise install`: nightly for fuzzing, optional Cargo
 # tools, then the cheap workspace build check. `mise bootstrap --yes` runs this.
 setup: setup-rust setup-dev-tools check-all-host
+
+# Install/update git hooks through hk. mise pins hk and exports HK_MISE=1, so
+# hooks execute in the project tool environment even from a plain git command.
+hooks-install:
+    hk install --mise
 
 # cargo-fuzz needs nightly even though normal development uses stable Rust.
 setup-rust:
@@ -76,6 +83,13 @@ test-store:
 test-engine:
     cargo test -p vixen-engine
 
+test-script:
+    cargo test -p vixen-engine script
+
+test-headless-runtime:
+    cargo test -p vixen-headless focused_document_eval_uses_runtime_host_objects
+    cargo test -p vixen-headless --test cdp_runtime
+
 # --- Lint / format -----------------------------------------------------------
 
 fmt:
@@ -93,11 +107,17 @@ clippy:
 
 # Fast alpha-slice gate: pair this with focused tests and the relevant phase
 # gate. It is not a substitute for reviewer smoke before commit/push.
-gate-alpha: fmt-check clippy check-all-host
+gate-alpha: fmt-check clippy check-all-host gate-webidl
     cargo test -p vixen-headless --test wpt_runner
 
 # Reviewer smoke: formatting, linting, and all host-runnable tests.
 gate-smoke: fmt-check clippy check-all-host test-host
+
+# Long gate invoked by hk pre-push. Keep long checks here instead of pre-commit
+# so local iteration stays fast.
+gate-push: gate-alpha gate-phase6 gate-smoke
+    git diff --check
+    git diff --cached --check
 
 # Phase 0 gate: workspace builds and API DTO/trait tests pass.
 gate-phase0: check-all-host test-api
@@ -107,7 +127,7 @@ gate-phase0: check-all-host test-api
 gate-phase1: test-net test-store audit fuzz-security
 
 # Phase 2 vertical gate: engine tests plus deno_core eval through headless.
-gate-phase2: test-engine
+gate-phase2: test-engine gate-webidl
     test "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/dom/basic.html --eval '1+2')" = "3"
 
 # Phase 3 current gate: DOM parse + Stylo selector matching through the shared
@@ -160,30 +180,18 @@ gate-phase5:
     cargo test -p vixen-engine geometry
     case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/paint/display-list.html --viewport 160x120 --dump-display-list)" in *"cmd 0: background"*"cmd 1: text"*) true;; *) false;; esac
     case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/paint/display-list.html --viewport 160x120 --paint-stats)" in *"# paint-stats"*"text-runs="*) true;; *) false;; esac
+    cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/paint/display-list.html --viewport 160x120 --screenshot target/vixen-phase5-shot.png
+    test -s target/vixen-phase5-shot.png
 
-# Phase 6 current gate: DOM/forms/network-host pure prep + responsive images.
-gate-phase6:
-    cargo test -p vixen-engine forms
-    cargo test -p vixen-engine form_submission
-    cargo test -p vixen-engine dataset
-    cargo test -p vixen-engine storage_key
-    cargo test -p vixen-engine url_search_params
-    cargo test -p vixen-engine mime
-    cargo test -p vixen-engine text_codec
-    cargo test -p vixen-engine html_serialize
-    cargo test -p vixen-engine class_list
-    cargo test -p vixen-engine calc
-    cargo test -p vixen-engine easing
-    cargo test -p vixen-engine media_query
-    cargo test -p vixen-engine source_size
-    cargo test -p vixen-engine responsive_select
-    cargo test -p vixen-engine structured_clone
-    cargo test -p vixen-engine message_port
-    cargo test -p vixen-engine range
-    cargo test -p vixen-engine history
-    cargo test -p vixen-engine mutation_observer
-    cargo test -p vixen-engine traversal
-    cargo test -p vixen-engine whatwg_url
+# WebIDL/runtime host gate: generated constructor/prototype coverage plus the
+# user-visible headless/CDP seams that consume those bindings.
+gate-webidl: test-script test-headless-runtime
+    test "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/dom/basic.html --eval 'globalThis.__vixenWebidl.interfaceNames().includes("HTMLDialogElement") && HTMLElement.prototype instanceof Element')" = "true"
+
+# Phase 6 current gate: full engine host-family coverage plus WebIDL runtime
+# seams. `test-engine` is intentionally cheaper and less fragile than a long
+# list of filtered test invocations, while covering the same phase-6 modules.
+gate-phase6: test-engine gate-webidl
 
 # --- Fuzz (docs/PLAN.md Phase 1 gate: 1M iterations each) --------------------
 
@@ -241,16 +249,33 @@ run *ARGS:
 flatpak-update-sdk:
     {{CONTAINER}} pull {{FLATPAK_BUILDER_IMAGE}}
 
+# Refresh Flatpak cargo archive sources from Cargo.lock. Run after dependency
+# changes so the Flatpak build sandbox can stay offline.
+flatpak-cargo-sources:
+    python3 build-aux/generate-cargo-sources.py
+
 # Interactive shell in the SDK container, workspace mounted at /workspace.
 flatpak-shell:
     {{CONTAINER}} run --rm -it -v {{justfile_directory()}}:/workspace:z -w /workspace {{FLATPAK_BUILDER_IMAGE}}
 
 # Build the Flatpak against org.gnome.Sdk//{{GNOME_RUNTIME_VERSION}} inside the
-# container. Manifest is scaffolding until the shell lands (Phase 9).
-flatpak-build:
-    {{CONTAINER}} run --rm -v {{justfile_directory()}}:/workspace:z -w /workspace {{FLATPAK_BUILDER_IMAGE}} \
-        flatpak-builder --user --force-clean --install \
+# container. `--privileged` lets flatpak-builder run its nested bwrap sandbox on
+# rootless Podman hosts; `--disable-rofiles-fuse` avoids a container dbus/fuse
+# dependency. Cargo uses build-aux/cargo-sources.json and runs offline inside
+# the build sandbox.
+flatpak-build: flatpak-cargo-sources
+    {{CONTAINER}} run --rm --privileged -v {{justfile_directory()}}:/workspace:z -w /workspace {{FLATPAK_BUILDER_IMAGE}} \
+        flatpak-builder --install-deps-from=flathub --disable-rofiles-fuse --force-clean --repo=build-aux/_repo \
         build-aux/_build build-aux/org.vixen.Vixen.json
+
+# Install the locally built Flatpak repo into the host user installation for GUI smoke.
+flatpak-install-local: flatpak-build
+    flatpak remote-add --user --if-not-exists --no-gpg-verify vixen-local {{justfile_directory()}}/build-aux/_repo
+    flatpak install --user --noninteractive vixen-local org.vixen.Vixen
+
+# Run the locally installed Flatpak. Use after `just flatpak-install-local`.
+flatpak-run *ARGS:
+    flatpak run org.vixen.Vixen {{ARGS}}
 
 # --- Audit (docs/ACCEPTANCE.md hard gate) ------------------------------------
 

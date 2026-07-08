@@ -223,7 +223,8 @@
         { "type": "js-eval", "expr": "new DOMMatrix([1,0,0,1,5,6]).e", "expected": "5" },
         { "type": "js-eval", "expr": "new DOMMatrix().translate(10,20).transformPoint(new DOMPoint(1,2)).y", "expected": "22" },
         { "type": "js-eval", "expr": "new DOMMatrix().scale(2,3).transformPoint(new DOMPoint(5,5)).x", "expected": "10" },
-        { "type": "body-contains", "expected": "Nested flex/grid" }
+        { "type": "body-contains", "expected": "Nested flex/grid" },
+        { "type": "visual-hash", "expected": "bfbf0f1fffffffff@1" }
       ]
     },
     {
@@ -238,7 +239,8 @@
         { "type": "layout-box", "selector": "#center", "expected": [67.0, 48.0, 100.0, 10.0] },
         { "type": "layout-box", "selector": "#borderbox", "expected": [17.0, 64.0, 80.0, 30.0] },
         { "type": "body-contains", "expected": "Border box" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "3f7fffffffffffff@1" }
       ]
     },
     {
@@ -254,7 +256,8 @@
         { "type": "layout-box", "selector": "#three", "expected": [54.0, 15.0, 24.0, 19.2] },
         { "type": "layout-box", "selector": "#block", "expected": [15.0, 45.2, 20.0, 10.0] },
         { "type": "body-contains", "expected": "ABCDEF" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "7f7fffffffffffff@1" }
       ]
     },
     {
@@ -269,7 +272,8 @@
         { "type": "layout-box", "selector": "#abs", "expected": [72.0, 27.0, 50.0, 20.0] },
         { "type": "layout-box", "selector": "#after", "expected": [17.0, 54.0, 20.0, 10.0] },
         { "type": "body-contains", "expected": "Absolute" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "3f7fffffffffffff@1" }
       ]
     },
     {
@@ -283,7 +287,8 @@
         { "type": "layout-box", "selector": "#grow1", "expected": [76.0, 16.0, 76.7, 30.0] },
         { "type": "layout-box", "selector": "#grow2", "expected": [162.7, 16.0, 153.3, 40.0] },
         { "type": "body-contains", "expected": "Grow two" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "1fffffffffffffff@1" }
       ]
     },
     {
@@ -297,7 +302,8 @@
         { "type": "layout-box", "selector": "#grow1", "expected": [16.0, 46.0, 120.0, 33.3] },
         { "type": "layout-box", "selector": "#grow2", "expected": [16.0, 89.3, 120.0, 66.7] },
         { "type": "body-contains", "expected": "Grow two" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "7f7fffffffffffff@1" }
       ]
     },
     {
@@ -313,7 +319,8 @@
         { "type": "layout-box", "selector": "#d", "expected": [16.0, 56.0, 100.0, 60.0] },
         { "type": "layout-box", "selector": "#e", "expected": [136.0, 56.0, 86.7, 60.0] },
         { "type": "body-contains", "expected": "A" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "1fffffffffffffff@1" }
       ]
     },
     {
@@ -326,7 +333,8 @@
         { "type": "layout-box", "selector": "#after", "expected": [0.0, 10.0, 20.0, 10.0] },
         { "type": "display-list-contains", "expected": "cmd 2: text x=0.0 y=0.0 w=40.0 h=10.0" },
         { "type": "body-contains", "expected": "Overflowing text" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "7fffffffffffffff@1" }
       ]
     },
     {
@@ -338,7 +346,8 @@
         { "type": "display-list-contains", "expected": "cmd 2: text x=0.0 y=0.0 w=40.0 h=19.2 color=#123456ff text=\"alpha\"" },
         { "type": "display-list-contains", "expected": "cmd 4: text x=0.0 y=38.4 w=40.0 h=19.2 color=#123456ff text=\"gamma\"" },
         { "type": "body-contains", "expected": "alpha beta gamma" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "7fffffffffffffff@1" }
       ]
     },
     {
@@ -351,7 +360,8 @@
         { "type": "element-attribute", "selector": "#scale", "attribute": "data-transform", "expected": "scale(2)" },
         { "type": "element-attribute", "selector": "#list", "attribute": "data-transform", "expected": "translate(10px, 0) rotate(45deg)" },
         { "type": "selector-count", "selector": "#identity:not([data-transform])", "expected": 1 },
-        { "type": "body-contains", "expected": "identity" }
+        { "type": "body-contains", "expected": "identity" },
+        { "type": "visual-hash", "expected": "7f7fffffffffffff@1" }
       ]
     },
     {
@@ -367,7 +377,8 @@
         { "type": "element-attribute", "selector": "#centered", "attribute": "data-margin-left", "expected": "auto" },
         { "type": "element-attribute", "selector": "#centered", "attribute": "data-margin-right", "expected": "auto" },
         { "type": "element-attribute", "selector": "#round-half", "attribute": "data-radius", "expected": "50%" },
-        { "type": "body-contains", "expected": "border-box" }
+        { "type": "body-contains", "expected": "border-box" },
+        { "type": "visual-hash", "expected": "7f7f7f7fe73f7f7f@1" }
       ]
     },
     {
@@ -559,7 +570,8 @@
         { "type": "element-attribute", "selector": "#sc-opacity", "attribute": "id", "expected": "sc-opacity" },
         { "type": "body-contains", "expected": "shadow outer" },
         { "type": "body-contains", "expected": "pos center" },
-        { "type": "body-contains", "expected": "z positive" }
+        { "type": "body-contains", "expected": "z positive" },
+        { "type": "visual-hash", "expected": "7f3f7fffffffffff@1" }
       ]
     },
     {
@@ -569,7 +581,8 @@
         { "type": "selector-count", "selector": "#paint-root p", "expected": 2 },
         { "type": "selectors-exact", "selector": "#paint-root p", "expected": ["intro", "quote"] },
         { "type": "body-contains", "expected": "shared Page paint facade" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "07ffffffffffffff@1" }
       ]
     },
     {
@@ -580,7 +593,8 @@
         { "type": "body-contains", "expected": "Block reference" },
         { "type": "js-eval", "expr": "document.title", "expected": "Ref equivalent block — Vixen fixture" },
         { "type": "ref-equivalent", "reference": "ref-block-ref.html" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "3fffffffffffffff@1" }
       ]
     },
     {
@@ -590,7 +604,8 @@
         { "type": "selector-count", "selector": "#wrap > .token", "expected": 2 },
         { "type": "body-contains", "expected": "Inline reference" },
         { "type": "ref-equivalent", "reference": "ref-inline-ref.html" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "3fffffffffffffff@1" }
       ]
     },
     {
@@ -600,7 +615,8 @@
         { "type": "selector-count", "selector": "#outer #inner", "expected": 1 },
         { "type": "body-contains", "expected": "Nested reference" },
         { "type": "ref-equivalent", "reference": "ref-nested-ref.html" },
-        { "type": "no-critical-diagnostics" }
+        { "type": "no-critical-diagnostics" },
+        { "type": "visual-hash", "expected": "1fffffffffffffff@1" }
       ]
     },
     {
@@ -695,7 +711,8 @@
         { "type": "selector-count", "selector": ".stage#blend-group", "expected": 1 },
         { "type": "selector-count", "selector": "#bg-single, #bg-list", "expected": 2 },
         { "type": "selector-count", "selector": "#iso-auto, #iso-isolate", "expected": 2 },
-        { "type": "body-contains", "expected": "luminosity" }
+        { "type": "body-contains", "expected": "luminosity" },
+        { "type": "visual-hash", "expected": "7f7f7f7f7f7fffff@1" }
       ]
     },
     {
@@ -706,7 +723,8 @@
         { "type": "selectors-exact", "selector": "main#content > div", "expected": ["f-brightness", "f-contrast", "f-grayscale", "f-hue-rotate", "f-invert", "f-opacity", "f-saturate", "f-sepia", "f-blur", "f-drop-shadow", "f-chain", "f-none", "f-percent"] },
         { "type": "selector-count", "selector": "#f-chain", "expected": 1 },
         { "type": "selector-count", "selector": "#f-none", "expected": 1 },
-        { "type": "body-contains", "expected": "drop-shadow" }
+        { "type": "body-contains", "expected": "drop-shadow" },
+        { "type": "visual-hash", "expected": "7f7f7f7fffffffff@1" }
       ]
     },
     {
@@ -717,7 +735,8 @@
         { "type": "selectors-exact", "selector": "main#content > div", "expected": ["bi-slice", "bi-width", "bi-outset", "bi-repeat-stretch", "bi-repeat-round", "bi-repeat-space", "bi-repeat-two", "bi-shorthand", "bi-default"] },
         { "type": "selector-count", "selector": "[id^='bi-repeat-']", "expected": 4 },
         { "type": "selector-count", "selector": "#bi-shorthand", "expected": 1 },
-        { "type": "body-contains", "expected": "shorthand" }
+        { "type": "body-contains", "expected": "shorthand" },
+        { "type": "visual-hash", "expected": "3f3f7fffffffffff@1" }
       ]
     },
     {
@@ -771,7 +790,8 @@
         { "type": "element-attribute", "selector": "#minmax-grow", "attribute": "data-template", "expected": "minmax(0, 100px) 1fr" },
         { "type": "element-attribute", "selector": "#minmax-base", "attribute": "data-template", "expected": "minmax(50px, 1fr) minmax(50px, 1fr)" },
         { "type": "element-attribute", "selector": "#rows-fr", "attribute": "data-template", "expected": "1fr 2fr" },
-        { "type": "body-contains", "expected": "Grid track" }
+        { "type": "body-contains", "expected": "Grid track" },
+        { "type": "visual-hash", "expected": "01ffffffffffffff@1" }
       ]
     },
     {
@@ -809,7 +829,8 @@
         { "type": "element-attribute", "selector": "#mask-layered", "attribute": "data-mask", "expected": "url(#a) alpha, url(#b) luminance" },
         { "type": "element-attribute", "selector": "#mask-pos-size", "attribute": "data-mask", "expected": "url(#m) 50% 50% / cover" },
         { "type": "selector-count", "selector": "svg mask", "expected": 1 },
-        { "type": "body-contains", "expected": "clip-path" }
+        { "type": "body-contains", "expected": "clip-path" },
+        { "type": "visual-hash", "expected": "007f7f3f3fffffff@1" }
       ]
     },
     {
@@ -850,7 +871,8 @@
         { "type": "selector-count", "selector": "section", "expected": 6 },
         { "type": "selector-count", "selector": "[style*='writing-mode']", "expected": 6 },
         { "type": "selector-count", "selector": "[dir='auto']", "expected": 1 },
-        { "type": "body-contains", "expected": "logical properties" }
+        { "type": "body-contains", "expected": "logical properties" },
+        { "type": "visual-hash", "expected": "013f3f7fffffffff@1" }
       ]
     },
     {
@@ -868,7 +890,8 @@
         { "type": "element-attribute", "selector": "#with-rule", "attribute": "data-spec", "expected": "count:3,rule" },
         { "type": "selector-count", "selector": "[style*='column-span']", "expected": 1 },
         { "type": "selector-count", "selector": "#span-all", "expected": 1 },
-        { "type": "body-contains", "expected": "spanning heading" }
+        { "type": "body-contains", "expected": "spanning heading" },
+        { "type": "visual-hash", "expected": "010307ffffffffff@1" }
       ]
     },
     {
@@ -886,7 +909,8 @@
         { "type": "element-attribute", "selector": "#v-item-2", "attribute": "style", "expected": "scroll-snap-align: center;" },
         { "type": "selector-count", "selector": "#h-mandatory span", "expected": 3 },
         { "type": "selectors-exact", "selector": "#h-mandatory span", "expected": ["h-item-1", "h-item-2", "h-item-3"] },
-        { "type": "body-contains", "expected": "unskippable" }
+        { "type": "body-contains", "expected": "unskippable" },
+        { "type": "visual-hash", "expected": "007fff7fffffff3f@1" }
       ]
     },
     {
@@ -904,7 +928,8 @@
         { "type": "element-attribute", "selector": "#steps-easing", "attribute": "data-timing", "expected": "easing:steps(4,jump-start)" },
         { "type": "selector-count", "selector": "[style*='animation']", "expected": 7 },
         { "type": "selector-count", "selector": "[style*='transition']", "expected": 1 },
-        { "type": "body-contains", "expected": "shorthand animation" }
+        { "type": "body-contains", "expected": "shorthand animation" },
+        { "type": "visual-hash", "expected": "033f3fffffffffff@1" }
       ]
     },
     {

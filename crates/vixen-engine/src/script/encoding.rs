@@ -75,6 +75,7 @@ const ENCODING_API_BOOTSTRAP: &str = r#"
     op_vixen_text_encode_into,
     op_vixen_text_decode,
   } = Deno.core.ops;
+  const webidl = globalThis.__vixenWebidl;
 
   function validateLabel(label) {
     const value = String(label).trim().toLowerCase();
@@ -128,15 +129,7 @@ const ENCODING_API_BOOTSTRAP: &str = r#"
     }
   }
 
-  Object.defineProperty(globalThis, 'TextEncoder', {
-    value: TextEncoder,
-    writable: true,
-    configurable: true,
-  });
-  Object.defineProperty(globalThis, 'TextDecoder', {
-    value: TextDecoder,
-    writable: true,
-    configurable: true,
-  });
+  webidl.adoptInterface('TextEncoder', TextEncoder);
+  webidl.adoptInterface('TextDecoder', TextDecoder);
 })();
 "#;

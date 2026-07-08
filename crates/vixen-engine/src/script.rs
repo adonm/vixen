@@ -16,6 +16,8 @@ mod cssom;
 mod dom;
 mod encoding;
 mod runtime;
+mod webapi;
+mod webidl;
 
 /// Vixen's JavaScript runtime seam, backed by `deno_core`/V8.
 pub struct JsRuntime;
@@ -156,6 +158,16 @@ mod tests {
             JsValue::String("utf-8".to_owned())
         );
         assert_eq!(
+            rt.evaluate("new TextEncoder() instanceof TextEncoder")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("Object.prototype.toString.call(new TextDecoder())")
+                .unwrap(),
+            JsValue::String("[object TextDecoder]".to_owned())
+        );
+        assert_eq!(
             rt.evaluate("new TextEncoder().encode('é').length").unwrap(),
             JsValue::Int32(2)
         );
@@ -201,6 +213,147 @@ mod tests {
             codes::SCRIPT_EVAL
         );
 
+        // Generated WebIDL scaffolding exposes browser-shaped constructors and
+        // prototype inheritance before backend behavior is implemented.
+        let all_webidl_constructors = webidl_all_constructors_expr();
+        let all_webidl_parent_chains = webidl_parent_chains_expr();
+        assert_eq!(
+            rt.evaluate(&all_webidl_constructors).unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate(&all_webidl_parent_chains).unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("['Window','Document','HTMLElement','HTMLDialogElement','CanvasRenderingContext2D','CSSStyleDeclaration','Request','ReadableStream','GPUDevice','PaymentRequest','IDBDatabase'].every((name) => typeof globalThis[name] === 'function')")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("Window.prototype instanceof EventTarget && HTMLDialogElement.prototype instanceof HTMLElement && CSSStyleRule.prototype instanceof CSSRule && GPUDevice.prototype instanceof EventTarget && IDBDatabase.prototype instanceof EventTarget")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("HTMLElement.prototype instanceof Element && XMLDocument.prototype instanceof Document")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("typeof HTMLDialogElement.prototype.showModal === 'function' && 'innerText' in HTMLElement.prototype && 'getContext' in HTMLCanvasElement.prototype")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("(() => { try { new HTMLDialogElement(); } catch (err) { return err instanceof TypeError && /Illegal constructor: HTMLDialogElement/.test(err.message); } return false; })()")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+
+        // Pure Web API value objects are runtime constructors, not Page-string
+        // parser special cases.
+        assert_eq!(
+            rt.evaluate("new Event('message').type").unwrap(),
+            JsValue::String("message".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("new Event('message', { bubbles: true, cancelable: true, composed: true }).cancelable")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("new CustomEvent('note', { detail: 'payload' }).detail")
+                .unwrap(),
+            JsValue::String("payload".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("(() => { const t = new EventTarget(); let seen = 0; t.addEventListener('x', (e) => { if (e.type === 'x') seen++; }); return t.dispatchEvent(new Event('x')) && seen === 1; })()")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("new DOMPoint(1, 2, 3, 4).z").unwrap(),
+            JsValue::Int32(3)
+        );
+        assert_eq!(
+            rt.evaluate("DOMPoint.fromPoint({ x: 5, y: 6 }).w").unwrap(),
+            JsValue::Int32(1)
+        );
+        assert_eq!(
+            rt.evaluate("new DOMRect(10, 20, -5, 7).left").unwrap(),
+            JsValue::Int32(5)
+        );
+        assert_eq!(
+            rt.evaluate("DOMQuad.fromRect({ x: 1, y: 2, width: 3, height: 4 }).p3.x")
+                .unwrap(),
+            JsValue::Int32(4)
+        );
+        assert_eq!(
+            rt.evaluate("new DOMMatrix([1, 0, 0, 1, 5, 6]).e").unwrap(),
+            JsValue::Int32(5)
+        );
+        assert_eq!(
+            rt.evaluate("new DOMMatrix().translate(10, 20).transformPoint(new DOMPoint(1, 2)).y")
+                .unwrap(),
+            JsValue::Int32(22)
+        );
+        assert_eq!(
+            rt.evaluate("new Headers([['Content-Type', ' text/plain '], ['X-Test', 'a'], ['X-Test', 'b']]).get('x-test')")
+                .unwrap(),
+            JsValue::String("a, b".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("new Blob(['Hi', 'é'], { type: 'TEXT/PLAIN' }).size")
+                .unwrap(),
+            JsValue::Int32(4)
+        );
+        assert_eq!(
+            rt.evaluate("new File(['hello'], 'note.txt', { type: 'text/plain', lastModified: 42 }).lastModified")
+                .unwrap(),
+            JsValue::Int32(42)
+        );
+        assert_eq!(
+            rt.evaluate("new Response('Created', { status: 201 }).headers.get('content-type')")
+                .unwrap(),
+            JsValue::String("text/plain;charset=UTF-8".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("new Request('https://example.com/api', { method: 'post', headers: [['Host', 'evil.test'], ['Accept', 'text/html']], body: 'hello' }).headers.has('host')")
+                .unwrap(),
+            JsValue::Bool(false)
+        );
+        assert_eq!(
+            rt.evaluate("new URL('/other', 'https://example.com/app/page').href")
+                .unwrap(),
+            JsValue::String("https://example.com/other".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("new URLSearchParams('?q=rust+lang&tag=web&tag=engine').getAll('tag')[1]")
+                .unwrap(),
+            JsValue::String("engine".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("structuredClone(new Map([['answer', 42]])).get('answer')")
+                .unwrap(),
+            JsValue::Int32(42)
+        );
+        assert_eq!(
+            rt.evaluate("new DOMParser().parseFromString(\"<main><p id='parsed'>Parsed</p></main>\", 'text/html').querySelector('#parsed').textContent")
+                .unwrap(),
+            JsValue::String("Parsed".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("btoa('Vixen') + ':' + atob('Vml4ZW4=')")
+                .unwrap(),
+            JsValue::String("Vml4ZW4=:Vixen".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("AbortSignal.any([AbortSignal.timeout(0)]).aborted")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+
         // Phase 6 DOM host-object backbone: page DOM data is projected into the
         // deno_core global as `document` / read-only `Element` / DOMTokenList /
         // DOMStringMap objects.
@@ -228,9 +381,84 @@ mod tests {
             JsValue::Bool(true)
         );
         assert_eq!(
+            rt.evaluate_with_page("document instanceof Document", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document instanceof Node", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.defaultView === window", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.location.href", &page)
+                .unwrap(),
+            JsValue::String("file:///dom-host.html".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.baseURI", &page).unwrap(),
+            JsValue::String("file:///dom-host.html".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.head instanceof HTMLHeadElement", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.body instanceof HTMLBodyElement", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
             rt.evaluate_with_page("document.querySelector('#lead').textContent", &page)
                 .unwrap(),
             JsValue::String("Hello world".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#lead').innerHTML", &page)
+                .unwrap(),
+            JsValue::String("Hello <b>world</b>".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#lead') instanceof Element", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead') instanceof HTMLElement",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead') instanceof HTMLParagraphElement",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("HTMLElement.prototype instanceof Element", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(&all_webidl_constructors, &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(&all_webidl_parent_chains, &page)
+                .unwrap(),
+            JsValue::Bool(true)
         );
         assert_eq!(
             rt.evaluate_with_page("document.querySelector('#lead').tagName", &page)
@@ -272,6 +500,19 @@ mod tests {
             JsValue::Int32(1)
         );
         assert_eq!(
+            rt.evaluate_with_page("document.querySelectorAll('p') instanceof NodeList", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelectorAll('p').item(0) === document.querySelector('#lead')",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
             rt.evaluate_with_page("document.querySelectorAll('.note').length", &page)
                 .unwrap(),
             JsValue::Int32(1)
@@ -290,20 +531,85 @@ mod tests {
             JsValue::Bool(true)
         );
         assert_eq!(
+            rt.evaluate_with_page("document.body.children instanceof HTMLCollection", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.body.children.length", &page)
+                .unwrap(),
+            JsValue::Int32(2)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.body.firstElementChild === document.querySelector('#lead')",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead').parentElement === document.body",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead').nextElementSibling === document.querySelector('#frame')",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead').attributes instanceof NamedNodeMap",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead').attributes.getNamedItem('data-role').value",
+                &page
+            )
+            .unwrap(),
+            JsValue::String("copy".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.forms.length + document.images.length + document.links.length + document.scripts.length", &page)
+                .unwrap(),
+            JsValue::Int32(0)
+        );
+        assert_eq!(
             rt.evaluate_with_page("document.querySelector('p').matches('.note')", &page)
                 .unwrap(),
             JsValue::Bool(true)
         );
         assert_eq!(
-            rt.evaluate_with_page("document.querySelector('p.note')", &page)
-                .unwrap_err()
-                .code(),
-            codes::SCRIPT_EVAL
+            rt.evaluate_with_page(
+                "document.querySelector('p.note') === document.querySelector('#lead')",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
         );
         assert_eq!(
             rt.evaluate_with_page("document.querySelector('#lead').classList.length", &page)
                 .unwrap(),
             JsValue::Int32(2)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead').classList instanceof DOMTokenList",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
         );
         assert_eq!(
             rt.evaluate_with_page("document.querySelector('#lead').classList.item(1)", &page)
@@ -348,6 +654,14 @@ mod tests {
         );
         assert_eq!(
             rt.evaluate_with_page(
+                "document.querySelector('#lead').dataset instanceof DOMStringMap",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
                 "document.querySelector('#lead').dataset['authorName']",
                 &page
             )
@@ -358,6 +672,24 @@ mod tests {
             rt.evaluate_with_page("document.querySelector('#lead').dataset.missing", &page)
                 .unwrap(),
             JsValue::Undefined
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.createRange().collapsed", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("window.getSelection().rangeCount", &page)
+                .unwrap(),
+            JsValue::Int32(0)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead').dispatchEvent(new CustomEvent('click', { detail: 'payload' }))",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
         );
         assert_eq!(
             rt.evaluate_with_page("CSS.supports('display', 'grid')", &page)
@@ -376,6 +708,14 @@ mod tests {
             )
             .unwrap(),
             JsValue::String("blue".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "getComputedStyle(document.querySelector('#lead')) instanceof CSSStyleDeclaration",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
         );
         assert_eq!(
             rt.evaluate_with_page(
@@ -407,9 +747,27 @@ mod tests {
             JsValue::Int32(1)
         );
         assert_eq!(
+            rt.evaluate_with_page("document.styleSheets instanceof StyleSheetList", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
             rt.evaluate_with_page("document.styleSheets[0].cssRules.length", &page)
                 .unwrap(),
             JsValue::Int32(2)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.styleSheets[0] instanceof CSSStyleSheet", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.styleSheets[0].cssRules instanceof CSSRuleList",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
         );
         assert_eq!(
             rt.evaluate_with_page("document.styleSheets[0].href === null", &page)
@@ -420,6 +778,22 @@ mod tests {
             rt.evaluate_with_page("document.styleSheets[0].cssRules[0].selectorText", &page)
                 .unwrap(),
             JsValue::String("#lead".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.styleSheets[0].cssRules[0] instanceof CSSStyleRule",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.styleSheets[0].cssRules[0] instanceof CSSRule",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
         );
         assert_eq!(
             rt.evaluate_with_page("document.styleSheets[0].cssRules[0].style.length", &page)
@@ -438,6 +812,128 @@ mod tests {
             rt.evaluate_with_page("document.styleSheets[0].cssRules[1].style[0]", &page)
                 .unwrap(),
             JsValue::String("margin-left".to_owned())
+        );
+
+        let geometry_page = Page::from_html(
+            "file:///dom-geometry-host.html",
+            "<style>#box { width: 40px; height: 20px; }</style><main><div id='box'>Box</div></main>",
+        )
+        .unwrap();
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#box').getBoundingClientRect().x",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Int32(8)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#box').getBoundingClientRect().width",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Int32(40)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#box').getBoundingClientRect() instanceof DOMRectReadOnly",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#box').getBoundingClientRect().right",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Int32(48)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#box').getBoundingClientRect().toJSON().height",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Int32(20)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#box').getClientRects().length",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Int32(1)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#box').getClientRects() instanceof DOMRectList",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#box').getClientRects().item(0).width",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Int32(40)
+        );
+
+        let form_page = Page::from_html(
+            "file:///dom-formdata-host.html",
+            "<form id='contact'><input name='name' value='Ada'><textarea name='body'>Hello</textarea><input type='checkbox' name='format' value='html' checked></form><form id='upload' enctype='multipart/form-data'><input type='file' name='attachment'></form>",
+        )
+        .unwrap();
+        assert_eq!(
+            rt.evaluate_with_page(
+                "new FormData(document.querySelector('#contact')).get('name')",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("Ada".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "new FormData(document.querySelector('#contact')).getAll('format').length",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::Int32(1)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "new FormData(document.getElementById('upload')).get('attachment').type",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("application/octet-stream".to_owned())
+        );
+
+        let traversal_page = Page::from_html(
+            "file:///dom-traversal-host.html",
+            "<main><div id='walk-root'><article id='art-1'><p id='para-1'>one</p></article><aside id='aside-1'></aside></div></main>",
+        )
+        .unwrap();
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.createTreeWalker(document.getElementById('walk-root'), NodeFilter.SHOW_ELEMENT).firstChild().id",
+                &traversal_page
+            )
+            .unwrap(),
+            JsValue::String("art-1".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.createNodeIterator(document.getElementById('walk-root'), NodeFilter.SHOW_ELEMENT).nextNode().id",
+                &traversal_page
+            )
+            .unwrap(),
+            JsValue::String("art-1".to_owned())
         );
 
         let unicode_page = Page::from_html(
@@ -495,5 +991,24 @@ mod tests {
             evaluate_inline_script(&mut rt, None, &origin, "1+2", None).unwrap(),
             JsValue::Int32(3)
         );
+    }
+
+    fn webidl_all_constructors_expr() -> String {
+        let names = webidl::manifest_interface_names();
+        let names = deno_core::serde_json::to_string(&names).unwrap();
+        format!(
+            "(() => {{ const names = {names}; const isExposed = (name) => typeof globalThis[name] === 'function' || (name === 'CSS' && typeof globalThis[name] === 'object' && globalThis.CSS !== null); return globalThis.__vixenWebidl.interfaceNames().length === names.length && names.every((name) => typeof globalThis.__vixenWebidl.interfaceConstructor(name) === 'function' && isExposed(name)); }})()"
+        )
+    }
+
+    fn webidl_parent_chains_expr() -> String {
+        let pairs = webidl::manifest_parent_pairs()
+            .into_iter()
+            .map(|(name, parent)| [name, parent])
+            .collect::<Vec<_>>();
+        let pairs = deno_core::serde_json::to_string(&pairs).unwrap();
+        format!(
+            "(() => {{ const pairs = {pairs}; return pairs.every(([name, parent]) => globalThis[name].prototype instanceof globalThis[parent]); }})()"
+        )
     }
 }

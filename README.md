@@ -1,15 +1,15 @@
 # Vixen
 
-A small, GNOME-native web browser built in Rust from browser-grade components.
-Targets Firefox-grade Web compatibility with the smallest credible binary.
+A modern-Linux Firefox replacement built in Rust: minimal desktop browser,
+first-class headless/CDP automation, and the most web capability per byte.
 
-The hard, spec-heavy, easy-to-get-wrong subsystems are delegated to proven
-browser/runtime components: **Stylo** for CSS, **deno_core/V8** for JS,
-**WebRender** for paint, and **html5ever** for HTML. Vixen itself is the
-product glue: a libadwaita shell, a networking/security layer, a persistence
-layer, headless tooling, and the integration code that wires the upstream crates
-together. ADR-014 keeps Vixen's public `JsRuntime` seam small while using
-`deno_core` APIs directly inside the engine.
+The hard, spec-heavy, easy-to-get-wrong subsystems are delegated where that
+keeps Vixen smaller and more correct: **Stylo/selectors** for CSS matching and
+cascade, **deno_core/V8** for JS execution and host packaging, **WebRender** for
+paint, and **html5ever** for HTML. Vixen owns the product glue, modern-Linux
+Relm4/libadwaita shell, networking/security layer, persistence, headless
+tooling, WPT reporting, and the Rust layout engine. See
+[`docs/PROJECT_DIRECTION.md`](docs/PROJECT_DIRECTION.md) for the current focus.
 
 ---
 
@@ -278,14 +278,17 @@ Source for later phases lands per [`docs/PLAN.md`](docs/PLAN.md).
 Workspace setup is split deliberately:
 
 - [mise](https://mise.jdx.dev) pins tool versions and exports the workspace
-  environment (`CARGO_HOME`, `PATH`, Rust toolchain selection).
-- [`just`](justfile) owns project actions. Prefer a recipe over spelling out
-  raw `cargo ...` commands in docs, CI, or local scripts.
+  environment (`CARGO_HOME`, `PATH`, Rust toolchain selection, `hk`).
+- [`just`](justfile) owns project actions. Prefer a recipe over spelling out raw
+  `cargo ...` commands in docs, CI, or local scripts.
+- [hk](https://hk.jdx.dev/) owns git lifecycle enforcement: quick pre-commit,
+  long pre-push.
 
 ```sh
 mise trust
 mise bootstrap --yes     # pinned tools + optional Cargo tools + `just setup`
 eval "$(mise activate bash)"
+just hooks-install       # installs hk hooks through mise
 just check               # alias: check-all-host
 just test                # alias: test-host
 just smoke               # fmt-check + clippy + check + tests
@@ -296,11 +299,15 @@ Common recipes:
 | Recipe | Use |
 |--------|-----|
 | `just setup` | Nightly for fuzzing, optional Cargo tools, then `check-all-host` |
+| `just hooks-install` | Install/update hk git hooks via `hk install --mise` |
 | `just check` / `just check-all-host` | Type-check the host-runnable workspace |
 | `just test` / `just test-host` | Run host-runnable tests |
-| `just smoke` / `just gate-smoke` | Reviewer baseline before commit/push |
+| `just smoke` / `just gate-smoke` | Reviewer baseline used by pre-push |
+| `just gate-push` | Long pre-push gate invoked by hk |
+| `just webidl` / `just gate-webidl` | Generated WebIDL/runtime host seam coverage |
 | `just audit` | `cargo audit` + `cargo deny check` |
 | `just flatpak-update-sdk` / `just flatpak-build` | Manage and build against the GNOME SDK container |
+| `just flatpak-install-local` / `just flatpak-run` | Install/run the locally exported Flatpak for GUI smoke |
 
 `mise bootstrap` and recipes run from a mise-active shell use
 `CARGO_HOME=<workspace>/.cargo`, so the Cargo registry cache and installed dev
@@ -313,8 +320,14 @@ reproducible. To build against the SDK (the shell, or the Flatpak):
 
 ```sh
 just flatpak-update-sdk  # pull the image (= install the GNOME 50 SDK)
-just flatpak-build       # flatpak-builder against org.gnome.Sdk//50 in the container
+just flatpak-build       # build/export the GTK shell against org.gnome.Sdk//50
 ```
+
+`just flatpak-build` runs flatpak-builder inside the container with the host
+workspace mounted at `/workspace`; this is the supported GTK shell build path on
+hosts without native `gtk4`/`libadwaita` development packages. It exports a
+local repo under `build-aux/_repo`; use `just flatpak-install-local` then
+`just flatpak-run` for host GUI smoke.
 
 See [`docs/guidance/gnome-sdk-flatpak-builder.md`](docs/guidance/gnome-sdk-flatpak-builder.md)
 for the full workflow. Headless/CI hosts that only build `vixen-api` /
@@ -333,9 +346,13 @@ MSRV is 1.88 (let-chains); the developer toolchain is pinned in
 | Path                                        | Purpose                                                       |
 |---------------------------------------------|---------------------------------------------------------------|
 | [`docs/SPEC.md`](docs/SPEC.md)              | **What Vixen must do.** Capabilities, CLI, behaviour contracts. |
+| [`docs/PROJECT_DIRECTION.md`](docs/PROJECT_DIRECTION.md) | **What Vixen is optimizing for.** North star, users, priorities, alpha definition. |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md)        | **What comes next.** Focused MVP-to-alpha delivery order. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | **How Vixen is structured.** Crates, data flow, trust boundaries, trait APIs. |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md)    | **Why these choices.** ADR-style records for the major decisions. |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | **How to move fast safely.** Alpha/dev workflow, gate tiers, maintainability budget. |
+| [`docs/RUNTIME_WEB_PLATFORM.md`](docs/RUNTIME_WEB_PLATFORM.md) | **How WebIDL/DOM/Web APIs are exposed.** JS bootstrap vs Rust op/resource strategy. |
+| [`docs/AUTONOMOUS_WORK.md`](docs/AUTONOMOUS_WORK.md) | **How agents/maintainers can proceed.** Commit/push policy, hk gates, report format. |
 | [`docs/PLAN.md`](docs/PLAN.md)              | **How to build it.** Phased execution runbook with phase gates. |
 | [`docs/REFERENCES.md`](docs/REFERENCES.md)  | **Where to look for truth.** Pinned reference trees + how to consult each. |
 | [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)  | **When it's done.** Release gates per capability. |
@@ -348,13 +365,14 @@ MSRV is 1.88 (let-chains); the developer toolchain is pinned in
 
 If executing the build:
 
-1. `docs/SPEC.md` — the contract
-2. `docs/ARCHITECTURE.md` — the shape
-3. `docs/DEVELOPMENT.md` — choose the dev/alpha workflow and gates
-4. `docs/DECISIONS.md` — confirm the choices
-5. `docs/PLAN.md` — the runbook
-6. `docs/REFERENCES.md` — consult as integration questions arise
-7. `docs/ACCEPTANCE.md` — check against, every phase
+1. `docs/PROJECT_DIRECTION.md` — the north star
+2. `docs/ROADMAP.md` — the next delivery order
+3. `docs/ARCHITECTURE.md` — the shape
+4. `docs/RUNTIME_WEB_PLATFORM.md` — runtime host strategy
+5. `docs/DEVELOPMENT.md` and `docs/AUTONOMOUS_WORK.md` — workflow and gates
+6. `docs/DECISIONS.md` — confirm the choices
+7. `docs/SPEC.md`, `docs/PLAN.md`, `docs/REFERENCES.md`, `docs/ACCEPTANCE.md`
+   — contracts, historical runbook, references, release checks
 
 If evaluating the project: read `docs/SPEC.md` and
 `docs/DECISIONS.md`, then sample `docs/PLAN.md`.
@@ -366,8 +384,9 @@ Update both when resolving.
 
 ## Working assumptions
 
-- Target platform: **Linux + GNOME 50 SDK**, distributed via Flatpak.
-  Other platforms are best-effort, not a release blocker.
+- Target platform: **modern Linux**, distributed via Flatpak. The desktop GUI
+  path is Relm4/libadwaita against the GNOME SDK. Other platforms are
+  best-effort, not a release blocker.
 - Build profile is optimal already and carries forward unchanged:
   `strip = true`, `lto = "thin"`, `codegen-units = 1`, `panic = "abort"`.
 - App IDs: `org.vixen.Vixen` (production), `org.vixen.Vixen.Devel` (devel).

@@ -6,6 +6,9 @@ does not re-list the delegated web-platform features or the Vixen-owned
 layout subset (see [`SPEC.md`](SPEC.md) and [`COMPAT.md`](COMPAT.md) for the
 actual contracts).
 
+Alpha is defined separately in [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md):
+architecture frozen and validated, with API surface still allowed to move.
+
 ---
 
 ## Hard gates (release-blocking for v1.0)
@@ -30,6 +33,8 @@ actual contracts).
 - [ ] `docs/COMPAT.md` published with honest capability matrix
 - [ ] `just audit` passes (`cargo audit` + `cargo deny check`)
 - [ ] `just check` passes
+- [ ] hk hooks are installed or `hk run pre-push --check` passes from a clean
+      checkout
 - [ ] No non-test module > 1,000 lines
 - [ ] All fuzz targets stable at 1 M iterations
 

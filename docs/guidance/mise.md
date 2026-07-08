@@ -3,12 +3,14 @@
 Vixen uses two tools with separate jobs:
 
 - `mise` pins tool versions and exports the project environment from
-  `.mise.toml` (`RUSTUP_TOOLCHAIN`, `CARGO_HOME`, and `PATH`).
+  `.mise.toml` (`RUSTUP_TOOLCHAIN`, `CARGO_HOME`, `HK_MISE`, and `PATH`).
 - `just` owns repository actions. Add or update a `justfile` recipe instead of
   copying `cargo ...` command lines into docs, scripts, or CI.
+- `hk` owns git lifecycle hooks. The project config is `hk.pkl`; install hooks
+  with `just hooks-install` or through the mise postinstall hook.
 
 The intended workflow is an activated shell where `cargo`, `rustfmt`, `clippy`,
-`rustup`, `cargo-binstall`, and `just` come from the versions pinned in
+`rustup`, `cargo-binstall`, `hk`, and `just` come from the versions pinned in
 `.mise.toml`.
 
 ## First setup
@@ -21,6 +23,8 @@ mise bootstrap --yes
 `mise bootstrap` installs pinned tools, then runs `just setup`, which installs
 the optional Cargo tools used by `just audit` / `just fuzz-security`, installs a
 nightly Rust toolchain for cargo-fuzz, and finishes with `just check-all-host`.
+mise's postinstall hook also runs `hk install --mise` so git hooks execute in
+the project tool environment.
 
 For tools-only CI images, `mise install` is enough; run project checks through
 `just` after activating the shell.
@@ -37,6 +41,7 @@ eval "$(mise activate bash)"    # bash
 just check
 just test
 just smoke
+just hooks-install
 ```
 
 Do **not** hard-code paths to Cargo, and do not wrap every build command in
@@ -48,9 +53,11 @@ has not completed.
 | Recipe | What it does |
 |--------|--------------|
 | `just setup` | Optional dev tools + nightly for fuzzing + `check-all-host` |
+| `just hooks-install` | Install/update hk hooks through `hk install --mise` |
 | `just check` / `just check-all-host` | Type-check the host-runnable workspace |
 | `just test` / `just test-host` | Run host-runnable tests |
 | `just smoke` / `just gate-smoke` | Formatting check, clippy, check, tests |
+| `just gate-push` | Long hk pre-push gate |
 | `just audit` | `cargo audit` and `cargo deny check` |
 | `just fuzz-security` | Phase 1 fuzz targets at 1 M iterations |
 | `just flatpak-update-sdk` / `just flatpak-build` | GNOME SDK container workflow |
@@ -80,6 +87,8 @@ command -v cargo
 cargo --version
 command -v just
 just --version
+command -v hk
+hk --version
 printenv CARGO_HOME
 ```
 
@@ -87,6 +96,7 @@ Expected properties:
 
 - `cargo` resolves under `<workspace>/.cargo/bin`.
 - `just` resolves under mise's install directory.
+- `hk` resolves under mise's install directory.
 - `cargo --version` matches the Rust version pinned in `.mise.toml`.
 - `CARGO_HOME` is `<workspace>/.cargo`.
 
@@ -98,6 +108,7 @@ of truth:
 ```sh
 mise use rust@<version>
 mise use just@<version>
+mise use hk@<version>
 mise use cargo-binstall@<version>
 ```
 

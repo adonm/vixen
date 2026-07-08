@@ -1,0 +1,74 @@
+amends "package://github.com/jdx/hk/releases/download/v1.50.0/hk@1.50.0#/Config.pkl"
+
+default_branch = "main"
+exclude = List("target", ".cargo", ".tmp")
+
+local allTextFiles = List("**/*.rs", "**/*.toml", "**/*.md", "justfile", "hk.pkl")
+
+hooks {
+  ["pre-commit"] {
+    fix = true
+    stash = "git"
+    steps {
+      ["rustfmt"] {
+        glob = "**/*.rs"
+        check = "cargo fmt --all -- --check"
+        fix = "cargo fmt --all"
+        stage = "**/*.rs"
+      }
+      ["merge-conflicts"] {
+        glob = allTextFiles
+        check = "hk util check-merge-conflict {{files}}"
+      }
+      ["private-keys"] {
+        glob = allTextFiles
+        check = "hk util detect-private-key {{files}}"
+      }
+      ["diff-check"] {
+        check = "git diff --cached --check"
+        exclusive = true
+      }
+    }
+  }
+
+  ["pre-push"] {
+    steps {
+      ["push-gate"] {
+        check = "just gate-push"
+        exclusive = true
+      }
+    }
+  }
+
+  ["check"] {
+    steps {
+      ["rustfmt"] {
+        glob = "**/*.rs"
+        check = "cargo fmt --all -- --check"
+      }
+      ["merge-conflicts"] {
+        glob = allTextFiles
+        check = "hk util check-merge-conflict {{files}}"
+      }
+      ["private-keys"] {
+        glob = allTextFiles
+        check = "hk util detect-private-key {{files}}"
+      }
+      ["diff-check"] {
+        check = "git diff --check && git diff --cached --check"
+        exclusive = true
+      }
+    }
+  }
+
+  ["fix"] {
+    fix = true
+    steps {
+      ["rustfmt"] {
+        glob = "**/*.rs"
+        fix = "cargo fmt --all"
+        stage = "**/*.rs"
+      }
+    }
+  }
+}

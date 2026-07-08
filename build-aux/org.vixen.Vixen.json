@@ -28,20 +28,44 @@
             "name": "vixen",
             "buildsystem": "simple",
             "build-commands": [
-                "source /usr/lib/sdk/rust-stable/enable.sh && cargo build --release --features vixen-shell/gtk-shell",
-                "install -Dm755 target/release/vixen /app/bin/vixen"
+                "mkdir -p .cargo",
+                "printf '%s\n' '[source.crates-io]' 'replace-with = \"vendored-sources\"' '[source.vendored-sources]' 'directory = \"cargo/vendor\"' > .cargo/config.toml",
+                "python3 build-aux/write-vendor-checksums.py",
+                "source /usr/lib/sdk/rust-stable/enable.sh && cargo build --offline --release -p vixen --features vixen-shell/gtk-shell",
+                "install -Dm755 target/release/vixen /app/bin/vixen",
+                "install -Dm644 data/org.vixen.Vixen.desktop /app/share/applications/org.vixen.Vixen.desktop",
+                "install -Dm644 data/org.vixen.Vixen.metainfo.xml /app/share/metainfo/org.vixen.Vixen.metainfo.xml",
+                "install -Dm644 data/icons/hicolor/scalable/apps/org.vixen.Vixen.svg /app/share/icons/hicolor/scalable/apps/org.vixen.Vixen.svg"
             ],
             "build-options": {
                 "append-path": "/usr/lib/sdk/rust-stable/bin",
                 "env": {
                     "CARGO_HOME": "/run/build/vixen/cargo",
+                    "RUSTY_V8_ARCHIVE": "/run/build/vixen/cargo/rusty-v8/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz",
                     "RUSTFLAGS": "--cfg=flatpak"
                 }
             },
             "sources": [
+                "cargo-sources.json",
+                {
+                    "type": "file",
+                    "url": "https://github.com/denoland/rusty_v8/releases/download/v149.4.0/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz",
+                    "sha256": "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53",
+                    "dest": "cargo/rusty-v8",
+                    "dest-filename": "librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
+                },
                 {
                     "type": "dir",
-                    "path": "../"
+                    "path": "../",
+                    "skip": [
+                        ".git",
+                        ".cargo/registry",
+                        ".cargo/git",
+                        "target",
+                        "build-aux/_build",
+                        "build-aux/_repo",
+                        "build-aux/.flatpak-builder"
+                    ]
                 }
             ]
         }

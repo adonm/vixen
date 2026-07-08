@@ -3,8 +3,8 @@
 //! Phase 2 stands up the `deno_core` runtime here (`script.rs`). Phase 3
 //! adds HTML parse + Stylo cascade, Phase 4 layout, Phase 5 the single
 //! WebRender paint path consuming `vixen_api::GlContext`.
-//! The crate uses `deny(unsafe_code)`; JS embedding goes through safe
-//! `deno_core`/V8 APIs.
+//! The crate defaults to `deny(unsafe_code)`; the only localized exception is
+//! the documented GL symbol-loader boundary in `paint.rs`.
 
 #![deny(unsafe_code)]
 
@@ -54,6 +54,7 @@ pub mod mime;
 pub mod multicol;
 pub mod mutation_observer;
 pub mod page;
+pub mod paint;
 pub mod radial_gradient;
 pub mod range;
 pub mod ratio;

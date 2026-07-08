@@ -12,14 +12,14 @@ Vixen's contract. What this document captures:
 
 What this document deliberately does **not** capture:
 
-- Restatement of web-platform specs. CSS cascade/selectors, HTML parsing,
-  ES execution, and paint are delegated to Firefox-family crates/components
-  where possible (Stylo, `selectors`, `deno_core`/V8, `html5ever`, WebRender —
-  see [`DECISIONS.md`](DECISIONS.md) ADR-001 / ADR-011). Layout is
-  Vixen-owned Rust code per ADR-013, with Ladybird used as the architecture
-  reference. Behavioural parity is measured by the WPT profile documented in
-  `docs/COMPAT.md`; if a behaviour isn't called out below, follow the latest
-  stable spec and document deviations in `docs/COMPAT.md`.
+- Restatement of web-platform specs. Vixen delegates spec-heavy behavior where
+  that improves correctness and size: Stylo/`selectors` for CSS,
+  `html5ever` for HTML, `deno_core`/V8 for JS execution and host packaging, and
+  WebRender for paint (see [`DECISIONS.md`](DECISIONS.md) ADR-001 / ADR-011 /
+  ADR-014). Layout is Vixen-owned Rust code per ADR-013, with Ladybird used as
+  the architecture reference. Behavioural parity is measured by the WPT profile
+  documented in `docs/COMPAT.md`; if a behaviour isn't called out below, follow
+  the latest stable spec and document deviations in `docs/COMPAT.md`.
 
 ---
 

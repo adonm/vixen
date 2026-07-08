@@ -6,17 +6,23 @@ browser-visible slices. Rule: every large browser milestone extends
 fixture in `fixtures/manifest.json`. Alpha/dev batch sizing and maintainability
 rules live in [`DEVELOPMENT.md`](DEVELOPMENT.md).
 
+Current product priority lives in [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md)
+and the focused MVP-to-alpha order lives in [`ROADMAP.md`](ROADMAP.md). This file
+tracks executable gates and historical milestone slices.
+
 ## Gates
 
 | Command | Proves today | Extends next |
 |---------|--------------|--------------|
-| `just gate-alpha` | fmt, clippy, workspace check, and committed fixture manifest runner | fast alpha-slice baseline before relevant phase gate |
+| `just gate-alpha` | fmt, clippy, workspace check, WebIDL/runtime host seam checks, and committed fixture manifest runner | fast alpha-slice baseline before relevant phase gate |
 | `just gate-smoke` | fmt, clippy, all host tests | reviewer baseline before commit/push |
+| `just gate-push` | alpha + phase-6 runtime + smoke + diff whitespace checks | hk pre-push enforcement point |
+| `just gate-webidl` | generated WebIDL constructor/prototype coverage plus headless/CDP runtime host seams | expand manifest/import coverage while keeping host-family implementations on generated prototypes |
 | `just gate-phase2` | `vixen-headless --eval '1+2'` through the `deno_core` JS runtime seam | grow host modules behind the same `JsRuntime`/`JsValue` seam |
 | `just gate-phase3` | HTML parse + Stylo selector matching + author/inline computed-style cascade through `Page` + WPT fixtures | full Stylo `Stylist`/computed values behind `Page::computed_style` |
 | `just gate-phase4` | layout pure-logic prep + Page-backed layout tree / text line boxes plus `layout-box` fixture assertions | richer inline/flex/grid formatting contexts |
 | `just gate-phase5` | display-list + paint prep + Page-backed layout-tree display list/stats through `vixen-headless --dump-display-list` + `--paint-stats` | WebRender screenshot path through `Page` |
-| `just gate-phase6` | DOM/forms/network-host pure prep plus Page-backed getComputedStyle/CSSOM/CSSStyleRule/viewport/DOMRect/Geometry Interfaces/document/navigator/storage/events/DOMTokenList/dataset/validity/FormData/URL/encoding/serialization/currentSrc/range/history/traversal/mutation/fetch `Blob`/`File`/`Request`/`Response`/performance/media eval projections, with Encoding API constructors plus focused `document`/`Element`/read-only DOMTokenList/dataset evals on the `deno_core` runtime seam | convert bootstrap host objects to explicit `deno_core` op/resource extensions, then widen CSSOM/geometry/forms/events/history/storage/fetch |
+| `just gate-phase6` | full engine host-family tests plus `gate-webidl` coverage for generated WebIDL prototypes and headless/CDP runtime seams | convert remaining Page string projections to explicit `deno_core` op/resource extensions, then widen CSSOM/geometry/forms/events/history/storage/fetch |
 
 ## Six-milestone execution roadmap
 
@@ -65,10 +71,13 @@ slot or date.
    through the first op-backed `deno_core` host extension. Focused
    `document.title`, simple `querySelector`/`getElementById`,
    `querySelectorAll().length`, and read-only DOMTokenList/dataset evals run on
-   the `deno_core` DOM snapshot extension with page data crossing an explicit
-   op boundary. Selector lookup and `Element.matches()` now cross finer-grained
+   the `deno_core` DOM snapshot extension on generated WebIDL prototype chains,
+   with page data crossing an explicit op boundary. Selector lookup and
+   `Element.matches()` now cross finer-grained
    ops, element record data is loaded through an element snapshot op, and
    text/attribute/token/dataset reads now delegate through focused DOM ops.
+   Element `getBoundingClientRect()` / `getClientRects()` reads now cross a
+   focused DOM rect op.
    Focused `CSS.supports`, `getComputedStyle`, and CSSStyleSheet/CSSRule evals
    now run through an explicit CSSOM extension/op boundary too.
    Proof: `just gate-phase6`, relevant WPT fixtures, and `just gate-smoke`.
@@ -138,19 +147,27 @@ same rule as above: one Page/headless-visible seam, one fixture path, one gate.
    URLPattern, Performance, and matchMedia smoke
    surfaces from the same pure modules that Phase 6 host objects will use. The
    Encoding API constructors now run through an op-backed `deno_core` extension;
+   `script::webidl` now renders generated browser interface/prototype scaffolding
+   for the runtime-visible DOM/CSSOM/geometry subset, and host-family bootstraps
+   adopt those generated prototypes instead of hand-rolling constructor shape.
    focused document/query/element evals and read-only DOMTokenList/dataset
    property reads run against a DOM snapshot extension whose Page data is served
    by `op_vixen_dom_snapshot`, with selector lookup and `Element.matches()` now
    delegated through explicit DOM ops and element data loaded through
    `op_vixen_dom_element_snapshot`; text/attribute/token/dataset reads also
-   cross focused DOM ops. Focused `CSS.supports`, `getComputedStyle`, and
-   CSSStyleSheet/CSSRule evals now run against `script::cssom` ops. Next: widen
-   the replacement across geometry, forms, events, history, storage, and fetch.
+   cross focused DOM ops. Element `getBoundingClientRect()` / `getClientRects()`
+   reads now cross a focused DOM rect op. Focused `CSS.supports`,
+   `getComputedStyle`, and CSSStyleSheet/CSSRule evals now run against
+   `script::cssom` ops. Next: widen the replacement across Geometry Interface
+   value constructors, forms, events, history, storage, and fetch.
    Proof: `just gate-phase6`, relevant WPT fixtures, and `just gate-smoke`.
-5. **Browser shell vertical slice** — once screenshots and host objects have a
-   shared Page seam, wire URL entry, reload/stop/back/forward, one-tab lifecycle,
-   and visible diagnostics through `vixen-api::Engine`. Proof: `just shell-check`,
-   one manual GUI smoke, and `just gate-smoke`.
+5. **Browser shell vertical slice** — the first one-window GTK shell now wires a
+    URL entry, reload/stop/back/forward, one-page lifecycle, status diagnostics,
+    and a visible `gtk4::GLArea` WebRender surface through a shell-side
+    `vixen-api::Engine` adapter. Next: replace the synchronous adapter with the
+    planned per-tab Relm4 worker/factory architecture and add full tab lifecycle
+    affordances. Proof: `just flatpak-build`, one manual GUI smoke, and
+    `just gate-smoke`.
 6. **Release-measurement slice** — keep `docs/COMPAT.md` generated from the
    manifest runner output, add benches for the landed Page seams, then make
    `just size-fp` and `just audit` routine release gates instead of last-minute

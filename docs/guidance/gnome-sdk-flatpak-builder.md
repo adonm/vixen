@@ -105,24 +105,27 @@ just flatpak-build
 This runs, inside the container:
 
 ```sh
-flatpak-builder --user --force-clean --install \
+flatpak-builder --install-deps-from=flathub --disable-rofiles-fuse --force-clean --repo=build-aux/_repo \
   build-aux/_build build-aux/org.vixen.Vixen.json
 ```
 
-`flatpak-builder` resolves the manifest, builds each module **inside the
-`org.gnome.Sdk//50` sandbox** (where gtk4, libadwaita, and the Rust
-extension live), exports the app, and installs it to the container's user
-installation (`--install`). The build output lands in `build-aux/_build/`
-(repo is omitted above for simplicity; add `--repo=build-aux/_repo` to
-export a publishable repository).
+The recipe launches the container with `podman run --privileged` because this
+host path nests flatpak-builder's `bwrap` sandbox inside rootless Podman.
+`--disable-rofiles-fuse` avoids needing a container dbus/fuse setup. These are
+container-only privileges; the repo remains mounted at `/workspace`.
 
-> **Status:** `build-aux/org.vixen.Vixen.json` is **scaffolding**. Today
-> the workspace only produces the thin `vixen` binary stub (the GTK shell
-> is feature-gated and not yet wired — see `docs/PLAN.md` Phase 0). A full
-> release build additionally needs Cargo vendoring (or a network-enabled
-> build) and the Rust SDK extension; that wiring lands at **Phase 9
-> (release hardening)**. The manifest's *structure* is correct so the
-> container workflow is exercisable as soon as the shell builds.
+`flatpak-builder` resolves the manifest, builds each module **inside the
+`org.gnome.Sdk//50` sandbox** (where gtk4, libadwaita, and the Rust extension
+live), and exports the app to `build-aux/_repo`. The build output lands in
+`build-aux/_build/`. For host GUI smoke, install the exported local repo with
+`just flatpak-install-local`, then run `just flatpak-run`.
+
+> **Status:** `build-aux/org.vixen.Vixen.json` builds the GTK shell vertical
+> (`cargo build --release -p vixen --features vixen-shell/gtk-shell`) against
+> the GNOME SDK. Cargo crate archives and the rusty_v8 static archive are
+> checked Flatpak sources, so Cargo itself runs offline inside the build
+> sandbox. The Rust SDK extension is installed from Flathub by
+> `flatpak-builder --install-deps-from`.
 
 ### Validating the manifest without a full build
 
@@ -152,12 +155,18 @@ pins the preinstalled `org.gnome.Sdk//50` runtime). Updating the SDK is
 
 ## Troubleshooting
 
-- **`flatpak-builder` reports the runtime is missing.** You're not using
-  the `gnome-50` image, or overrode `FLATPAK_BUILDER_IMAGE`. Check
-  `just flatpak-shell` → `flatpak list | grep gnome` shows `50`.
+- **`flatpak-builder` reports the runtime or Rust SDK extension is missing.**
+  Use `just flatpak-build`; it passes `--install-deps-from=flathub` so
+  flatpak-builder can install/update `org.gnome.Sdk//50`,
+  `org.gnome.Platform//50`, and `org.freedesktop.Sdk.Extension.rust-stable`.
 - **Permission denied on `/workspace`.** The `:z` mount flag relabels for
   SELinux (Fedora). On non-SELinux hosts it's harmless. With `docker`,
   swap `podman` for `docker` in the `justfile` if you prefer.
+- **`bwrap: Can't mount proc on /newroot/proc`.** Run through
+  `just flatpak-build`; the recipe uses `podman run --privileged` for nested
+  flatpak-builder sandboxing.
+- **`Failure spawning rofiles-fuse` / missing machine-id.** Run through
+  `just flatpak-build`; the recipe passes `--disable-rofiles-fuse`.
 - **"No cargo in the container."** Expected — cargo is provided to the
   build via the Rust SDK extension inside the manifest, not at the
   container root. Use `just flatpak-build`, not `cargo build` in the shell.

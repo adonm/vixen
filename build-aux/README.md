@@ -5,11 +5,16 @@ Flatpak manifests and distribution packaging live here
 
 Contents:
 
-- `org.vixen.Vixen.json` — production Flatpak manifest (**scaffolding**: the
-  structure is correct but the shell is not wired yet; full release build +
-  Cargo vendoring land at Phase 9). Build it against the GNOME 50 SDK inside
-  the flatpak-builder container: `just flatpak-build`
+- `org.vixen.Vixen.json` — production Flatpak manifest. Build it against the
+  GNOME 50 SDK inside the flatpak-builder container: `just flatpak-build`
   (see [../docs/guidance/gnome-sdk-flatpak-builder.md](../docs/guidance/gnome-sdk-flatpak-builder.md)).
+- `cargo-sources.json` — generated checked-source list for offline Cargo builds
+  inside the Flatpak sandbox. Refresh with `just flatpak-cargo-sources` after
+  `Cargo.lock` changes.
+- `write-vendor-checksums.py` — emits Cargo's per-file vendor checksum metadata
+  after flatpak-builder extracts checked crate archives into `cargo/vendor`.
+- The manifest also checks and stages the rusty_v8 prebuilt archive referenced
+  by `RUSTY_V8_ARCHIVE`, so the Cargo build itself does not fetch from GitHub.
 - `org.vixen.Vixen.Devel.json` — devel manifest (TODO)
 - `modules/` — vendored Flatpak modules (runtime deps as needed; TODO)
 - `_build/`, `_repo/` — flatpak-builder outputs (gitignored)

@@ -1,15 +1,17 @@
 //! vixen-shell — Relm4/libadwaita browser chrome (ADR-010).
 //!
-//! ## Phase 0 status
+//! ## GTK shell status
 //!
-//! The real Relm4 shell (`App`, `FactoryVecDeque<TabModel>`, per-tab
-//! `EngineWorker`) lands behind the `gtk-shell` feature, which requires the
-//! GNOME SDK (`gtk4`, `libadwaita-1`). On hosts without those dev packages
-//! the workspace still type-checks: `run()` reports the missing shell and
-//! returns, so the `vixen` GUI binary compiles everywhere
-//! (docs/PLAN.md Phase 0 gate: `cargo check --workspace`).
+//! The first Relm4/libadwaita desktop vertical lands behind the `gtk-shell`
+//! feature: one window, one URL entry, one visible page, navigation controls,
+//! status diagnostics, and WebRender output in a `gtk4::GLArea`. On hosts
+//! without GNOME SDK dev packages the default workspace still type-checks:
+//! `run()` reports the missing shell and returns, so the `vixen` GUI binary
+//! compiles everywhere (docs/PLAN.md Phase 0 gate: `cargo check --workspace`).
 //!
-//! Build the real shell with `cargo build --features vixen-shell/gtk-shell`.
+//! Build the real shell with `just flatpak-build` (supported) or native
+//! `cargo build -p vixen --features vixen-shell/gtk-shell` after installing
+//! GTK/libadwaita development packages.
 //!
 //! ## Planned module layout (docs/ARCHITECTURE.md "Crate layout")
 //!
@@ -28,7 +30,7 @@
 //! modals/            — about, preferences, shortcuts
 //! ```
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 /// App ID constants (docs/ARCHITECTURE.md "App ID and profile paths").
 pub mod config {
@@ -39,6 +41,15 @@ pub mod config {
     /// Vixen version string (kept in sync with the workspace `Cargo.toml`).
     pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 }
+
+#[cfg(feature = "gtk-shell")]
+mod app;
+
+#[cfg(feature = "gtk-shell")]
+mod engine_worker;
+
+#[cfg(feature = "gtk-shell")]
+mod tab;
 
 #[cfg(feature = "gtk-shell")]
 pub mod surface;
@@ -64,8 +75,5 @@ pub fn run() {
 
 #[cfg(feature = "gtk-shell")]
 fn run_gtk() {
-    // Real Relm4 bootstrap lands with the GTK shell (Phase 5+ smoke, per
-    // docs/PLAN.md). The skeleton is kept here so the `gtk-shell` feature
-    // compiles today; `relm4::main_adw_application()` launches the app.
-    relm4::main_adw_application();
+    app::run();
 }

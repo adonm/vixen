@@ -4,6 +4,11 @@ Phased execution runbook. Each phase ends in a green test suite, a
 working binary, and a measured size. Do not start the next phase until
 the previous one's gate passes.
 
+For current focus, start with [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md) and
+[`ROADMAP.md`](ROADMAP.md). This file is the historical phase runbook; avoid
+adding broad status prose here when a concise ADR, roadmap entry, or code test is
+enough.
+
 Tick-tock discipline applies throughout: each phase is a *tick*
 (capability lands); the post-phase cleanup is the *tock* (dead-code
 removal, module ≤ 1 kLOC, references cited). See `docs/ACCEPTANCE.md`
@@ -875,15 +880,21 @@ Each family lands with its WPT fixtures passing before moving on.
   while `vixen-headless --eval` / CDP `Runtime.evaluate` now exercise
   op-backed runtime `TextEncoder` / `TextDecoder` constructors plus focused
   `document` / `Element` / read-only `DOMTokenList` / `DOMStringMap` snapshot
-  extension objects backed by the same Page data. The DOM snapshot data now
-  crosses the `deno_core` op boundary via `op_vixen_dom_snapshot`; selector
-  lookup and `Element.matches()` now use finer-grained DOM ops, and element
-  record data is loaded through `op_vixen_dom_element_snapshot`. Element
-  text/attribute reads plus read-only DOMTokenList/dataset data now use focused
-  DOM ops. Focused `CSS.supports`, `getComputedStyle`, and
+  extension objects backed by the same Page data. `script::webidl` now renders
+  the first generated browser interface/prototype substrate for the
+  runtime-visible DOM/CSSOM/geometry subset; DOM and CSSOM bootstraps adopt those
+  generated prototypes instead of hand-rolling constructor shape. The DOM
+  snapshot data now crosses the `deno_core` op boundary via
+  `op_vixen_dom_snapshot`; selector lookup and `Element.matches()` now use
+  finer-grained DOM ops, and element record data is loaded through
+  `op_vixen_dom_element_snapshot`. Element text/attribute reads plus read-only
+  DOMTokenList/dataset data now use focused DOM ops, and element
+  `getBoundingClientRect()` / `getClientRects()` geometry reads now cross a
+  focused DOM rect op. Focused `CSS.supports`, `getComputedStyle`, and
   CSSStyleSheet/CSSRule smoke evals now use the op-backed `script::cssom`
-  extension, leaving geometry/forms/events/history/storage/fetch as the next
-  host-object replacement targets.
+  extension, leaving imported full WebIDL manifests, Geometry Interface value
+  constructors/forms/events/history/storage/fetch as the next host-object
+  replacement targets.
 
 **Pure-logic foundation landed for the fetch host-hook data model (Phase 6 prep).**
 The `Headers` object, `Blob`/`File` metadata, read-only `Request`/`Response`

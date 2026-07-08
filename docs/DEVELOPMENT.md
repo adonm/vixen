@@ -3,6 +3,11 @@
 This document defines **dev** for this repo: how to move quickly during alpha
 without creating long-term maintenance debt.
 
+Project focus is defined in [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md).
+Autonomous commit/push policy is defined in
+[`AUTONOMOUS_WORK.md`](AUTONOMOUS_WORK.md). Git lifecycle gates are enforced by
+[`hk`](https://hk.jdx.dev/) via the checked-in [`../hk.pkl`](../hk.pkl).
+
 ## Definitions
 
 - **Dev / alpha** means partial browser capability is allowed when it is
@@ -48,13 +53,26 @@ push.
 | Tier | Use when | Command shape |
 |------|----------|---------------|
 | Inner loop | Editing one crate/module | `cargo check -p <crate>` plus focused `cargo test ... <name>` |
-| Alpha slice | A coherent partial capability is ready | focused tests + `just gate-alpha` + the relevant `just gate-phaseN` |
-| Reviewer baseline | Before commit/push or handoff | `just gate-smoke` + changed phase gates + `git diff --check` |
+| Pre-commit | A commit is being made | hk pre-commit: `cargo fmt`, merge-conflict/private-key scan, staged diff whitespace check |
+| Alpha slice | A coherent partial capability is ready | focused tests + relevant `just gate-phaseN` |
+| Pre-push | Work is ready to leave the machine | hk pre-push: `just gate-push` |
 | Release | Versioned release readiness | every gate in `ACCEPTANCE.md` |
 
-`just gate-alpha` is intentionally faster than `gate-smoke`: it checks format,
-clippy, workspace typechecking, and the committed fixture manifest runner, but it
-does not replace focused tests or the relevant phase gate.
+`just gate-push` is the long integration gate. Keep long gates out of the inner
+loop and pre-commit path so iteration stays fast.
+
+Current pre-push composition:
+
+```sh
+just gate-alpha
+just gate-phase6
+just gate-smoke
+git diff --check
+git diff --cached --check
+```
+
+Adjust `just gate-push` as the alpha architecture changes; hk should keep
+calling that single recipe.
 
 ## Larger alpha batches
 
@@ -92,5 +110,5 @@ A dev/alpha slice is done when:
 - unsupported inputs fail closed,
 - docs mention the current state and next widening step,
 - focused tests and the relevant gate pass,
-- `git diff --check` is clean,
+- hk pre-commit/pre-push gates are clean before commit/push,
 - any known debt is either removed immediately or named as the next tock.

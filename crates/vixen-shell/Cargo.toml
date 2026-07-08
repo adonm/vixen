@@ -22,13 +22,27 @@ publish = false
 default = []
 # Pull in the GTK4/libadwaita/Relm4 stack and build the real browser window.
 # Requires gtk4, libadwaita-1 dev packages (pkg-config).
-gtk-shell = ["dep:gtk4", "dep:relm4", "dep:libadwaita"]
+gtk-shell = [
+    "dep:gtk4",
+    "dep:relm4",
+    "dep:libadwaita",
+    "dep:vixen-engine",
+    "dep:vixen-net",
+    "dep:libloading",
+    "dep:tokio",
+    "dep:url",
+]
 
 [dependencies]
 vixen-api = { path = "../vixen-api" }
+vixen-engine = { path = "../vixen-engine", optional = true }
+vixen-net = { path = "../vixen-net", optional = true }
 gtk4 = { version = "0.9", optional = true }
-relm4 = { version = "0.9", optional = true }
+relm4 = { version = "0.9", features = ["libadwaita"], optional = true }
 libadwaita = { version = "0.7", optional = true }
+libloading = { version = "0.8", optional = true }
+tokio = { version = "1", features = ["rt"], optional = true }
+url = { version = "2", optional = true }
 
 [lib]
 path = "src/lib.rs"

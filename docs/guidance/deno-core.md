@@ -29,6 +29,7 @@ Each host family should be small and explicit:
 ```text
 crates/vixen-engine/src/script/
   runtime.rs          # deno_core runtime construction + eval bridge
+  webidl.rs           # generated interface/prototype substrate
   encoding.rs         # TextEncoder/TextDecoder ops + bootstrap JS
   dom.rs              # document/Element snapshot extension + bootstrap JS
   cssom.rs            # getComputedStyle/CSS.supports/styleSheets ops + bootstrap JS
@@ -39,6 +40,11 @@ crates/vixen-engine/src/script/
 Current state:
 
 - `runtime.rs` owns `deno_core::JsRuntime` construction and V8 value conversion.
+- `webidl.rs` renders the first generated binding substrate from a Rust-owned
+  WebIDL-shaped manifest. It installs browser interface constructors/prototypes
+  plus `__vixenWebidl.adoptInterface(...)`, so feature-family bootstraps attach
+  concrete Vixen implementations to generated prototype chains instead of
+  hand-rolling every constructor shape.
 - `encoding.rs` registers the first op-backed host extension; JS constructors
   delegate UTF-8 encode/decode work to `vixen-engine::text_codec` through ops.
 - `dom.rs` registers a page-snapshot extension for focused read-only
@@ -46,11 +52,16 @@ Current state:
   `deno_core` op boundary through `op_vixen_dom_snapshot`; element data is
   loaded through `op_vixen_dom_element_snapshot`; selector lookup,
   `Element.matches()`, element text/attribute reads, and read-only token/dataset
-  surfaces delegate through focused DOM ops.
+  surfaces delegate through focused DOM ops. Element geometry reads
+  (`getBoundingClientRect()` / `getClientRects()`) now cross a DOM rect op and
+  materialize Web-shaped rect/list objects on generated WebIDL prototypes.
 - `cssom.rs` registers the focused read-only CSSOM extension. `CSS.supports`,
   `getComputedStyle`, and `document.styleSheets`/CSSRule smoke data now cross
-  explicit CSSOM ops instead of being synthesized by the headless/Page string
-  projection.
+  explicit CSSOM ops and attach to generated CSSOM prototypes instead of being
+  synthesized by the headless/Page string projection.
+- `just gate-webidl` is the focused regression gate for this layer: generated
+  interface/prototype coverage, `JsRuntime` eval, headless `--eval`, and CDP
+  `Runtime.evaluate` must stay green together.
 
 Rules:
 

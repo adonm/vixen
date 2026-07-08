@@ -8,10 +8,14 @@ use deno_core::{JsRuntime as DenoJsRuntime, RuntimeOptions};
 use crate::engine_error::{EngineError, codes};
 use crate::page::Page;
 
-use super::{JsValue, cssom, dom, encoding};
+use super::{JsValue, cssom, dom, encoding, webapi, webidl};
 
 pub(super) fn new_deno_runtime(page: Option<&Page>) -> Result<DenoJsRuntime, EngineError> {
-    let mut extensions = vec![encoding::extension()];
+    let mut extensions = vec![
+        webidl::extension(),
+        encoding::extension(),
+        webapi::extension(),
+    ];
     if let Some(page) = page {
         extensions.push(dom::extension(page)?);
         extensions.push(cssom::extension(page)?);

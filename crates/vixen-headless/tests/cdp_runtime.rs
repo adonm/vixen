@@ -63,13 +63,45 @@ fn runtime_evaluate_surface() {
     assert_eq!(v["result"]["type"], "boolean");
     assert_eq!(v["result"]["value"], true);
 
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "Window.prototype instanceof EventTarget && typeof HTMLCanvasElement === 'function' && typeof GPUDevice === 'function'" }),
+    );
+    assert_eq!(v["result"]["type"], "boolean");
+    assert_eq!(v["result"]["value"], true);
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "new EventTarget().dispatchEvent(new Event('ready'))" }),
+    );
+    assert_eq!(v["result"]["type"], "boolean");
+    assert_eq!(v["result"]["value"], true);
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "new DOMMatrix().translate(10, 20).transformPoint(new DOMPoint(1, 2)).y" }),
+    );
+    assert_eq!(v["result"]["type"], "number");
+    assert_eq!(v["result"]["value"], 22);
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "new Headers([['X-Test', 'a'], ['X-Test', 'b']]).get('x-test')" }),
+    );
+    assert_eq!(v["result"]["type"], "string");
+    assert_eq!(v["result"]["value"], "a, b");
+
     // Phase 6 DOM host-object backbone: after navigation, Runtime.evaluate runs
     // against deno_core with a real `document` snapshot in the global.
     let dir = tempfile::tempdir().unwrap();
     let html = dir.path().join("cdp-dom-host.html");
     std::fs::write(
         &html,
-        "<html><head><title>CDP DOM</title><style>#lead { color: blue; font-size: 20px !important; } p { margin-left: 4px; }</style><link id='theme' rel='stylesheet alternate'></head><body><p id='lead' class='note note callout' data-role='copy' data-author-name='ada' style='font-size: 18px; margin-left: 10px'>Hello <b>CDP</b></p><iframe id='frame' sandbox='allow-scripts allow-same-origin'></iframe></body></html>",
+        "<html><head><title>CDP DOM</title><style>#lead { color: blue; font-size: 20px !important; } p { margin-left: 4px; } #box { width: 40px; height: 20px; }</style><link id='theme' rel='stylesheet alternate'></head><body><p id='lead' class='note note callout' data-role='copy' data-author-name='ada' style='font-size: 18px; margin-left: 10px'>Hello <b>CDP</b></p><div id='box'>Box</div><form id='contact'><input name='name' value='Ada'></form><iframe id='frame' sandbox='allow-scripts allow-same-origin'></iframe></body></html>",
     )
     .unwrap();
     let url = format!("file://{}", html.display());
@@ -83,6 +115,14 @@ fn runtime_evaluate_surface() {
     );
     assert_eq!(v["result"]["type"], "string");
     assert_eq!(v["result"]["value"], "CDP DOM");
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "HTMLElement.prototype instanceof Element && XMLDocument.prototype instanceof Document" }),
+    );
+    assert_eq!(v["result"]["type"], "boolean");
+    assert_eq!(v["result"]["value"], true);
 
     let v = dispatch_one(
         &mut s,
@@ -195,6 +235,54 @@ fn runtime_evaluate_surface() {
     );
     assert_eq!(v["result"]["type"], "number");
     assert_eq!(v["result"]["value"], 2);
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.querySelector('#box').getBoundingClientRect().width" }),
+    );
+    assert_eq!(v["result"]["type"], "number");
+    assert_eq!(v["result"]["value"], 40);
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.querySelector('#box').getBoundingClientRect().right" }),
+    );
+    assert_eq!(v["result"]["type"], "number");
+    assert_eq!(v["result"]["value"], 48);
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.querySelector('#box').getClientRects().length" }),
+    );
+    assert_eq!(v["result"]["type"], "number");
+    assert_eq!(v["result"]["value"], 1);
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "new FormData(document.getElementById('contact')).get('name')" }),
+    );
+    assert_eq!(v["result"]["type"], "string");
+    assert_eq!(v["result"]["value"], "Ada");
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.createRange().collapsed && window.getSelection().rangeCount === 0" }),
+    );
+    assert_eq!(v["result"]["type"], "boolean");
+    assert_eq!(v["result"]["value"], true);
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "(() => document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT).firstChild() !== null)()" }),
+    );
+    assert_eq!(v["result"]["type"], "boolean");
+    assert_eq!(v["result"]["value"], true);
 
     // Script error carries the stable code. The text is the generic
     // "script error: ..." from `EngineError`.

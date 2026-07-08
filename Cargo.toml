@@ -41,7 +41,7 @@ name = "vixen"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"   # let-chains used in vixen-net per docs/SPEC.md
-description = "A small, GNOME-native web browser built on Firefox-family components"
+description = "A focused modern-Linux browser built for capability per byte"
 license = "Apache-2.0"
 publish = false
 

@@ -3,6 +3,11 @@
 How Vixen is structured: crate layout, data flow, trust boundaries, and
 the public trait APIs at each seam.
 
+Product direction lives in [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md): a
+modern-Linux Firefox replacement with a minimal Relm4/libadwaita desktop shell,
+headless/CDP automation, and maximum capability for the smallest credible
+binary. Architecture choices below should be read through that lens.
+
 ---
 
 ## Crate layout
@@ -189,6 +194,10 @@ registration, local JS bootstrap, pure Rust operation/data surfaces, resource
 handles for long-lived host state, and permission checks near the host boundary.
 Firefox remains a DOM/Web API semantic reference; Deno/`deno_core` is the JS
 runtime substrate.
+Generated WebIDL scaffolding lives in `script::webidl`; host-family bootstraps
+adopt those generated interfaces. Pure value APIs may stay JS-only when that is
+smaller and state-free; page/network/storage/security-backed APIs cross a Rust
+op/resource boundary. See [`RUNTIME_WEB_PLATFORM.md`](RUNTIME_WEB_PLATFORM.md).
 
 ---
 

@@ -8,11 +8,12 @@ App IDs (docs/ARCHITECTURE.md "App ID and profile paths"):
 - `org.vixen.Vixen`        — production
 - `org.vixen.Vixen.Devel`  — development
 
-Expected contents once the shell lands:
+Shipped contents:
 
 ```
-org.vixen.Vixen.desktop.in
+org.vixen.Vixen.desktop
 org.vixen.Vixen.metainfo.xml
-org.vixen.Vixen.gschema.xml
-icons/scalable/apps/org.vixen.Vixen.svg
+icons/hicolor/scalable/apps/org.vixen.Vixen.svg
 ```
+
+`org.vixen.Vixen.gschema.xml` lands when persisted preferences are wired.

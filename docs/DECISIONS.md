@@ -620,3 +620,92 @@ The target JS architecture is Deno-shaped:
 - Existing Page string-smoke projections and bootstrap snapshot pilots should
   migrate into explicit `deno_core` op/resource extensions one family at a time,
   while still reusing the same pure Rust modules.
+
+---
+
+## ADR-015: Modern-Linux Firefox replacement, optimized for capability per byte
+
+**Status:** accepted
+
+**Supersedes:** ADR-007's narrow "GNOME-only" product wording. The
+Relm4/libadwaita/Flatpak implementation path remains accepted.
+
+**Context.** The project direction is now explicit: Vixen should become a
+Firefox replacement for modern Linux users, with both a focused desktop browser
+and first-class CLI/CDP automation. The important differentiator is not a large
+feature buffet; it is high web capability with low binary size, low memory use,
+fast builds, and rapid iteration driven by useful text reports.
+
+**Decision.** Optimize Vixen for maximum browser capability per byte. The
+desktop product targets modern Linux broadly while using the Relm4/libadwaita
+GUI path and Flatpak/GNOME SDK build path. The shell should stay minimal and
+focused, closer to Ghostty's product philosophy than a kitchen-sink browser UI.
+Headless CLI, CDP, and Playwright-style workflows are product surfaces, not just
+test harnesses.
+
+Priority order is recorded in `docs/PROJECT_DIRECTION.md`: rendering/layout,
+runtime DOM/Web APIs, network/security, storage/history, minimal shell,
+headless/CDP, WPT/reporting, HTML integration, CLI ergonomics, then embeddable
+Rust API.
+
+**Alternatives considered.**
+
+- *GNOME-only browser identity.* Narrowed: the implementation remains GTK/
+  libadwaita, but the user target is modern Linux rather than GNOME Shell only.
+- *Kitchen-sink browser chrome.* Rejected: UI breadth competes with engine
+  correctness, binary size, and iteration speed before alpha.
+- *Automation as secondary.* Rejected: CLI/CDP users and text reports are part of
+  how Vixen will iterate quickly and be useful early.
+
+**Consequences.**
+
+- Architecture choices should cite size, memory, build-speed, or correctness
+  impact when there is a meaningful tradeoff.
+- Non-Linux platforms remain best-effort.
+- UI additions must justify themselves against the focused-shell goal.
+- `docs/COMPAT.md` and WPT/profile output are product artifacts because they let
+  humans and agents measure progress.
+
+---
+
+## ADR-016: hk owns git lifecycle gates
+
+**Status:** accepted
+
+**Context.** The previous gate story mixed raw cargo commands, many `just gate-*`
+recipes, manual pre-push habits, and ad-hoc agent summaries. Iteration speed is a
+north-star concern, but work leaving the machine still needs consistent checks.
+The project already uses mise, and hk is built by the same toolchain ecosystem
+for fast git hook orchestration.
+
+**Decision.** Add checked-in `hk.pkl` and make hk the git lifecycle enforcement
+layer. `just` remains the project command library; hk decides when those recipes
+run. Pre-commit stays quick and mostly local: formatting, merge-conflict/private
+key scans, and staged diff whitespace. Long gates run only pre-push through one
+recipe, `just gate-push`.
+
+The standard pre-push gate is:
+
+```sh
+just gate-alpha
+just gate-phase6
+just gate-smoke
+git diff --check
+git diff --cached --check
+```
+
+**Alternatives considered.**
+
+- *Keep manual gate discipline.* Rejected: too easy for long autonomous sessions
+  to drift.
+- *Run all long gates pre-commit.* Rejected: hurts iteration speed and produces
+  small, slow commits.
+- *Replace `just` with hk commands.* Rejected: `just` recipes are still useful
+  as explicit project actions and documentation anchors.
+
+**Consequences.**
+
+- Agents may commit and push automatically when hk gates pass.
+- Hook setup is part of normal mise/bootstrap workflow.
+- If pre-push becomes too slow or misses an important area, change
+  `just gate-push` first; keep hk pointing at that stable recipe.

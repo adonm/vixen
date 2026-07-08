@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>org.vixen.Vixen</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>Vixen</name>
+  <summary>Minimal Rust browser for modern Linux</summary>
+  <description>
+    <p>
+      Vixen is an experimental browser with a focused Relm4/libadwaita desktop
+      shell, a Rust page pipeline, WebRender output, and headless automation.
+    </p>
+  </description>
+  <launchable type="desktop-id">org.vixen.Vixen.desktop</launchable>
+  <provides>
+    <binary>vixen</binary>
+  </provides>
+  <categories>
+    <category>Network</category>
+    <category>WebBrowser</category>
+  </categories>
+  <url type="homepage">https://codeberg.org/adonm/vixen</url>
+  <releases>
+    <release version="0.1.0" date="2026-07-08">
+      <description>
+        <p>Initial GTK WebRender browser vertical with tab lifecycle.</p>
+      </description>
+    </release>
+  </releases>
+  <content_rating type="oars-1.1" />
+</component>
