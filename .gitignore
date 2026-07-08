@@ -35,3 +35,7 @@ Cargo.lock.bak
 
 # Reftest diff output (docs/PLAN.md "Snapshot tests against Firefox reference")
 /target-reftest-diff/
+
+# Node tooling cache/install outputs. `package-lock.json` is tracked; modules are
+# reproduced through mise-managed npm.
+/node_modules/

@@ -5,8 +5,9 @@
 //! enforcement points"). Enforcement happens at three boundaries:
 //!
 //! 1. **Script execution** — `script-src` (or `default-src` fallback).
-//!    Inline scripts blocked unless `'unsafe-inline'` or a matching
-//!    hash/nonce is present.
+//!    Inline scripts blocked unless `'unsafe-inline'` or a matching hash/nonce
+//!    is present. External scripts require a matching URL source or script
+//!    nonce.
 //! 2. **Fetch** — `connect-src`, `img-src`, `style-src`, `font-src`,
 //!    `media-src`, `object-src`, etc. URLs matched against the source-list.
 //! 3. **Plugin content** — `<embed>`/`<object>` gated by `object-src`.
@@ -161,6 +162,23 @@ impl ContentSecurityPolicy {
         })
     }
 
+    /// Allow an external classic script request? URL source expressions match
+    /// as for other fetches, and a matching `nonce` on the script element also
+    /// permits the request under `script-src`.
+    pub fn allows_external_script(
+        &self,
+        doc_origin: &Origin,
+        url: &Url,
+        nonce: Option<&str>,
+    ) -> bool {
+        self.policies.iter().all(|p| {
+            let Some(srcs) = self.sources_for(p, "script-src") else {
+                return true;
+            };
+            external_script_allowed(srcs, url, doc_origin, nonce)
+        })
+    }
+
     /// Allow plugin content (`<embed>`/`<object>`)? Gated by `object-src`.
     pub fn allows_plugin(&self, url: &Url, doc_origin: &Origin) -> bool {
         self.allows_fetch("object-src", url, doc_origin)
@@ -213,6 +231,25 @@ fn url_allowed(srcs: &[Source], url: &Url, doc_origin: &Origin) -> bool {
     // A list with only keywords like unsafe-inline/unsafe-eval (which never
     // match a URL) denies the fetch.
     !has_positive
+}
+
+fn external_script_allowed(
+    srcs: &[Source],
+    url: &Url,
+    doc_origin: &Origin,
+    nonce: Option<&str>,
+) -> bool {
+    if srcs.len() == 1 && matches!(srcs[0], Source::KeywordNone) {
+        return false;
+    }
+    for s in srcs {
+        if let Source::Nonce(n) = s
+            && Some(n.as_str()) == nonce
+        {
+            return true;
+        }
+    }
+    url_allowed(srcs, url, doc_origin)
 }
 
 fn url_matches_source(s: &Source, url: &Url, doc_origin: &Origin) -> bool {
@@ -558,6 +595,17 @@ mod tests {
         csp.add_header("script-src 'nonce-abc123'");
         assert!(csp.allows_inline_script(&doc_origin(), None, Some("abc123")));
         assert!(!csp.allows_inline_script(&doc_origin(), None, Some("wrong")));
+    }
+
+    #[test]
+    fn external_script_allowed_with_matching_nonce() {
+        let mut csp = ContentSecurityPolicy::new();
+        csp.add_header("script-src 'nonce-abc123'");
+        let url = Url::parse("https://cdn.example/app.js").unwrap();
+
+        assert!(csp.allows_external_script(&doc_origin(), &url, Some("abc123")));
+        assert!(!csp.allows_external_script(&doc_origin(), &url, Some("wrong")));
+        assert!(!csp.allows_external_script(&doc_origin(), &url, None));
     }
 
     #[test]

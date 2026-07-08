@@ -14,9 +14,10 @@ browser-shaped outcomes.
    - Proof: `hk validate`, `hk run pre-commit --check`, `hk run pre-push --check`.
 
 2. **WebRender screenshot vertical**
-   - Consume `Page::display_list` through the single WebRender path.
-   - Make headless `--screenshot` produce PNGs through EGL surfaceless.
-   - Keep GUI/headless rendering on the same display list and renderer.
+   - Status: live. `Page::display_list` feeds the single WebRender path,
+     headless `--screenshot` writes PNGs through EGL surfaceless, CDP
+     `Page.captureScreenshot` returns PNG data, and GUI/headless rendering share
+     the same display-list-to-renderer mapping.
    - Proof: `just gate-phase5`, visual/ref fixtures, size measurement.
 
 3. **Minimal desktop browser vertical**
@@ -41,10 +42,11 @@ browser-shaped outcomes.
    - Proof: network/storage WPT fixtures plus `vixen-net`/`vixen-store` tests.
 
 6. **CDP/Playwright MVP**
-   - Grow CDP only along the paths needed by useful automation: navigation,
-     runtime evaluation, screenshots, basic input, console/errors.
+   - Status: smoke-live. CDP now covers navigation, runtime evaluation,
+     screenshot capture, runtime console/exception events, flattened-session
+     response echo, and basic mouse input dispatch over the current viewport.
    - Preserve stable JSON/text diagnostics.
-   - Proof: CDP integration tests and a documented Playwright smoke.
+   - Proof: CDP integration tests and `docs/CDP_PLAYWRIGHT_SMOKE.md`.
 
 7. **Compatibility report loop**
    - Expand imported WPT profiles by priority area.

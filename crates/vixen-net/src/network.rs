@@ -10,6 +10,7 @@
 //! Every error variant of [`NetworkError`] is exercised by tests.
 
 use std::collections::HashSet;
+use std::net::SocketAddr;
 
 use reqwest::header::HeaderMap;
 use url::Url;
@@ -69,6 +70,9 @@ pub struct NetworkConfig {
     pub max_body_bytes: u64,
     pub max_redirects: usize,
     pub timeout: std::time::Duration,
+    /// Optional DNS overrides used by deterministic integration tests. Empty
+    /// in production; URL policy still validates the original request URL.
+    pub dns_overrides: Vec<(String, Vec<SocketAddr>)>,
 }
 
 impl Default for NetworkConfig {
@@ -78,6 +82,7 @@ impl Default for NetworkConfig {
             max_body_bytes: DEFAULT_MAX_BODY_BYTES,
             max_redirects: DEFAULT_MAX_REDIRECTS,
             timeout: std::time::Duration::from_secs(30),
+            dns_overrides: Vec::new(),
         }
     }
 }
@@ -94,14 +99,16 @@ impl Network {
     /// (reqwest features). Built-in redirects are **off** — we follow them
     /// manually so URL policy + cookies re-apply per hop.
     pub fn new(config: NetworkConfig) -> Result<Self, NetworkError> {
-        let client = reqwest::Client::builder()
+        let mut builder = reqwest::Client::builder()
             .user_agent(&config.user_agent)
             .redirect(reqwest::redirect::Policy::none())
-            .timeout(config.timeout)
-            .build()
-            .map_err(|e| NetworkError::Builder {
-                message: e.to_string(),
-            })?;
+            .timeout(config.timeout);
+        for (domain, addrs) in &config.dns_overrides {
+            builder = builder.resolve_to_addrs(domain, addrs);
+        }
+        let client = builder.build().map_err(|e| NetworkError::Builder {
+            message: e.to_string(),
+        })?;
         Ok(Self { client, config })
     }
 

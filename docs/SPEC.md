@@ -66,9 +66,10 @@ without a GPU device fails closed with `unsupported.screenshot`.
 **CDP methods required** at v1.0:
 
 - `Browser.getVersion`
-- `Target.createTarget`, `Target.attachToTarget`
-- `Page.navigate`, `Page.loadEventFired`
-- `Runtime.evaluate`
+- `Target.createTarget`, `Target.attachToTarget`, `Target.getTargets`
+- `Page.enable`, `Page.navigate`, `Page.loadEventFired`, `Page.captureScreenshot` (PNG), `Page.getFrameTree`
+- `Runtime.enable`, `Runtime.evaluate`, `Runtime.consoleAPICalled`, `Runtime.exceptionThrown`
+- `Input.dispatchMouseEvent` (mouse move/press/release over the current full viewport)
 
 ---
 

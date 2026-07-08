@@ -1,0 +1,11 @@
+{
+  "name": "vixen-automation-smoke",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "cdp:playwright-smoke": "node scripts/playwright-cdp-smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright-core": "1.61.1"
+  }
+}

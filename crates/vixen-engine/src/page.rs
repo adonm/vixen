@@ -16,6 +16,7 @@
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use vixen_api::{ElementInfo, EngineDiagnostic, EngineInspector, PageSnapshot};
+use vixen_net::csp::ContentSecurityPolicy;
 
 use crate::abort::{AbortController, AbortSignal, TimeoutSignal, abort_any};
 use crate::class_list::DomTokenList;
@@ -24,7 +25,7 @@ use crate::display_list::{
     BackgroundAttachment, BackgroundBox, Color, DisplayListBuilder, DrawItem, PaintCommand,
     PaintStats, Rect, TextRun, dump_paint_commands, dump_paint_stats,
 };
-use crate::doc::{Document, ParseError};
+use crate::doc::{Document, InlineScript, ParseError};
 use crate::form_submission::{FormEntry, FormEntryValue};
 use crate::forms::{
     Validity, email_is_valid, length_validity, range_validity, step_mismatch_f64, url_is_valid,
@@ -62,6 +63,7 @@ pub use interaction::FormSubmissionSnapshot;
 pub struct Page {
     url: String,
     document: Document,
+    csp: ContentSecurityPolicy,
     author_stylesheet: AuthorStylesheet,
     diagnostics: Vec<EngineDiagnostic>,
 }
@@ -83,6 +85,30 @@ impl Page {
         Ok(Self {
             url: url.into(),
             document,
+            csp: ContentSecurityPolicy::new(),
+            author_stylesheet,
+            diagnostics: Vec::new(),
+        })
+    }
+
+    /// Build a page from already-loaded HTML plus response headers. Enforcing
+    /// `Content-Security-Policy` headers are captured here so inline script
+    /// execution starts with network-delivered policy before document meta CSP.
+    pub fn from_html_with_headers<'a, I>(
+        url: impl Into<String>,
+        html: &str,
+        headers: I,
+    ) -> Result<Self, PageError>
+    where
+        I: IntoIterator<Item = (&'a str, &'a str)>,
+    {
+        let document = Document::parse(html)?;
+        let csp = ContentSecurityPolicy::from_headers(headers);
+        let author_stylesheet = AuthorStylesheet::from_blocks(&document.style_blocks());
+        Ok(Self {
+            url: url.into(),
+            document,
+            csp,
             author_stylesheet,
             diagnostics: Vec::new(),
         })
@@ -97,6 +123,23 @@ impl Page {
     /// existing code migrates to the facade methods.
     pub fn document(&self) -> &Document {
         &self.document
+    }
+
+    /// Enforcing CSP delivered with the document response headers.
+    pub fn csp(&self) -> &ContentSecurityPolicy {
+        &self.csp
+    }
+
+    /// Inline classic scripts in document order. Full page-script execution also
+    /// handles external classic scripts through the JS/runtime boundary.
+    pub fn inline_classic_scripts(&self) -> Vec<InlineScript> {
+        self.document.inline_classic_scripts()
+    }
+
+    /// True when the page contains at least one inline or external classic
+    /// script that should cross the script execution boundary.
+    pub fn has_classic_scripts(&self) -> bool {
+        self.document.has_classic_scripts()
     }
 
     /// DOM tree dump (`vixen-headless --dump-dom`).
@@ -805,7 +848,7 @@ impl Page {
             .unwrap_or_default())
     }
 
-    fn document_base_uri(&self) -> String {
+    pub(crate) fn document_base_uri(&self) -> String {
         let Some(base) = self
             .query_selector_all("base[href]")
             .ok()

@@ -126,7 +126,8 @@ and reference material, plus:
   the anti-collision rule, now reflected by the Page-backed `dataset` eval
   seam); `vixen-engine::storage_key` (Web Storage key/value
   validation + origin-partitioned redb keys + the 5 MiB quota, now used by the
-  Page-backed empty `localStorage` / `sessionStorage` smoke seam); document and
+  runtime-backed in-memory `localStorage` / `sessionStorage` mutation seam);
+  document and
   navigator state, DOM ancestry/core-node shape (`closest()`, `nodeName` /
   `nodeType`, `ownerDocument`), plus `Event` / `CustomEvent` / `dispatchEvent()`
   smoke, CSSOM `CSS.supports()` / `document.styleSheets` / CSSStyleRule shape,
@@ -137,8 +138,11 @@ and reference material, plus:
   focused document/query/element evals (`document.title`, simple
   `querySelector`/`getElementById`, `querySelectorAll().length`) plus read-only
   `classList`/`relList`/`sandbox` and `dataset` property reads now run through a
-  `deno_core` `document` snapshot host-object seam; the next JS-runtime milestone
-  moves these bootstrap surfaces to explicit `deno_core` op/resource extensions.
+  `deno_core` `document` snapshot host-object seam. `JsRuntime` now owns a
+  persistent realm, so sequential evals retain globals, storage, and pending
+  promise/event-loop state until switching between non-page and page realms or
+  navigating to a new page snapshot; the next JS-runtime milestone widens these
+  bootstrap surfaces through explicit `deno_core` op/resource extensions.
   The network
   host-hook family: `vixen-engine::url_search_params` (WHATWG URL Standard
   `URLSearchParams` parse/serialize + the full mutating surface; both now feed
@@ -153,8 +157,10 @@ and reference material, plus:
   `abort`, `mime`, and `url_pattern` now also feed Page-backed `Headers`
   iteration, `Blob`/`File`,
   read-only `Request`/`Response` state with forbidden-header filtering, static
-  `Response.error()` / `Response.redirect()` / `Response.json()`,
-  `AbortController`/`AbortSignal`, and `URLPattern` eval smoke checks. The
+  `Response.error()` / `Response.redirect()` / `Response.json()`, an op-backed
+  `fetch()` MVP that routes HTTP(S) through `vixen-net` for status/headers/body
+  and URL-policy/private-host rejection, `AbortController`/`AbortSignal`, and
+  `URLPattern` eval smoke checks. The
   DOM-serialisation surface:
   `vixen-engine::html_serialize` (WHATWG HTML § 13.2.9 fragment serialisation
   — the `Element.innerHTML` / `outerHTML` / `document.write` getter pipeline,

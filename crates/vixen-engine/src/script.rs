@@ -3,13 +3,16 @@
 //! The public Vixen-facing seam stays small (`JsRuntime`, `JsValue`, eval
 //! methods), but the implementation uses `deno_core`/V8 directly per ADR-014.
 //! Host surfaces are installed from focused bootstrap modules before the caller's
-//! script runs. Each evaluation uses a fresh JS runtime today to preserve the
-//! earlier Phase 2 semantics: `--eval` sees a clean global, and `document` only
-//! exists for `evaluate_with_page`.
+//! script runs. A `JsRuntime` owns a persistent V8 realm: sequential evals share
+//! globals, storage host state, pending microtasks, and network host state until
+//! the caller switches between the page and non-page realms or navigates to a new
+//! page snapshot.
 
 #![forbid(unsafe_code)]
 
+use crate::doc::{DocumentScriptItem, ExternalScript};
 use crate::engine_error::{EngineError, codes};
+use crate::mime::MimeType;
 use crate::page::Page;
 
 mod cssom;
@@ -20,7 +23,17 @@ mod webapi;
 mod webidl;
 
 /// Vixen's JavaScript runtime seam, backed by `deno_core`/V8.
-pub struct JsRuntime;
+pub struct JsRuntime {
+    network_config: vixen_net::NetworkConfig,
+    runtime: Option<deno_core::JsRuntime>,
+    realm_key: RealmKey,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RealmKey {
+    NoPage,
+    Page(String),
+}
 
 /// A safe subset of a JS value returned across the runtime boundary.
 #[derive(Debug, Clone, PartialEq)]
@@ -33,6 +46,32 @@ pub enum JsValue {
     Undefined,
     /// Any non-scalar (object, symbol, etc.) — not introspected here.
     Object,
+}
+
+/// A console event captured from the current JS realm.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsConsoleEvent {
+    pub kind: String,
+    pub args: Vec<JsConsoleArg>,
+}
+
+/// A CDP-friendly projection of a single console argument.
+#[derive(Debug, Clone, PartialEq)]
+pub struct JsConsoleArg {
+    pub type_name: String,
+    pub subtype: Option<String>,
+    pub value: Option<JsConsoleValue>,
+    pub unserializable_value: Option<String>,
+    pub description: String,
+}
+
+/// JSON-scalar console argument values preserved across the runtime boundary.
+#[derive(Debug, Clone, PartialEq)]
+pub enum JsConsoleValue {
+    String(String),
+    Number(f64),
+    Bool(bool),
+    Null,
 }
 
 impl JsValue {
@@ -62,19 +101,123 @@ fn format_number(n: f64) -> String {
 impl JsRuntime {
     /// Initialise the V8 platform through `deno_core`.
     pub fn new() -> Result<Self, EngineError> {
-        let _ = runtime::new_deno_runtime(None)?;
-        Ok(Self)
+        Self::with_network_config(vixen_net::NetworkConfig::default())
     }
 
-    /// Evaluate `src` in a fresh JS global and return the result.
+    /// Initialise the runtime with a specific network configuration. This is
+    /// primarily a deterministic-test seam; production uses [`Self::new`].
+    pub fn with_network_config(
+        network_config: vixen_net::NetworkConfig,
+    ) -> Result<Self, EngineError> {
+        let runtime = runtime::new_deno_runtime(None, network_config.clone())?;
+        Ok(Self {
+            network_config,
+            runtime: Some(runtime),
+            realm_key: RealmKey::NoPage,
+        })
+    }
+
+    /// Evaluate `src` in the persistent non-page JS global and return the
+    /// result. Switching from a page realm resets to the non-page realm.
     pub fn evaluate(&mut self, src: &str) -> Result<JsValue, EngineError> {
         self.evaluate_with_page_context(src, None)
     }
 
-    /// Evaluate `src` in a fresh JS global with read-only DOM host objects
-    /// projected from `page`.
+    /// Evaluate `src` in a persistent page JS global with read-only DOM host
+    /// objects projected from `page`. Reuses the realm for the same page
+    /// snapshot; changing the page snapshot resets the page realm.
     pub fn evaluate_with_page(&mut self, src: &str, page: &Page) -> Result<JsValue, EngineError> {
         self.evaluate_with_page_context(src, Some(page))
+    }
+
+    /// Execute classic page scripts in document order, using the persistent
+    /// page realm for `page`.
+    ///
+    /// This is the page-script trust boundary: response-header CSP is active
+    /// first, document meta CSP takes effect for later scripts as it is
+    /// encountered, external scripts resolve against the document base URL,
+    /// HTTP(S) fetches cross `vixen-net` URL policy, and `nosniff` is enforced
+    /// before execution. Blocked/failed subresources are skipped; JavaScript
+    /// exceptions still surface as [`codes::SCRIPT_EVAL`] errors.
+    pub fn execute_page_scripts(&mut self, page: &Page) -> Result<usize, EngineError> {
+        let items = page.document().script_execution_items();
+        if !items.iter().any(|item| {
+            matches!(
+                item,
+                DocumentScriptItem::InlineClassicScript(_)
+                    | DocumentScriptItem::ExternalClassicScript(_)
+            )
+        }) {
+            return Ok(0);
+        }
+
+        let mut csp = page.csp().clone();
+        let origin = page_origin(page);
+        let mut executed = 0;
+        for item in items {
+            match item {
+                DocumentScriptItem::CspMeta(policy) => csp.add_header(&policy),
+                DocumentScriptItem::InlineClassicScript(script) => {
+                    match evaluate_inline_page_script(
+                        self,
+                        Some(&csp),
+                        &origin,
+                        page,
+                        &script.source,
+                        script.nonce.as_deref(),
+                    ) {
+                        Ok(_) => executed += 1,
+                        Err(err) if err.code() == codes::SCRIPT_CSP_BLOCKED => {}
+                        Err(err) => return Err(err),
+                    }
+                }
+                DocumentScriptItem::ExternalClassicScript(script) => {
+                    if let Some(source) = load_external_page_script(
+                        &self.network_config,
+                        &csp,
+                        &origin,
+                        page,
+                        &script,
+                    )? {
+                        self.evaluate_with_page(&source, page)?;
+                        executed += 1;
+                    }
+                }
+            }
+        }
+        Ok(executed)
+    }
+
+    /// Drop the current JavaScript realm while preserving runtime configuration
+    /// such as deterministic network settings. The next evaluation creates a
+    /// fresh global. Browser navigations use this so page scripts/listeners from
+    /// the previous document cannot leak into the new document, even when the
+    /// new URL and DOM snapshot are byte-for-byte identical.
+    pub fn reset_realm(&mut self) {
+        self.runtime = None;
+        self.realm_key = RealmKey::NoPage;
+    }
+
+    /// Drain console calls recorded in the current realm. CDP uses this after
+    /// `Runtime.evaluate`, page-script execution, and synthetic input dispatch;
+    /// callers that have not created a realm simply get an empty list.
+    pub fn drain_console_events(&mut self) -> Result<Vec<JsConsoleEvent>, EngineError> {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let result = runtime
+            .execute_script(
+                "vixen-console-drain.js",
+                "JSON.stringify(globalThis.__vixenDrainConsoleEvents ? globalThis.__vixenDrainConsoleEvents() : [])".to_owned(),
+            )
+            .map_err(|_| {
+                EngineError::script(codes::SCRIPT_EVAL, "failed to drain console events")
+            })?;
+        let result = runtime::resolve_value(runtime, result)?;
+        match runtime::js_value_from_global(runtime, result)? {
+            JsValue::String(json) => parse_console_events(&json),
+            _ => Ok(Vec::new()),
+        }
     }
 
     fn evaluate_with_page_context(
@@ -82,15 +225,190 @@ impl JsRuntime {
         src: &str,
         page: Option<&Page>,
     ) -> Result<JsValue, EngineError> {
-        let mut runtime = runtime::new_deno_runtime(page)?;
+        self.ensure_realm(page)?;
 
+        let runtime = self.runtime.as_mut().expect("realm initialised");
         let result = runtime
             .execute_script("inline.js", src.to_owned())
             .map_err(|_| {
                 EngineError::script(codes::SCRIPT_EVAL, "script evaluation raised an exception")
             })?;
-        runtime::js_value_from_global(&mut runtime, result)
+        let result = runtime::resolve_value(runtime, result)?;
+        runtime::js_value_from_global(runtime, result)
     }
+
+    fn ensure_realm(&mut self, page: Option<&Page>) -> Result<(), EngineError> {
+        let target = page
+            .map(page_realm_key)
+            .map(RealmKey::Page)
+            .unwrap_or(RealmKey::NoPage);
+        if self.realm_key != target || self.runtime.is_none() {
+            self.runtime = None;
+            let runtime = runtime::new_deno_runtime(page, self.network_config.clone())?;
+            self.runtime = Some(runtime);
+            self.realm_key = target;
+        }
+        Ok(())
+    }
+}
+
+fn parse_console_events(json: &str) -> Result<Vec<JsConsoleEvent>, EngineError> {
+    let value: deno_core::serde_json::Value =
+        deno_core::serde_json::from_str(json).map_err(|err| {
+            EngineError::script(
+                codes::SCRIPT_EVAL,
+                format!("console event parse failed: {err}"),
+            )
+        })?;
+    let Some(events) = value.as_array() else {
+        return Ok(Vec::new());
+    };
+    Ok(events.iter().map(parse_console_event).collect())
+}
+
+fn parse_console_event(value: &deno_core::serde_json::Value) -> JsConsoleEvent {
+    JsConsoleEvent {
+        kind: value
+            .get("type")
+            .and_then(deno_core::serde_json::Value::as_str)
+            .unwrap_or("log")
+            .to_owned(),
+        args: value
+            .get("args")
+            .and_then(deno_core::serde_json::Value::as_array)
+            .map(|args| args.iter().map(parse_console_arg).collect())
+            .unwrap_or_default(),
+    }
+}
+
+fn parse_console_arg(value: &deno_core::serde_json::Value) -> JsConsoleArg {
+    JsConsoleArg {
+        type_name: value
+            .get("type")
+            .and_then(deno_core::serde_json::Value::as_str)
+            .unwrap_or("undefined")
+            .to_owned(),
+        subtype: value
+            .get("subtype")
+            .and_then(deno_core::serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        value: value.get("value").map(parse_console_value),
+        unserializable_value: value
+            .get("unserializableValue")
+            .and_then(deno_core::serde_json::Value::as_str)
+            .map(ToOwned::to_owned),
+        description: value
+            .get("description")
+            .and_then(deno_core::serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    }
+}
+
+fn parse_console_value(value: &deno_core::serde_json::Value) -> JsConsoleValue {
+    if let Some(s) = value.as_str() {
+        JsConsoleValue::String(s.to_owned())
+    } else if let Some(n) = value.as_f64() {
+        JsConsoleValue::Number(n)
+    } else if let Some(b) = value.as_bool() {
+        JsConsoleValue::Bool(b)
+    } else {
+        JsConsoleValue::Null
+    }
+}
+
+fn page_realm_key(page: &Page) -> String {
+    format!("{}\n{}", page.url(), page.dump_dom())
+}
+
+fn page_origin(page: &Page) -> vixen_net::Origin {
+    url::Url::parse(page.url())
+        .map(|url| vixen_net::Origin::from_url(&url))
+        .unwrap_or_else(|_| vixen_net::Origin::opaque())
+}
+
+fn load_external_page_script(
+    network_config: &vixen_net::NetworkConfig,
+    csp: &vixen_net::csp::ContentSecurityPolicy,
+    origin: &vixen_net::Origin,
+    page: &Page,
+    script: &ExternalScript,
+) -> Result<Option<String>, EngineError> {
+    let Some(script_url) = resolve_external_script_url(page, &script.src) else {
+        return Ok(None);
+    };
+    if !csp.allows_external_script(origin, &script_url, script.nonce.as_deref()) {
+        return Ok(None);
+    }
+
+    match script_url.scheme() {
+        "file" => Ok(load_file_script(&script_url)),
+        "http" | "https" => {
+            let response = match fetch_http_script(network_config.clone(), script_url) {
+                Ok(response) => response,
+                Err(_) => return Ok(None),
+            };
+            if script_response_allowed(&response) {
+                Ok(Some(response.body))
+            } else {
+                Ok(None)
+            }
+        }
+        _ => Ok(None),
+    }
+}
+
+fn resolve_external_script_url(page: &Page, src: &str) -> Option<url::Url> {
+    url::Url::parse(&page.document_base_uri())
+        .or_else(|_| url::Url::parse(page.url()))
+        .ok()?
+        .join(src)
+        .ok()
+}
+
+fn load_file_script(url: &url::Url) -> Option<String> {
+    let path = url.to_file_path().ok()?;
+    std::fs::read_to_string(path).ok()
+}
+
+fn fetch_http_script(
+    network_config: vixen_net::NetworkConfig,
+    url: url::Url,
+) -> Result<vixen_net::TextResponse, vixen_net::NetworkError> {
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|err| vixen_net::NetworkError::Builder {
+                message: err.to_string(),
+            })?;
+        rt.block_on(async move {
+            let mut network = vixen_net::Network::new(network_config)?;
+            let mut jar = vixen_net::CookieJar::default();
+            network
+                .get_text_with_cookies(&mut jar, &url, false, vixen_net::Method::Get)
+                .await
+        })
+    })
+    .join()
+    .map_err(|_| vixen_net::NetworkError::Transport {
+        message: "external script fetch thread panicked".to_owned(),
+    })?
+}
+
+fn script_response_allowed(response: &vixen_net::TextResponse) -> bool {
+    let nosniff = response
+        .header("x-content-type-options")
+        .is_some_and(vixen_net::is_nosniff);
+    let mime_essence = response
+        .header("content-type")
+        .and_then(MimeType::parse)
+        .map(|mime| mime.essence())
+        .unwrap_or_else(|| "text/plain".to_owned());
+    matches!(
+        vixen_net::enforce_nosniff(nosniff, &mime_essence, vixen_net::Destination::Script),
+        vixen_net::NosniffOutcome::Allow
+    )
 }
 
 impl Default for JsRuntime {
@@ -115,6 +433,29 @@ pub fn evaluate_inline_script(
     src: &str,
     nonce: Option<&str>,
 ) -> Result<JsValue, EngineError> {
+    enforce_inline_script_csp(csp, origin, src, nonce)?;
+    rt.evaluate(src)
+}
+
+/// Evaluate an inline script in the persistent page realm after CSP approval.
+pub fn evaluate_inline_page_script(
+    rt: &mut JsRuntime,
+    csp: Option<&vixen_net::csp::ContentSecurityPolicy>,
+    origin: &vixen_net::Origin,
+    page: &Page,
+    src: &str,
+    nonce: Option<&str>,
+) -> Result<JsValue, EngineError> {
+    enforce_inline_script_csp(csp, origin, src, nonce)?;
+    rt.evaluate_with_page(src, page)
+}
+
+fn enforce_inline_script_csp(
+    csp: Option<&vixen_net::csp::ContentSecurityPolicy>,
+    origin: &vixen_net::Origin,
+    src: &str,
+    nonce: Option<&str>,
+) -> Result<(), EngineError> {
     if let Some(policy) = csp
         && !policy.allows_inline_script(origin, Some(src), nonce)
     {
@@ -123,12 +464,85 @@ pub fn evaluate_inline_script(
             "inline script blocked by Content-Security-Policy",
         ));
     }
-    rt.evaluate(src)
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spawn_fetch_server(
+        host: &str,
+        body: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = body.to_owned();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Vixen-Test: yes\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            handle,
+        )
+    }
+
+    fn spawn_script_server(
+        host: &str,
+        body: &str,
+        headers: &[(&str, &str)],
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = body.to_owned();
+        let headers: Vec<(String, String)> = headers
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let mut response = "HTTP/1.1 200 OK\r\n".to_owned();
+            for (name, value) in headers {
+                response.push_str(&format!("{name}: {value}\r\n"));
+            }
+            response.push_str(&format!(
+                "Content-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            ));
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (format!("http://{host}:{}", addr.port()), config, handle)
+    }
 
     #[test]
     fn eval_runs() {
@@ -332,6 +746,21 @@ mod tests {
             rt.evaluate("new URLSearchParams('?q=rust+lang&tag=web&tag=engine').getAll('tag')[1]")
                 .unwrap(),
             JsValue::String("engine".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("(() => { localStorage.setItem('theme', 'dark'); return localStorage.getItem('theme') + ':' + localStorage.length + ':' + localStorage.key(0); })()")
+                .unwrap(),
+            JsValue::String("dark:1:theme".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("(() => { localStorage.setItem('shared', 'local'); sessionStorage.setItem('shared', 'session'); return localStorage.getItem('shared') + ':' + sessionStorage.getItem('shared'); })()")
+                .unwrap(),
+            JsValue::String("local:session".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("(() => { try { localStorage.setItem('', 'x'); } catch (err) { return err instanceof TypeError && /storage key must be non-empty/.test(err.message); } return false; })()")
+                .unwrap(),
+            JsValue::Bool(true)
         );
         assert_eq!(
             rt.evaluate("structuredClone(new Map([['answer', 42]])).get('answer')")
@@ -990,6 +1419,284 @@ mod tests {
         assert_eq!(
             evaluate_inline_script(&mut rt, None, &origin, "1+2", None).unwrap(),
             JsValue::Int32(3)
+        );
+    }
+
+    #[test]
+    fn console_events_drain_from_current_realm() {
+        let mut rt = JsRuntime::new().expect("engine init");
+
+        assert_eq!(rt.drain_console_events().unwrap(), Vec::new());
+        assert_eq!(
+            rt.evaluate("console.log('hello', 7, true); 'done'")
+                .unwrap(),
+            JsValue::String("done".to_owned())
+        );
+        let events = rt.drain_console_events().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "log");
+        assert_eq!(
+            events[0].args[0].value,
+            Some(JsConsoleValue::String("hello".into()))
+        );
+        assert_eq!(events[0].args[1].value, Some(JsConsoleValue::Number(7.0)));
+        assert_eq!(events[0].args[2].value, Some(JsConsoleValue::Bool(true)));
+        assert_eq!(rt.drain_console_events().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn eval_persists_global_and_storage_state() {
+        let mut rt = JsRuntime::new().expect("engine init");
+
+        assert_eq!(
+            rt.evaluate("globalThis.__vixenPersist = 41").unwrap(),
+            JsValue::Int32(41)
+        );
+        assert_eq!(
+            rt.evaluate("__vixenPersist + 1").unwrap(),
+            JsValue::Int32(42)
+        );
+        assert_eq!(
+            rt.evaluate("localStorage.setItem('persist', 'yes'); 'stored'")
+                .unwrap(),
+            JsValue::String("stored".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("localStorage.getItem('persist')").unwrap(),
+            JsValue::String("yes".to_owned())
+        );
+    }
+
+    #[test]
+    fn page_eval_persists_until_page_snapshot_changes() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let page_one = Page::from_html(
+            "file:///persist-one.html",
+            "<html><head><title>One</title></head><body><p>first</p></body></html>",
+        )
+        .unwrap();
+        let page_two = Page::from_html(
+            "file:///persist-two.html",
+            "<html><head><title>Two</title></head><body><p>second</p></body></html>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            rt.evaluate_with_page(
+                "globalThis.__pageTitle = document.title; localStorage.setItem('page', 'one'); __pageTitle",
+                &page_one,
+            )
+            .unwrap(),
+            JsValue::String("One".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "__pageTitle + ':' + localStorage.getItem('page') + ':' + document.title",
+                &page_one,
+            )
+            .unwrap(),
+            JsValue::String("One:one:One".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "typeof __pageTitle + ':' + localStorage.getItem('page') + ':' + document.title",
+                &page_two,
+            )
+            .unwrap(),
+            JsValue::String("undefined:null:Two".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("typeof document").unwrap(),
+            JsValue::String("undefined".to_owned())
+        );
+    }
+
+    #[test]
+    fn page_inline_scripts_run_in_page_realm_and_honor_csp() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let page = Page::from_html(
+            "https://example.com/inline.html",
+            "<html><head><title>Inline</title></head><body>\
+             <script>globalThis.__inlineCount = 40; localStorage.setItem('inline', 'ran');</script>\
+             <script>globalThis.__inlineCount += 2;</script>\
+             </body></html>",
+        )
+        .unwrap();
+
+        assert_eq!(rt.execute_page_scripts(&page).unwrap(), 2);
+        assert_eq!(
+            rt.evaluate_with_page(
+                "__inlineCount + ':' + localStorage.getItem('inline') + ':' + document.title",
+                &page,
+            )
+            .unwrap(),
+            JsValue::String("42:ran:Inline".to_owned())
+        );
+
+        let blocked = Page::from_html(
+            "https://example.com/blocked.html",
+            "<meta http-equiv='Content-Security-Policy' content=\"script-src 'self'\">\
+             <script>globalThis.__blockedInline = true;</script>",
+        )
+        .unwrap();
+        assert_eq!(rt.execute_page_scripts(&blocked).unwrap(), 0);
+        assert_eq!(
+            rt.evaluate_with_page("typeof __blockedInline", &blocked)
+                .unwrap(),
+            JsValue::String("undefined".to_owned())
+        );
+
+        let header_blocked = Page::from_html_with_headers(
+            "https://example.com/header-blocked.html",
+            "<script>globalThis.__headerBlockedInline = true;</script>",
+            [("Content-Security-Policy", "script-src 'self'")],
+        )
+        .unwrap();
+        assert_eq!(rt.execute_page_scripts(&header_blocked).unwrap(), 0);
+        assert_eq!(
+            rt.evaluate_with_page("typeof __headerBlockedInline", &header_blocked)
+                .unwrap(),
+            JsValue::String("undefined".to_owned())
+        );
+    }
+
+    #[test]
+    fn page_external_scripts_fetch_execute_and_fail_closed() {
+        let (base_url, network_config, server) = spawn_script_server(
+            "vixen-script-success.com",
+            "globalThis.__externalOrder += ':external'; localStorage.setItem('external-script', 'ran');",
+            &[("Content-Type", "text/javascript; charset=utf-8")],
+        );
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let html = format!(
+            "<base href='{base_url}/assets/'>\
+             <script>globalThis.__externalOrder = 'inline';</script>\
+             <script src='app.js'></script>"
+        );
+        let page = Page::from_html(format!("{base_url}/page.html"), &html).unwrap();
+
+        assert_eq!(rt.execute_page_scripts(&page).unwrap(), 2);
+        assert_eq!(
+            rt.evaluate_with_page(
+                "__externalOrder + ':' + localStorage.getItem('external-script')",
+                &page,
+            )
+            .unwrap(),
+            JsValue::String("inline:external:ran".to_owned())
+        );
+        server.join().unwrap();
+
+        let (base_url, network_config, server) = spawn_script_server(
+            "vixen-script-nonce.com",
+            "globalThis.__externalNonceRan = true;",
+            &[("Content-Type", "text/javascript")],
+        );
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let page = Page::from_html(
+            format!("{base_url}/page.html"),
+            "<meta http-equiv='Content-Security-Policy' content=\"script-src 'nonce-ext'\">\
+             <script src='/nonce.js' nonce='ext'></script>",
+        )
+        .unwrap();
+        assert_eq!(rt.execute_page_scripts(&page).unwrap(), 1);
+        assert_eq!(
+            rt.evaluate_with_page("__externalNonceRan", &page).unwrap(),
+            JsValue::Bool(true)
+        );
+        server.join().unwrap();
+
+        let mut rt = JsRuntime::new().expect("engine init");
+        let nonce_blocked = Page::from_html(
+            "https://example.com/nonce-blocked.html",
+            "<meta http-equiv='Content-Security-Policy' content=\"script-src 'nonce-ext'\">\
+             <script src='https://cdn.example/app.js' nonce='wrong'></script>",
+        )
+        .unwrap();
+        assert_eq!(rt.execute_page_scripts(&nonce_blocked).unwrap(), 0);
+        assert_eq!(
+            rt.evaluate_with_page("typeof __externalNonceBlocked", &nonce_blocked)
+                .unwrap(),
+            JsValue::String("undefined".to_owned())
+        );
+
+        let mut rt = JsRuntime::new().expect("engine init");
+        let csp_blocked = Page::from_html(
+            "https://example.com/csp-blocked.html",
+            "<meta http-equiv='Content-Security-Policy' content=\"script-src 'self'\">\
+             <script src='https://cdn.example/app.js'></script>",
+        )
+        .unwrap();
+        assert_eq!(rt.execute_page_scripts(&csp_blocked).unwrap(), 0);
+        assert_eq!(
+            rt.evaluate_with_page("typeof __externalCspBlocked", &csp_blocked)
+                .unwrap(),
+            JsValue::String("undefined".to_owned())
+        );
+
+        let policy_blocked = Page::from_html(
+            "http://vixen-url-policy.com/page.html",
+            "<script src='http://127.0.0.1:9/app.js'></script>",
+        )
+        .unwrap();
+        assert_eq!(rt.execute_page_scripts(&policy_blocked).unwrap(), 0);
+        assert_eq!(
+            rt.evaluate_with_page("typeof __externalPolicyBlocked", &policy_blocked)
+                .unwrap(),
+            JsValue::String("undefined".to_owned())
+        );
+
+        let (base_url, network_config, server) = spawn_script_server(
+            "vixen-script-nosniff.com",
+            "globalThis.__externalNosniffBlocked = true;",
+            &[
+                ("Content-Type", "text/plain"),
+                ("X-Content-Type-Options", "nosniff"),
+            ],
+        );
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let page = Page::from_html(
+            format!("{base_url}/page.html"),
+            "<script src='/blocked.js'></script>",
+        )
+        .unwrap();
+        assert_eq!(rt.execute_page_scripts(&page).unwrap(), 0);
+        assert_eq!(
+            rt.evaluate_with_page("typeof __externalNosniffBlocked", &page)
+                .unwrap(),
+            JsValue::String("undefined".to_owned())
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_returns_http_response() {
+        let (url, network_config, server) =
+            spawn_fetch_server("vixen-fetch-success.com", "hello fetch");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        assert_eq!(
+            rt.evaluate("globalThis.__beforeFetch = 7").unwrap(),
+            JsValue::Int32(7)
+        );
+        let expr = format!(
+            "fetch({url:?}).then((response) => response.text().then((body) => response.status + ':' + response.url + ':' + response.headers.get('x-vixen-test') + ':' + body))"
+        );
+
+        assert_eq!(
+            rt.evaluate(&expr).unwrap(),
+            JsValue::String(format!("200:{url}:yes:hello fetch"))
+        );
+        server.join().unwrap();
+        assert_eq!(rt.evaluate("__beforeFetch + 1").unwrap(), JsValue::Int32(8));
+    }
+
+    #[test]
+    fn fetch_blocks_private_hosts() {
+        let mut rt = JsRuntime::new().expect("engine init");
+
+        assert_eq!(
+            rt.evaluate("fetch('http://127.0.0.1:9/').then(() => false, (err) => err instanceof TypeError && /blocked host/.test(err.message))")
+                .unwrap(),
+            JsValue::Bool(true)
         );
     }
 

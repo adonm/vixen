@@ -8,8 +8,8 @@
 //! The 15 check types (14 inherited from upstream WPT + `ref-equivalent`,
 //! Vixen's addition) are all defined. `ref-equivalent` compares the stable
 //! display-list render projection through [`HarnessEngine`]; `visual-hash`
-//! hashes RGBA screenshots once an adapter can provide offscreen pixels and
-//! remains skipped for adapters that cannot.
+//! hashes RGBA screenshots through adapters with an offscreen renderer and
+//! remains skipped for adapters that cannot provide pixels.
 
 #![forbid(unsafe_code)]
 

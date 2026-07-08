@@ -50,6 +50,9 @@ just = "1.55.1"
 hk = "1.50.0"
 # Self-contained: `just setup-dev-tools` uses binstall to fetch optional tooling.
 cargo-binstall = "1.20.1"
+# Playwright/CDP smoke runner. We use `playwright-core` (package.json), so no
+# browser binaries are downloaded; the script connects to Vixen's CDP endpoint.
+node = "24.18.0"
 
 # --- GNOME SDK --------------------------------------------------------------
 # The GNOME 50 SDK is NOT installed on the host. It is managed inside a

@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Vixen CDP Playwright Smoke</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  #hit { display: block; width: 120px; height: 40px; background: #2b6; }
+  #status { width: 200px; height: 30px; background: #eee; }
+</style>
+<button id="hit">Hit me</button>
+<p id="status">waiting</p>
+<script>
+  globalThis.__smokeClicks = 0;
+  document.querySelector('#hit').addEventListener('click', () => {
+    globalThis.__smokeClicks += 1;
+    document.querySelector('#status').textContent = 'clicked:' + globalThis.__smokeClicks;
+    console.log('playwright-click', globalThis.__smokeClicks);
+  });
+</script>

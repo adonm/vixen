@@ -90,6 +90,14 @@ test-headless-runtime:
     cargo test -p vixen-headless focused_document_eval_uses_runtime_host_objects
     cargo test -p vixen-headless --test cdp_runtime
 
+# Real Playwright client smoke over Vixen's CDP WebSocket. Requires mise-managed
+# Node. Uses playwright-core only: no Chromium/browser binary download.
+_node-deps:
+    mise x node@24 -- npm ci
+
+cdp-playwright-smoke: _node-deps
+    mise x node@24 -- npm run cdp:playwright-smoke
+
 # --- Lint / format -----------------------------------------------------------
 
 fmt:

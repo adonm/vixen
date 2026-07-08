@@ -247,22 +247,14 @@ fn run_screenshot(url: &str, viewport: (u32, u32), output: &Path) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let surface = match surface::SurfacelessSurface::new(viewport) {
-        Ok(surface) => surface,
-        Err(err) => {
-            eprintln!("{}: {err}", err.stable_code());
-            return ExitCode::FAILURE;
-        }
-    };
-    let commands = page.display_list(viewport);
-    let frame = match paint::render_commands_to_rgba(&surface, &commands, viewport) {
-        Ok(frame) => frame,
+    let png = match capture_screenshot_png(&page, viewport) {
+        Ok(png) => png,
         Err(err) => {
             eprintln!("{}: {err}", codes::UNSUPPORTED_SCREENSHOT);
             return ExitCode::FAILURE;
         }
     };
-    match write_png(output, &frame) {
+    match std::fs::write(output, png).map_err(|e| format!("write {}: {e}", output.display())) {
         Ok(()) => ExitCode::SUCCESS,
         Err(err) => {
             eprintln!("error: {err}");
@@ -271,7 +263,30 @@ fn run_screenshot(url: &str, viewport: (u32, u32), output: &Path) -> ExitCode {
     }
 }
 
+pub(crate) fn capture_screenshot_png(page: &Page, viewport: (u32, u32)) -> Result<Vec<u8>, String> {
+    let surface = match surface::SurfacelessSurface::new(viewport) {
+        Ok(surface) => surface,
+        Err(err) => {
+            return Err(err.to_string());
+        }
+    };
+    let commands = page.display_list(viewport);
+    let frame = match paint::render_commands_to_rgba(&surface, &commands, viewport) {
+        Ok(frame) => frame,
+        Err(err) => {
+            return Err(err.to_string());
+        }
+    };
+    encode_png(&frame)
+}
+
+#[cfg(test)]
 fn write_png(path: &Path, frame: &RgbaFrame) -> Result<(), String> {
+    let png = encode_png(frame)?;
+    std::fs::write(path, png).map_err(|e| format!("write {}: {e}", path.display()))
+}
+
+fn encode_png(frame: &RgbaFrame) -> Result<Vec<u8>, String> {
     let expected_len = frame
         .width
         .checked_mul(frame.height)
@@ -285,17 +300,19 @@ fn write_png(path: &Path, frame: &RgbaFrame) -> Result<(), String> {
         ));
     }
 
-    let file =
-        std::fs::File::create(path).map_err(|e| format!("create {}: {e}", path.display()))?;
-    let mut encoder = png::Encoder::new(file, frame.width, frame.height);
+    let mut out = Vec::new();
+    let mut encoder = png::Encoder::new(std::io::Cursor::new(&mut out), frame.width, frame.height);
     encoder.set_color(png::ColorType::Rgba);
     encoder.set_depth(png::BitDepth::Eight);
-    let mut writer = encoder
-        .write_header()
-        .map_err(|e| format!("write PNG header {}: {e}", path.display()))?;
-    writer
-        .write_image_data(&frame.rgba)
-        .map_err(|e| format!("write PNG data {}: {e}", path.display()))
+    {
+        let mut writer = encoder
+            .write_header()
+            .map_err(|e| format!("write PNG header: {e}"))?;
+        writer
+            .write_image_data(&frame.rgba)
+            .map_err(|e| format!("write PNG data: {e}"))?;
+    }
+    Ok(out)
 }
 
 fn has_non_memory_action(cli: &Cli) -> bool {
@@ -510,6 +527,10 @@ fn run_eval(url: &str, js: &str) -> ExitCode {
     // `--url` is the page context. Legacy broad DOM smoke expressions are
     // handled above; the first DOM host-object slice falls through here so the
     // JS runtime sees a real `document` snapshot in the global.
+    if let Err(e) = rt.execute_page_scripts(&page) {
+        eprintln!("error: page script failed: {e}");
+        return ExitCode::FAILURE;
+    }
     match rt.evaluate_with_page(js, &page) {
         Ok(value) => {
             println!("{}", value.to_display());
@@ -956,14 +977,26 @@ fn parse_viewport(input: &str) -> Result<(u32, u32), String> {
 /// vertical integration entry for headless DOM/selector surfaces while the full
 /// network/style/layout/paint pipeline grows behind `vixen_engine::page::Page`.
 fn load_page(url: &str) -> Result<Page, String> {
-    let source = load_url_source(url)?;
-    Page::from_html(source.final_url, &source.html).map_err(|e| format!("parse failed: {e}"))
+    let LoadedSource {
+        final_url,
+        html,
+        headers,
+    } = load_url_source(url)?;
+    Page::from_html_with_headers(
+        final_url,
+        &html,
+        headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+    )
+    .map_err(|e| format!("parse failed: {e}"))
 }
 
 #[derive(Debug)]
 struct LoadedSource {
     final_url: String,
     html: String,
+    headers: Vec<(String, String)>,
 }
 
 /// Read a page's source. `file://` is direct filesystem I/O; HTTP(S) crosses
@@ -981,6 +1014,7 @@ fn load_url_source(url: &str) -> Result<LoadedSource, String> {
                 Ok(LoadedSource {
                     final_url: parsed.to_string(),
                     html,
+                    headers: Vec::new(),
                 })
             }),
         "http" | "https" => fetch_http_source(parsed),
@@ -1006,6 +1040,7 @@ fn fetch_http_source(url: url::Url) -> Result<LoadedSource, String> {
         Ok(LoadedSource {
             final_url: response.final_url,
             html: response.body,
+            headers: response.headers.into_iter().collect(),
         })
     })
 }
@@ -1374,6 +1409,9 @@ mod tests {
         ));
         assert!(uses_runtime_dom_eval("navigator.onLine"));
         assert!(uses_runtime_dom_eval(
+            "localStorage.setItem('mode', 'dark')"
+        ));
+        assert!(uses_runtime_dom_eval(
             "matchMedia('(min-width: 800px)').matches"
         ));
         assert!(!uses_runtime_dom_eval(
@@ -1410,6 +1448,7 @@ mod tests {
             None
         );
         assert_eq!(run_dom_eval(&url, "navigator.onLine"), None);
+        assert_eq!(run_dom_eval(&url, "localStorage.length"), None);
     }
 
     #[test]

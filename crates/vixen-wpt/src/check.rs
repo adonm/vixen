@@ -1,7 +1,8 @@
 //! The WPT check types (docs/SPEC.md "WPT harness — check types") and the
 //! per-check runner. Checks map to [`HarnessEngine`]'s inspection surface;
-//! `ref-equivalent` compares the stable display-list render projection until
-//! the offscreen pixel path is available for `visual-hash`.
+//! `ref-equivalent` compares the stable display-list render projection;
+//! `visual-hash` consumes RGBA screenshots from adapters with an offscreen
+//! renderer.
 
 use serde::{Deserialize, Serialize};
 use vixen_api::PageSnapshot;

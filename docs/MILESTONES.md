@@ -44,15 +44,16 @@ slot or date.
    shaping remains the next formatter swap. Proof:
    `just gate-phase4 && just gate-smoke` plus the imported layout WPT profile.
 3. **Milestone 3 — WebRender screenshots.** Consume `Page::display_list` through
-   one WebRender path over `vixen_api::GlContext`; make headless
-   `--screenshot` write PNGs and keep GUI/headless on the same path. Proof:
-   `just gate-phase5`, screenshot/visual-hash fixtures, and `just gate-smoke`.
+   one WebRender path over `vixen_api::GlContext`; headless `--screenshot`, CDP
+   `Page.captureScreenshot`, WPT `visual-hash`, and the GUI all use that shared
+   display-list path. Proof: `just gate-phase5`, screenshot/visual-hash
+   fixtures, and `just gate-smoke`.
 4. **Milestone 4 — JS host bindings.** The runtime is now `deno_core`; replace
    string-smoke DOM evals with explicit `deno_core` extensions for
    document/query/element attributes,
    DOMTokenList/dataset, events/forms/history, fetch/cookie, and storage. The
    first compatibility seam now reflects `getComputedStyle()`, document/navigator
-   state, empty Web Storage, viewport/window state,
+   state, op-backed in-memory Web Storage mutation, viewport/window state,
    `Event`/`CustomEvent`/`dispatchEvent()` smoke, CSSOM `CSS.supports()` /
    `document.styleSheets` / CSSStyleRule shape, DOMRect geometry via
    `getBoundingClientRect()`, DOM ancestry/core-node state (`closest()`,
@@ -63,9 +64,10 @@ slot or date.
    TextEncoder/TextDecoder (`encodeInto` and constructor options included),
    `<img>.currentSrc`, initial `Range`/`Selection`,
    read-only history accessors, structured clone, MutationObserver lifecycle,
-   TreeWalker/NodeIterator, `Headers` iteration, `Blob`/`File`, read-only
-   `Request`/`Response` state, static `Response.error()` / `Response.redirect()` / `Response.json()`,
-   `AbortSignal`, `URLPattern`, Performance timing shape, and
+    TreeWalker/NodeIterator, `Headers` iteration, `Blob`/`File`, read-only
+    `Request`/`Response` state, static `Response.error()` / `Response.redirect()` / `Response.json()`,
+    op-backed `fetch()` HTTP(S) status/header/body reads with URL-policy/private-host
+    rejection, `AbortSignal`, `URLPattern`, Performance timing shape, and
    `matchMedia()` through `Page::evaluate_dom_expression`
    against WPT manifest `js-eval` checks, while TextEncoder/TextDecoder now run
    through the first op-backed `deno_core` host extension. Focused
@@ -122,16 +124,21 @@ same rule as above: one Page/headless-visible seam, one fixture path, one gate.
 3. **Renderer screenshot slice** — `Page::display_list` now converts the first
    line layout fragments into invariant-enforced paint commands and exposes
    `vixen-headless --dump-display-list`; `--paint-stats` reports command counts
-   and painted area from the same stream. Next: consume that display list via
-   WebRender behind `Page::render(&dyn GlContext)` and make headless
-   `--screenshot` produce PNGs. Proof:
-   `just gate-phase5 && just gate-smoke`.
+   and painted area from the same stream. The same display list now renders via
+   WebRender for GUI, headless PNG screenshots, CDP `Page.captureScreenshot`,
+   and WPT `visual-hash` checks. Next: replace rectangle text placeholders with
+   shaped glyph upload. Proof: `just gate-phase5 && just gate-smoke`.
 4. **Host-object replacement slice** — `JsRuntime` is now backed by `deno_core`
    while keeping `JsRuntime`/`JsValue`, headless `--eval`, CDP `Runtime.evaluate`,
    Encoding API constructors, and the current focused document/DOMTokenList/dataset
-   evals green. Continue host-object replacement. `Page::evaluate_dom_expression` now
-   projects the `getComputedStyle()`, document/navigator state, empty Web
-   Storage, viewport/window state, Event/CustomEvent/dispatch smoke, CSSOM
+   evals green. `JsRuntime` now owns a persistent realm for sequential evals,
+   retaining globals, Web Storage host state, and promise/event-loop work until
+   the caller switches between non-page and page realms or navigates to a new
+   page snapshot. Continue host-object replacement. Runtime-backed Web Storage
+   now mutates in-memory partitions through explicit storage ops with key/value
+   validation and quota errors. `Page::evaluate_dom_expression` now projects the
+   `getComputedStyle()`, document/navigator state, viewport/window state,
+   Event/CustomEvent/dispatch smoke, CSSOM
    `CSS.supports()` / `document.styleSheets` / CSSStyleRule shape, DOMRect
    geometry via `getBoundingClientRect()`, DOM ancestry/core-node state
    (`closest()`, `nodeName`/`nodeType`, `ownerDocument`), `DOMParser`,
@@ -142,8 +149,8 @@ same rule as above: one Page/headless-visible seam, one fixture path, one gate.
    options included), responsive-image `currentSrc`, initial Range/Selection,
    read-only history,
     structured clone containers, MutationObserver, traversal, Headers iteration,
-    Blob/File, read-only Request/Response state, Response static constructors,
-    AbortSignal,
+     Blob/File, read-only Request/Response state, Response static constructors,
+     op-backed fetch status/header/body reads with private-host rejection, AbortSignal,
    URLPattern, Performance, and matchMedia smoke
    surfaces from the same pure modules that Phase 6 host objects will use. The
    Encoding API constructors now run through an op-backed `deno_core` extension;
@@ -158,7 +165,8 @@ same rule as above: one Page/headless-visible seam, one fixture path, one gate.
    cross focused DOM ops. Element `getBoundingClientRect()` / `getClientRects()`
    reads now cross a focused DOM rect op. Focused `CSS.supports`,
    `getComputedStyle`, and CSSStyleSheet/CSSRule evals now run against
-   `script::cssom` ops. Next: widen the replacement across Geometry Interface
+   `script::cssom` ops. Next: wire parser-discovered page scripts into the
+   persistent realm and widen remaining host objects across Geometry Interface
    value constructors, forms, events, history, storage, and fetch.
    Proof: `just gate-phase6`, relevant WPT fixtures, and `just gate-smoke`.
 5. **Browser shell vertical slice** — the first one-window GTK shell now wires a
@@ -168,7 +176,15 @@ same rule as above: one Page/headless-visible seam, one fixture path, one gate.
     planned per-tab Relm4 worker/factory architecture and add full tab lifecycle
     affordances. Proof: `just flatpak-build`, one manual GUI smoke, and
     `just gate-smoke`.
-6. **Release-measurement slice** — keep `docs/COMPAT.md` generated from the
+6. **CDP/Playwright smoke slice** — CDP now has Playwright-friendly enable and
+   target/frame metadata methods, flattened-session response echo, runtime
+   console/exception notifications, screenshot capture, and basic
+   `Input.dispatchMouseEvent` mouse move/press/release dispatch through the
+   page hit-test plus DOM event listener path. Next: grow this only when a real
+   Playwright smoke exposes a missing method or lifecycle event. Proof:
+   `cargo test -p vixen-headless --test cdp_runtime`, `just gate-phase6`, and
+   `just gate-smoke`.
+7. **Release-measurement slice** — keep `docs/COMPAT.md` generated from the
    manifest runner output, add benches for the landed Page seams, then make
    `just size-fp` and `just audit` routine release gates instead of last-minute
    checks. Proof: all release gates green from a clean checkout.

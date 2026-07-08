@@ -7,14 +7,54 @@
 #![forbid(unsafe_code)]
 
 use std::borrow::Cow;
+use std::cell::RefCell;
+use std::rc::Rc;
 use std::sync::Arc;
 
-use deno_core::{Extension, ExtensionFileSource};
+use deno_core::serde_json::{Value, json};
+use deno_core::{Extension, ExtensionFileSource, OpState};
+use url::Url;
+use vixen_net::{CookieJar, Method, Network, NetworkConfig, TextResponse, validate_http_url};
 
-deno_core::extension!(vixen_webapi);
+use crate::storage_key::{
+    MAX_PARTITION_BYTES, StorageKeyError, StorageKind, StorageQuota, validate_storage_key,
+    validate_storage_value,
+};
 
-pub(super) fn extension() -> Extension {
+struct WebApiHost {
+    local_storage: Vec<(String, String)>,
+    session_storage: Vec<(String, String)>,
+    network: Result<Network, String>,
+}
+
+impl WebApiHost {
+    fn new(network_config: NetworkConfig) -> Self {
+        Self {
+            local_storage: Vec::new(),
+            session_storage: Vec::new(),
+            network: Network::new(network_config).map_err(|err| err.to_string()),
+        }
+    }
+}
+
+deno_core::extension!(
+    vixen_webapi,
+    ops = [
+        op_vixen_storage_length,
+        op_vixen_storage_key,
+        op_vixen_storage_get,
+        op_vixen_storage_set,
+        op_vixen_storage_remove,
+        op_vixen_storage_clear,
+        op_vixen_fetch,
+    ],
+);
+
+pub(super) fn extension(network_config: NetworkConfig) -> Extension {
     let mut extension = vixen_webapi::init();
+    extension.op_state_fn = Some(Box::new(move |state| {
+        state.put(WebApiHost::new(network_config));
+    }));
     extension.js_files = Cow::Owned(vec![ExtensionFileSource::new_computed(
         "ext:vixen_webapi/bootstrap.js",
         Arc::<str>::from(WEB_API_BOOTSTRAP),
@@ -22,8 +62,311 @@ pub(super) fn extension() -> Extension {
     extension
 }
 
+#[deno_core::op2(fast)]
+fn op_vixen_storage_length(state: &mut OpState, #[string] kind: &str) -> u32 {
+    let host = state.borrow::<WebApiHost>();
+    storage_entries(host, parse_storage_kind(kind)).len() as u32
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_storage_key(
+    state: &mut OpState,
+    #[string] kind: &str,
+    index: u32,
+) -> deno_core::serde_json::Value {
+    let Some(kind) = parse_storage_kind(kind) else {
+        return storage_error("unsupported Storage kind");
+    };
+    let host = state.borrow::<WebApiHost>();
+    json!({
+        "ok": true,
+        "value": storage_entries(host, Some(kind))
+            .get(index as usize)
+            .map(|(key, _)| key.clone()),
+    })
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_storage_get(
+    state: &mut OpState,
+    #[string] kind: &str,
+    #[string] key: String,
+) -> deno_core::serde_json::Value {
+    let Some(kind) = parse_storage_kind(kind) else {
+        return storage_error("unsupported Storage kind");
+    };
+    if key.is_empty() {
+        return storage_value(None);
+    }
+    if let Err(err) = validate_storage_key(&key) {
+        return storage_key_error(err);
+    }
+    let host = state.borrow::<WebApiHost>();
+    storage_value(
+        storage_entries(host, Some(kind))
+            .iter()
+            .find(|(entry_key, _)| entry_key == &key)
+            .map(|(_, value)| value.clone()),
+    )
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_storage_set(
+    state: &mut OpState,
+    #[string] kind: &str,
+    #[string] key: String,
+    #[string] value: String,
+) -> deno_core::serde_json::Value {
+    let Some(kind) = parse_storage_kind(kind) else {
+        return storage_error("unsupported Storage kind");
+    };
+    if let Err(err) = validate_storage_key(&key) {
+        return storage_key_error(err);
+    }
+    if let Err(err) = validate_storage_value(&value) {
+        return storage_key_error(err);
+    }
+
+    let host = state.borrow_mut::<WebApiHost>();
+    let entries = storage_entries_mut(host, kind);
+    if let Err(err) = storage_check_quota(entries, &key, &value) {
+        return storage_quota_error(err);
+    }
+
+    if let Some((_, existing)) = entries.iter_mut().find(|(entry_key, _)| entry_key == &key) {
+        *existing = value;
+    } else {
+        entries.push((key, value));
+    }
+    json!({ "ok": true })
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_fetch(
+    state: Rc<RefCell<OpState>>,
+    #[serde] request: deno_core::serde_json::Value,
+) -> deno_core::serde_json::Value {
+    let Some(url_text) = request.get("url").and_then(Value::as_str) else {
+        return fetch_error("fetch request missing URL");
+    };
+    let method_text = request
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or("GET");
+    let method = match parse_fetch_method(method_text) {
+        Ok(method) => method,
+        Err(message) => return fetch_error(message),
+    };
+    let url = match Url::parse(url_text) {
+        Ok(url) => url,
+        Err(err) => return fetch_error(format!("invalid URL: {err}")),
+    };
+    if let Err(err) = validate_http_url(&url) {
+        return fetch_error(format!("URL rejected by policy: {err}"));
+    }
+
+    let network = {
+        let state = state.borrow();
+        let host = state.borrow::<WebApiHost>();
+        match &host.network {
+            Ok(network) => network.clone(),
+            Err(message) => return fetch_error(format!("network unavailable: {message}")),
+        }
+    };
+
+    match fetch_http_text_blocking(network, url, method) {
+        Ok(response) => fetch_response(response),
+        Err(message) => fetch_error(message),
+    }
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_storage_remove(
+    state: &mut OpState,
+    #[string] kind: &str,
+    #[string] key: String,
+) -> deno_core::serde_json::Value {
+    let Some(kind) = parse_storage_kind(kind) else {
+        return storage_error("unsupported Storage kind");
+    };
+    if key.is_empty() {
+        return json!({ "ok": true });
+    }
+    if let Err(err) = validate_storage_key(&key) {
+        return storage_key_error(err);
+    }
+
+    let host = state.borrow_mut::<WebApiHost>();
+    storage_entries_mut(host, kind).retain(|(entry_key, _)| entry_key != &key);
+    json!({ "ok": true })
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_storage_clear(
+    state: &mut OpState,
+    #[string] kind: &str,
+) -> deno_core::serde_json::Value {
+    let Some(kind) = parse_storage_kind(kind) else {
+        return storage_error("unsupported Storage kind");
+    };
+    let host = state.borrow_mut::<WebApiHost>();
+    storage_entries_mut(host, kind).clear();
+    json!({ "ok": true })
+}
+
+fn parse_storage_kind(kind: &str) -> Option<StorageKind> {
+    match kind {
+        "local" => Some(StorageKind::Local),
+        "session" => Some(StorageKind::Session),
+        _ => None,
+    }
+}
+
+fn parse_fetch_method(method: &str) -> Result<Method, String> {
+    match method.to_ascii_uppercase().as_str() {
+        "GET" => Ok(Method::Get),
+        "HEAD" => Ok(Method::Head),
+        "POST" => Ok(Method::Post),
+        "PUT" => Ok(Method::Put),
+        "DELETE" => Ok(Method::Delete),
+        "PATCH" => Ok(Method::Patch),
+        "OPTIONS" => Ok(Method::Options),
+        other => Err(format!("unsupported fetch method: {other}")),
+    }
+}
+
+fn fetch_http_text_blocking(
+    network: Network,
+    url: Url,
+    method: Method,
+) -> Result<TextResponse, String> {
+    let handle = std::thread::Builder::new()
+        .name("vixen-fetch".to_owned())
+        .spawn(move || {
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| format!("network runtime unavailable: {err}"))?;
+            let mut network = network;
+            let mut jar = CookieJar::default();
+            rt.block_on(network.get_text_with_cookies(&mut jar, &url, false, method))
+                .map_err(|err| err.to_string())
+        })
+        .map_err(|err| format!("fetch worker spawn failed: {err}"))?;
+    handle
+        .join()
+        .map_err(|_| "fetch worker panicked".to_owned())?
+}
+
+fn storage_entries(host: &WebApiHost, kind: Option<StorageKind>) -> &[(String, String)] {
+    match kind {
+        Some(StorageKind::Local) => &host.local_storage,
+        Some(StorageKind::Session) => &host.session_storage,
+        None => &[],
+    }
+}
+
+fn storage_entries_mut(host: &mut WebApiHost, kind: StorageKind) -> &mut Vec<(String, String)> {
+    match kind {
+        StorageKind::Local => &mut host.local_storage,
+        StorageKind::Session => &mut host.session_storage,
+    }
+}
+
+fn storage_check_quota(
+    entries: &[(String, String)],
+    key: &str,
+    value: &str,
+) -> Result<(), StorageKeyError> {
+    let current_bytes = storage_total_bytes(entries);
+    let Some((old_key, old_value)) = entries.iter().find(|(entry_key, _)| entry_key == key) else {
+        return StorageQuota {
+            entries: entries.len(),
+            bytes: current_bytes,
+        }
+        .check(key.len(), value.len());
+    };
+
+    let old_bytes = old_key.len() + old_value.len();
+    let projected_bytes = current_bytes - old_bytes + key.len() + value.len();
+    if projected_bytes > MAX_PARTITION_BYTES {
+        return Err(StorageKeyError::TooLong {
+            what: "partition-bytes",
+            len: projected_bytes,
+            max: MAX_PARTITION_BYTES,
+        });
+    }
+    Ok(())
+}
+
+fn storage_total_bytes(entries: &[(String, String)]) -> usize {
+    entries
+        .iter()
+        .map(|(key, value)| key.len() + value.len())
+        .sum()
+}
+
+fn storage_value(value: Option<String>) -> deno_core::serde_json::Value {
+    json!({
+        "ok": true,
+        "value": value,
+    })
+}
+
+fn fetch_response(response: TextResponse) -> deno_core::serde_json::Value {
+    json!({
+        "ok": true,
+        "body": response.body,
+        "headers": response.headers,
+        "status": response.status,
+        "finalUrl": response.final_url,
+        "redirected": response.redirects > 0,
+    })
+}
+
+fn fetch_error(message: impl Into<String>) -> deno_core::serde_json::Value {
+    json!({
+        "ok": false,
+        "message": message.into(),
+    })
+}
+
+fn storage_error(message: impl Into<String>) -> deno_core::serde_json::Value {
+    json!({
+        "ok": false,
+        "message": message.into(),
+    })
+}
+
+fn storage_key_error(err: StorageKeyError) -> deno_core::serde_json::Value {
+    storage_error(err.to_string())
+}
+
+fn storage_quota_error(err: StorageKeyError) -> deno_core::serde_json::Value {
+    json!({
+        "ok": false,
+        "name": "QuotaExceededError",
+        "message": err.to_string(),
+    })
+}
+
 const WEB_API_BOOTSTRAP: &str = r#"
 (() => {
+  const {
+    op_vixen_storage_length,
+    op_vixen_storage_key,
+    op_vixen_storage_get,
+    op_vixen_storage_set,
+    op_vixen_storage_remove,
+    op_vixen_storage_clear,
+    op_vixen_fetch,
+  } = Deno.core.ops;
   const webidl = globalThis.__vixenWebidl;
   const textEncoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
   const startEpoch = Date.now();
@@ -52,6 +395,56 @@ const WEB_API_BOOTSTRAP: &str = r#"
       configurable: true,
     });
   }
+
+  // -----------------------------------------------------------------------
+  // Console capture
+  // -----------------------------------------------------------------------
+
+  const consoleEvents = [];
+
+  function consoleArg(value) {
+    if (value === null) {
+      return { type: 'object', subtype: 'null', value: null, description: 'null' };
+    }
+    const type = typeof value;
+    if (type === 'undefined') {
+      return { type: 'undefined', description: 'undefined' };
+    }
+    if (type === 'string') {
+      return { type: 'string', value, description: value };
+    }
+    if (type === 'number') {
+      return { type: 'number', value, description: String(value) };
+    }
+    if (type === 'boolean') {
+      return { type: 'boolean', value, description: String(value) };
+    }
+    if (type === 'bigint') {
+      return { type: 'bigint', unserializableValue: String(value) + 'n', description: String(value) + 'n' };
+    }
+    try {
+      return { type: 'object', description: String(value) };
+    } catch (_) {
+      return { type: 'object', description: '[object]' };
+    }
+  }
+
+  function recordConsole(type, args) {
+    consoleEvents.push({ type, args: Array.prototype.map.call(args, consoleArg) });
+  }
+
+  const vixenConsole = Object.assign({}, globalThis.console || {});
+  for (const type of ['log', 'debug', 'info', 'warn', 'error']) {
+    Object.defineProperty(vixenConsole, type, {
+      value: function (...args) { recordConsole(type, args); },
+      writable: true,
+      configurable: true,
+    });
+  }
+  defineGlobal('console', vixenConsole);
+  defineGlobal('__vixenDrainConsoleEvents', function () {
+    return consoleEvents.splice(0, consoleEvents.length);
+  });
 
   function copyPrototypeMembers(source, target) {
     for (const name of Reflect.ownKeys(source)) {
@@ -177,9 +570,46 @@ const WEB_API_BOOTSTRAP: &str = r#"
     initCustomEvent() {}
   }
 
+  class VixenUIEvent extends VixenEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      defineReadonly(this, 'view', init && Object.prototype.hasOwnProperty.call(init, 'view') ? init.view : globalThis, false);
+      defineReadonly(this, 'detail', Number(init && init.detail) || 0, false);
+    }
+  }
+
+  class VixenMouseEvent extends VixenUIEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      const opts = init || {};
+      defineReadonly(this, 'screenX', Number(opts.screenX) || 0, false);
+      defineReadonly(this, 'screenY', Number(opts.screenY) || 0, false);
+      defineReadonly(this, 'clientX', Number(opts.clientX) || 0, false);
+      defineReadonly(this, 'clientY', Number(opts.clientY) || 0, false);
+      defineReadonly(this, 'ctrlKey', Boolean(opts.ctrlKey), false);
+      defineReadonly(this, 'shiftKey', Boolean(opts.shiftKey), false);
+      defineReadonly(this, 'altKey', Boolean(opts.altKey), false);
+      defineReadonly(this, 'metaKey', Boolean(opts.metaKey), false);
+      defineReadonly(this, 'button', Number(opts.button) || 0, false);
+      defineReadonly(this, 'buttons', Number(opts.buttons) || 0, false);
+      defineReadonly(this, 'relatedTarget', opts.relatedTarget || null, false);
+    }
+    getModifierState(key) {
+      switch (String(key)) {
+        case 'Control': return this.ctrlKey;
+        case 'Shift': return this.shiftKey;
+        case 'Alt': return this.altKey;
+        case 'Meta': return this.metaKey;
+        default: return false;
+      }
+    }
+  }
+
   webidl.adoptInterface('EventTarget', VixenEventTarget);
   webidl.adoptInterface('Event', VixenEvent);
   webidl.adoptInterface('CustomEvent', VixenCustomEvent);
+  webidl.adoptInterface('UIEvent', VixenUIEvent);
+  webidl.adoptInterface('MouseEvent', VixenMouseEvent);
 
   // -----------------------------------------------------------------------
   // Geometry Interfaces
@@ -685,10 +1115,10 @@ const WEB_API_BOOTSTRAP: &str = r#"
   }
 
   function bodyInfo(body) {
-    if (body === null || body === undefined) return { isNull: true, contentType: '' };
-    if (body instanceof VixenBlob) return { isNull: false, contentType: body.type };
-    if (body instanceof VixenURLSearchParams) return { isNull: false, contentType: 'application/x-www-form-urlencoded;charset=UTF-8' };
-    return { isNull: false, contentType: 'text/plain;charset=UTF-8' };
+    if (body === null || body === undefined) return { isNull: true, contentType: '', text: '' };
+    if (body instanceof VixenBlob) return { isNull: false, contentType: body.type, text: body.__vixenText };
+    if (body instanceof VixenURLSearchParams) return { isNull: false, contentType: 'application/x-www-form-urlencoded;charset=UTF-8', text: body.toString() };
+    return { isNull: false, contentType: 'text/plain;charset=UTF-8', text: String(body) };
   }
 
   class VixenRequest {
@@ -713,15 +1143,16 @@ const WEB_API_BOOTSTRAP: &str = r#"
       defineReadonly(this, 'integrity', (init && init.integrity) || '', true);
       defineReadonly(this, 'keepalive', Boolean(init && init.keepalive), true);
       defineReadonly(this, 'signal', (init && init.signal) || new VixenAbortController().signal, true);
+      defineReadonly(this, '__vixenBodyText', body.text, false);
       defineReadonly(this, 'body', body.isNull ? null : {}, true);
       defineReadonly(this, 'bodyUsed', false, true);
     }
     clone() { return new VixenRequest(this); }
-    text() { return Promise.resolve(''); }
-    json() { return Promise.resolve(null); }
-    blob() { return Promise.resolve(new VixenBlob([])); }
-    arrayBuffer() { return Promise.resolve(new ArrayBuffer(0)); }
-    bytes() { return Promise.resolve(new Uint8Array()); }
+    text() { return Promise.resolve(this.__vixenBodyText); }
+    json() { return Promise.resolve(this.__vixenBodyText === '' ? null : JSON.parse(this.__vixenBodyText)); }
+    blob() { return Promise.resolve(new VixenBlob([this.__vixenBodyText])); }
+    arrayBuffer() { return Promise.resolve(textEncoder.encode(this.__vixenBodyText).buffer); }
+    bytes() { return Promise.resolve(textEncoder.encode(this.__vixenBodyText)); }
     formData() { return Promise.resolve(new FormData()); }
   }
 
@@ -732,21 +1163,22 @@ const WEB_API_BOOTSTRAP: &str = r#"
       const headers = filteredHeaders(init && init.headers, forbiddenResponseHeader);
       if (!info.isNull && info.contentType && !headers.has('content-type')) headers.set('Content-Type', info.contentType);
       defineReadonly(this, 'type', 'default', true);
-      defineReadonly(this, 'url', '', true);
-      defineReadonly(this, 'redirected', false, true);
+      defineReadonly(this, 'url', (init && init.url) || '', true);
+      defineReadonly(this, 'redirected', Boolean(init && init.redirected), true);
       defineReadonly(this, 'status', status, true);
       defineReadonly(this, 'ok', status >= 200 && status <= 299, true);
       defineReadonly(this, 'statusText', (init && init.statusText) || '', true);
       defineReadonly(this, 'headers', headers, true);
+      defineReadonly(this, '__vixenBodyText', info.text, false);
       defineReadonly(this, 'body', info.isNull ? null : {}, true);
       defineReadonly(this, 'bodyUsed', false, true);
     }
-    clone() { return this; }
-    text() { return Promise.resolve(''); }
-    json() { return Promise.resolve(null); }
-    blob() { return Promise.resolve(new VixenBlob([])); }
-    arrayBuffer() { return Promise.resolve(new ArrayBuffer(0)); }
-    bytes() { return Promise.resolve(new Uint8Array()); }
+    clone() { return new VixenResponse(this.__vixenBodyText, { status: this.status, statusText: this.statusText, headers: this.headers, url: this.url, redirected: this.redirected }); }
+    text() { return Promise.resolve(this.__vixenBodyText); }
+    json() { return Promise.resolve(this.__vixenBodyText === '' ? null : JSON.parse(this.__vixenBodyText)); }
+    blob() { return Promise.resolve(new VixenBlob([this.__vixenBodyText], { type: this.headers.get('content-type') || '' })); }
+    arrayBuffer() { return Promise.resolve(textEncoder.encode(this.__vixenBodyText).buffer); }
+    bytes() { return Promise.resolve(textEncoder.encode(this.__vixenBodyText)); }
     formData() { return Promise.resolve(new FormData()); }
     static error() {
       const response = new VixenResponse(null, { status: 200 });
@@ -768,6 +1200,27 @@ const WEB_API_BOOTSTRAP: &str = r#"
   webidl.adoptInterface('File', VixenFile);
   webidl.adoptInterface('Request', VixenRequest);
   webidl.adoptInterface('Response', VixenResponse);
+
+  function fetch(input, init = {}) {
+    let request;
+    try {
+      request = new VixenRequest(input, init);
+    } catch (err) {
+      return Promise.reject(err);
+    }
+    const result = op_vixen_fetch({ url: request.url, method: request.method });
+    if (!result || !result.ok) {
+      return Promise.reject(new TypeError(result && result.message ? result.message : 'fetch failed'));
+    }
+    return Promise.resolve(new VixenResponse(result.body, {
+      status: result.status,
+      headers: result.headers,
+      url: result.finalUrl,
+      redirected: result.redirected,
+    }));
+  }
+
+  defineGlobal('fetch', fetch);
 
   // -----------------------------------------------------------------------
   // Abort, MutationObserver, structuredClone, DOMParser, platform globals
@@ -911,13 +1364,39 @@ const WEB_API_BOOTSTRAP: &str = r#"
     getEntriesByType() { return []; }
   }
 
+  function unwrapStorageOp(result) {
+    if (!result.ok) {
+      const error = new TypeError(result.message);
+      if (result.name) error.name = result.name;
+      throw error;
+    }
+    return result;
+  }
+
+  function storageIndex(index) {
+    return Number(index) >>> 0;
+  }
+
   class VixenStorage {
-    get length() { return 0; }
-    key() { return null; }
-    getItem() { return null; }
-    setItem() {}
-    removeItem() {}
-    clear() {}
+    constructor(kind = 'local') {
+      defineReadonly(this, '__vixenKind', kind, false);
+    }
+    get length() { return op_vixen_storage_length(this.__vixenKind); }
+    key(index = 0) {
+      return unwrapStorageOp(op_vixen_storage_key(this.__vixenKind, storageIndex(index))).value;
+    }
+    getItem(key) {
+      return unwrapStorageOp(op_vixen_storage_get(this.__vixenKind, String(key))).value;
+    }
+    setItem(key, value) {
+      unwrapStorageOp(op_vixen_storage_set(this.__vixenKind, String(key), String(value)));
+    }
+    removeItem(key) {
+      unwrapStorageOp(op_vixen_storage_remove(this.__vixenKind, String(key)));
+    }
+    clear() {
+      unwrapStorageOp(op_vixen_storage_clear(this.__vixenKind));
+    }
   }
 
   class VixenNavigator {
@@ -956,8 +1435,8 @@ const WEB_API_BOOTSTRAP: &str = r#"
   if (typeof globalThis.self === 'undefined') defineGlobal('self', globalThis);
   defineGlobal('performance', new VixenPerformance());
   defineGlobal('navigator', new VixenNavigator());
-  defineGlobal('localStorage', new VixenStorage());
-  defineGlobal('sessionStorage', new VixenStorage());
+  defineGlobal('localStorage', new VixenStorage('local'));
+  defineGlobal('sessionStorage', new VixenStorage('session'));
   defineGlobal('history', { length: 1, state: null, scrollRestoration: 'auto', go() {}, back() {}, forward() {}, pushState() {}, replaceState() {} });
   defineGlobal('screen', { width: 800, height: 600, availWidth: 800, availHeight: 600, colorDepth: 24, pixelDepth: 24 });
   defineGlobal('visualViewport', { offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, width: 800, height: 600, scale: 1 });
@@ -980,6 +1459,7 @@ mod tests {
         assert!(WEB_API_BOOTSTRAP.contains("adoptInterface('Event'"));
         assert!(WEB_API_BOOTSTRAP.contains("adoptInterface('DOMMatrix'"));
         assert!(WEB_API_BOOTSTRAP.contains("adoptInterface('Headers'"));
+        assert!(WEB_API_BOOTSTRAP.contains("op_vixen_storage_set"));
         assert!(WEB_API_BOOTSTRAP.contains("structuredClone"));
     }
 }

@@ -760,9 +760,16 @@ Each family lands with its WPT fixtures passing before moving on.
   report `QuotaExceededError` against.
 - `Page::evaluate_dom_expression` now projects the read-only document/navigator
   state shape (`readyState`, `compatMode`, visibility, `documentURI`/`baseURI`,
-  focus/active element, viewport/window/screen state, language/userAgent) plus
-  an empty `localStorage`/`sessionStorage` smoke seam through the same storage-key
-  validation boundary the persistent host object will use. The DOM query seam
+  focus/active element, viewport/window/screen state, language/userAgent). The
+  runtime `Storage` host object now crosses explicit `deno_core` ops for
+  in-memory `localStorage`/`sessionStorage` mutation through the same storage-key
+  validation and quota boundary the persistent host object will use. `JsRuntime`
+  now owns a persistent realm, so sequential evals retain globals, storage, and
+  promise/event-loop state until the caller switches between non-page/page realms
+  or navigates to a new page snapshot. The runtime `fetch()` MVP now crosses an
+  explicit op into `vixen-net`, returns real HTTP(S) `Response`
+  status/headers/text body, and rejects private/reserved hosts through the shared
+  URL policy before I/O. The DOM query seam
   now also covers core node/ancestry properties (`nodeName`/`nodeType`,
   `isConnected`, `ownerDocument`, and `Element.closest()`) before full Node /
   Element JS host wrappers replace the string projection.
@@ -927,7 +934,12 @@ remain `#![forbid(unsafe_code)]`, Rust-unit-tested.
   `URLPattern` smoke seams from these pure modules (`get`/`has`, iterator shape,
   forbidden-header filtering in Request/Response init, byte-size/type/name/
   method/status/header state, `Response.json()`, timeout/any snapshots, pathname
-  test/exec groups) while mutable fetch and routing host objects land.
+  test/exec groups) while full streaming/upload/XHR routing host objects land.
+- `vixen-engine::script::webapi` now exposes a minimal `fetch(input, init)` host
+  function. It normalizes through `Request`, validates via
+  `vixen-net::validate_http_url`, routes HTTP(S) through `vixen-net::Network`,
+  and resolves to `Response` with status, headers, URL, redirect flag, and text
+  body; policy/network failures reject the promise as `TypeError`.
 
 [`validate_header_name`]: ../../crates/vixen-engine/src/headers.rs
 [`validate_header_value`]: ../../crates/vixen-engine/src/headers.rs

@@ -82,9 +82,10 @@ forms collection length, `matches()`, logical selectors, and `:has()`-backed
 matching. Imported forms smoke has reached the 25-fixture target across
 reflected/default form/control properties, labels, radio/checkbox/select states,
 textarea text, form tree traversal, repeated names, and `:has()` form selectors.
-Local Phase 6 fixtures now also assert Page-backed `js-eval` projections for
+Local Phase 6 fixtures now also assert runtime/Page-backed `js-eval` projections for
 `getComputedStyle()`, document/navigator state (`documentURI`/`baseURI`,
-focus, and active-element shape included), empty Web Storage,
+focus, and active-element shape included), op-backed in-memory Web Storage
+mutation with key/value validation and quota errors,
 `Event`/`CustomEvent`/`dispatchEvent()` smoke, CSSOM `CSS.supports()` /
 `document.styleSheets` plus CSSStyleRule / CSSStyleDeclaration read-only shape,
 viewport/window state, DOMRect geometry via `getBoundingClientRect()`,
@@ -100,11 +101,13 @@ entry-list and iterator projection, meta/content reflection, `innerHTML`/`outerH
 MutationObserver lifecycle, TreeWalker/NodeIterator traversal, `Headers`
 iteration, `Blob`/`File`, read-only `Request`/`Response` state with forbidden
 header filtering, `Response.error()` / `Response.redirect()` / `Response.json()`,
-`AbortSignal`, `URLPattern`, Performance timing shape, and
+op-backed `fetch()` HTTP(S) status/header/body reads plus URL-policy/private-host
+rejection, `AbortSignal`, `URLPattern`, Performance timing shape, and
 `matchMedia()` before the remaining host-object swap; Encoding API constructors,
-focused `document`/`Element` snapshot host-object evals, and read-only
-`DOMTokenList`/`DOMStringMap` property reads are also exercised directly through
-the `deno_core` runtime seam. Imported
+Web Storage mutation, focused `fetch()` success/blocking checks, sequential
+global/storage persistence across `Runtime.evaluate`, focused `document`/`Element`
+snapshot host-object evals, and read-only `DOMTokenList`/`DOMStringMap` property
+reads are also exercised directly through the persistent `deno_core` runtime seam. Imported
 smoke fixtures now also seed
 block/inline/position layout, flexbox, grid, and display-list `ref-equivalent`
 paint; imported layout smoke covers auto margins, border-box sizing, inline

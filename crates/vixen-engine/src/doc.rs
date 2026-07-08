@@ -28,6 +28,36 @@ pub enum ParseError {
     Parse(String),
 }
 
+/// An inline classic `<script>` block ready for the JS execution boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineScript {
+    /// Raw text content of the script element, in DOM/source order.
+    pub source: String,
+    /// CSP nonce, if one was authored on the `<script>` element.
+    pub nonce: Option<String>,
+}
+
+/// An external classic `<script src>` block ready for the subresource boundary.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalScript {
+    /// Authored `src` attribute. Callers resolve this against the document base
+    /// URL before CSP and network policy checks.
+    pub src: String,
+    /// CSP nonce, if one was authored on the `<script>` element.
+    pub nonce: Option<String>,
+}
+
+/// Document-ordered events relevant to classic script execution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentScriptItem {
+    /// `<meta http-equiv="Content-Security-Policy" content="...">`.
+    CspMeta(String),
+    /// Inline classic `<script>` without `src` and with a JavaScript type.
+    InlineClassicScript(InlineScript),
+    /// External classic `<script src>` with a JavaScript type.
+    ExternalClassicScript(ExternalScript),
+}
+
 impl Document {
     /// Parse an HTML string.
     pub fn parse(html: &str) -> Result<Self, ParseError> {
@@ -97,6 +127,107 @@ impl Document {
         out
     }
 
+    /// Inline classic `<script>` blocks, in document order.
+    ///
+    /// External scripts (`src`) and non-classic script types (`module`,
+    /// `importmap`, JSON data blocks, etc.) are intentionally excluded; fetching
+    /// external scripts is a separate network/CSP/MIME trust boundary.
+    pub fn inline_classic_scripts(&self) -> Vec<InlineScript> {
+        self.script_execution_items()
+            .into_iter()
+            .filter_map(|item| match item {
+                DocumentScriptItem::InlineClassicScript(script) => Some(script),
+                DocumentScriptItem::CspMeta(_) | DocumentScriptItem::ExternalClassicScript(_) => {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// True when the document contains an inline or external classic script.
+    pub fn has_classic_scripts(&self) -> bool {
+        self.script_execution_items().into_iter().any(|item| {
+            matches!(
+                item,
+                DocumentScriptItem::InlineClassicScript(_)
+                    | DocumentScriptItem::ExternalClassicScript(_)
+            )
+        })
+    }
+
+    /// Document-ordered CSP-meta and classic-script items. Callers run through
+    /// this sequence to apply meta CSP before later scripts.
+    pub fn script_execution_items(&self) -> Vec<DocumentScriptItem> {
+        let mut out = Vec::new();
+        walk(&self.dom.document, &mut |node| {
+            let NodeData::Element { name, attrs, .. } = &node.data else {
+                return;
+            };
+            let tag = name.local.as_ref();
+            if tag == "meta" {
+                let policy = {
+                    let attrs = attrs.borrow();
+                    let is_csp = attrs.iter().any(|attr| {
+                        attr.name.local.as_ref() == "http-equiv"
+                            && attr
+                                .value
+                                .trim()
+                                .eq_ignore_ascii_case("Content-Security-Policy")
+                    });
+                    if is_csp {
+                        attrs
+                            .iter()
+                            .find(|attr| attr.name.local.as_ref() == "content")
+                            .map(|attr| attr.value.to_string())
+                    } else {
+                        None
+                    }
+                };
+                if let Some(policy) = policy {
+                    out.push(DocumentScriptItem::CspMeta(policy));
+                }
+                return;
+            }
+
+            if tag == "script" {
+                let script_item = {
+                    let attrs = attrs.borrow();
+                    let src = attrs
+                        .iter()
+                        .find(|attr| attr.name.local.as_ref() == "src")
+                        .map(|attr| attr.value.to_string());
+                    let script_type = attrs
+                        .iter()
+                        .find(|attr| attr.name.local.as_ref() == "type")
+                        .map(|attr| attr.value.to_string());
+                    if is_classic_script_type(script_type.as_deref()) {
+                        let nonce = attrs
+                            .iter()
+                            .find(|attr| attr.name.local.as_ref() == "nonce")
+                            .map(|attr| attr.value.to_string());
+                        Some((src, nonce))
+                    } else {
+                        None
+                    }
+                };
+                if let Some((src, nonce)) = script_item {
+                    if let Some(src) = src {
+                        out.push(DocumentScriptItem::ExternalClassicScript(ExternalScript {
+                            src,
+                            nonce,
+                        }));
+                    } else {
+                        out.push(DocumentScriptItem::InlineClassicScript(InlineScript {
+                            source: text_content_of(node),
+                            nonce,
+                        }));
+                    }
+                }
+            }
+        });
+        out
+    }
+
     /// Number of element nodes (a coarse `min-nodes`/`dom-nodes-range` signal).
     pub fn element_count(&self) -> usize {
         let mut n = 0;
@@ -135,6 +266,40 @@ fn text_content_of(node: &Handle) -> String {
         }
     });
     buf
+}
+
+fn is_classic_script_type(script_type: Option<&str>) -> bool {
+    let Some(script_type) = script_type else {
+        return true;
+    };
+    let essence = script_type
+        .split(';')
+        .next()
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if essence.is_empty() {
+        return true;
+    }
+    matches!(
+        essence.as_str(),
+        "application/ecmascript"
+            | "application/javascript"
+            | "application/x-ecmascript"
+            | "application/x-javascript"
+            | "text/ecmascript"
+            | "text/javascript"
+            | "text/javascript1.0"
+            | "text/javascript1.1"
+            | "text/javascript1.2"
+            | "text/javascript1.3"
+            | "text/javascript1.4"
+            | "text/javascript1.5"
+            | "text/jscript"
+            | "text/livescript"
+            | "text/x-ecmascript"
+            | "text/x-javascript"
+    )
 }
 
 fn children_of(node: &Handle) -> Ref<'_, Vec<Handle>> {
@@ -232,6 +397,60 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert!(blocks[0].contains("color: red"));
         assert!(blocks[1].contains("display: grid"));
+    }
+
+    #[test]
+    fn inline_classic_scripts_are_collected_in_document_order() {
+        let doc = Document::parse(
+            "<script>globalThis.a = 1;</script>\
+             <script type='text/javascript; charset=utf-8' nonce='abc'>globalThis.b = 2;</script>\
+             <script type='module'>globalThis.moduleRan = true;</script>\
+             <script type='application/json'>{\"not\":\"code\"}</script>\
+             <script src='/app.js'>globalThis.externalFallback = true;</script>\
+             <script type='application/javascript'>globalThis.c = 3;</script>",
+        )
+        .unwrap();
+
+        let scripts = doc.inline_classic_scripts();
+        assert_eq!(scripts.len(), 3);
+        assert!(scripts[0].source.contains("a = 1"));
+        assert_eq!(scripts[0].nonce, None);
+        assert!(scripts[1].source.contains("b = 2"));
+        assert_eq!(scripts[1].nonce.as_deref(), Some("abc"));
+        assert!(scripts[2].source.contains("c = 3"));
+    }
+
+    #[test]
+    fn script_execution_items_include_meta_csp_in_order() {
+        let doc = Document::parse(
+            "<script>before()</script>\
+             <meta http-equiv='Content-Security-Policy' content=\"script-src 'self'\">\
+             <script src='/after.js' nonce='n'></script>\
+             <script nonce='n'>after()</script>",
+        )
+        .unwrap();
+
+        let items = doc.script_execution_items();
+        assert_eq!(items.len(), 4);
+        assert!(doc.has_classic_scripts());
+        assert!(matches!(
+            &items[0],
+            DocumentScriptItem::InlineClassicScript(script) if script.source.contains("before")
+        ));
+        assert_eq!(
+            items[1],
+            DocumentScriptItem::CspMeta("script-src 'self'".to_owned())
+        );
+        assert!(matches!(
+            &items[2],
+            DocumentScriptItem::ExternalClassicScript(script)
+                if script.src == "/after.js" && script.nonce.as_deref() == Some("n")
+        ));
+        assert!(matches!(
+            &items[3],
+            DocumentScriptItem::InlineClassicScript(script)
+                if script.source.contains("after") && script.nonce.as_deref() == Some("n")
+        ));
     }
 
     #[test]

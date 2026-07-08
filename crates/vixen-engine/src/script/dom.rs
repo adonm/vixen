@@ -995,6 +995,20 @@ const DOM_API_BOOTSTRAP: &str = r#"
     return new VixenDOMRectList(rect === null ? [] : [rect]);
   }
 
+  Object.defineProperty(globalThis, '__vixenDispatchMouseEvent', {
+    value(nodeId, type, init = {}) {
+      const target = wrapElementByNodeId(Number(nodeId));
+      if (target === null) return false;
+      const event = new MouseEvent(String(type), Object.assign({
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+      }, init || {}));
+      return target.dispatchEvent(event);
+    },
+    configurable: true,
+  });
+
   webidl.adoptInterface('Attr', VixenAttr);
   webidl.adoptInterface('NamedNodeMap', VixenNamedNodeMap);
   webidl.adoptInterface('NodeList', VixenNodeList);
