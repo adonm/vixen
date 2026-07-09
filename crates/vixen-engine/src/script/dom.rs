@@ -20,7 +20,9 @@ use crate::class_list::DomTokenList;
 use crate::dataset::collect_dataset;
 use crate::engine_error::{EngineError, codes};
 use crate::form_submission::{FormEntry, FormEntryValue};
+use crate::media_query::Viewport;
 use crate::page::Page;
+use crate::responsive_select::select_from as select_responsive_image_source;
 use crate::style_dom::ElementRelation;
 
 struct DomHost(Arc<DomHostState>);
@@ -134,6 +136,7 @@ deno_core::extension!(
         op_vixen_dom_element_tokens,
         op_vixen_dom_element_dataset,
         op_vixen_dom_element_rect,
+        op_vixen_dom_image_current_src,
         op_vixen_dom_form_entries,
         op_vixen_dom_set_document_title,
         op_vixen_dom_set_element_text,
@@ -407,6 +410,17 @@ fn op_vixen_dom_element_rect(state: &mut OpState, node_id: u32) -> deno_core::se
         return missing_element_result(node_id);
     };
     json!({ "ok": true, "rect": record.bbox.map(rect_value) })
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_dom_image_current_src(
+    #[string] src: String,
+    #[string] srcset: String,
+    #[string] sizes: String,
+) -> deno_core::serde_json::Value {
+    let viewport = Viewport::new(800.0, 600.0, 1.0);
+    json!(select_responsive_image_source(&srcset, &sizes, &viewport).unwrap_or(src))
 }
 
 #[deno_core::op2]
@@ -893,6 +907,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     op_vixen_dom_element_tokens,
     op_vixen_dom_element_dataset,
     op_vixen_dom_element_rect,
+    op_vixen_dom_image_current_src,
     op_vixen_dom_form_entries,
     op_vixen_dom_set_document_title,
     op_vixen_dom_set_element_text,
@@ -1121,6 +1136,15 @@ const DOM_API_BOOTSTRAP: &str = r#"
     const record = recordForElementNodeId(nodeId);
     if (!record) return unwrapDomOp(op_vixen_dom_element_attribute(nodeId, String(name))).value;
     return recordAttr(record, name);
+  }
+
+  function imageCurrentSrc(element) {
+    const nodeId = element.__vixenNodeId;
+    const src = elementAttribute(nodeId, 'src') || '';
+    if (elementTag(element) !== 'img') return src;
+    const srcset = elementAttribute(nodeId, 'srcset') || '';
+    if (!srcset) return src;
+    return op_vixen_dom_image_current_src(src, srcset, elementAttribute(nodeId, 'sizes') || '');
   }
 
   function elementTokens(nodeId, attribute) {
@@ -1467,13 +1491,101 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   function parseSimpleSelectorList(selector) {
-    return String(selector).split(',').map((part) => parseSimpleSelector(part.trim()));
+    return splitSelectorList(selector).map(parseComplexSelector);
   }
 
-  function parseSimpleSelector(raw) {
-    if (!raw || /[\s>+~:]/.test(raw)) throw new TypeError('unsupported selector');
-    let rest = raw;
-    const selector = { tag: null, id: null, classes: [], attrs: [] };
+  function splitSelectorList(selector) {
+    const input = String(selector);
+    const parts = [];
+    let start = 0;
+    let bracketDepth = 0;
+    let parenDepth = 0;
+    let quote = '';
+    for (let i = 0; i < input.length; i++) {
+      const ch = input[i];
+      if (quote) {
+        if (ch === '\\') i += 1;
+        else if (ch === quote) quote = '';
+        continue;
+      }
+      if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (ch === '[') {
+        bracketDepth += 1;
+      } else if (ch === ']') {
+        bracketDepth = Math.max(0, bracketDepth - 1);
+      } else if (ch === '(') {
+        parenDepth += 1;
+      } else if (ch === ')') {
+        parenDepth = Math.max(0, parenDepth - 1);
+      } else if (ch === ',' && bracketDepth === 0 && parenDepth === 0) {
+        const part = input.slice(start, i).trim();
+        if (!part) throw new TypeError('unsupported selector');
+        parts.push(part);
+        start = i + 1;
+      }
+    }
+    const tail = input.slice(start).trim();
+    if (!tail) throw new TypeError('unsupported selector');
+    parts.push(tail);
+    return parts;
+  }
+
+  function parseComplexSelector(raw) {
+    const input = String(raw).trim();
+    if (!input) throw new TypeError('unsupported selector');
+    const steps = [];
+    let combinator = null;
+    let i = 0;
+    while (i < input.length) {
+      const beforeWs = i;
+      while (i < input.length && /[\t\n\f\r ]/.test(input[i])) i += 1;
+      if (i >= input.length) break;
+      if (input[i] === '>') {
+        if (steps.length === 0 || combinator !== null) throw new TypeError('unsupported selector');
+        combinator = 'child';
+        i += 1;
+        continue;
+      }
+      if (i > beforeWs && steps.length > 0 && combinator === null) combinator = 'descendant';
+      if (input[i] === '+' || input[i] === '~') throw new TypeError('unsupported selector');
+      const start = i;
+      i = scanCompoundEnd(input, i);
+      if (i === start) throw new TypeError('unsupported selector');
+      steps.push({
+        combinator: steps.length === 0 ? null : (combinator || 'descendant'),
+        compound: parseCompoundSelector(input.slice(start, i)),
+      });
+      combinator = null;
+    }
+    if (steps.length === 0 || combinator !== null) throw new TypeError('unsupported selector');
+    return { steps };
+  }
+
+  function scanCompoundEnd(input, start) {
+    let bracketDepth = 0;
+    let parenDepth = 0;
+    let quote = '';
+    for (let i = start; i < input.length; i++) {
+      const ch = input[i];
+      if (quote) {
+        if (ch === '\\') i += 1;
+        else if (ch === quote) quote = '';
+        continue;
+      }
+      if (ch === '"' || ch === "'") quote = ch;
+      else if (ch === '[') bracketDepth += 1;
+      else if (ch === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+      else if (ch === '(') parenDepth += 1;
+      else if (ch === ')') parenDepth = Math.max(0, parenDepth - 1);
+      else if (bracketDepth === 0 && parenDepth === 0 && (/[\t\n\f\r ]/.test(ch) || ch === '>' || ch === '+' || ch === '~')) return i;
+    }
+    return input.length;
+  }
+
+  function parseCompoundSelector(raw) {
+    let rest = String(raw);
+    const selector = { tag: null, id: null, classes: [], attrs: [], pseudos: [] };
     if (rest.startsWith('*')) rest = rest.slice(1);
     else {
       const tag = /^[A-Za-z][A-Za-z0-9_-]*/.exec(rest);
@@ -1494,32 +1606,102 @@ const DOM_API_BOOTSTRAP: &str = r#"
         selector.classes.push(m[1]);
         rest = rest.slice(m[0].length);
       } else if (rest.startsWith('[')) {
-        const end = rest.indexOf(']');
+        const end = findBalancedClose(rest, 0, '[', ']');
         if (end === -1) throw new TypeError('unsupported selector');
-        const body = rest.slice(1, end).trim();
-        const eq = body.indexOf('=');
-        if (eq === -1) selector.attrs.push([body.toLowerCase(), null]);
-        else {
-          const name = body.slice(0, eq).trim().toLowerCase();
-          let value = body.slice(eq + 1).trim();
-          if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-            value = value.slice(1, -1);
-          }
-          selector.attrs.push([name, value]);
-        }
+        selector.attrs.push(parseAttributeSelector(rest.slice(1, end)));
         rest = rest.slice(end + 1);
+      } else if (rest.startsWith(':')) {
+        const pseudo = parseFunctionalPseudo(rest);
+        selector.pseudos.push(pseudo.value);
+        rest = rest.slice(pseudo.length);
       } else {
         throw new TypeError('unsupported selector');
       }
     }
-    if (!selector.tag && !selector.id && selector.classes.length === 0 && selector.attrs.length === 0 && raw !== '*') {
+    if (!selector.tag && !selector.id && selector.classes.length === 0 && selector.attrs.length === 0 && selector.pseudos.length === 0 && raw !== '*') {
       throw new TypeError('unsupported selector');
     }
     return selector;
   }
 
+  function parseAttributeSelector(body) {
+    const eq = String(body).indexOf('=');
+    if (eq === -1) return [String(body).trim().toLowerCase(), null];
+    const name = String(body).slice(0, eq).trim().toLowerCase();
+    let value = String(body).slice(eq + 1).trim();
+    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
+      value = value.slice(1, -1);
+    }
+    return [name, value];
+  }
+
+  function parseFunctionalPseudo(rest) {
+    const nameMatch = /^:([A-Za-z-]+)/.exec(rest);
+    if (!nameMatch) throw new TypeError('unsupported selector');
+    const name = nameMatch[1].toLowerCase();
+    const open = nameMatch[0].length;
+    if (rest[open] !== '(') throw new TypeError('unsupported selector');
+    const close = findBalancedClose(rest, open, '(', ')');
+    if (close === -1) throw new TypeError('unsupported selector');
+    const body = rest.slice(open + 1, close);
+    if (name === 'is' || name === 'where' || name === 'not') {
+      return { length: close + 1, value: { name, selectors: splitSelectorList(body).map(parseComplexSelector) } };
+    }
+    if (name === 'has') {
+      return { length: close + 1, value: { name, selectors: splitSelectorList(body).map(parseRelativeSelector) } };
+    }
+    throw new TypeError('unsupported selector');
+  }
+
+  function parseRelativeSelector(raw) {
+    const input = String(raw).trim();
+    if (input.startsWith('>')) {
+      return { combinator: 'child', selector: parseComplexSelector(input.slice(1).trim()) };
+    }
+    return { combinator: 'descendant', selector: parseComplexSelector(input) };
+  }
+
+  function findBalancedClose(input, openIndex, openChar, closeChar) {
+    let depth = 0;
+    let quote = '';
+    for (let i = openIndex; i < input.length; i++) {
+      const ch = input[i];
+      if (quote) {
+        if (ch === '\\') i += 1;
+        else if (ch === quote) quote = '';
+        continue;
+      }
+      if (ch === '"' || ch === "'") quote = ch;
+      else if (ch === openChar) depth += 1;
+      else if (ch === closeChar) {
+        depth -= 1;
+        if (depth === 0) return i;
+      }
+    }
+    return -1;
+  }
+
   function recordMatchesAny(record, selectors) {
-    return selectors.some((selector) => recordMatches(record, selector));
+    return selectors.some((selector) => complexSelectorMatches(record, selector));
+  }
+
+  function complexSelectorMatches(record, selector) {
+    return selectorStepMatches(record, selector.steps, selector.steps.length - 1);
+  }
+
+  function selectorStepMatches(record, steps, index) {
+    if (!record || record.isConnected === false || !recordMatches(record, steps[index].compound)) return false;
+    if (index === 0) return true;
+    const combinator = steps[index].combinator || 'descendant';
+    if (combinator === 'child') {
+      return selectorStepMatches(parentElementRecord(record), steps, index - 1);
+    }
+    let parent = parentElementRecord(record);
+    while (parent) {
+      if (selectorStepMatches(parent, steps, index - 1)) return true;
+      parent = parentElementRecord(parent);
+    }
+    return false;
   }
 
   function recordMatches(record, selector) {
@@ -1534,7 +1716,44 @@ const DOM_API_BOOTSTRAP: &str = r#"
         if (attr === null) return false;
       } else if (attr !== value) return false;
     }
+    for (const pseudo of selector.pseudos) {
+      if (pseudo.name === 'is' || pseudo.name === 'where') {
+        if (!recordMatchesAny(record, pseudo.selectors)) return false;
+      } else if (pseudo.name === 'not') {
+        if (recordMatchesAny(record, pseudo.selectors)) return false;
+      } else if (pseudo.name === 'has') {
+        if (!relativeSelectorMatchesAny(record, pseudo.selectors)) return false;
+      } else {
+        return false;
+      }
+    }
     return true;
+  }
+
+  function relativeSelectorMatchesAny(record, selectors) {
+    return selectors.some((selector) => relativeSelectorMatches(record, selector));
+  }
+
+  function relativeSelectorMatches(record, relative) {
+    const candidates = relative.combinator === 'child'
+      ? childElementRecords(record)
+      : descendantElementRecords(record);
+    return candidates.some((candidate) => complexSelectorMatches(candidate, relative.selector));
+  }
+
+  function childElementRecords(record) {
+    return (record && record.childElementNodeIds ? record.childElementNodeIds : [])
+      .map(recordForElementNodeId)
+      .filter((child) => child && child.isConnected !== false);
+  }
+
+  function descendantElementRecords(record) {
+    const out = [];
+    for (const child of childElementRecords(record)) {
+      out.push(child);
+      out.push(...descendantElementRecords(child));
+    }
+    return out;
   }
 
   function wrapElementByNodeId(nodeId) {
@@ -1685,6 +1904,14 @@ const DOM_API_BOOTSTRAP: &str = r#"
     Object.defineProperty(target, name, {
       value,
       writable: true,
+      enumerable,
+      configurable: true,
+    });
+  }
+
+  function defineReadonlyValue(target, name, value, enumerable = true) {
+    Object.defineProperty(target, name, {
+      value,
       enumerable,
       configurable: true,
     });
@@ -2729,6 +2956,141 @@ const DOM_API_BOOTSTRAP: &str = r#"
     }
   }
 
+  const validityFlagNames = [
+    'valueMissing', 'typeMismatch', 'patternMismatch', 'tooLong', 'tooShort',
+    'rangeUnderflow', 'rangeOverflow', 'stepMismatch', 'badInput', 'customError',
+  ];
+
+  class VixenValidityState {
+    constructor(flags) {
+      for (const name of validityFlagNames) defineReadonlyValue(this, name, Boolean(flags && flags[name]));
+    }
+    get valid() { return validityFlagNames.every((name) => !this[name]); }
+  }
+
+  function emptyValidityFlags() {
+    const flags = {};
+    for (const name of validityFlagNames) flags[name] = false;
+    return flags;
+  }
+
+  function mergeValidityFlags(target, source) {
+    for (const name of validityFlagNames) target[name] = Boolean(target[name] || source[name]);
+    return target;
+  }
+
+  function willValidateElement(element) {
+    if (!element || typeof element.__vixenNodeId !== 'number' || isDisabled(element)) return false;
+    const tag = elementTag(element);
+    if (tag === 'input') {
+      const type = elementType(element);
+      return !['hidden', 'button', 'reset', 'submit', 'image'].includes(type) && elementAttribute(element.__vixenNodeId, 'readonly') === null;
+    }
+    if (tag === 'select') return true;
+    if (tag === 'textarea') return elementAttribute(element.__vixenNodeId, 'readonly') === null;
+    return false;
+  }
+
+  function validityStateForElementOrForm(element) {
+    return new VixenValidityState(elementTag(element) === 'form'
+      ? formValidityFlags(element)
+      : elementValidityFlags(element));
+  }
+
+  function formValidityFlags(form) {
+    const aggregate = emptyValidityFlags();
+    for (const control of formControlElements(form)) mergeValidityFlags(aggregate, elementValidityFlags(control));
+    return aggregate;
+  }
+
+  function formControlElements(form) {
+    return Array.from(form.querySelectorAll('input,select,textarea'));
+  }
+
+  function elementValidityFlags(element) {
+    const flags = emptyValidityFlags();
+    const record = elementRecord(element);
+    if (record.__vixenCustomValidityMessage) flags.customError = true;
+    if (!willValidateElement(element)) return flags;
+
+    const value = controlValue(element);
+    const type = elementType(element);
+    if (element.required) {
+      const missing = type === 'checkbox' || type === 'radio' ? !element.checked : value === '';
+      if (missing) flags.valueMissing = true;
+    }
+
+    if (value !== '') {
+      if (type === 'email' && !emailIsValid(value)) flags.typeMismatch = true;
+      else if (type === 'url' && !urlIsValid(value)) flags.typeMismatch = true;
+      else if (type === 'number' || type === 'range') applyNumericValidity(element, value, flags);
+      applyLengthValidity(element, value, flags);
+    }
+    return flags;
+  }
+
+  function emailIsValid(value) {
+    const text = String(value);
+    const parts = text.split('@');
+    if (parts.length !== 2 || parts[0] === '') return false;
+    return parts[1].includes('.') && !parts[1].startsWith('.') && !parts[1].endsWith('.');
+  }
+
+  function urlIsValid(value) {
+    const text = String(value);
+    const colon = text.indexOf(':');
+    if (colon <= 0 || !/^[A-Za-z]+$/.test(text.slice(0, colon))) return false;
+    const rest = text.slice(colon + 1);
+    return rest.startsWith('//') && rest.slice(2).split('/')[0] !== '';
+  }
+
+  function parseNumberAttr(element, name) {
+    const raw = elementAttribute(element.__vixenNodeId, name);
+    if (raw === null || raw === '') return null;
+    const number = Number(raw);
+    return Number.isFinite(number) ? number : null;
+  }
+
+  function applyNumericValidity(element, value, flags) {
+    const number = Number(value);
+    if (!Number.isFinite(number)) {
+      flags.badInput = true;
+      return;
+    }
+    const min = parseNumberAttr(element, 'min');
+    const max = parseNumberAttr(element, 'max');
+    if (min !== null && number < min) flags.rangeUnderflow = true;
+    if (max !== null && number > max) flags.rangeOverflow = true;
+    const rawStep = elementAttribute(element.__vixenNodeId, 'step');
+    if (rawStep !== null && rawStep.toLowerCase() !== 'any') {
+      const step = Number(rawStep);
+      if (Number.isFinite(step) && step > 0) {
+        const base = min === null ? 0 : min;
+        const n = Math.round((number - base) / step);
+        flags.stepMismatch = Math.abs(number - (base + n * step)) > 1e-9 * Math.abs(step);
+      }
+    }
+  }
+
+  function parseNonNegativeIntAttr(element, name) {
+    const raw = elementAttribute(element.__vixenNodeId, name);
+    if (raw === null || raw === '') return null;
+    const number = Number.parseInt(raw, 10);
+    return Number.isFinite(number) && number >= 0 ? number : null;
+  }
+
+  function applyLengthValidity(element, value, flags) {
+    const length = Array.from(String(value)).length;
+    const min = parseNonNegativeIntAttr(element, 'minlength');
+    const max = parseNonNegativeIntAttr(element, 'maxlength');
+    if (min !== null && length < min) flags.tooShort = true;
+    if (max !== null && length > max) flags.tooLong = true;
+  }
+
+  function checkValidityElement(element) {
+    return validityStateForElementOrForm(element).valid;
+  }
+
   function runDomDefaultAction(target, event) {
     if (!target || typeof target.__vixenNodeId !== 'number') return;
     if (event.type === 'keydown') {
@@ -2876,6 +3238,13 @@ const DOM_API_BOOTSTRAP: &str = r#"
     set encoding(value) { this.enctype = value; }
     get action() { return reflectedAttribute(this, 'action'); }
     set action(value) { setReflectedAttribute(this, 'action', value); }
+    get src() { return reflectedAttribute(this, 'src'); }
+    set src(value) { setReflectedAttribute(this, 'src', value); }
+    get srcset() { return reflectedAttribute(this, 'srcset'); }
+    set srcset(value) { setReflectedAttribute(this, 'srcset', value); }
+    get sizes() { return reflectedAttribute(this, 'sizes'); }
+    set sizes(value) { setReflectedAttribute(this, 'sizes', value); }
+    get currentSrc() { return imageCurrentSrc(this); }
     get disabled() { return booleanAttribute(this, 'disabled'); }
     set disabled(value) { setBooleanAttribute(this, 'disabled', value); }
     get readOnly() { return booleanAttribute(this, 'readonly'); }
@@ -2931,6 +3300,11 @@ const DOM_API_BOOTSTRAP: &str = r#"
     set files(value) { setInputFiles(this, value); }
     get value() { return controlValue(this); }
     set value(value) { setControlValue(this, value); }
+    get willValidate() { return willValidateElement(this); }
+    get validity() { return validityStateForElementOrForm(this); }
+    checkValidity() { return checkValidityElement(this); }
+    reportValidity() { return checkValidityElement(this); }
+    setCustomValidity(message) { elementRecord(this).__vixenCustomValidityMessage = String(message || ''); }
     get defaultValue() { return ensureControlState(this).defaultValue; }
     set defaultValue(value) {
       const text = String(value);
@@ -3020,6 +3394,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     getClientRects() { return makeDOMRectList(elementRect(this.__vixenNodeId)); }
   }
 
+  webidl.adoptInterface('ValidityState', VixenValidityState);
   webidl.adoptInterface('Element', VixenElement);
 
   const elementImplementationMembers = [
@@ -3028,10 +3403,11 @@ const DOM_API_BOOTSTRAP: &str = r#"
     'lastChild', 'firstElementChild', 'lastElementChild', 'childElementCount', 'previousSibling',
     'nextSibling', 'previousElementSibling', 'nextElementSibling', 'clientWidth', 'clientHeight', 'textContent', 'innerText', 'text',
     'innerHTML', 'outerHTML', 'attributes', 'classList', 'relList', 'sandbox', 'dataset', 'style', 'sheet',
-    'hidden', 'title', 'lang', 'dir', 'type', 'name', 'method', 'enctype', 'encoding', 'action', 'disabled', 'readOnly', 'required', 'multiple',
+    'hidden', 'title', 'lang', 'dir', 'type', 'name', 'method', 'enctype', 'encoding', 'action', 'src', 'srcset', 'sizes', 'currentSrc', 'disabled', 'readOnly', 'required', 'multiple',
     'placeholder', 'autocomplete', 'htmlFor', 'control', 'labels', 'contentEditable', 'isContentEditable',
     'options', 'selectedOptions', 'selectedIndex', 'length', 'size', 'label', 'selected', 'index',
-    'files', 'value', 'defaultValue', 'selectionStart', 'selectionEnd', 'setSelectionRange', 'select', 'checked',
+    'files', 'value', 'willValidate', 'validity', 'checkValidity', 'reportValidity', 'setCustomValidity',
+    'defaultValue', 'selectionStart', 'selectionEnd', 'setSelectionRange', 'select', 'checked',
     'getAttribute', 'hasAttribute', 'setAttribute', 'removeAttribute', 'toggleAttribute',
     'getAttributeNames', 'hasAttributes', 'matches', 'closest', 'appendChild', 'removeChild',
     'insertBefore', 'replaceChildren', 'append', 'prepend', 'click', 'focus', 'blur',
@@ -3596,6 +3972,7 @@ mod tests {
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_element_tokens"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_element_dataset"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_element_rect"));
+        assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_image_current_src"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_element_text"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_element_attr"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_element_inner_html"));

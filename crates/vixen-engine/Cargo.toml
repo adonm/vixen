@@ -12,6 +12,7 @@ publish = false
 [dependencies]
 vixen-api = { path = "../vixen-api" }
 vixen-net = { path = "../vixen-net" }
+vixen-store = { path = "../vixen-store" }
 deno_core = "0.406.0"
 thiserror = "2"
 tokio = { version = "1", features = ["rt", "net", "time"] }

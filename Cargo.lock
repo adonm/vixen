@@ -4065,6 +4065,7 @@ dependencies = [
  "url",
  "vixen-api",
  "vixen-net",
+ "vixen-store",
  "webrender",
 ]
 

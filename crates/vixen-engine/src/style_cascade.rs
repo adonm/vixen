@@ -50,10 +50,9 @@ impl AuthorStylesheet {
         self.rules.len()
     }
 
-    /// Read-only CSSOM-style view of one parsed style rule. This is intentionally
-    /// small and stable: `Page::evaluate_dom_expression` uses it for
-    /// `document.styleSheets[0].cssRules[n]` smoke checks until real CSSRule /
-    /// CSSStyleDeclaration host objects replace the projection.
+    /// Read-only CSSOM-style view of one parsed style rule. This stays small and
+    /// stable so the CSSOM host module can expose `document.styleSheets` /
+    /// `CSSRule` smoke coverage without re-walking cascade internals.
     pub fn rule(&self, index: usize) -> Option<AuthorStyleRule<'_>> {
         self.rules.get(index).map(|rule| AuthorStyleRule { rule })
     }

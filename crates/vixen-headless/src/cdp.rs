@@ -43,6 +43,7 @@ use vixen_engine::script::{
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const DEFAULT_CAPTURE_VIEWPORT: (u32, u32) = (800, 600);
+const CDP_DOCUMENT_NODE_ID: usize = 1_000_000_000;
 
 /// CDP server entry point. Binds `127.0.0.1:{port}` and serves the
 /// WebSocket CDP protocol until the process is killed.
@@ -116,8 +117,10 @@ async fn handle_connection(
 pub struct CdpState {
     next_target_id: AtomicU64,
     targets: Vec<Target>,
+    attached_sessions: Vec<TargetSession>,
     js: Option<JsRuntime>,
     runtime_enabled: bool,
+    network_enabled: bool,
     page_enabled: bool,
     isolated_world_name: Option<String>,
     log_enabled: bool,
@@ -130,6 +133,7 @@ pub struct CdpState {
     next_new_document_script_id: u64,
     new_document_scripts: Vec<NewDocumentScript>,
     runtime_bindings: Vec<String>,
+    download_behavior: DownloadBehavior,
 }
 
 #[allow(dead_code)] // Bookkeeping fields; required for future per-target routing.
@@ -143,10 +147,31 @@ struct Target {
     page: Option<Page>,
 }
 
+struct TargetSession {
+    session_id: u64,
+    target_id: u64,
+}
+
 #[derive(Debug, Clone)]
 struct NewDocumentScript {
     identifier: String,
     source: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct DownloadBehavior {
+    policy: DownloadPolicy,
+    download_path: Option<String>,
+    events_enabled: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+enum DownloadPolicy {
+    Deny,
+    Allow,
+    AllowAndName,
+    #[default]
+    Default,
 }
 
 #[derive(Debug, Clone)]
@@ -238,10 +263,12 @@ impl CdpState {
     fn dispatch(&mut self, req: &CdpRequest) -> CdpDispatch {
         match req.method.as_str() {
             "Browser.getVersion" => CdpDispatch::ok(self.browser_get_version()),
-            "Browser.close" | "Browser.setDownloadBehavior" => CdpDispatch::ok(json!({})),
+            "Browser.close" => CdpDispatch::ok(json!({})),
+            "Browser.setDownloadBehavior" => self.browser_set_download_behavior(req),
             "Target.createTarget" => self.target_create(req),
             "Target.closeTarget" => self.target_close(req),
             "Target.attachToTarget" => self.target_attach(req),
+            "Target.detachFromTarget" => self.target_detach(req),
             "Target.attachToBrowserTarget" => self.target_attach_to_browser_target(),
             "Target.getTargets" => CdpDispatch::ok(self.target_get_targets()),
             "Target.getTargetInfo" => CdpDispatch::ok(self.target_get_target_info(req)),
@@ -291,9 +318,15 @@ impl CdpState {
                 self.log_enabled = false;
                 CdpDispatch::ok(json!({}))
             }
-            "Network.enable"
-            | "Network.disable"
-            | "DOM.enable"
+            "Network.enable" => {
+                self.network_enabled = true;
+                CdpDispatch::ok(json!({}))
+            }
+            "Network.disable" => {
+                self.network_enabled = false;
+                CdpDispatch::ok(json!({}))
+            }
+            "DOM.enable"
             | "DOM.disable"
             | "Emulation.setTouchEmulationEnabled"
             | "Emulation.setFocusEmulationEnabled" => CdpDispatch::ok(json!({})),
@@ -304,6 +337,9 @@ impl CdpState {
                 CdpDispatch::ok(json!({}))
             }
             "DOM.scrollIntoViewIfNeeded" => CdpDispatch::ok(json!({})),
+            "DOM.getDocument" => self.dom_get_document(req),
+            "DOM.querySelector" => self.dom_query_selector(req),
+            "DOM.querySelectorAll" => self.dom_query_selector_all(req),
             "DOM.describeNode" => self.dom_describe_node(req),
             "DOM.resolveNode" => self.dom_resolve_node(req),
             "DOM.getContentQuads" => self.dom_get_content_quads(req),
@@ -318,17 +354,32 @@ impl CdpState {
     // --- Method handlers ------------------------------------------------
 
     fn target_for_session(&self, session_id: Option<&str>) -> Option<&Target> {
-        if let Some(target_session_id) = session_id
-            .and_then(|session_id| session_id.strip_prefix("sess-"))
-            .and_then(|session_id| session_id.parse::<u64>().ok())
-            && let Some(target) = self
-                .targets
-                .iter()
-                .find(|target| target.session_id == target_session_id)
-        {
-            return Some(target);
+        if let Some(session_id) = session_id {
+            if let Some(target) = self.target_by_primary_session_id(session_id) {
+                return Some(target);
+            }
+            if let Some(target) = self.target_by_attached_session_id(session_id) {
+                return Some(target);
+            }
         }
         self.targets.first()
+    }
+
+    fn target_by_primary_session_id(&self, session_id: &str) -> Option<&Target> {
+        let target_session_id = session_id.strip_prefix("sess-")?.parse::<u64>().ok()?;
+        self.targets
+            .iter()
+            .find(|target| target.session_id == target_session_id)
+    }
+
+    fn target_by_attached_session_id(&self, session_id: &str) -> Option<&Target> {
+        let target_session_id = session_id.strip_prefix("sess-")?.parse::<u64>().ok()?;
+        let target_id = self
+            .attached_sessions
+            .iter()
+            .find(|session| session.session_id == target_session_id)?
+            .target_id;
+        self.targets.iter().find(|target| target.id == target_id)
     }
 
     fn browser_get_version(&self) -> Value {
@@ -340,6 +391,50 @@ impl CdpState {
             "userAgent": format!("Vixen/{}", env!("CARGO_PKG_VERSION")),
             "jsVersion": "V8 (deno_core)"
         })
+    }
+
+    fn browser_set_download_behavior(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(raw_behavior) = req.params.get("behavior").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "Browser.setDownloadBehavior: missing `behavior`");
+        };
+        let policy = match raw_behavior {
+            "deny" => DownloadPolicy::Deny,
+            "allow" => DownloadPolicy::Allow,
+            "allowAndName" => DownloadPolicy::AllowAndName,
+            "default" => DownloadPolicy::Default,
+            other => {
+                return CdpDispatch::error(
+                    -32602,
+                    format!("Browser.setDownloadBehavior: unsupported behavior `{other}`"),
+                );
+            }
+        };
+        let download_path = req
+            .params
+            .get("downloadPath")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|path| !path.is_empty())
+            .map(ToOwned::to_owned);
+        if matches!(policy, DownloadPolicy::Allow | DownloadPolicy::AllowAndName)
+            && download_path.is_none()
+        {
+            return CdpDispatch::error(
+                -32602,
+                "Browser.setDownloadBehavior: `downloadPath` is required for allow behavior",
+            );
+        }
+        let events_enabled = req
+            .params
+            .get("eventsEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        self.download_behavior = DownloadBehavior {
+            policy,
+            download_path,
+            events_enabled,
+        };
+        CdpDispatch::ok(json!({}))
     }
 
     fn target_create(&mut self, req: &CdpRequest) -> CdpDispatch {
@@ -380,6 +475,8 @@ impl CdpState {
             return CdpDispatch::ok(json!({ "success": false }));
         };
         let target = self.targets.remove(index);
+        self.attached_sessions
+            .retain(|session| session.target_id != target.id);
         if index == 0 {
             self.reset_js_for_navigation();
         }
@@ -392,17 +489,64 @@ impl CdpState {
         )
     }
 
-    fn target_attach(&self, req: &CdpRequest) -> CdpDispatch {
-        // CDP attaches to a target and returns a session. We mint a
-        // deterministic id even if the requested targetId doesn't exist —
-        // CDP clients treat attach as a fairly thin session bootstrap.
-        let _ = req
-            .params
-            .get("targetId")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+    fn target_attach(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(target_id) = req.params.get("targetId").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "Target.attachToTarget: missing `targetId`");
+        };
+        let Some(target_id) = self
+            .targets
+            .iter()
+            .find(|target| format!("tab-{}", target.id) == target_id)
+            .map(|target| target.id)
+        else {
+            return CdpDispatch::error(-32602, "Target.attachToTarget: unknown `targetId`");
+        };
         let session_id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
+        self.attached_sessions.push(TargetSession {
+            session_id,
+            target_id,
+        });
         CdpDispatch::ok(json!({ "sessionId": format!("sess-{session_id}") }))
+    }
+
+    fn target_detach(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(session_id) = req
+            .params
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .or(req.session_id.as_deref())
+        else {
+            return CdpDispatch::error(-32602, "Target.detachFromTarget: missing `sessionId`");
+        };
+        if session_id == "browser-session" {
+            return CdpDispatch::ok(json!({}));
+        }
+        let Some(detached_session_id) = session_id
+            .strip_prefix("sess-")
+            .and_then(|session_id| session_id.parse::<u64>().ok())
+        else {
+            return CdpDispatch::error(-32602, "Target.detachFromTarget: unknown `sessionId`");
+        };
+        let Some(target) = self.target_for_session(Some(session_id)) else {
+            return CdpDispatch::error(-32602, "Target.detachFromTarget: unknown `sessionId`");
+        };
+        let target_id = target.id;
+        let primary_session_id = target.session_id;
+        if detached_session_id != primary_session_id {
+            self.attached_sessions
+                .retain(|session| session.session_id != detached_session_id);
+        }
+        let Some(target) = self.targets.iter().find(|target| target.id == target_id) else {
+            return CdpDispatch::error(-32602, "Target.detachFromTarget: unknown `sessionId`");
+        };
+        CdpDispatch::ok_with_notifications(
+            json!({}),
+            vec![target_detached_notification_for_session(
+                target,
+                detached_session_id,
+                req.session_id.as_deref(),
+            )],
+        )
     }
 
     fn target_attach_to_browser_target(&self) -> CdpDispatch {
@@ -817,12 +961,73 @@ impl CdpState {
         )
     }
 
+    fn dom_get_document(&self, req: &CdpRequest) -> CdpDispatch {
+        let Some(target) = self.target_for_session(req.session_id.as_deref()) else {
+            return CdpDispatch::error(-32000, "DOM.getDocument: no page loaded");
+        };
+        if target.page.is_none() {
+            return CdpDispatch::error(-32000, "DOM.getDocument: no page loaded");
+        }
+        let depth = req.params.get("depth").and_then(Value::as_i64).unwrap_or(1);
+        CdpDispatch::ok(json!({ "root": cdp_document_node(target, depth) }))
+    }
+
+    fn dom_query_selector(&self, req: &CdpRequest) -> CdpDispatch {
+        let selector = match req.params.get("selector").and_then(Value::as_str) {
+            Some(selector) if !selector.is_empty() => selector,
+            _ => return CdpDispatch::error(-32602, "DOM.querySelector: missing `selector`"),
+        };
+        if let Err(err) = cdp_query_root_node_id(&req.params, "DOM.querySelector") {
+            return CdpDispatch::error(-32602, err);
+        }
+        let Some(page) = self
+            .target_for_session(req.session_id.as_deref())
+            .and_then(|target| target.page.as_ref())
+        else {
+            return CdpDispatch::error(-32000, "DOM.querySelector: no page loaded");
+        };
+        match page.query_selector_all(selector) {
+            Ok(elements) => CdpDispatch::ok(json!({
+                "nodeId": elements.first().map(|element| element.node_id).unwrap_or(0),
+            })),
+            Err(err) => CdpDispatch::error(-32602, format!("DOM.querySelector: {err}")),
+        }
+    }
+
+    fn dom_query_selector_all(&self, req: &CdpRequest) -> CdpDispatch {
+        let selector = match req.params.get("selector").and_then(Value::as_str) {
+            Some(selector) if !selector.is_empty() => selector,
+            _ => return CdpDispatch::error(-32602, "DOM.querySelectorAll: missing `selector`"),
+        };
+        if let Err(err) = cdp_query_root_node_id(&req.params, "DOM.querySelectorAll") {
+            return CdpDispatch::error(-32602, err);
+        }
+        let Some(page) = self
+            .target_for_session(req.session_id.as_deref())
+            .and_then(|target| target.page.as_ref())
+        else {
+            return CdpDispatch::error(-32000, "DOM.querySelectorAll: no page loaded");
+        };
+        match page.query_selector_all(selector) {
+            Ok(elements) => CdpDispatch::ok(json!({
+                "nodeIds": elements.into_iter().map(|element| element.node_id).collect::<Vec<_>>(),
+            })),
+            Err(err) => CdpDispatch::error(-32602, format!("DOM.querySelectorAll: {err}")),
+        }
+    }
+
     fn dom_describe_node(&mut self, req: &CdpRequest) -> CdpDispatch {
         let node_id = match self.dom_node_id_from_params(&req.params, "DOM.describeNode") {
             Ok(node_id) => node_id,
             Err(err) => return CdpDispatch::error(-32602, err),
         };
-        let Some(page) = self.targets.first().and_then(|target| target.page.as_ref()) else {
+        let Some(target) = self.target_for_session(req.session_id.as_deref()) else {
+            return CdpDispatch::error(-32000, "DOM.describeNode: no page loaded");
+        };
+        if node_id == CDP_DOCUMENT_NODE_ID {
+            return CdpDispatch::ok(json!({ "node": cdp_document_node(target, 1) }));
+        }
+        let Some(page) = target.page.as_ref() else {
             return CdpDispatch::error(-32000, "DOM.describeNode: no page loaded");
         };
         let element = match element_info_for_node_id(page, node_id) {
@@ -840,8 +1045,17 @@ impl CdpState {
         };
         let object_id = self.next_remote_object_id();
         let object_id_json = serde_json::to_string(&object_id).unwrap_or_else(|_| "\"\"".into());
-        let store_expr = format!(
-            r#"(() => {{
+        let store_expr = if node_id == CDP_DOCUMENT_NODE_ID {
+            format!(
+                r#"(() => {{
+                globalThis.__vixenCdpObjects = globalThis.__vixenCdpObjects || Object.create(null);
+                globalThis.__vixenCdpObjects[{object_id_json}] = document;
+                return document;
+            }})()"#
+            )
+        } else {
+            format!(
+                r#"(() => {{
                 globalThis.__vixenCdpObjects = globalThis.__vixenCdpObjects || Object.create(null);
                 const __nodeId = {node_id};
                 const __nodes = document.querySelectorAll('*');
@@ -853,7 +1067,8 @@ impl CdpState {
                 }}
                 throw new Error('DOM.resolveNode: node not found');
             }})()"#
-        );
+            )
+        };
         match self.evaluate_js(&store_expr) {
             Ok(value) => CdpDispatch::ok(json!({
                 "object": self.remote_object_from_js_value(&value, Some(&object_id)),
@@ -1393,23 +1608,6 @@ impl CdpState {
             .get("returnByValue")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        if crate::looks_like_dom_eval(&expr)
-            && !crate::uses_runtime_dom_eval(&expr)
-            && let Some(page) = self.targets.first().and_then(|target| target.page.as_ref())
-            && let Some(result) = page.evaluate_dom_expression(&expr)
-        {
-            return match result {
-                Ok(value) => CdpDispatch::ok(remote_object_from_text(value)),
-                Err(e) => CdpDispatch::ok(json!({
-                    "result": { "type": "undefined" },
-                    "exceptionDetails": {
-                        "exceptionId": 1,
-                        "text": e,
-                        "code": "dom.eval",
-                    }
-                })),
-            };
-        }
         let result = if return_by_value {
             self.evaluate_serialized_value(&format!(
                 "globalThis.eval({})",
@@ -1441,8 +1639,32 @@ impl CdpState {
                     notifications,
                 )
             }
-            Err(e) => self.runtime_exception_result(e, req),
+            Err(e) => self
+                .legacy_dom_evaluate(&expr)
+                .unwrap_or_else(|| self.runtime_exception_result(e, req)),
         }
+    }
+
+    fn legacy_dom_evaluate(&self, expr: &str) -> Option<CdpDispatch> {
+        if !crate::looks_like_dom_eval(expr) || crate::uses_runtime_dom_eval(expr) {
+            return None;
+        }
+        let result = self
+            .targets
+            .first()
+            .and_then(|target| target.page.as_ref())?
+            .evaluate_dom_expression(expr)?;
+        Some(match result {
+            Ok(value) => CdpDispatch::ok(remote_object_from_text(value)),
+            Err(e) => CdpDispatch::ok(json!({
+                "result": { "type": "undefined" },
+                "exceptionDetails": {
+                    "exceptionId": 1,
+                    "text": e,
+                    "code": "dom.eval",
+                }
+            })),
+        })
     }
 
     fn runtime_call_function_on(&mut self, req: &CdpRequest) -> CdpDispatch {
@@ -2224,6 +2446,11 @@ impl CdpState {
         let frame_id = target_frame_id(target);
         let timestamp = now_ms();
         let mut notifications = Vec::new();
+        if self.network_enabled {
+            notifications.push(network_request_will_be_sent_notification(
+                target, &frame_id, timestamp, session_id,
+            ));
+        }
         notifications.push(notification(
             "Page.frameStartedLoading",
             json!({ "frameId": &frame_id }),
@@ -2241,6 +2468,11 @@ impl CdpState {
             json!({ "frame": frame_json(target) }),
             session_id,
         ));
+        if self.network_enabled {
+            notifications.push(network_response_received_notification(
+                target, &frame_id, timestamp, session_id,
+            ));
+        }
         if self.runtime_enabled {
             notifications.push(self.runtime_main_context_created_notification(session_id));
             if let Some(world_name) = self.isolated_world_name.as_deref() {
@@ -2279,6 +2511,11 @@ impl CdpState {
             }),
             session_id,
         ));
+        if self.network_enabled {
+            notifications.push(network_loading_finished_notification(
+                target, timestamp, session_id,
+            ));
+        }
         notifications.push(notification(
             "Page.frameStoppedLoading",
             json!({ "frameId": target_frame_id(target) }),
@@ -2377,8 +2614,10 @@ impl CdpState {
         Self {
             next_target_id: AtomicU64::new(0),
             targets: Vec::new(),
+            attached_sessions: Vec::new(),
             js: Some(rt),
             runtime_enabled: false,
+            network_enabled: false,
             page_enabled: false,
             isolated_world_name: None,
             log_enabled: false,
@@ -2391,6 +2630,7 @@ impl CdpState {
             next_new_document_script_id: 0,
             new_document_scripts: Vec::new(),
             runtime_bindings: Vec::new(),
+            download_behavior: DownloadBehavior::default(),
         }
     }
 }
@@ -2501,10 +2741,18 @@ fn target_attached_notification(target: &Target, session_id: Option<&str>) -> St
 }
 
 fn target_detached_notification(target: &Target, session_id: Option<&str>) -> String {
+    target_detached_notification_for_session(target, target.session_id, session_id)
+}
+
+fn target_detached_notification_for_session(
+    target: &Target,
+    detached_session_id: u64,
+    session_id: Option<&str>,
+) -> String {
     notification(
         "Target.detachedFromTarget",
         json!({
-            "sessionId": format!("sess-{}", target.session_id),
+            "sessionId": format!("sess-{detached_session_id}"),
             "targetId": format!("tab-{}", target.id),
         }),
         session_id,
@@ -2666,6 +2914,44 @@ fn origin_for_url(raw: &str) -> String {
         url::Origin::Tuple(scheme, host, port) => format!("{scheme}://{host}:{port}"),
         url::Origin::Opaque(_) => "://".to_owned(),
     }
+}
+
+fn cdp_query_root_node_id(params: &Value, method: &str) -> Result<usize, String> {
+    let Some(value) = params.get("nodeId") else {
+        return Err(format!("{method}: missing `nodeId`"));
+    };
+    let node_id = value
+        .as_u64()
+        .ok_or_else(|| format!("{method}: `nodeId` must be a non-negative integer"))?;
+    usize::try_from(node_id).map_err(|_| format!("{method}: `nodeId` is too large"))
+}
+
+fn cdp_document_node(target: &Target, depth: i64) -> Value {
+    let child = target
+        .page
+        .as_ref()
+        .and_then(|page| page.query_selector_all("*").ok())
+        .and_then(|elements| elements.into_iter().next())
+        .map(|element| cdp_node_from_element(&element));
+    let child_node_count = usize::from(child.is_some());
+    let mut node = json!({
+        "nodeId": CDP_DOCUMENT_NODE_ID,
+        "backendNodeId": CDP_DOCUMENT_NODE_ID,
+        "nodeType": 9,
+        "nodeName": "#document",
+        "localName": "",
+        "nodeValue": "",
+        "childNodeCount": child_node_count,
+        "documentURL": target.url.as_str(),
+        "baseURL": target.url.as_str(),
+        "xmlVersion": "",
+    });
+    if depth != 0
+        && let Some(child) = child
+    {
+        node["children"] = json!([child]);
+    }
+    node
 }
 
 fn element_info_for_node_id(
@@ -3101,6 +3387,99 @@ fn exception_thrown_notification(text: &str, code: &str, session_id: Option<&str
     )
 }
 
+fn network_request_will_be_sent_notification(
+    target: &Target,
+    frame_id: &str,
+    timestamp: u64,
+    session_id: Option<&str>,
+) -> String {
+    notification(
+        "Network.requestWillBeSent",
+        json!({
+            "requestId": network_request_id(target),
+            "loaderId": format!("loader-{}", target.loader_id),
+            "documentURL": target.url.as_str(),
+            "request": {
+                "url": target.url.as_str(),
+                "method": "GET",
+                "headers": {},
+                "mixedContentType": "none",
+                "initialPriority": "VeryHigh",
+                "referrerPolicy": "strict-origin-when-cross-origin",
+            },
+            "timestamp": timestamp,
+            "wallTime": timestamp as f64 / 1000.0,
+            "initiator": { "type": "other" },
+            "type": "Document",
+            "frameId": frame_id,
+            "hasUserGesture": false,
+        }),
+        session_id,
+    )
+}
+
+fn network_response_received_notification(
+    target: &Target,
+    frame_id: &str,
+    timestamp: u64,
+    session_id: Option<&str>,
+) -> String {
+    notification(
+        "Network.responseReceived",
+        json!({
+            "requestId": network_request_id(target),
+            "loaderId": format!("loader-{}", target.loader_id),
+            "timestamp": timestamp,
+            "type": "Document",
+            "frameId": frame_id,
+            "response": {
+                "url": target.url.as_str(),
+                "status": 200,
+                "statusText": "OK",
+                "headers": {},
+                "mimeType": "text/html",
+                "connectionReused": false,
+                "connectionId": 0,
+                "encodedDataLength": 0,
+                "securityState": "neutral",
+                "protocol": network_protocol_for_url(&target.url),
+            },
+            "hasExtraInfo": false,
+        }),
+        session_id,
+    )
+}
+
+fn network_loading_finished_notification(
+    target: &Target,
+    timestamp: u64,
+    session_id: Option<&str>,
+) -> String {
+    notification(
+        "Network.loadingFinished",
+        json!({
+            "requestId": network_request_id(target),
+            "timestamp": timestamp,
+            "encodedDataLength": 0,
+        }),
+        session_id,
+    )
+}
+
+fn network_request_id(target: &Target) -> String {
+    format!("request-{}", target.loader_id)
+}
+
+fn network_protocol_for_url(raw: &str) -> &'static str {
+    match url::Url::parse(raw).ok().map(|url| url.scheme().to_owned()) {
+        Some(scheme) if scheme == "https" => "h2",
+        Some(scheme) if scheme == "http" => "http/1.1",
+        Some(scheme) if scheme == "file" => "file",
+        Some(scheme) if scheme == "about" => "about",
+        _ => "unknown",
+    }
+}
+
 fn remote_object_from_console_arg(arg: &JsConsoleArg) -> Value {
     let mut object = serde_json::Map::new();
     object.insert("type".to_owned(), json!(arg.type_name));
@@ -3167,6 +3546,31 @@ mod tests {
         assert!(v["product"].as_str().unwrap().starts_with("Vixen/"));
         assert_eq!(v["jsVersion"], "V8 (deno_core)");
 
+        let v = dispatch_one(
+            &mut s,
+            "Browser.setDownloadBehavior",
+            json!({ "behavior": "allow", "downloadPath": "/tmp/vixen-downloads", "eventsEnabled": true }),
+        );
+        assert_eq!(v, json!({}));
+        assert_eq!(s.download_behavior.policy, DownloadPolicy::Allow);
+        assert_eq!(
+            s.download_behavior.download_path.as_deref(),
+            Some("/tmp/vixen-downloads")
+        );
+        assert!(s.download_behavior.events_enabled);
+
+        let req = CdpRequest {
+            id: 4,
+            session_id: None,
+            method: "Browser.setDownloadBehavior".into(),
+            params: json!({ "behavior": "allow" }),
+        };
+        let err = s
+            .dispatch(&req)
+            .response
+            .expect_err("missing downloadPath should fail");
+        assert_eq!(err.code, -32602);
+
         // Target.createTarget — returns a targetId.
         let v = dispatch_one(
             &mut s,
@@ -3181,7 +3585,7 @@ mod tests {
             "Target.attachToTarget",
             json!({ "targetId": "tab-1" }),
         );
-        assert!(v["sessionId"].as_str().unwrap().starts_with("sess-"));
+        assert_eq!(v["sessionId"], "sess-3");
 
         let v = dispatch_one(&mut s, "Target.getTargets", json!({}));
         assert_eq!(v["targetInfos"].as_array().unwrap().len(), 1);
@@ -3305,6 +3709,138 @@ mod tests {
         assert_eq!(detached["method"], "Target.detachedFromTarget");
         assert_eq!(detached["params"]["targetId"], target_id);
         assert!(s.targets.is_empty());
+    }
+
+    #[test]
+    fn target_attach_routes_new_session_to_requested_target_and_detaches() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = dir.path().join("one.html");
+        let two = dir.path().join("two.html");
+        std::fs::write(&one, "<title>One</title>").unwrap();
+        std::fs::write(&two, "<title>Two</title>").unwrap();
+
+        let mut s = CdpState::default();
+        let first = dispatch_one(
+            &mut s,
+            "Target.createTarget",
+            json!({ "url": format!("file://{}", one.display()) }),
+        );
+        let second = dispatch_one(
+            &mut s,
+            "Target.createTarget",
+            json!({ "url": format!("file://{}", two.display()) }),
+        );
+        assert_eq!(first["targetId"], "tab-1");
+        assert_eq!(second["targetId"], "tab-3");
+
+        let attached = dispatch_one(
+            &mut s,
+            "Target.attachToTarget",
+            json!({ "targetId": second["targetId"].as_str().unwrap(), "flatten": true }),
+        );
+        let session_id = attached["sessionId"].as_str().unwrap();
+        assert_eq!(session_id, "sess-5");
+
+        let frame_req = CdpRequest {
+            id: 11,
+            session_id: Some(session_id.to_owned()),
+            method: "Page.getFrameTree".to_owned(),
+            params: json!({}),
+        };
+        let frame = s.dispatch(&frame_req).response.expect("frame tree");
+        assert_eq!(frame["frameTree"]["frame"]["id"], "tab-3");
+        assert!(
+            frame["frameTree"]["frame"]["url"]
+                .as_str()
+                .unwrap()
+                .ends_with("two.html")
+        );
+
+        let detach_req = CdpRequest {
+            id: 12,
+            session_id: None,
+            method: "Target.detachFromTarget".to_owned(),
+            params: json!({ "sessionId": session_id }),
+        };
+        let detached = s.dispatch(&detach_req);
+        assert_eq!(detached.response.expect("detach"), json!({}));
+        let notification: Value = serde_json::from_str(&detached.notifications[0]).unwrap();
+        assert_eq!(notification["method"], "Target.detachedFromTarget");
+        assert_eq!(notification["params"]["sessionId"], "sess-5");
+        assert_eq!(notification["params"]["targetId"], "tab-3");
+        assert_eq!(s.targets.len(), 2, "detach must not close the target");
+        assert!(
+            s.attached_sessions.is_empty(),
+            "detach drops only the routed session"
+        );
+    }
+
+    #[test]
+    fn network_enable_emits_top_level_navigation_events() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("network.html");
+        std::fs::write(&html, "<title>Network</title>").unwrap();
+        let url = format!("file://{}", html.display());
+
+        let mut s = CdpState::default();
+        dispatch_one(&mut s, "Network.enable", json!({}));
+        let navigate = CdpRequest {
+            id: 1,
+            session_id: Some("sess-2".to_owned()),
+            method: "Page.navigate".to_owned(),
+            params: json!({ "url": url }),
+        };
+        let outcome = s.dispatch(&navigate);
+        let response = outcome.response.expect("navigate response");
+        let loader_id = response["loaderId"].as_str().unwrap();
+        let notifications = outcome
+            .notifications
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+
+        let request = notifications
+            .iter()
+            .find(|event| event["method"] == "Network.requestWillBeSent")
+            .expect("request event");
+        assert_eq!(request["sessionId"], "sess-2");
+        assert_eq!(request["params"]["loaderId"], loader_id);
+        assert_eq!(request["params"]["request"]["method"], "GET");
+        assert!(
+            request["params"]["request"]["url"]
+                .as_str()
+                .unwrap()
+                .ends_with("network.html")
+        );
+        let request_id = request["params"]["requestId"].clone();
+
+        let response = notifications
+            .iter()
+            .find(|event| event["method"] == "Network.responseReceived")
+            .expect("response event");
+        assert_eq!(response["params"]["requestId"], request_id);
+        assert_eq!(response["params"]["type"], "Document");
+        assert_eq!(response["params"]["response"]["status"], 200);
+        assert_eq!(response["params"]["response"]["mimeType"], "text/html");
+
+        let finished = notifications
+            .iter()
+            .find(|event| event["method"] == "Network.loadingFinished")
+            .expect("loadingFinished event");
+        assert_eq!(finished["params"]["requestId"], request_id);
+
+        dispatch_one(&mut s, "Network.disable", json!({}));
+        let second = s.dispatch(&CdpRequest {
+            id: 2,
+            session_id: None,
+            method: "Page.navigate".to_owned(),
+            params: json!({ "url": "about:blank" }),
+        });
+        assert!(second.notifications.iter().all(|line| {
+            serde_json::from_str::<Value>(line).unwrap()["method"]
+                .as_str()
+                .is_some_and(|method| !method.starts_with("Network."))
+        }));
     }
 
     #[test]
@@ -3750,6 +4286,52 @@ mod tests {
         assert!(closed.notifications.iter().any(|line| {
             serde_json::from_str::<Value>(line).unwrap()["method"] == "Page.javascriptDialogClosed"
         }));
+    }
+
+    #[test]
+    fn dom_query_methods_project_page_selectors() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("query.html");
+        std::fs::write(
+            &html,
+            "<main id='root'><button id='hit'>Go</button><p class='note'>One</p><p class='note'>Two</p></main>",
+        )
+        .unwrap();
+        let url = format!("file://{}", html.display());
+
+        let mut s = CdpState::default();
+        dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
+
+        let document = dispatch_one(&mut s, "DOM.getDocument", json!({ "depth": 1 }));
+        assert_eq!(document["root"]["nodeId"], CDP_DOCUMENT_NODE_ID);
+        assert_eq!(document["root"]["nodeType"], 9);
+        assert_eq!(document["root"]["children"][0]["localName"], "html");
+
+        let hit = dispatch_one(
+            &mut s,
+            "DOM.querySelector",
+            json!({ "nodeId": CDP_DOCUMENT_NODE_ID, "selector": "#hit" }),
+        );
+        let hit_node_id = hit["nodeId"].as_u64().expect("button node id");
+        assert!(hit_node_id > 0);
+
+        let missing = dispatch_one(
+            &mut s,
+            "DOM.querySelector",
+            json!({ "nodeId": CDP_DOCUMENT_NODE_ID, "selector": "#missing" }),
+        );
+        assert_eq!(missing["nodeId"], 0);
+
+        let notes = dispatch_one(
+            &mut s,
+            "DOM.querySelectorAll",
+            json!({ "nodeId": CDP_DOCUMENT_NODE_ID, "selector": ".note" }),
+        );
+        let note_ids = notes["nodeIds"].as_array().expect("node id list");
+        assert_eq!(note_ids.len(), 2);
+
+        let described = dispatch_one(&mut s, "DOM.describeNode", json!({ "nodeId": hit_node_id }));
+        assert_eq!(described["node"]["localName"], "button");
     }
 
     #[test]

@@ -72,6 +72,31 @@ Rules:
 - Permissions and origin policy checks stay near the operation that crosses the
   trust boundary.
 
+## DOM maintenance comparison
+
+Staying on `deno_core` is still the lower-maintenance path for a stable browser
+DOM surface. Deno's runtime is built from the same extension/op/WebIDL pattern
+Vixen already uses, and Deno publishes separable extension crates for many
+state-light Web APIs (`deno_web`, `deno_fetch`, `deno_webstorage`, etc.). Those
+crates can be evaluated family-by-family to reduce Vixen-owned code for value
+objects, streams, fetch plumbing, storage scaffolding, and WebIDL conversions.
+
+Neither Deno nor Bun gives Vixen a drop-in browser document tree: Vixen still
+owns `Document`/`Node`/`Element`/`HTMLElement`, selector integration, mutation
+commit, layout-backed geometry, CSSOM, navigation, and origin/security policy
+because those APIs must talk to Vixen's `Page`, Stylo/layout, `vixen-net`, and
+`vixen-store` state. The best code-reduction strategy is therefore to reuse
+Deno-style non-DOM host families where they fit while keeping the DOM tree
+Vixen-owned.
+
+Bun/JSC does not lower that maintenance burden today. Bun has substantial
+WebCore-flavoured implementations for runtime APIs such as Blob, Request,
+Response, streams, encoding, and fetch, but its Rust crates are internal to the
+Bun executable: they depend on generated code, Bun-specific globals/event-loop
+state, C++ WebKit/JSC shims, and Node/Bun compatibility layers. Adopting them
+would replace Vixen's current op modules with a larger forked embedding surface
+without providing a maintained browser DOM tree for Vixen's `Page` model.
+
 ## Cache and size notes
 
 Expect V8/`rusty_v8` artifacts to dominate JS runtime packaging. Keep Cargo and

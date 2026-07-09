@@ -503,19 +503,6 @@ fn run_eval(url: &str, js: &str) -> ExitCode {
         }
     };
 
-    if let Some(result) = run_dom_eval_on_page(&page, js) {
-        return match result {
-            Ok(value) => {
-                println!("{value}");
-                ExitCode::SUCCESS
-            }
-            Err(e) => {
-                eprintln!("error: {e}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-
     let mut rt = match JsRuntime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -524,16 +511,35 @@ fn run_eval(url: &str, js: &str) -> ExitCode {
         }
     };
 
-    // `--url` is the page context. Legacy broad DOM smoke expressions are
-    // handled above; the first DOM host-object slice falls through here so the
-    // JS runtime sees a real `document` snapshot in the global.
+    // `--url` is the page context. The runtime host is the product eval path;
+    // the old Page string projection is now only a compatibility fallback for
+    // legacy smoke expressions that are intentionally not routed to the host yet.
     if let Err(e) = rt.execute_page_scripts(&mut page) {
+        if let Some(result) = run_dom_eval_on_page(&page, js) {
+            return print_dom_eval_result(result);
+        }
         eprintln!("error: page script failed: {e}");
         return ExitCode::FAILURE;
     }
     match rt.evaluate_with_page_mut(js, &mut page) {
         Ok(value) => {
             println!("{}", value.to_display());
+            ExitCode::SUCCESS
+        }
+        Err(e) => {
+            if let Some(result) = run_dom_eval_on_page(&page, js) {
+                return print_dom_eval_result(result);
+            }
+            eprintln!("error: {e}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn print_dom_eval_result(result: Result<String, String>) -> ExitCode {
+    match result {
+        Ok(value) => {
+            println!("{value}");
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -618,6 +624,27 @@ fn runtime_web_api_eval(js: &str) -> bool {
         || js.starts_with("structuredClone(")
         || js.starts_with("new MutationObserver(")
         || js.starts_with("new Headers(")
+        || js.starts_with("new Blob(")
+        || js.starts_with("new File(")
+        || js.starts_with("new Request(")
+        || js.starts_with("new Response(")
+        || js.starts_with("Response.")
+        || js.starts_with("new DOMPoint(")
+        || js.starts_with("DOMPoint.")
+        || js.starts_with("new DOMRect(")
+        || js.starts_with("DOMRect.")
+        || js.starts_with("DOMQuad.")
+        || js.starts_with("new DOMMatrix(")
+        || js.starts_with("DOMMatrix.")
+        || js.starts_with("new Event(")
+        || js.starts_with("new CustomEvent(")
+        || js.starts_with("new TextEncoder(")
+        || js.starts_with("new TextDecoder(")
+        || js.starts_with("btoa(")
+        || js.starts_with("atob(")
+        || js.starts_with("window.btoa(")
+        || js.starts_with("window.atob(")
+        || js.starts_with("new DOMParser(")
         || js.starts_with("new AbortController()")
         || js.starts_with("AbortSignal.")
         || js.starts_with("new URL(")
@@ -667,6 +694,27 @@ pub(crate) fn looks_like_dom_eval(js: &str) -> bool {
         || js.starts_with("structuredClone(")
         || js.starts_with("new MutationObserver(")
         || js.starts_with("new Headers(")
+        || js.starts_with("new Blob(")
+        || js.starts_with("new File(")
+        || js.starts_with("new Request(")
+        || js.starts_with("new Response(")
+        || js.starts_with("Response.")
+        || js.starts_with("new DOMPoint(")
+        || js.starts_with("DOMPoint.")
+        || js.starts_with("new DOMRect(")
+        || js.starts_with("DOMRect.")
+        || js.starts_with("DOMQuad.")
+        || js.starts_with("new DOMMatrix(")
+        || js.starts_with("DOMMatrix.")
+        || js.starts_with("new Event(")
+        || js.starts_with("new CustomEvent(")
+        || js.starts_with("new TextEncoder(")
+        || js.starts_with("new TextDecoder(")
+        || js.starts_with("btoa(")
+        || js.starts_with("atob(")
+        || js.starts_with("window.btoa(")
+        || js.starts_with("window.atob(")
+        || js.starts_with("new DOMParser(")
         || js.starts_with("new AbortController()")
         || js.starts_with("AbortSignal.")
         || js.starts_with("new URL(")
@@ -1386,7 +1434,7 @@ mod tests {
         let html = dir.path().join("title.html");
         std::fs::write(
             &html,
-            "<html><head><title>DOM title</title><style>#lead { color: blue; }</style><link id='theme' rel='stylesheet alternate'></head><body><p id='lead' class='note callout' data-author-name='ada'>body</p><form id='f' method='POST' enctype='multipart/form-data' action='/submit'></form><iframe id='frame' sandbox='allow-scripts'></iframe></body></html>",
+            "<html><head><title>DOM title</title><style>#lead { color: blue; }</style><link id='theme' rel='stylesheet alternate'></head><body><p id='lead' class='note callout' data-author-name='ada'>body</p><form id='f' method='POST' enctype='multipart/form-data' action='/submit'></form><iframe id='frame' sandbox='allow-scripts'></iframe><img id='widths' src='small.jpg' srcset='small.jpg 480w, medium.jpg 800w' sizes='100vw'></body></html>",
         )
         .unwrap();
         let url = format!("file://{}", html.display());
@@ -1444,6 +1492,9 @@ mod tests {
             "document.querySelector('#lead').dataset['authorName']"
         ));
         assert!(uses_runtime_dom_eval(
+            "document.querySelector('#widths').currentSrc"
+        ));
+        assert!(uses_runtime_dom_eval(
             "getComputedStyle(document.querySelector('#lead')).color"
         ));
         assert!(uses_runtime_dom_eval(
@@ -1472,16 +1523,66 @@ mod tests {
         assert!(uses_runtime_dom_eval(
             "new Headers([['X-Test', 'a']]).get('x-test')"
         ));
+        assert!(uses_runtime_dom_eval("new Blob(['Hi']).size"));
+        assert!(uses_runtime_dom_eval(
+            "new File(['hello'], 'note.txt').name"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "new Response('Created', { status: 201 }).status"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "Response.json({ok:true}, { status: 201 }).status"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "new Request('https://example.com/api').method"
+        ));
+        assert!(uses_runtime_dom_eval("new DOMPoint(1,2,3,4).z"));
+        assert!(uses_runtime_dom_eval(
+            "DOMRect.fromRect({x:1,y:2,width:3,height:4}).bottom"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "DOMQuad.fromRect({x:1,y:2,width:3,height:4}).getBounds().height"
+        ));
+        assert!(uses_runtime_dom_eval("new DOMMatrix().is2D"));
+        assert!(uses_runtime_dom_eval("new Event('message').type"));
+        assert!(uses_runtime_dom_eval(
+            "new CustomEvent('note', {detail:'payload'}).detail"
+        ));
+        assert!(uses_runtime_dom_eval("new TextEncoder().encoding"));
+        assert!(uses_runtime_dom_eval(
+            "new TextDecoder('utf-8', { fatal: true }).fatal"
+        ));
+        assert!(uses_runtime_dom_eval("btoa('Vixen')"));
+        assert!(uses_runtime_dom_eval(
+            "new DOMParser().parseFromString(\"<p>ok</p>\", 'text/html').body.textContent"
+        ));
         assert!(uses_runtime_dom_eval(
             "structuredClone(new Map([['answer', 42]])).get('answer')"
         ));
         assert!(uses_runtime_dom_eval(
             "new URL('/other', 'https://example.com/app/page').href"
         ));
+        assert!(uses_runtime_dom_eval("URL.canParse('://bad')"));
+        assert!(uses_runtime_dom_eval(
+            "new URLPattern({ pathname: '/posts/:id' }).test({ pathname: '/posts/42' })"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "new URLSearchParams('?q=rust+lang&tag=web&tag=engine').get('q')"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "new AbortController().signal.aborted"
+        ));
+        assert!(uses_runtime_dom_eval("AbortSignal.timeout(0).aborted"));
         assert!(uses_runtime_dom_eval("navigator.onLine"));
+        assert!(uses_runtime_dom_eval("typeof performance.now()"));
+        assert!(uses_runtime_dom_eval(
+            "matchMedia('(min-width: 800px)').matches"
+        ));
         assert!(uses_runtime_dom_eval(
             "localStorage.setItem('mode', 'dark')"
         ));
+        assert!(uses_runtime_dom_eval("history.length"));
+        assert!(uses_runtime_dom_eval("window.history.scrollRestoration"));
         assert!(uses_runtime_dom_eval(
             "matchMedia('(min-width: 800px)').matches"
         ));
@@ -1512,6 +1613,10 @@ mod tests {
             None
         );
         assert_eq!(
+            run_dom_eval(&url, "document.querySelector('#widths').currentSrc"),
+            None
+        );
+        assert_eq!(
             run_dom_eval(
                 &url,
                 "getComputedStyle(document.querySelector('#lead')).color"
@@ -1535,14 +1640,99 @@ mod tests {
             run_dom_eval(&url, "new Headers([['X-Test', 'a']]).get('x-test')"),
             None
         );
+        assert_eq!(run_dom_eval(&url, "new Blob(['Hi']).size"), None);
+        assert_eq!(
+            run_dom_eval(&url, "new File(['hello'], 'note.txt').name"),
+            None
+        );
+        assert_eq!(
+            run_dom_eval(&url, "new Response('Created', { status: 201 }).status"),
+            None
+        );
+        assert_eq!(
+            run_dom_eval(&url, "Response.json({ok:true}, { status: 201 }).status"),
+            None
+        );
+        assert_eq!(
+            run_dom_eval(&url, "new Request('https://example.com/api').method"),
+            None
+        );
+        assert_eq!(run_dom_eval(&url, "new DOMPoint(1,2,3,4).z"), None);
+        assert_eq!(
+            run_dom_eval(&url, "DOMRect.fromRect({x:1,y:2,width:3,height:4}).bottom"),
+            None
+        );
+        assert_eq!(
+            run_dom_eval(
+                &url,
+                "DOMQuad.fromRect({x:1,y:2,width:3,height:4}).getBounds().height"
+            ),
+            None
+        );
+        assert_eq!(run_dom_eval(&url, "new DOMMatrix().is2D"), None);
+        assert_eq!(run_dom_eval(&url, "new Event('message').type"), None);
+        assert_eq!(
+            run_dom_eval(&url, "new CustomEvent('note', {detail:'payload'}).detail"),
+            None
+        );
+        assert_eq!(run_dom_eval(&url, "new TextEncoder().encoding"), None);
+        assert_eq!(
+            run_dom_eval(&url, "new TextDecoder('utf-8', { fatal: true }).fatal"),
+            None
+        );
+        assert_eq!(run_dom_eval(&url, "btoa('Vixen')"), None);
+        assert_eq!(
+            run_dom_eval(
+                &url,
+                "new DOMParser().parseFromString(\"<p>ok</p>\", 'text/html').body.textContent"
+            ),
+            None
+        );
+        assert_eq!(
+            run_dom_eval(
+                &url,
+                "new URL('/other', 'https://example.com/app/page').href"
+            ),
+            None
+        );
+        assert_eq!(run_dom_eval(&url, "URL.canParse('://bad')"), None);
+        assert_eq!(
+            run_dom_eval(
+                &url,
+                "new URLPattern({ pathname: '/posts/:id' }).test({ pathname: '/posts/42' })"
+            ),
+            None
+        );
+        assert_eq!(
+            run_dom_eval(
+                &url,
+                "new URLSearchParams('?q=rust+lang&tag=web&tag=engine').get('q')"
+            ),
+            None
+        );
+        assert_eq!(
+            run_dom_eval(&url, "new AbortController().signal.aborted"),
+            None
+        );
+        assert_eq!(run_dom_eval(&url, "AbortSignal.timeout(0).aborted"), None);
         assert_eq!(run_dom_eval(&url, "navigator.onLine"), None);
+        assert_eq!(run_dom_eval(&url, "typeof performance.now()"), None);
+        assert_eq!(
+            run_dom_eval(&url, "matchMedia('(min-width: 800px)').matches"),
+            None
+        );
         assert_eq!(run_dom_eval(&url, "localStorage.length"), None);
+        assert_eq!(run_dom_eval(&url, "history.length"), None);
     }
 
     #[test]
     fn encoding_eval_uses_runtime_host_constructors() {
-        assert!(!looks_like_dom_eval("new TextEncoder().encoding"));
-        assert!(!looks_like_dom_eval(
+        assert!(looks_like_dom_eval("new TextEncoder().encoding"));
+        assert!(uses_runtime_dom_eval("new TextEncoder().encoding"));
+        assert!(looks_like_dom_eval(
+            "new TextDecoder('utf-8', { fatal: true }).fatal"
+        ));
+        assert!(uses_runtime_dom_eval(
             "new TextDecoder('utf-8', { fatal: true }).fatal"
         ));
     }

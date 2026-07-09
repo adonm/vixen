@@ -52,6 +52,15 @@ async function waitForValue(session, expression, predicate, label) {
   fail(`${label} did not settle: ${JSON.stringify(value)}`);
 }
 
+async function waitForCondition(predicate, label) {
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  fail(`${label} did not settle`);
+}
+
 async function stopServer(child) {
   if (child.exitCode !== null) return;
   child.kill('SIGTERM');
@@ -127,6 +136,11 @@ async function main() {
 
     await session.send('Runtime.enable');
     await session.send('Page.enable');
+    const networkEvents = [];
+    for (const method of ['Network.requestWillBeSent', 'Network.responseReceived', 'Network.loadingFinished']) {
+      session.on(method, (event) => networkEvents.push({ method, event }));
+    }
+    await session.send('Network.enable');
     const targets = await session.send('Target.getTargets');
     if (!Array.isArray(targets.targetInfos) || targets.targetInfos.length < 1) {
       fail('Target.getTargets returned no page targets');
@@ -137,9 +151,46 @@ async function main() {
     });
 
     await session.send('Page.navigate', { url: fixtureUrl });
+    await waitForCondition(
+      () => ['Network.requestWillBeSent', 'Network.responseReceived', 'Network.loadingFinished'].every((method) => networkEvents.some((entry) => entry.method === method)),
+      'Network navigation events',
+    );
+    const requestEvent = networkEvents.find((entry) => entry.method === 'Network.requestWillBeSent')?.event;
+    const responseEvent = networkEvents.find((entry) => entry.method === 'Network.responseReceived')?.event;
+    const finishedEvent = networkEvents.find((entry) => entry.method === 'Network.loadingFinished')?.event;
+    if (!requestEvent?.requestId || requestEvent.request?.url !== fixtureUrl || requestEvent.request?.method !== 'GET') {
+      fail(`Network.requestWillBeSent did not describe the navigation: ${JSON.stringify(requestEvent)}`);
+    }
+    if (responseEvent?.requestId !== requestEvent.requestId || responseEvent.response?.status !== 200 || responseEvent.type !== 'Document') {
+      fail(`Network.responseReceived did not match the navigation: ${JSON.stringify(responseEvent)}`);
+    }
+    if (finishedEvent?.requestId !== requestEvent.requestId) {
+      fail(`Network.loadingFinished did not match the navigation: ${JSON.stringify(finishedEvent)}`);
+    }
     const title = await evaluateValue(session, 'document.title');
     if (title !== 'Vixen CDP Playwright Smoke') {
       fail(`unexpected document title: ${JSON.stringify(title)}`);
+    }
+    const domDocument = await session.send('DOM.getDocument', { depth: 1 });
+    const rootNodeId = domDocument.root?.nodeId;
+    if (!rootNodeId || domDocument.root?.nodeType !== 9) {
+      fail(`DOM.getDocument did not return a document root: ${JSON.stringify(domDocument)}`);
+    }
+    const domHit = await session.send('DOM.querySelector', { nodeId: rootNodeId, selector: '#hit' });
+    if (!domHit.nodeId) {
+      fail(`DOM.querySelector did not find #hit: ${JSON.stringify(domHit)}`);
+    }
+    const domForms = await session.send('DOM.querySelectorAll', { nodeId: rootNodeId, selector: 'form' });
+    if (!Array.isArray(domForms.nodeIds) || domForms.nodeIds.length !== 2) {
+      fail(`DOM.querySelectorAll did not return both forms: ${JSON.stringify(domForms)}`);
+    }
+    const domDescription = await session.send('DOM.describeNode', { nodeId: domHit.nodeId });
+    if (domDescription.node?.localName !== 'button') {
+      fail(`DOM.describeNode did not describe #hit as a button: ${JSON.stringify(domDescription)}`);
+    }
+    const domResolved = await session.send('DOM.resolveNode', { nodeId: domHit.nodeId });
+    if (domResolved.object?.subtype !== 'node') {
+      fail(`DOM.resolveNode did not return a node remote object: ${JSON.stringify(domResolved)}`);
     }
     const initScriptValue = await evaluateValue(session, 'globalThis.__playwrightInitScriptValue');
     if (initScriptValue !== 'vixen-init-script') {

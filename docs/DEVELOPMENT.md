@@ -74,6 +74,23 @@ git diff --cached --check
 Adjust `just gate-push` as the alpha architecture changes; hk should keep
 calling that single recipe.
 
+### GTK shell / GNOME SDK blockers
+
+The supported GTK/libadwaita build path is **Podman + the flatpak-builder
+container**, not host-installed GNOME development packages. If a native
+`cargo check --features vixen-shell/gtk-shell` or `just shell-check` fails with
+missing `glib-2.0`, `gtk4`, or `libadwaita` `pkg-config` files, treat that as a
+host-environment limitation, not a product blocker. Verify shell changes with:
+
+```sh
+just flatpak-update-sdk
+just flatpak-build
+```
+
+Use native GTK development packages only for ad-hoc local work. Keep blocker
+notes explicit about this split so follow-up work points at the containerized
+Flatpak path before asking for host package installs.
+
 ## Larger alpha batches
 
 Larger batches are encouraged when they reduce handoff overhead **and** stay

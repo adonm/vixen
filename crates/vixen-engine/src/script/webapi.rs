@@ -8,13 +8,16 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use deno_core::serde_json::{Value, json};
 use deno_core::{Extension, ExtensionFileSource, OpState};
 use url::Url;
 use vixen_net::{CookieJar, Method, Network, NetworkConfig, TextResponse, validate_http_url};
+use vixen_store::Store;
 
 use crate::storage_key::{
     MAX_PARTITION_BYTES, StorageKeyError, StorageKind, StorageQuota, validate_storage_key,
@@ -22,18 +25,60 @@ use crate::storage_key::{
 };
 
 struct WebApiHost {
-    local_storage: Vec<(String, String)>,
-    session_storage: Vec<(String, String)>,
+    storage: WebStorageHost,
     network: Result<Network, String>,
 }
 
+type StorageEntries = Vec<(String, String)>;
+type MemoryStorageMap = Arc<Mutex<HashMap<String, StorageEntries>>>;
+
 impl WebApiHost {
-    fn new(network_config: NetworkConfig) -> Self {
+    fn new(network_config: NetworkConfig, storage: WebStorageHost) -> Self {
         Self {
-            local_storage: Vec::new(),
-            session_storage: Vec::new(),
+            storage,
             network: Network::new(network_config).map_err(|err| err.to_string()),
         }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct WebStorageHost {
+    backend: WebStorageBackend,
+    local_partition_key: String,
+    session_partition_key: String,
+}
+
+impl WebStorageHost {
+    pub(super) fn new(backend: WebStorageBackend, partitions: WebStoragePartitions) -> Self {
+        Self {
+            backend,
+            local_partition_key: partitions.local,
+            session_partition_key: partitions.session,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct WebStoragePartitions {
+    pub(super) local: String,
+    pub(super) session: String,
+}
+
+#[derive(Clone)]
+pub(super) enum WebStorageBackend {
+    Memory(MemoryStorageMap),
+    Store(Arc<Store>),
+}
+
+impl WebStorageBackend {
+    pub(super) fn memory() -> Self {
+        Self::Memory(Arc::new(Mutex::new(HashMap::new())))
+    }
+
+    pub(super) fn open(path: impl AsRef<Path>) -> Result<Self, String> {
+        Store::open(path)
+            .map(|store| Self::Store(Arc::new(store)))
+            .map_err(|err| err.to_string())
     }
 }
 
@@ -50,10 +95,10 @@ deno_core::extension!(
     ],
 );
 
-pub(super) fn extension(network_config: NetworkConfig) -> Extension {
+pub(super) fn extension(network_config: NetworkConfig, storage: WebStorageHost) -> Extension {
     let mut extension = vixen_webapi::init();
     extension.op_state_fn = Some(Box::new(move |state| {
-        state.put(WebApiHost::new(network_config));
+        state.put(WebApiHost::new(network_config, storage.clone()));
     }));
     extension.js_files = Cow::Owned(vec![ExtensionFileSource::new_computed(
         "ext:vixen_webapi/bootstrap.js",
@@ -65,7 +110,12 @@ pub(super) fn extension(network_config: NetworkConfig) -> Extension {
 #[deno_core::op2(fast)]
 fn op_vixen_storage_length(state: &mut OpState, #[string] kind: &str) -> u32 {
     let host = state.borrow::<WebApiHost>();
-    storage_entries(host, parse_storage_kind(kind)).len() as u32
+    let Some(kind) = parse_storage_kind(kind) else {
+        return 0;
+    };
+    storage_entries(host, kind)
+        .map(|entries| entries.len() as u32)
+        .unwrap_or(0)
 }
 
 #[deno_core::op2]
@@ -79,9 +129,13 @@ fn op_vixen_storage_key(
         return storage_error("unsupported Storage kind");
     };
     let host = state.borrow::<WebApiHost>();
+    let entries = match storage_entries(host, kind) {
+        Ok(entries) => entries,
+        Err(message) => return storage_error(message),
+    };
     json!({
         "ok": true,
-        "value": storage_entries(host, Some(kind))
+        "value": entries
             .get(index as usize)
             .map(|(key, _)| key.clone()),
     })
@@ -104,12 +158,10 @@ fn op_vixen_storage_get(
         return storage_key_error(err);
     }
     let host = state.borrow::<WebApiHost>();
-    storage_value(
-        storage_entries(host, Some(kind))
-            .iter()
-            .find(|(entry_key, _)| entry_key == &key)
-            .map(|(_, value)| value.clone()),
-    )
+    match storage_get_item(host, kind, &key) {
+        Ok(value) => storage_value(value),
+        Err(message) => storage_error(message),
+    }
 }
 
 #[deno_core::op2]
@@ -130,16 +182,17 @@ fn op_vixen_storage_set(
         return storage_key_error(err);
     }
 
-    let host = state.borrow_mut::<WebApiHost>();
-    let entries = storage_entries_mut(host, kind);
-    if let Err(err) = storage_check_quota(entries, &key, &value) {
+    let host = state.borrow::<WebApiHost>();
+    let entries = match storage_entries(host, kind) {
+        Ok(entries) => entries,
+        Err(message) => return storage_error(message),
+    };
+    if let Err(err) = storage_check_quota(&entries, &key, &value) {
         return storage_quota_error(err);
     }
 
-    if let Some((_, existing)) = entries.iter_mut().find(|(entry_key, _)| entry_key == &key) {
-        *existing = value;
-    } else {
-        entries.push((key, value));
+    if let Err(message) = storage_set_item(host, kind, key, value) {
+        return storage_error(message);
     }
     json!({ "ok": true })
 }
@@ -201,9 +254,11 @@ fn op_vixen_storage_remove(
         return storage_key_error(err);
     }
 
-    let host = state.borrow_mut::<WebApiHost>();
-    storage_entries_mut(host, kind).retain(|(entry_key, _)| entry_key != &key);
-    json!({ "ok": true })
+    let host = state.borrow::<WebApiHost>();
+    match storage_remove_item(host, kind, &key) {
+        Ok(()) => json!({ "ok": true }),
+        Err(message) => storage_error(message),
+    }
 }
 
 #[deno_core::op2]
@@ -215,9 +270,11 @@ fn op_vixen_storage_clear(
     let Some(kind) = parse_storage_kind(kind) else {
         return storage_error("unsupported Storage kind");
     };
-    let host = state.borrow_mut::<WebApiHost>();
-    storage_entries_mut(host, kind).clear();
-    json!({ "ok": true })
+    let host = state.borrow::<WebApiHost>();
+    match storage_clear(host, kind) {
+        Ok(()) => json!({ "ok": true }),
+        Err(message) => storage_error(message),
+    }
 }
 
 fn parse_storage_kind(kind: &str) -> Option<StorageKind> {
@@ -264,18 +321,107 @@ fn fetch_http_text_blocking(
         .map_err(|_| "fetch worker panicked".to_owned())?
 }
 
-fn storage_entries(host: &WebApiHost, kind: Option<StorageKind>) -> &[(String, String)] {
+fn storage_partition_key(host: &WebApiHost, kind: StorageKind) -> &str {
     match kind {
-        Some(StorageKind::Local) => &host.local_storage,
-        Some(StorageKind::Session) => &host.session_storage,
-        None => &[],
+        StorageKind::Local => &host.storage.local_partition_key,
+        StorageKind::Session => &host.storage.session_partition_key,
     }
 }
 
-fn storage_entries_mut(host: &mut WebApiHost, kind: StorageKind) -> &mut Vec<(String, String)> {
-    match kind {
-        StorageKind::Local => &mut host.local_storage,
-        StorageKind::Session => &mut host.session_storage,
+fn storage_entries(host: &WebApiHost, kind: StorageKind) -> Result<Vec<(String, String)>, String> {
+    let partition = storage_partition_key(host, kind);
+    match &host.storage.backend {
+        WebStorageBackend::Memory(map) => Ok(map
+            .lock()
+            .map_err(|_| "storage map poisoned".to_owned())?
+            .get(partition)
+            .cloned()
+            .unwrap_or_default()),
+        WebStorageBackend::Store(store) => store
+            .storage_entries(partition)
+            .map_err(|err| err.to_string()),
+    }
+}
+
+fn storage_get_item(
+    host: &WebApiHost,
+    kind: StorageKind,
+    key: &str,
+) -> Result<Option<String>, String> {
+    let partition = storage_partition_key(host, kind);
+    match &host.storage.backend {
+        WebStorageBackend::Memory(map) => Ok(map
+            .lock()
+            .map_err(|_| "storage map poisoned".to_owned())?
+            .get(partition)
+            .and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|(entry_key, _)| entry_key == key)
+                    .map(|(_, value)| value.clone())
+            })),
+        WebStorageBackend::Store(store) => store
+            .get_storage_item(partition, key)
+            .map_err(|err| err.to_string()),
+    }
+}
+
+fn storage_set_item(
+    host: &WebApiHost,
+    kind: StorageKind,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let partition = storage_partition_key(host, kind);
+    match &host.storage.backend {
+        WebStorageBackend::Memory(map) => {
+            let mut map = map.lock().map_err(|_| "storage map poisoned".to_owned())?;
+            let entries = map.entry(partition.to_owned()).or_default();
+            if let Some((_, existing)) = entries.iter_mut().find(|(entry_key, _)| entry_key == &key)
+            {
+                *existing = value;
+            } else {
+                entries.push((key, value));
+            }
+            Ok(())
+        }
+        WebStorageBackend::Store(store) => store
+            .put_storage_item(partition, &key, &value)
+            .map_err(|err| err.to_string()),
+    }
+}
+
+fn storage_remove_item(host: &WebApiHost, kind: StorageKind, key: &str) -> Result<(), String> {
+    let partition = storage_partition_key(host, kind);
+    match &host.storage.backend {
+        WebStorageBackend::Memory(map) => {
+            if let Some(entries) = map
+                .lock()
+                .map_err(|_| "storage map poisoned".to_owned())?
+                .get_mut(partition)
+            {
+                entries.retain(|(entry_key, _)| entry_key != key);
+            }
+            Ok(())
+        }
+        WebStorageBackend::Store(store) => store
+            .remove_storage_item(partition, key)
+            .map_err(|err| err.to_string()),
+    }
+}
+
+fn storage_clear(host: &WebApiHost, kind: StorageKind) -> Result<(), String> {
+    let partition = storage_partition_key(host, kind);
+    match &host.storage.backend {
+        WebStorageBackend::Memory(map) => {
+            map.lock()
+                .map_err(|_| "storage map poisoned".to_owned())?
+                .remove(partition);
+            Ok(())
+        }
+        WebStorageBackend::Store(store) => store
+            .clear_storage_partition(partition)
+            .map_err(|err| err.to_string()),
     }
 }
 

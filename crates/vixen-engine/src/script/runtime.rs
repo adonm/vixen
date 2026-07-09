@@ -19,11 +19,12 @@ pub(super) struct DenoRuntimeInit {
 pub(super) fn new_deno_runtime(
     page: Option<&Page>,
     network_config: NetworkConfig,
+    storage: webapi::WebStorageHost,
 ) -> Result<DenoRuntimeInit, EngineError> {
     let mut extensions = vec![
         webidl::extension(),
         encoding::extension(),
-        webapi::extension(network_config),
+        webapi::extension(network_config, storage),
     ];
     let mut dom_mutations = None;
     if let Some(page) = page {

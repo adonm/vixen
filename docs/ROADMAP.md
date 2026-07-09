@@ -18,23 +18,12 @@ These items are live enough to stop treating them as roadmap milestones:
 - CDP/Playwright smoke covers navigation, runtime evaluation, console/exception
   events, screenshot capture, flattened-session response echo, exposed bindings,
   init scripts, dialogs, and basic mouse/keyboard input.
-- The `deno_core` runtime host is the preferred eval path for WPT, headless, and
-  CDP; the legacy `Page::evaluate_dom_expression` path is now transitional debt.
+- The `deno_core` runtime host is the eval path for WPT, headless, and CDP;
+  `Page::evaluate_dom_expression` is only a fail-closed compatibility shim.
 
 ## Alpha to beta: make one small browser real
 
-1. **Retire legacy eval projections**
-   - Ban new `Page::evaluate_dom_expression` surface area; every new eval-visible
-     browser API must land in a `deno_core` host module first.
-   - Move remaining CSSOM, DOM, forms, history, storage, fetch, media-query, and
-     geometry projections into explicit runtime ops/resources or JS-only value
-     bootstraps when state-free.
-   - Keep a compatibility shim only for old smoke tests until equivalent runtime
-     coverage exists, then delete it in slices.
-   - Proof: `just gate-phase6`, CDP runtime tests, and imported DOM/Web API
-     fixture profiles with no legacy fallback for newly covered expressions.
-
-2. **Full page lifecycle over real backing stores**
+1. **Full page lifecycle over real backing stores**
    - Connect fetch, cookies, local/session storage, history, form submission,
      redirects, CSP, referrer policy, permissions, and session restore through
      `vixen-net`/`vixen-store` instead of in-memory runtime-only state.
@@ -46,7 +35,7 @@ These items are live enough to stop treating them as roadmap milestones:
    - Proof: network/storage/history WPT profiles, `vixen-net`/`vixen-store` tests,
      and CDP navigation/runtime integration tests.
 
-3. **Real layout broadening, not more projection tricks**
+2. **Real layout broadening, not more projection tricks**
    - Replace deterministic text metrics and compact layout shortcuts with the
      owned layout pipeline: block, inline, positioned, overflow/scroll, flex, grid,
      and enough intrinsic sizing for real sites.
@@ -58,7 +47,7 @@ These items are live enough to stop treating them as roadmap milestones:
    - Proof: `just gate-phase4`, imported layout profile pass counts in
      `COMPAT.md`, visual/ref fixtures, and realworld fixture screenshots.
 
-4. **Desktop shell becomes daily-smoke usable**
+3. **Desktop shell becomes daily-smoke usable**
    - Move from “window can display a page” to a tight browser vertical: tabs,
      URL/search entry, reload/stop, back/forward, find, zoom, downloads/status,
      permission prompts, and clear error states.
@@ -69,7 +58,7 @@ These items are live enough to stop treating them as roadmap milestones:
    - Proof: `just flatpak-build`, manual GNOME smoke, `just gate-smoke`, and a
      realworld fixture checklist documented in `COMPAT.md` or a smoke report.
 
-5. **Automation becomes a product surface**
+4. **Automation becomes a product surface**
    - Grow CDP toward the Playwright MVP: target/session lifecycle, runtime object
      handles/properties, DOM querying, input, navigation waits, screenshots,
      downloads, dialogs, console/network events, and stable error responses.
@@ -80,7 +69,7 @@ These items are live enough to stop treating them as roadmap milestones:
    - Proof: `docs/CDP_PLAYWRIGHT_SMOKE.md`, CDP integration tests, and at least
      one external Playwright smoke script recorded as a repeatable command.
 
-6. **Compatibility loop scales up**
+5. **Compatibility loop scales up**
    - Expand imported WPT profiles by user-visible risk, not by easy pass counts:
      layout, DOM/events/forms, storage/history/network, CSS cascade/values, then
      paint/ref tests.

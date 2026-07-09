@@ -10,10 +10,14 @@
 
 #![forbid(unsafe_code)]
 
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use crate::doc::{DocumentScriptItem, ExternalScript};
 use crate::engine_error::{EngineError, codes};
 use crate::mime::MimeType;
 use crate::page::Page;
+use crate::storage_key::{StorageKind, StoragePartition};
 
 mod cssom;
 mod dom;
@@ -25,6 +29,10 @@ mod webidl;
 /// Vixen's JavaScript runtime seam, backed by `deno_core`/V8.
 pub struct JsRuntime {
     network_config: vixen_net::NetworkConfig,
+    storage_backend: webapi::WebStorageBackend,
+    storage_temp_path: Option<PathBuf>,
+    storage_session_id: String,
+    storage_opaque_serial: u64,
     runtime: Option<deno_core::JsRuntime>,
     dom_mutations: Option<dom::DomMutationSink>,
     realm_key: RealmKey,
@@ -157,9 +165,54 @@ impl JsRuntime {
     pub fn with_network_config(
         network_config: vixen_net::NetworkConfig,
     ) -> Result<Self, EngineError> {
-        let init = runtime::new_deno_runtime(None, network_config.clone())?;
+        let (storage_backend, storage_temp_path) = temporary_storage_backend()?;
+        Self::with_storage_backend(network_config, storage_backend, storage_temp_path)
+    }
+
+    /// Initialise the runtime with persistent Web Storage at `path`.
+    pub fn with_storage_path(path: impl AsRef<Path>) -> Result<Self, EngineError> {
+        Self::with_network_config_and_storage_path(vixen_net::NetworkConfig::default(), path)
+    }
+
+    /// Initialise the runtime with both deterministic network config and a
+    /// persistent `vixen-store` Web Storage database.
+    pub fn with_network_config_and_storage_path(
+        network_config: vixen_net::NetworkConfig,
+        path: impl AsRef<Path>,
+    ) -> Result<Self, EngineError> {
+        let storage_backend =
+            webapi::WebStorageBackend::open(path.as_ref()).map_err(|message| {
+                EngineError::Other {
+                    code: codes::SCRIPT_EVAL,
+                    message: format!("Web Storage store initialisation failed: {message}"),
+                }
+            })?;
+        Self::with_storage_backend(network_config, storage_backend, None)
+    }
+
+    fn with_storage_backend(
+        network_config: vixen_net::NetworkConfig,
+        storage_backend: webapi::WebStorageBackend,
+        storage_temp_path: Option<PathBuf>,
+    ) -> Result<Self, EngineError> {
+        let storage_session_id = next_storage_session_id();
+        let storage_opaque_serial = 1;
+        let init = runtime::new_deno_runtime(
+            None,
+            network_config.clone(),
+            web_storage_host(
+                None,
+                &storage_backend,
+                &storage_session_id,
+                storage_opaque_serial,
+            ),
+        )?;
         Ok(Self {
             network_config,
+            storage_backend,
+            storage_temp_path,
+            storage_session_id,
+            storage_opaque_serial,
             runtime: Some(init.runtime),
             dom_mutations: init.dom_mutations,
             realm_key: RealmKey::NoPage,
@@ -377,7 +430,14 @@ impl JsRuntime {
             .unwrap_or(RealmKey::NoPage);
         if self.realm_key != target || self.runtime.is_none() {
             self.runtime = None;
-            let init = runtime::new_deno_runtime(page, self.network_config.clone())?;
+            self.storage_opaque_serial = self.storage_opaque_serial.saturating_add(1);
+            let storage = web_storage_host(
+                page,
+                &self.storage_backend,
+                &self.storage_session_id,
+                self.storage_opaque_serial,
+            );
+            let init = runtime::new_deno_runtime(page, self.network_config.clone(), storage)?;
             self.runtime = Some(init.runtime);
             self.dom_mutations = init.dom_mutations;
             self.realm_key = target;
@@ -681,6 +741,82 @@ fn page_origin(page: &Page) -> vixen_net::Origin {
         .unwrap_or_else(|_| vixen_net::Origin::opaque())
 }
 
+fn web_storage_host(
+    page: Option<&Page>,
+    backend: &webapi::WebStorageBackend,
+    session_id: &str,
+    opaque_serial: u64,
+) -> webapi::WebStorageHost {
+    webapi::WebStorageHost::new(
+        backend.clone(),
+        webapi::WebStoragePartitions {
+            local: web_storage_partition_key(page, StorageKind::Local, session_id, opaque_serial),
+            session: web_storage_partition_key(
+                page,
+                StorageKind::Session,
+                session_id,
+                opaque_serial,
+            ),
+        },
+    )
+}
+
+fn web_storage_partition_key(
+    page: Option<&Page>,
+    kind: StorageKind,
+    session_id: &str,
+    opaque_serial: u64,
+) -> String {
+    let origin = page
+        .map(page_origin)
+        .unwrap_or_else(vixen_net::Origin::opaque);
+    if !origin.is_opaque() {
+        return StoragePartition::new(origin, kind).partition_key();
+    }
+
+    let document_key = page
+        .map(page_realm_key)
+        .unwrap_or_else(|| "no-page".to_owned());
+    format!(
+        "storage:{}:opaque:{}",
+        kind.tag(),
+        stable_storage_hash(&format!("{session_id}\n{opaque_serial}\n{document_key}"))
+    )
+}
+
+fn stable_storage_hash(value: &str) -> String {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+static STORAGE_SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_storage_session_id() -> String {
+    format!(
+        "{}-{}",
+        std::process::id(),
+        STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    )
+}
+
+fn temporary_storage_backend() -> Result<(webapi::WebStorageBackend, Option<PathBuf>), EngineError>
+{
+    let path = std::env::temp_dir().join(format!(
+        "vixen-js-storage-{}-{}.redb",
+        std::process::id(),
+        STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    ));
+    let backend = webapi::WebStorageBackend::open(&path).map_err(|message| EngineError::Other {
+        code: codes::SCRIPT_EVAL,
+        message: format!("Web Storage store initialisation failed: {message}"),
+    })?;
+    Ok((backend, Some(path)))
+}
+
 fn load_external_page_script(
     network_config: &vixen_net::NetworkConfig,
     csp: &vixen_net::csp::ContentSecurityPolicy,
@@ -768,6 +904,16 @@ fn script_response_allowed(response: &vixen_net::TextResponse) -> bool {
 impl Default for JsRuntime {
     fn default() -> Self {
         Self::new().expect("deno_core runtime must initialise")
+    }
+}
+
+impl Drop for JsRuntime {
+    fn drop(&mut self) {
+        self.runtime = None;
+        self.storage_backend = webapi::WebStorageBackend::memory();
+        if let Some(path) = self.storage_temp_path.take() {
+            let _ = std::fs::remove_file(path);
+        }
     }
 }
 
@@ -1031,6 +1177,15 @@ mod tests {
             JsValue::Bool(true)
         );
         assert_eq!(
+            rt.evaluate("new Event('message').target === null").unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("new Event('message').composedPath().length")
+                .unwrap(),
+            JsValue::Int32(0)
+        );
+        assert_eq!(
             rt.evaluate("new CustomEvent('note', { detail: 'payload' }).detail")
                 .unwrap(),
             JsValue::String("payload".to_owned())
@@ -1053,7 +1208,17 @@ mod tests {
             JsValue::Int32(5)
         );
         assert_eq!(
+            rt.evaluate("DOMRect.fromRect({ x: 1, y: 2, width: 3, height: 4 }).bottom")
+                .unwrap(),
+            JsValue::Int32(6)
+        );
+        assert_eq!(
             rt.evaluate("DOMQuad.fromRect({ x: 1, y: 2, width: 3, height: 4 }).p3.x")
+                .unwrap(),
+            JsValue::Int32(4)
+        );
+        assert_eq!(
+            rt.evaluate("DOMQuad.fromRect({ x: 1, y: 2, width: 3, height: 4 }).getBounds().height")
                 .unwrap(),
             JsValue::Int32(4)
         );
@@ -1065,6 +1230,11 @@ mod tests {
             rt.evaluate("new DOMMatrix().translate(10, 20).transformPoint(new DOMPoint(1, 2)).y")
                 .unwrap(),
             JsValue::Int32(22)
+        );
+        assert_eq!(
+            rt.evaluate("new DOMMatrix().scale(2, 3).transformPoint(new DOMPoint(5, 5)).x")
+                .unwrap(),
+            JsValue::Int32(10)
         );
         assert_eq!(
             rt.evaluate(
@@ -1119,6 +1289,22 @@ mod tests {
             JsValue::String("text/plain;charset=UTF-8".to_owned())
         );
         assert_eq!(
+            rt.evaluate("Response.json({ok:true}, { status: 201 }).headers.get('content-type')")
+                .unwrap(),
+            JsValue::String("application/json".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("Response.error().status").unwrap(),
+            JsValue::Int32(0)
+        );
+        assert_eq!(
+            rt.evaluate(
+                "Response.redirect('https://example.com/target', 302).headers.get('location')"
+            )
+            .unwrap(),
+            JsValue::String("https://example.com/target".to_owned())
+        );
+        assert_eq!(
             rt.evaluate("new Request('https://example.com/api', { method: 'post', headers: [['Host', 'evil.test'], ['Accept', 'text/html']], body: 'hello' }).headers.has('host')")
                 .unwrap(),
             JsValue::Bool(false)
@@ -1129,9 +1315,51 @@ mod tests {
             JsValue::String("https://example.com/other".to_owned())
         );
         assert_eq!(
+            rt.evaluate("URL.canParse('/other', 'https://example.com/app/page')")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("URL.canParse('://bad')").unwrap(),
+            JsValue::Bool(false)
+        );
+        assert_eq!(
+            rt.evaluate("new URL('data:text/plain,Hello').origin")
+                .unwrap(),
+            JsValue::String("null".to_owned())
+        );
+        assert_eq!(
             rt.evaluate("new URLSearchParams('?q=rust+lang&tag=web&tag=engine').getAll('tag')[1]")
                 .unwrap(),
             JsValue::String("engine".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("new URLPattern({ pathname: '/posts/:id' }).exec({ pathname: '/posts/42' }).pathname.groups.id")
+                .unwrap(),
+            JsValue::String("42".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("typeof performance.now()").unwrap(),
+            JsValue::String("number".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("performance.timeOrigin + performance.now() >= performance.timeOrigin")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("matchMedia('(min-width: 800px)').matches")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("navigator.userAgent.includes('Vixen')")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("navigator.languages[0]").unwrap(),
+            JsValue::String("en-US".to_owned())
         );
         assert_eq!(
             rt.evaluate("(() => { localStorage.setItem('theme', 'dark'); return localStorage.getItem('theme') + ':' + localStorage.length + ':' + localStorage.key(0); })()")
@@ -1154,6 +1382,54 @@ mod tests {
             JsValue::Int32(42)
         );
         assert_eq!(
+            rt.evaluate("structuredClone('hello')").unwrap(),
+            JsValue::String("hello".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("structuredClone([1,2,3]).length").unwrap(),
+            JsValue::Int32(3)
+        );
+        assert_eq!(
+            rt.evaluate("structuredClone({greeting:'hello'}).greeting")
+                .unwrap(),
+            JsValue::String("hello".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("structuredClone(new Date(42)).getTime()")
+                .unwrap(),
+            JsValue::Int32(42)
+        );
+        assert_eq!(
+            rt.evaluate("structuredClone(new Map([['answer', 42]])).entries().next().value[0]")
+                .unwrap(),
+            JsValue::String("answer".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("structuredClone(new Set(['alpha','beta'])).has('beta')")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("structuredClone(new TypeError('boom')).message")
+                .unwrap(),
+            JsValue::String("boom".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("structuredClone(new TypeError('boom')).name")
+                .unwrap(),
+            JsValue::String("TypeError".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate("new MutationObserver(() => {}).takeRecords().length")
+                .unwrap(),
+            JsValue::Int32(0)
+        );
+        assert_eq!(
+            rt.evaluate("new MutationObserver(() => {}).disconnect()")
+                .unwrap(),
+            JsValue::Undefined
+        );
+        assert_eq!(
             rt.evaluate("new DOMParser().parseFromString(\"<main><p id='parsed'>Parsed</p></main>\", 'text/html').querySelector('#parsed').textContent")
                 .unwrap(),
             JsValue::String("Parsed".to_owned())
@@ -1167,6 +1443,10 @@ mod tests {
             rt.evaluate("AbortSignal.any([AbortSignal.timeout(0)]).aborted")
                 .unwrap(),
             JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("new AbortController().signal.aborted").unwrap(),
+            JsValue::Bool(false)
         );
 
         // Phase 6 DOM host-object backbone: page DOM data is projected into the
@@ -1453,6 +1733,35 @@ mod tests {
             JsValue::Bool(true)
         );
         assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('body > p:is(.note, .missing):not(.missing)').id",
+                &page
+            )
+            .unwrap(),
+            JsValue::String("lead".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('p:has(> b)').id", &page)
+                .unwrap(),
+            JsValue::String("lead".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelectorAll('body > :where(p, iframe)').length",
+                &page
+            )
+            .unwrap(),
+            JsValue::Int32(2)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead').matches('body > p:has(> b)')",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
             rt.evaluate_with_page("document.querySelector('#lead').classList.length", &page)
                 .unwrap(),
             JsValue::Int32(2)
@@ -1527,15 +1836,51 @@ mod tests {
                 .unwrap(),
             JsValue::Undefined
         );
+
+        let image_page = Page::from_html(
+            "file:///dom-image-host.html",
+            "<img id='widths' src='small.jpg' srcset='small.jpg 480w, medium.jpg 800w, large.jpg 1200w' sizes='100vw'>\
+             <img id='density' srcset='one.png 1x, two.png 2x'>\
+             <img id='fallback' src='fallback.jpg'>",
+        )
+        .unwrap();
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#widths').currentSrc", &image_page)
+                .unwrap(),
+            JsValue::String("medium.jpg".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.querySelector('#density').currentSrc", &image_page)
+                .unwrap(),
+            JsValue::String("one.png".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#fallback').currentSrc",
+                &image_page
+            )
+            .unwrap(),
+            JsValue::String("fallback.jpg".to_owned())
+        );
         assert_eq!(
             rt.evaluate_with_page("document.createRange().collapsed", &page)
                 .unwrap(),
             JsValue::Bool(true)
         );
         assert_eq!(
+            rt.evaluate_with_page("document.createRange().startOffset", &page)
+                .unwrap(),
+            JsValue::Int32(0)
+        );
+        assert_eq!(
             rt.evaluate_with_page("window.getSelection().rangeCount", &page)
                 .unwrap(),
             JsValue::Int32(0)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.getSelection().isCollapsed", &page)
+                .unwrap(),
+            JsValue::Bool(true)
         );
         assert_eq!(
             rt.evaluate_with_page(
@@ -1629,6 +1974,16 @@ mod tests {
             JsValue::Bool(true)
         );
         assert_eq!(
+            rt.evaluate_with_page("document.styleSheets[0].disabled", &page)
+                .unwrap(),
+            JsValue::Bool(false)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.styleSheets[0].ownerNode.tagName", &page)
+                .unwrap(),
+            JsValue::String("STYLE".to_owned())
+        );
+        assert_eq!(
             rt.evaluate_with_page("document.styleSheets[0].cssRules[0].selectorText", &page)
                 .unwrap(),
             JsValue::String("#lead".to_owned())
@@ -1666,6 +2021,11 @@ mod tests {
             rt.evaluate_with_page("document.styleSheets[0].cssRules[1].style[0]", &page)
                 .unwrap(),
             JsValue::String("margin-left".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.styleSheets[0].cssRules[0].style[1]", &page)
+                .unwrap(),
+            JsValue::String("font-size".to_owned())
         );
 
         let geometry_page = Page::from_html(
@@ -1833,6 +2193,22 @@ mod tests {
         );
         assert_eq!(
             rt.evaluate_with_page(
+                "new FormData(document.querySelector('#contact')).get('body')",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("Hello".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "new FormData(document.querySelector('#contact')).get('plan')",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("pro".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
                 "new FormData(document.querySelector('#contact')).getAll('format').length",
                 &form_page
             )
@@ -1841,11 +2217,67 @@ mod tests {
         );
         assert_eq!(
             rt.evaluate_with_page(
+                "new FormData(document.querySelector('#contact')).has('skip')",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::Bool(false)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "new FormData(document.querySelector('#contact')).get('missing') === null",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "new FormData(document.querySelector('#contact')).entries().next().value[0]",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("name".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "new FormData(document.querySelector('#contact')).entries().next().value[1]",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("Ada".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "new FormData(document.querySelector('#contact')).keys().next().value",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("name".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "new FormData(document.querySelector('#contact')).values().next().value",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("Ada".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
                 "new FormData(document.getElementById('upload')).get('attachment').type",
                 &form_page
             )
             .unwrap(),
             JsValue::String("application/octet-stream".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "new FormData(document.getElementById('upload')).get('attachment').size",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::Int32(0)
         );
         assert_eq!(
             rt.evaluate_with_page(
@@ -1924,6 +2356,73 @@ mod tests {
             )
             .unwrap(),
             JsValue::String("get:application/x-www-form-urlencoded".to_owned())
+        );
+
+        let validity_page = Page::from_html(
+            "file:///dom-validity-host.html",
+            "<form id='f'>\
+                <input id='email' type='email' required value='bad'>\
+                <input id='age' type='number' min='10' max='20' step='2' value='13'>\
+                <select id='plan' required><option value=''>pick</option><option value='pro' selected>Pro</option></select>\
+                <textarea id='notes' readonly>ok</textarea>\
+             </form>",
+        )
+        .unwrap();
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#email').willValidate",
+                &validity_page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const v = document.querySelector('#email').validity; return (v instanceof ValidityState) + ':' + v.typeMismatch + ':' + v.valid; })()",
+                &validity_page,
+            )
+            .unwrap(),
+            JsValue::String("true:true:false".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#age').validity.stepMismatch",
+                &validity_page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#plan').checkValidity()",
+                &validity_page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#notes').willValidate",
+                &validity_page
+            )
+            .unwrap(),
+            JsValue::Bool(false)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#f').checkValidity()",
+                &validity_page
+            )
+            .unwrap(),
+            JsValue::Bool(false)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const input = document.querySelector('#email'); input.value = 'ada@example.test'; input.setCustomValidity('nope'); const before = input.validity.customError; input.setCustomValidity(''); return before + ':' + input.checkValidity(); })()",
+                &validity_page,
+            )
+            .unwrap(),
+            JsValue::String("true:true".to_owned())
         );
 
         let traversal_page = Page::from_html(
@@ -2051,6 +2550,51 @@ mod tests {
     }
 
     #[test]
+    fn local_storage_round_trips_through_store_partitions() {
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-storage-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut rt = JsRuntime::with_storage_path(&path).expect("engine init");
+            let page = Page::from_html("https://store.test/one", "<p>one</p>").unwrap();
+            assert_eq!(
+                rt.evaluate_with_page(
+                    "localStorage.setItem('persist', 'yes'); sessionStorage.setItem('tab', 'one'); 'stored'",
+                    &page,
+                )
+                .unwrap(),
+                JsValue::String("stored".to_owned())
+            );
+        }
+
+        {
+            let mut rt = JsRuntime::with_storage_path(&path).expect("engine init");
+            let same_origin = Page::from_html("https://store.test/two", "<p>two</p>").unwrap();
+            assert_eq!(
+                rt.evaluate_with_page(
+                    "localStorage.getItem('persist') + ':' + sessionStorage.getItem('tab')",
+                    &same_origin,
+                )
+                .unwrap(),
+                JsValue::String("yes:one".to_owned())
+            );
+
+            let other_origin = Page::from_html("https://other.test/", "<p>other</p>").unwrap();
+            assert_eq!(
+                rt.evaluate_with_page("localStorage.getItem('persist')", &other_origin)
+                    .unwrap(),
+                JsValue::Null
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn page_eval_persists_until_page_snapshot_changes() {
         let mut rt = JsRuntime::new().expect("engine init");
         let page_one = Page::from_html(
@@ -2113,8 +2657,8 @@ mod tests {
         assert_eq!(value, JsValue::String("clicked".to_owned()));
         assert_eq!(page.text_content(), "clicked");
         assert_eq!(
-            page.evaluate_dom_expression("document.querySelector('#status').textContent"),
-            Some(Ok("clicked".to_owned()))
+            page.query_selector_all("#status").unwrap()[0].text,
+            "clicked"
         );
         assert!(page.dump_lines((200, 100)).contains("clicked"));
         assert!(page.dump_display_list((200, 100)).contains("clicked"));
@@ -2159,18 +2703,14 @@ mod tests {
             .unwrap();
 
         assert_eq!(value, JsValue::String("made:fresh:true".to_owned()));
-        assert_eq!(
-            page.evaluate_dom_expression(
-                "document.querySelector('#status').getAttribute('data-state')"
-            ),
-            Some(Ok("ready".to_owned()))
+        let status = &page.query_selector_all("#status").unwrap()[0];
+        assert!(
+            status
+                .attributes
+                .iter()
+                .any(|(name, value)| name == "data-state" && value == "ready")
         );
-        assert_eq!(
-            page.evaluate_dom_expression(
-                "document.querySelector('#status').classList.contains('active')"
-            ),
-            Some(Ok("true".to_owned()))
-        );
+        assert!(status.classes.iter().any(|class| class == "active"));
         let status_id = page.query_selector_all("#status").unwrap()[0].node_id;
         let computed = page.computed_style(status_id);
         assert!(computed.contains(&("display".to_owned(), "block".to_owned())));
@@ -2205,9 +2745,11 @@ mod tests {
 
         assert_eq!(value, JsValue::String("yes:12".to_owned()));
         assert_eq!(page.query_selector_all("script").unwrap().len(), 1);
-        assert_eq!(
-            page.evaluate_dom_expression("document.body.getAttribute('data-script-ran')"),
-            Some(Ok("yes".to_owned()))
+        assert!(
+            page.query_selector_all("body").unwrap()[0]
+                .attributes
+                .iter()
+                .any(|(name, value)| name == "data-script-ran" && value == "yes")
         );
     }
 
@@ -2281,9 +2823,11 @@ mod tests {
                     .to_owned()
             )
         );
-        assert_eq!(
-            page.evaluate_dom_expression("document.querySelector('#check').checked"),
-            Some(Ok("true".to_owned()))
+        assert!(
+            page.query_selector_all("#check").unwrap()[0]
+                .attributes
+                .iter()
+                .any(|(name, _)| name == "checked")
         );
 
         let value = rt
@@ -2395,6 +2939,25 @@ mod tests {
             ]
         );
         assert_eq!(rt.drain_navigation_actions().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn page_history_accessors_use_page_realm() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let page = Page::from_html(
+            "file:///nav/initial.html",
+            "<html><body><p>history accessors</p></body></html>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            rt.evaluate_with_page(
+                "history.length + ':' + window.history.length + ':' + history.state + ':' + history.scrollRestoration",
+                &page,
+            )
+            .unwrap(),
+            JsValue::String("1:1:null:auto".to_owned())
+        );
     }
 
     #[test]
