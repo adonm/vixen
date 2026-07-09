@@ -10,14 +10,14 @@ feature.
 
 ## Current measured local fixture baseline
 
-As of 2026-07-09, `fixtures/manifest.json` contains 52 local fixtures plus
+As of 2026-07-09, `fixtures/manifest.json` contains 59 local fixtures plus
 199 imported smoke fixtures:
 
 | Category | Fixtures |
 |----------|---------:|
 | css      | 17 |
 | css-cascade/css-values | 50 |
-| dom      | 10 |
+| dom      | 16 |
 | dom-core | 50 |
 | flexbox | 5 |
 | forms    | 27 |
@@ -27,24 +27,24 @@ As of 2026-07-09, `fixtures/manifest.json` contains 52 local fixtures plus
 | network  | 2 |
 | paint    | 4 |
 | paint/ref-equivalent | 8 |
-| security | 8 |
+| security | 9 |
 | selectors | 50 |
-| **Total** | **251** |
+| **Total** | **258** |
 
-Total manifest checks: **1841**.
+Total manifest checks: **1924**.
 
 Current check mix:
 
 | Check type | Count |
 |------------|------:|
-| `selector-count` | 364 |
+| `selector-count` | 381 |
 | `selectors-exact` | 223 |
-| `title` | 250 |
-| `js-eval` | 468 |
+| `title` | 257 |
+| `js-eval` | 526 |
 | `computed-style` | 170 |
 | `element-attribute` | 132 |
 | `layout-box` | 104 |
-| `body-contains` | 66 |
+| `body-contains` | 67 |
 | `visual-hash` | 25 |
 | `no-critical-diagnostics` | 20 |
 | `ref-equivalent` | 11 |
@@ -91,22 +91,36 @@ focus, and active-element shape included), op-backed in-memory Web Storage
 mutation with key/value validation and quota errors,
 `Event`/`CustomEvent`/`dispatchEvent()` smoke, CSSOM `CSS.supports()` /
 `document.styleSheets` plus CSSStyleRule / CSSStyleDeclaration read-only shape,
-viewport/window state, DOMRect geometry via `getBoundingClientRect()`,
-Geometry Interfaces value constructors (`DOMPoint`/`DOMRect`/`DOMQuad`/
-`DOMMatrix`), DOM ancestry/core-node projections (`closest()`, `nodeName`/
-`nodeType`, `ownerDocument`), `DOMParser`, `atob`/`btoa`, `classList`/
+viewport/window state, DOMRect geometry via `getBoundingClientRect()` /
+`getClientRects()`, client/offset/scroll metrics, `getBoxQuads()`, Range
+rectangles, Geometry
+Interfaces value constructors (`DOMPoint`/`DOMRect`/`DOMQuad`/`DOMMatrix`), DOM
+ancestry/core-node projections (`closest()`, `nodeName`/`nodeType`,
+`ownerDocument`), anchor URL decomposition/reflection, `DOMParser`, `atob`/`btoa`, `classList`/
 `relList`/`sandbox`, `dataset`, `ValidityState`/`checkValidity()`, `FormData`
-entry-list and iterator projection, meta/content reflection, `innerHTML`/`outerHTML`,
+entry-list and iterator projection plus runtime/CDP form submission by page node
+id with successful submitter overrides, runtime form reset/default-state restore,
+meta/content reflection,
+`innerHTML`/`outerHTML`,
 `URL.canParse()`, `data:` URL parsing, `new URL()`/`URLSearchParams` constructor and iterator seams,
 `TextEncoder`/`TextDecoder` (`encodeInto` and constructor options included),
-`<img>.currentSrc`, initial `Range`/`Selection`, read-only `history` accessors,
-`structuredClone`,
+`<img>.currentSrc` plus image alt/dimension/loading/decode reflection, inert
+media element state (`HTMLMediaElement`/audio/video constants included),
+resource element reflection (`link`/`style`/`script`/`source`), initial `Range`/`Selection`, read-only `history` accessors,
+details/dialog open-state reflection,
+miscellaneous HTML reflected attributes for lists, quotes, embedded content, and
+table cells,
+progress/meter numeric state,
+`structuredClone`, CDP `Runtime.awaitPromise` over stored promise handles,
 MutationObserver lifecycle, TreeWalker/NodeIterator traversal, `Headers`
 iteration, `Blob`/`File`, read-only `Request`/`Response` state with forbidden
 header filtering, `Response.error()` / `Response.redirect()` / `Response.json()`,
 op-backed `fetch()` HTTP(S) status/header/body reads plus URL-policy/private-host
-rejection, `AbortSignal`, `URLPattern`, Performance timing shape, and
-`matchMedia()` before the remaining host-object swap; Encoding API constructors,
+rejection with CDP `Network.loadingFailed` diagnostics, `AbortSignal`,
+`URLPattern`, CDP lifecycle opt-in (`init`/`commit`/`DOMContentLoaded`/`load`),
+Performance timing shape, `matchMedia()`, Permissions API query state,
+Notification permission state, and StorageManager estimate/persisted state backed
+by profile/storage records before the remaining host-object swap; Encoding API constructors,
 Web Storage mutation, focused `fetch()` success/blocking checks, sequential
 global/storage persistence across `Runtime.evaluate`, focused `document`/`Element`
 snapshot host-object evals, and read-only `DOMTokenList`/`DOMStringMap` property
@@ -117,6 +131,18 @@ paint; imported layout smoke covers auto margins, border-box sizing, inline
 flow, flex reverse/gaps, and grid `minmax()`/fractional row/gap cases. Imported
 paint smoke now covers currentcolor, overflow clipping, positioned boxes,
 flex/grid backgrounds, and nested background/text display-list equivalence.
+
+---
+
+## Current desktop shell smoke baseline
+
+The GTK/libadwaita shell is not a WPT surface, but alpha daily-smoke builds now
+expect one production profile to restore persisted tab URLs and the active tab
+through `vixen-store::SessionRecord`. Empty or unavailable profiles fall back to
+the configured start page; shell-written records are bounded to the store tab
+limit. GTK-free profile helpers also expose explicit clear-data selections that
+can preserve or clear session restore. Native `gtk-shell` checks may be
+host-package blocked; use the supported Flatpak build path for GUI verification.
 
 ---
 

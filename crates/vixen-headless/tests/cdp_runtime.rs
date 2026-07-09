@@ -724,6 +724,79 @@ fn runtime_navigation_history_and_form_actions_update_page() {
 }
 
 #[test]
+fn runtime_form_submit_uses_node_id_submitter_and_overrides() {
+    let dir = tempfile::tempdir().unwrap();
+    let page_path = dir.path().join("idless.html");
+    let override_path = dir.path().join("override.html");
+    std::fs::write(
+        &page_path,
+        "<title>Form</title><form action='default.html' method='post' enctype='text/plain'><input name='q' value='rust'><button id='go' name='via' value='button' formaction='override.html' formmethod='get' formenctype='application/x-www-form-urlencoded'>Go</button></form>",
+    )
+    .unwrap();
+    std::fs::write(&override_path, "<title>Override</title><p>ok</p>").unwrap();
+
+    let mut s = CdpState::default();
+    dispatch_one(&mut s, "Runtime.enable", json!({}));
+    dispatch_one(
+        &mut s,
+        "Page.navigate",
+        json!({ "url": format!("file://{}", page_path.display()) }),
+    );
+
+    dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.querySelector('#go').click(); 'submitted'" }),
+    );
+
+    let targets = dispatch_one(&mut s, "Target.getTargets", json!({}));
+    let final_url = targets["targetInfos"][0]["url"].as_str().unwrap();
+    assert!(
+        final_url.ends_with("/override.html?q=rust&via=button"),
+        "{final_url}"
+    );
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.title" }),
+    );
+    assert_eq!(v["result"]["value"], "Override");
+}
+
+#[test]
+fn fetch_policy_failure_surfaces_cdp_loading_failed() {
+    let mut s = CdpState::default();
+    dispatch_one(&mut s, "Runtime.enable", json!({}));
+    dispatch_one(&mut s, "Network.enable", json!({}));
+
+    let lines = dispatch_lines(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "fetch('http://127.0.0.1:9/').then(() => false, (err) => /blocked host|URL rejected/.test(err.message))" }),
+    );
+
+    assert_eq!(lines[0]["result"]["result"]["value"], true);
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["method"] == "Network.requestWillBeSent"),
+        "expected request notification: {lines:#?}"
+    );
+    let failed = lines
+        .iter()
+        .find(|line| line["method"] == "Network.loadingFailed")
+        .expect("loadingFailed notification");
+    assert_eq!(failed["params"]["blockedReason"], "url-policy");
+    assert!(
+        failed["params"]["errorText"]
+            .as_str()
+            .unwrap()
+            .contains("URL rejected"),
+        "{failed:#?}"
+    );
+}
+
+#[test]
 fn page_navigate_same_url_resets_page_realm() {
     let dir = tempfile::tempdir().unwrap();
     let html = dir.path().join("same-page.html");

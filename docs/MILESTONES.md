@@ -56,19 +56,24 @@ slot or date.
    state, op-backed in-memory Web Storage mutation, viewport/window state,
    `Event`/`CustomEvent`/`dispatchEvent()` smoke, CSSOM `CSS.supports()` /
    `document.styleSheets` / CSSStyleRule shape, DOMRect geometry via
-   `getBoundingClientRect()`, DOM ancestry/core-node state (`closest()`,
+   `getBoundingClientRect()` / `getClientRects()`, client/offset/scroll metrics,
+   `getBoxQuads()`, and Range rectangles, DOM ancestry/core-node state (`closest()`,
    `nodeName`/`nodeType`, `ownerDocument`), `DOMParser`, `atob`/`btoa`,
    Geometry Interfaces value constructors, `classList`/`relList`/`sandbox`,
-   `dataset`, `ValidityState`/`checkValidity()`, `FormData` iteration,
-   meta/content reflection, HTML serialisation getters, URL/URLSearchParams iteration,
+   `dataset`, `ValidityState`/`checkValidity()`, `FormData` iteration, form
+   reset/default state, meta/content reflection, HTML serialisation getters,
+   URL/URLSearchParams iteration,
    TextEncoder/TextDecoder (`encodeInto` and constructor options included),
    `<img>.currentSrc`, initial `Range`/`Selection`,
    read-only history accessors, structured clone, MutationObserver lifecycle,
-    TreeWalker/NodeIterator, `Headers` iteration, `Blob`/`File`, read-only
-    `Request`/`Response` state, static `Response.error()` / `Response.redirect()` / `Response.json()`,
-    op-backed `fetch()` HTTP(S) status/header/body reads with URL-policy/private-host
-    rejection, `AbortSignal`, `URLPattern`, Performance timing shape, and
-   `matchMedia()` through `Page::evaluate_dom_expression`
+   TreeWalker/NodeIterator, `Headers` iteration, `Blob`/`File`, read-only
+   `Request`/`Response` state, static `Response.error()` /
+   `Response.redirect()` / `Response.json()`, op-backed `fetch()` HTTP(S)
+   status/header/body reads with URL-policy/private-host rejection plus CDP
+   `Network.loadingFailed` diagnostics, `AbortSignal`, `URLPattern`, CDP
+   lifecycle opt-in (`init`/`commit`/`DOMContentLoaded`/`load`), Performance
+   timing shape, `matchMedia()`, and profile-backed
+   `navigator.permissions.query()` through `Page::evaluate_dom_expression`
    against WPT manifest `js-eval` checks, while TextEncoder/TextDecoder now run
    through the first op-backed `deno_core` host extension. Focused
    `document.title`, simple `querySelector`/`getElementById`,
@@ -78,15 +83,27 @@ slot or date.
    `Element.matches()` now cross finer-grained
    ops, element record data is loaded through an element snapshot op, and
    text/attribute/token/dataset reads now delegate through focused DOM ops.
-   Element `getBoundingClientRect()` / `getClientRects()` reads now cross a
-   focused DOM rect op.
+   Element `getBoundingClientRect()` / `getClientRects()` / `getBoxQuads()`
+   reads plus client/offset/scroll metrics now cross a focused DOM rect op.
    Focused `CSS.supports`, `getComputedStyle`, and CSSStyleSheet/CSSRule evals
-   now run through an explicit CSSOM extension/op boundary too.
+   now run through an explicit CSSOM extension/op boundary too. Permissions API
+   queries plus Notification/StorageManager permission reads now cross a
+   profile-store op and default to `prompt` / `default` when no decision is
+   persisted; `navigator.storage.estimate()` reports bounded local-storage usage.
+   `HTMLImageElement` alt/dimension/loading/decode reflection is Page-backed for
+   responsive-image fixtures, and inert `HTMLMediaElement` / audio / video state
+   reflection covers media-control automation probes without decode support.
+   Resource element reflection now covers `link` / `style` / `script` / `source`
+   attributes plus `HTMLScriptElement.supports()` smoke, and details/dialog
+   open-state reflection covers dialog show/close automation probes. Misc HTML
+   reflected attributes now cover lists, quotes/time edits, image maps, embedded
+   content, table-cell spans/headers, and progress/meter numeric state.
    Proof: `just gate-phase6`, relevant WPT fixtures, and `just gate-smoke`.
-5. **Milestone 5 — Browser shell vertical.** Wire URL entry, one-tab navigation,
-   reload/stop/back/forward, visible page content, and tab diagnostics through
-   the engine trait. Proof: `just shell-check`, manual GUI smoke, and
-   `just gate-smoke`.
+5. **Milestone 5 — Browser shell vertical.** Wire URL entry, tabbed navigation,
+   reload/stop/back/forward, visible page content, tab diagnostics, and
+   profile-backed tab/session restore plus explicit clear-data plumbing through
+   the engine/profile traits. Proof: `cargo test -p vixen-shell profile`,
+   `just flatpak-build`, manual GUI smoke, and `just gate-smoke`.
 6. **Milestone 6 — Release hardening.** Publish measured WPT profiles in
    `docs/COMPAT.md`, reduce dependency/LOC budget pressure, keep modules under
    1 kLOC, add benches for landed vertical paths, and run audit/size gates.
@@ -150,8 +167,12 @@ same rule as above: one Page/headless-visible seam, one fixture path, one gate.
    read-only history,
     structured clone containers, MutationObserver, traversal, Headers iteration,
      Blob/File, read-only Request/Response state, Response static constructors,
-     op-backed fetch status/header/body reads with private-host rejection, AbortSignal,
-   URLPattern, Performance, and matchMedia smoke
+      op-backed fetch status/header/body reads with private-host rejection, AbortSignal,
+    URLPattern, Performance, matchMedia, Permissions API / Notification /
+    StorageManager permission smoke, anchor URL/reflection smoke, image
+    reflection smoke, inert media element state, resource element reflection,
+    details/dialog open-state smoke, misc reflected HTML attributes, and
+    progress/meter numeric state
    surfaces from the same pure modules that Phase 6 host objects will use. The
    Encoding API constructors now run through an op-backed `deno_core` extension;
    `script::webidl` now renders generated browser interface/prototype scaffolding
@@ -161,24 +182,35 @@ same rule as above: one Page/headless-visible seam, one fixture path, one gate.
    property reads run against a DOM snapshot extension whose Page data is served
    by `op_vixen_dom_snapshot`, with selector lookup and `Element.matches()` now
    delegated through explicit DOM ops and element data loaded through
-   `op_vixen_dom_element_snapshot`; text/attribute/token/dataset reads also
-   cross focused DOM ops. Element `getBoundingClientRect()` / `getClientRects()`
-   reads now cross a focused DOM rect op. Focused `CSS.supports`,
-   `getComputedStyle`, and CSSStyleSheet/CSSRule evals now run against
-   `script::cssom` ops. Next: wire parser-discovered page scripts into the
-   persistent realm and widen remaining host objects across Geometry Interface
-   value constructors, forms, events, history, storage, and fetch.
+    `op_vixen_dom_element_snapshot`; text/attribute/token/dataset reads also
+    cross focused DOM ops. Element `getBoundingClientRect()` / `getClientRects()`
+    reads now cross a focused DOM rect op. Focused `CSS.supports`,
+    `getComputedStyle`, and CSSStyleSheet/CSSRule evals now run against
+    `script::cssom` ops. Permissions API queries now read persisted
+    `vixen-store::PermissionRecord` decisions by origin and return `prompt` for
+    unknown decisions; Notification permission reads map `prompt` to `default`
+    without prompting, and StorageManager exposes bounded local-storage estimates
+    plus persisted-state checks. Anchor `href` decomposition, link attributes,
+    image alt/dimension/loading/decode properties, inert media element state,
+    resource element attributes, details/dialog open state, misc HTML reflected
+    attributes, and progress/meter numeric state now use Page-backed element data. Next: wire
+    parser-discovered page scripts into the
+    persistent realm and widen remaining host objects across events, history,
+    storage, and policy-gated APIs.
    Proof: `just gate-phase6`, relevant WPT fixtures, and `just gate-smoke`.
 5. **Browser shell vertical slice** — the first one-window GTK shell now wires a
-    URL entry, reload/stop/back/forward, one-page lifecycle, status diagnostics,
-    and a visible `gtk4::GLArea` WebRender surface through a shell-side
-    `vixen-api::Engine` adapter. Next: replace the synchronous adapter with the
-    planned per-tab Relm4 worker/factory architecture and add full tab lifecycle
-    affordances. Proof: `just flatpak-build`, one manual GUI smoke, and
-    `just gate-smoke`.
+    URL entry, reload/stop/back/forward, per-tab Relm4 worker/factory lifecycle,
+    status diagnostics, a visible `gtk4::GLArea` WebRender surface, and
+    profile-backed restore of tab URLs plus the active tab through
+    `vixen-store::SessionRecord`, with GTK-free clear-data helpers for preserving
+    or clearing session restore. Next: add tab affordances beyond close/new,
+    downloads/status, permission prompts, and profile controls. Proof:
+    `cargo test -p vixen-shell profile`, `just flatpak-build`, one manual GUI
+    smoke, and `just gate-smoke`.
 6. **CDP/Playwright smoke slice** — CDP now has Playwright-friendly enable and
    target/frame metadata methods, flattened-session response echo, runtime
-   console/exception notifications, screenshot capture, and basic
+   promise handles (`Runtime.awaitPromise`), console/exception notifications,
+   screenshot capture, and basic
    `Input.dispatchMouseEvent` mouse move/press/release dispatch through the
    page hit-test plus DOM event listener path. Next: grow this only when a real
    Playwright smoke exposes a missing method or lifecycle event. Proof:

@@ -19,6 +19,33 @@ pub enum Method {
     Options,
 }
 
+/// Fetch redirect handling mode. `Follow` preserves Vixen's existing
+/// navigation behavior; `Error` and `Manual` are used by script fetch options.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RedirectMode {
+    Follow,
+    Error,
+    Manual,
+}
+
+/// Stable network lifecycle events emitted for a completed text fetch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NetworkEvent {
+    RequestStart {
+        url: String,
+        method: Method,
+    },
+    Redirect {
+        from: String,
+        to: String,
+        status: u16,
+    },
+    Response {
+        url: String,
+        status: u16,
+    },
+}
+
 impl Method {
     /// RFC 7231 §4.2.1 safe methods.
     pub fn is_safe(self) -> bool {
@@ -56,6 +83,8 @@ pub struct TextResponse {
     pub set_cookie: Vec<String>,
     /// Number of HTTP redirects followed to reach this response.
     pub redirects: u32,
+    /// Stable network lifecycle events for automation/diagnostics.
+    pub events: Vec<NetworkEvent>,
 }
 
 impl TextResponse {

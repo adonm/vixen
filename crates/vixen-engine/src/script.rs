@@ -89,6 +89,33 @@ pub struct JsBindingEvent {
     pub payload: String,
 }
 
+/// A stable network lifecycle event captured from fetch() in the current realm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsNetworkEvent {
+    Request {
+        request_id: String,
+        url: String,
+        method: String,
+    },
+    Redirect {
+        request_id: String,
+        from: String,
+        to: String,
+        status: u16,
+    },
+    Response {
+        request_id: String,
+        url: String,
+        status: u16,
+    },
+    Failure {
+        request_id: String,
+        url: String,
+        error_text: String,
+        blocked_reason: Option<String>,
+    },
+}
+
 /// JSON-scalar console argument values preserved across the runtime boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsConsoleValue {
@@ -111,9 +138,11 @@ pub enum JsNavigationAction {
     FormSubmit {
         form_id: String,
         form_node_id: usize,
+        submitter_node_id: Option<usize>,
         submitter_id: Option<String>,
         action: String,
         method: String,
+        enctype: String,
     },
     HistoryPush {
         url: String,
@@ -376,6 +405,26 @@ impl JsRuntime {
         }
     }
 
+    /// Drain fetch() network lifecycle events recorded in the current realm.
+    pub fn drain_network_events(&mut self) -> Result<Vec<JsNetworkEvent>, EngineError> {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let result = runtime
+            .execute_script(
+                "vixen-network-drain.js",
+                "JSON.stringify(globalThis.__vixenDrainNetworkEvents ? globalThis.__vixenDrainNetworkEvents() : [])".to_owned(),
+            )
+            .map_err(|_| {
+                EngineError::script(codes::SCRIPT_EVAL, "failed to drain network events")
+            })?;
+        let result = runtime::resolve_value(runtime, result)?;
+        match runtime::js_value_from_global(runtime, result)? {
+            JsValue::String(json) => parse_network_events(&json),
+            _ => Ok(Vec::new()),
+        }
+    }
+
     /// Drain navigation/history/form-submit actions recorded in the current
     /// page realm. Non-page realms and pages without queued actions return an
     /// empty list.
@@ -441,8 +490,24 @@ impl JsRuntime {
             self.runtime = Some(init.runtime);
             self.dom_mutations = init.dom_mutations;
             self.realm_key = target;
+            if let Some(page) = page {
+                self.record_page_visit(page)?;
+            }
         }
         Ok(())
+    }
+
+    fn record_page_visit(&self, page: &Page) -> Result<(), EngineError> {
+        let webapi::WebStorageBackend::Store(store) = &self.storage_backend else {
+            return Ok(());
+        };
+        let ts = current_unix_timestamp();
+        store
+            .record_visit(&page_origin(page).partition_key(), page.url(), ts)
+            .map_err(|err| EngineError::Other {
+                code: codes::SCRIPT_EVAL,
+                message: format!("history store write failed: {err}"),
+            })
     }
 
     fn apply_dom_mutations(&mut self, page: &mut Page) -> Result<(), EngineError> {
@@ -625,6 +690,94 @@ fn parse_binding_event(value: &deno_core::serde_json::Value) -> JsBindingEvent {
     }
 }
 
+fn parse_network_events(json: &str) -> Result<Vec<JsNetworkEvent>, EngineError> {
+    let value: deno_core::serde_json::Value =
+        deno_core::serde_json::from_str(json).map_err(|err| {
+            EngineError::script(
+                codes::SCRIPT_EVAL,
+                format!("network event parse failed: {err}"),
+            )
+        })?;
+    let Some(events) = value.as_array() else {
+        return Ok(Vec::new());
+    };
+    events.iter().map(parse_network_event).collect()
+}
+
+fn parse_network_event(
+    value: &deno_core::serde_json::Value,
+) -> Result<JsNetworkEvent, EngineError> {
+    let request_id = required_network_event_string(value, "requestId")?;
+    match value
+        .get("type")
+        .and_then(deno_core::serde_json::Value::as_str)
+        .unwrap_or_default()
+    {
+        "request" => Ok(JsNetworkEvent::Request {
+            request_id,
+            url: required_network_event_string(value, "url")?,
+            method: value
+                .get("method")
+                .and_then(deno_core::serde_json::Value::as_str)
+                .unwrap_or("GET")
+                .to_ascii_uppercase(),
+        }),
+        "redirect" => Ok(JsNetworkEvent::Redirect {
+            request_id,
+            from: required_network_event_string(value, "from")?,
+            to: required_network_event_string(value, "to")?,
+            status: value
+                .get("status")
+                .and_then(deno_core::serde_json::Value::as_u64)
+                .unwrap_or_default()
+                .min(u16::MAX as u64) as u16,
+        }),
+        "response" => Ok(JsNetworkEvent::Response {
+            request_id,
+            url: required_network_event_string(value, "url")?,
+            status: value
+                .get("status")
+                .and_then(deno_core::serde_json::Value::as_u64)
+                .unwrap_or_default()
+                .min(u16::MAX as u64) as u16,
+        }),
+        "failure" => Ok(JsNetworkEvent::Failure {
+            request_id,
+            url: required_network_event_string(value, "url")?,
+            error_text: value
+                .get("errorText")
+                .and_then(deno_core::serde_json::Value::as_str)
+                .unwrap_or("fetch failed")
+                .to_owned(),
+            blocked_reason: value
+                .get("blockedReason")
+                .and_then(deno_core::serde_json::Value::as_str)
+                .filter(|reason| !reason.is_empty())
+                .map(ToOwned::to_owned),
+        }),
+        other => Err(EngineError::script(
+            codes::SCRIPT_EVAL,
+            format!("unsupported network event: {other}"),
+        )),
+    }
+}
+
+fn required_network_event_string(
+    value: &deno_core::serde_json::Value,
+    name: &str,
+) -> Result<String, EngineError> {
+    value
+        .get(name)
+        .and_then(deno_core::serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            EngineError::script(
+                codes::SCRIPT_EVAL,
+                format!("network event missing string field `{name}`"),
+            )
+        })
+}
+
 fn parse_navigation_actions(json: &str) -> Result<Vec<JsNavigationAction>, EngineError> {
     let value: deno_core::serde_json::Value =
         deno_core::serde_json::from_str(json).map_err(|err| {
@@ -663,6 +816,11 @@ fn parse_navigation_action(
                 .get("formNodeId")
                 .and_then(deno_core::serde_json::Value::as_u64)
                 .unwrap_or_default() as usize,
+            submitter_node_id: value
+                .get("submitterNodeId")
+                .and_then(deno_core::serde_json::Value::as_u64)
+                .filter(|node_id| *node_id != 0)
+                .map(|node_id| node_id as usize),
             submitter_id: value
                 .get("submitterId")
                 .and_then(deno_core::serde_json::Value::as_str)
@@ -673,6 +831,11 @@ fn parse_navigation_action(
                 .get("method")
                 .and_then(deno_core::serde_json::Value::as_str)
                 .unwrap_or("get")
+                .to_ascii_lowercase(),
+            enctype: value
+                .get("enctype")
+                .and_then(deno_core::serde_json::Value::as_str)
+                .unwrap_or("application/x-www-form-urlencoded")
                 .to_ascii_lowercase(),
         }),
         "history-push" => Ok(JsNavigationAction::HistoryPush {
@@ -739,6 +902,13 @@ fn page_origin(page: &Page) -> vixen_net::Origin {
     url::Url::parse(page.url())
         .map(|url| vixen_net::Origin::from_url(&url))
         .unwrap_or_else(|_| vixen_net::Origin::opaque())
+}
+
+fn current_unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or_default()
 }
 
 fn web_storage_host(
@@ -1003,6 +1173,414 @@ mod tests {
             config,
             handle,
         )
+    }
+
+    fn spawn_header_echo_server(
+        host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            let body = if request.contains("\r\nx-vixen-test: yes\r\n")
+                && !request.contains("\r\nhost: evil.example\r\n")
+            {
+                "header-ok"
+            } else {
+                "header-missing"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            handle,
+        )
+    }
+
+    fn spawn_body_echo_server(
+        host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            loop {
+                let read = stream.read(&mut buffer).unwrap_or(0);
+                if read == 0 {
+                    break;
+                }
+                request.extend_from_slice(&buffer[..read]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let header_end = request
+                        .windows(4)
+                        .position(|window| window == b"\r\n\r\n")
+                        .map(|pos| pos + 4)
+                        .unwrap_or(request.len());
+                    let headers =
+                        String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| line.strip_prefix("content-length:"))
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                        .unwrap_or_default();
+                    if request.len() >= header_end + content_length {
+                        break;
+                    }
+                }
+            }
+            let header_end = request
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .map(|pos| pos + 4)
+                .unwrap_or(request.len());
+            let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+            let method = headers.split_whitespace().next().unwrap_or_default();
+            let content_type = headers
+                .lines()
+                .find_map(|line| line.strip_prefix("content-type:"))
+                .map(str::trim)
+                .unwrap_or("missing");
+            let body = String::from_utf8_lossy(&request[header_end..]);
+            let body = format!("{method}:{content_type}:{body}");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            handle,
+        )
+    }
+
+    fn spawn_preflight_server(
+        host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 4096];
+                loop {
+                    let read = stream.read(&mut buffer).unwrap_or(0);
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        let header_end = request
+                            .windows(4)
+                            .position(|window| window == b"\r\n\r\n")
+                            .map(|pos| pos + 4)
+                            .unwrap_or(request.len());
+                        let headers =
+                            String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+                        let content_length = headers
+                            .lines()
+                            .find_map(|line| line.strip_prefix("content-length:"))
+                            .and_then(|value| value.trim().parse::<usize>().ok())
+                            .unwrap_or_default();
+                        if request.len() >= header_end + content_length {
+                            break;
+                        }
+                    }
+                }
+                let header_end = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|pos| pos + 4)
+                    .unwrap_or(request.len());
+                let headers = String::from_utf8_lossy(&request[..header_end]).to_ascii_lowercase();
+                if index == 0 {
+                    let ok = headers.starts_with("options ")
+                        && headers.contains("\r\norigin: http://source.test\r\n")
+                        && headers.contains("\r\naccess-control-request-method: post\r\n")
+                        && headers
+                            .contains("\r\naccess-control-request-headers: x-vixen-custom\r\n");
+                    let status = if ok {
+                        "204 No Content"
+                    } else {
+                        "400 Bad Request"
+                    };
+                    let response = format!(
+                        "HTTP/1.1 {status}\r\nAccess-Control-Allow-Origin: http://source.test\r\nAccess-Control-Allow-Methods: POST\r\nAccess-Control-Allow-Headers: X-Vixen-Custom\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                } else {
+                    let body_text = String::from_utf8_lossy(&request[header_end..]);
+                    let ok = headers.starts_with("post ")
+                        && headers.contains("\r\nx-vixen-custom: yes\r\n")
+                        && body_text == "preflight body";
+                    let body = if ok {
+                        "preflight-ok"
+                    } else {
+                        "preflight-missing"
+                    };
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: http://source.test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                }
+            }
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            handle,
+        )
+    }
+
+    fn spawn_referrer_echo_server(
+        host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            let body = if request.contains("\r\nreferer: http://source.test/path?q=1\r\n") {
+                "referrer-ok"
+            } else {
+                "referrer-missing"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: http://source.test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            handle,
+        )
+    }
+
+    fn spawn_cors_server(
+        host: &str,
+        allow_origin: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let allow_origin = allow_origin.to_owned();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+            let body = if request.contains("\r\norigin: http://source.test\r\n") {
+                "cors-ok"
+            } else {
+                "cors-origin-missing"
+            };
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Vixen-Test: yes\r\nX-Hidden: secret\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nAccess-Control-Expose-Headers: X-Vixen-Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            handle,
+        )
+    }
+
+    fn spawn_revalidation_server(
+        host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 2048];
+                let read = stream.read(&mut request).unwrap_or(0);
+                let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+                if index == 0 {
+                    let body = "cached-v1";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nETag: \"v1\"\r\nLast-Modified: Wed, 21 Oct 2015 07:28:00 GMT\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                } else if request.contains("\r\nif-none-match: \"v1\"\r\n")
+                    && request.contains("\r\nif-modified-since: wed, 21 oct 2015 07:28:00 gmt\r\n")
+                {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 304 Not Modified\r\nETag: \"v1\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                } else {
+                    let body = "missing-conditional";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                }
+            }
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            handle,
+        )
+    }
+
+    fn spawn_redirect_server(
+        host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let body = "redirect body";
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: /target\r\nContent-Type: text/plain\r\nX-Vixen-Redirect: yes\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/redirect", addr.port()),
+            config,
+            handle,
+        )
+    }
+
+    fn spawn_cookie_echo_server(
+        host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = std::thread::spawn(move || {
+            let (mut first, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = first.read(&mut request);
+            let response = "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nSet-Cookie: sid=abc; Path=/\r\nContent-Length: 3\r\nConnection: close\r\n\r\nset";
+            first.write_all(response.as_bytes()).unwrap();
+
+            let (mut second, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let read = second.read(&mut request).unwrap_or(0);
+            let request = String::from_utf8_lossy(&request[..read]);
+            let cookie = request
+                .lines()
+                .find_map(|line| {
+                    let (name, value) = line.split_once(':')?;
+                    name.eq_ignore_ascii_case("cookie").then(|| value.trim())
+                })
+                .unwrap_or("");
+            let body = cookie.to_owned();
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            second.write_all(response.as_bytes()).unwrap();
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (format!("http://{host}:{}", addr.port()), config, handle)
     }
 
     fn spawn_script_server(
@@ -2099,6 +2677,54 @@ mod tests {
         );
         assert_eq!(
             rt.evaluate_with_page(
+                "(() => { const r = document.createRange(); r.selectNode(document.querySelector('#box')); return r.getClientRects().length + ':' + r.getClientRects().item(0).width + ':' + (r.getBoundingClientRect() instanceof DOMRectReadOnly); })()",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::String("1:40:true".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const r = document.createRange(); r.setStart(document.querySelector('#box'), 0); r.collapse(true); return r.getClientRects().length + ':' + r.getBoundingClientRect().width; })()",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::String("0:0".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const box = document.querySelector('#box'); return box.clientWidth + ':' + box.clientHeight + ':' + box.clientTop + ':' + box.clientLeft; })()",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::String("40:20:0:0".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const box = document.querySelector('#box'); return box.offsetWidth + ':' + box.offsetHeight + ':' + box.offsetLeft + ':' + box.offsetTop + ':' + (box.offsetParent === document.body); })()",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::String("40:20:8:8:true".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const box = document.querySelector('#box'); box.scrollTop = 7.5; box.scrollLeft = 3; return box.scrollWidth + ':' + box.scrollHeight + ':' + box.scrollTop + ':' + box.scrollLeft; })()",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::String("40:20:7.5:3".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const quad = document.querySelector('#box').getBoxQuads()[0]; return document.querySelector('#box').getBoxQuads().length + ':' + (quad instanceof DOMQuad) + ':' + quad.getBounds().width; })()",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::String("1:true:40".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
                 "document.documentElement.parentNode === document && document.documentElement.parentElement === null",
                 &geometry_page
             )
@@ -2180,7 +2806,7 @@ mod tests {
 
         let form_page = Page::from_html(
             "file:///dom-formdata-host.html",
-            "<form id='contact'><label id='name-label' for='name-input'>Name</label><input id='name-input' name='name' value='Ada'><label id='body-label'>Body<textarea name='body'>Hello</textarea></label><input type='checkbox' name='format' value='html' checked><select name='plan'><option value='free'>Free</option><option value='pro' selected>Pro</option></select></form><form id='upload' enctype='multipart/form-data'><input type='file' name='attachment'></form>",
+            "<form id='contact'><label id='name-label' for='name-input'>Name</label><input id='name-input' name='name' value='Ada'><label id='body-label'>Body<textarea name='body'>Hello</textarea></label><input type='checkbox' name='format' value='html' checked><select name='plan'><option value='free'>Free</option><option value='pro' selected>Pro</option></select><button id='reset-contact' type='reset'>Reset</button></form><form id='upload' enctype='multipart/form-data'><input type='file' name='attachment'></form>",
         )
         .unwrap();
         assert_eq!(
@@ -2334,6 +2960,22 @@ mod tests {
             )
             .unwrap(),
             JsValue::String("free:0:false".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const form = document.querySelector('#contact'); const input = form.querySelector('[name=name]'); const textarea = form.querySelector('[name=body]'); const checkbox = form.querySelector('[name=format]'); const select = form.querySelector('[name=plan]'); const events = []; form.addEventListener('reset', () => events.push('reset'), { once: true }); input.value = 'Grace'; textarea.value = 'Changed'; checkbox.checked = false; select.value = 'free'; form.reset(); return events.join(',') + ':' + input.value + ':' + textarea.value + ':' + checkbox.checked + ':' + select.value + ':' + select.selectedIndex; })()",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("reset:Ada:Hello:true:pro:1".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const form = document.querySelector('#contact'); const input = form.querySelector('[name=name]'); form.addEventListener('reset', (event) => event.preventDefault(), { once: true }); input.value = 'Grace'; form.querySelector('#reset-contact').click(); const canceled = input.value; form.reset(); return canceled + ':' + input.value; })()",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("Grace:Ada".to_owned())
         );
 
         let reflected_form_page = Page::from_html(
@@ -2590,6 +3232,185 @@ mod tests {
                 JsValue::Null
             );
         }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn permissions_query_reads_profile_store_and_defaults_prompt() {
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-permissions-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let url = url::Url::parse("https://permissions.test/app").unwrap();
+        let origin_key = vixen_net::Origin::from_url(&url).partition_key();
+        let store = vixen_store::Store::open(&path).unwrap();
+        store
+            .put_permission(&vixen_store::PermissionRecord {
+                origin_key: origin_key.clone(),
+                kind: "geolocation".to_owned(),
+                decision: vixen_store::PermissionDecision::Granted,
+                updated_unix: 1_000,
+            })
+            .unwrap();
+        store
+            .put_permission(&vixen_store::PermissionRecord {
+                origin_key: origin_key.clone(),
+                kind: "notifications".to_owned(),
+                decision: vixen_store::PermissionDecision::Denied,
+                updated_unix: 1_001,
+            })
+            .unwrap();
+        store
+            .put_permission(&vixen_store::PermissionRecord {
+                origin_key,
+                kind: "persistent-storage".to_owned(),
+                decision: vixen_store::PermissionDecision::Granted,
+                updated_unix: 1_002,
+            })
+            .unwrap();
+        drop(store);
+
+        let page = Page::from_html(url.as_str(), "<p>permissions</p>").unwrap();
+        let mut rt = JsRuntime::with_storage_path(&path).expect("engine init");
+
+        assert_eq!(
+            rt.evaluate_with_page(
+                "navigator.permissions.query({ name: 'geolocation' }).then((status) => status.state + ':' + (status instanceof PermissionStatus) + ':' + (navigator.permissions instanceof Permissions))",
+                &page,
+            )
+            .unwrap(),
+            JsValue::String("granted:true:true".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "navigator.permissions.query({ name: 'camera' }).then((status) => status.state)",
+                &page,
+            )
+            .unwrap(),
+            JsValue::String("prompt".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "navigator.permissions.query({ name: 'midi' }).then(() => false, (err) => err instanceof TypeError && /unsupported permission name/.test(err.message))",
+                &page,
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("Notification.permission", &page)
+                .unwrap(),
+            JsValue::String("denied".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "Notification.requestPermission().then((permission) => permission)",
+                &page
+            )
+            .unwrap(),
+            JsValue::String("denied".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("navigator.storage.persisted()", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn document_cookie_round_trips_through_profile_store() {
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-document-cookie-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let page = Page::from_html("http://cookie-doc.test/page.html", "<p>cookies</p>").unwrap();
+
+        {
+            let mut rt = JsRuntime::with_storage_path(&path).expect("engine init");
+            assert_eq!(
+                rt.evaluate_with_page(
+                    "document.cookie = 'theme=dark; Path=/'; document.cookie",
+                    &page,
+                )
+                .unwrap(),
+                JsValue::String("theme=dark".to_owned())
+            );
+            assert_eq!(
+                rt.evaluate_with_page(
+                    "(() => { try { document.cookie = 'secret=x; HttpOnly'; } catch (err) { return err instanceof TypeError && /HttpOnly/.test(err.message); } return false; })()",
+                    &page,
+                )
+                .unwrap(),
+                JsValue::Bool(true)
+            );
+        }
+
+        {
+            let mut rt = JsRuntime::with_storage_path(&path).expect("engine init");
+            let same_origin =
+                Page::from_html("http://cookie-doc.test/other.html", "<p>again</p>").unwrap();
+            assert_eq!(
+                rt.evaluate_with_page("document.cookie", &same_origin)
+                    .unwrap(),
+                JsValue::String("theme=dark".to_owned())
+            );
+
+            let other_origin =
+                Page::from_html("http://other-cookie.test/", "<p>other</p>").unwrap();
+            assert_eq!(
+                rt.evaluate_with_page("document.cookie", &other_origin)
+                    .unwrap(),
+                JsValue::String(String::new())
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn page_realm_creation_records_history_visits_in_profile_store() {
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-history-store-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let page_one = Page::from_html("https://history.test/one", "<p>one</p>").unwrap();
+        let page_two = Page::from_html("https://history.test/two", "<p>two</p>").unwrap();
+
+        {
+            let mut rt = JsRuntime::with_storage_path(&path).expect("engine init");
+            assert_eq!(
+                rt.evaluate_with_page("1", &page_one).unwrap(),
+                JsValue::Int32(1)
+            );
+            assert_eq!(
+                rt.evaluate_with_page("2", &page_one).unwrap(),
+                JsValue::Int32(2)
+            );
+            assert_eq!(
+                rt.evaluate_with_page("3", &page_two).unwrap(),
+                JsValue::Int32(3)
+            );
+        }
+
+        let store = vixen_store::Store::open(&path).unwrap();
+        let origin_key = page_origin(&page_one).partition_key();
+        assert_eq!(
+            store.visits_for(&origin_key, page_one.url()).unwrap().len(),
+            1
+        );
+        assert_eq!(
+            store.visits_for(&origin_key, page_two.url()).unwrap().len(),
+            1
+        );
 
         let _ = std::fs::remove_file(&path);
     }
@@ -2932,11 +3753,54 @@ mod tests {
                 JsNavigationAction::FormSubmit {
                     form_id: "form".to_owned(),
                     form_node_id: page.query_selector_all("#form").unwrap()[0].node_id,
+                    submitter_node_id: Some(page.query_selector_all("#go").unwrap()[0].node_id),
                     submitter_id: Some("go".to_owned()),
                     action: "file:///nav/submit.html".to_owned(),
                     method: "get".to_owned(),
+                    enctype: "application/x-www-form-urlencoded".to_owned(),
                 },
             ]
+        );
+        assert_eq!(rt.drain_navigation_actions().unwrap(), Vec::new());
+    }
+
+    #[test]
+    fn page_request_submit_uses_submitter_and_honors_prevent_default() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///request-submit/index.html",
+            "<html><body><form id='form' action='submit.html'><button id='go'>Go</button><button id='alt' formaction='alt.html' formmethod='post' formenctype='text/plain'>Alt</button></form></body></html>",
+        )
+        .unwrap();
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "(() => {\
+                   const form = document.querySelector('#form');\
+                   const alt = document.querySelector('#alt');\
+                   const events = [];\
+                   form.addEventListener('submit', (event) => { events.push(event.submitter.id); event.preventDefault(); }, { once: true });\
+                   form.requestSubmit(alt);\
+                   form.addEventListener('submit', (event) => events.push(event.submitter.id), { once: true });\
+                   form.requestSubmit(alt);\
+                   return events.join(',');\
+                 })()",
+                &mut page,
+            )
+            .unwrap();
+
+        assert_eq!(value, JsValue::String("alt,alt".to_owned()));
+        assert_eq!(
+            rt.drain_navigation_actions().unwrap(),
+            vec![JsNavigationAction::FormSubmit {
+                form_id: "form".to_owned(),
+                form_node_id: page.query_selector_all("#form").unwrap()[0].node_id,
+                submitter_node_id: Some(page.query_selector_all("#alt").unwrap()[0].node_id),
+                submitter_id: Some("alt".to_owned()),
+                action: "file:///request-submit/alt.html".to_owned(),
+                method: "post".to_owned(),
+                enctype: "text/plain".to_owned(),
+            }]
         );
         assert_eq!(rt.drain_navigation_actions().unwrap(), Vec::new());
     }
@@ -3139,12 +4003,578 @@ mod tests {
     }
 
     #[test]
+    fn fetch_records_stable_network_events() {
+        let (url, network_config, server) =
+            spawn_fetch_server("vixen-fetch-events.com", "event body");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expr = format!("fetch({url:?}).then((response) => response.text())");
+
+        assert_eq!(
+            rt.evaluate(&expr).unwrap(),
+            JsValue::String("event body".to_owned())
+        );
+        let events = rt.drain_network_events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0],
+            JsNetworkEvent::Request {
+                request_id: "fetch-1".to_owned(),
+                url: url.clone(),
+                method: "GET".to_owned(),
+            }
+        );
+        assert_eq!(
+            events[1],
+            JsNetworkEvent::Response {
+                request_id: "fetch-1".to_owned(),
+                url: url.clone(),
+                status: 200,
+            }
+        );
+        assert_eq!(rt.drain_network_events().unwrap(), Vec::new());
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_records_failure_network_events() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        assert_eq!(
+            rt.evaluate(
+                "fetch('http://127.0.0.1:9/').then(() => false, (err) => /URL rejected/.test(err.message))"
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        let events = rt.drain_network_events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(
+            events[0],
+            JsNetworkEvent::Request {
+                request_id: "fetch-1".to_owned(),
+                url: "http://127.0.0.1:9/".to_owned(),
+                method: "GET".to_owned(),
+            }
+        );
+        let JsNetworkEvent::Failure {
+            request_id,
+            url,
+            error_text,
+            blocked_reason,
+        } = &events[1]
+        else {
+            panic!("expected failure event: {:?}", events[1]);
+        };
+        assert_eq!(request_id, "fetch-1");
+        assert_eq!(url, "http://127.0.0.1:9/");
+        assert!(error_text.contains("URL rejected by policy: blocked host"));
+        assert_eq!(blocked_reason.as_deref(), Some("url-policy"));
+    }
+
+    #[test]
+    fn fetch_cors_blocks_cross_origin_without_allow_origin() {
+        let (url, network_config, server) =
+            spawn_fetch_server("vixen-fetch-cors-block.com", "blocked");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let mut page = Page::from_html("http://source.test/page", "<main></main>").unwrap();
+        let expr = format!(
+            "fetch({url:?}).then(() => false, (err) => err instanceof TypeError && /blocked by CORS/.test(err.message))"
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(&expr, &mut page).unwrap(),
+            JsValue::Bool(true)
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_cors_allows_cross_origin_and_filters_headers() {
+        let (url, network_config, server) =
+            spawn_cors_server("vixen-fetch-cors-allow.com", "http://source.test");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let mut page = Page::from_html("http://source.test/page", "<main></main>").unwrap();
+        let expr = format!(
+            "fetch({url:?}).then((response) => response.text().then((body) => response.type + ':' + response.status + ':' + response.headers.get('content-type') + ':' + response.headers.get('x-vixen-test') + ':' + response.headers.get('x-hidden') + ':' + body))"
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(&expr, &mut page).unwrap(),
+            JsValue::String("cors:200:text/plain:yes:null:cors-ok".to_owned())
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_cors_preflights_non_safelisted_headers() {
+        let (url, network_config, server) = spawn_preflight_server("vixen-fetch-preflight.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let mut page = Page::from_html("http://source.test/page", "<main></main>").unwrap();
+        let expr = format!(
+            "fetch({url:?}, {{ method: 'POST', headers: {{ 'X-Vixen-Custom': 'yes' }}, body: 'preflight body' }}).then((response) => response.text())"
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(&expr, &mut page).unwrap(),
+            JsValue::String("preflight-ok".to_owned())
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_same_origin_mode_blocks_cross_origin_before_network() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html("http://source.test/page", "<main></main>").unwrap();
+
+        assert_eq!(
+            rt.evaluate_with_page_mut("fetch('http://example.com/payload', { mode: 'same-origin' }).then(() => false, (err) => err instanceof TypeError && /mode same-origin/.test(err.message))", &mut page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn fetch_no_cors_cross_origin_returns_opaque_response() {
+        let (url, network_config, server) =
+            spawn_fetch_server("vixen-fetch-no-cors.com", "opaque body");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let mut page = Page::from_html("http://source.test/page", "<main></main>").unwrap();
+        let expr = format!(
+            "fetch({url:?}, {{ mode: 'no-cors' }}).then((response) => response.text().then((body) => response.type + ':' + response.status + ':' + response.url + ':' + response.headers.get('content-type') + ':' + body))"
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(&expr, &mut page).unwrap(),
+            JsValue::String("opaque:0::null:".to_owned())
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_sends_allowed_request_headers() {
+        let (url, network_config, server) = spawn_header_echo_server("vixen-fetch-headers.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expr = format!(
+            "fetch({url:?}, {{ headers: {{ 'X-Vixen-Test': 'yes', 'Host': 'evil.example' }} }}).then((response) => response.text())"
+        );
+
+        assert_eq!(
+            rt.evaluate(&expr).unwrap(),
+            JsValue::String("header-ok".to_owned())
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_sends_request_body_for_unsafe_methods() {
+        let (url, network_config, server) = spawn_body_echo_server("vixen-fetch-body.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expr = format!(
+            "fetch({url:?}, {{ method: 'POST', body: 'hello body' }}).then((response) => response.text())"
+        );
+
+        assert_eq!(
+            rt.evaluate(&expr).unwrap(),
+            JsValue::String("post:text/plain;charset=utf-8:hello body".to_owned())
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn xhr_posts_body_and_reads_response_headers() {
+        let (url, network_config, server) = spawn_body_echo_server("vixen-xhr-body.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expr = format!(
+            r#"new Promise((resolve) => {{
+              const xhr = new XMLHttpRequest();
+              const states = [];
+              xhr.onreadystatechange = () => states.push(xhr.readyState);
+              xhr.onload = () => resolve(xhr.status + ':' + xhr.getResponseHeader('content-type') + ':' + states.join(',') + ':' + xhr.responseText);
+              xhr.open('POST', {url:?});
+              xhr.send('xhr body');
+            }})"#
+        );
+
+        assert_eq!(
+            rt.evaluate(&expr).unwrap(),
+            JsValue::String(
+                "200:text/plain:1,2,3,4:post:text/plain;charset=utf-8:xhr body".to_owned()
+            )
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_applies_referrer_policy_header() {
+        let (url, network_config, server) = spawn_referrer_echo_server("vixen-fetch-referrer.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let mut page =
+            Page::from_html("http://source.test/path?q=1#frag", "<main></main>").unwrap();
+        let expr = format!(
+            "fetch({url:?}, {{ referrerPolicy: 'unsafe-url' }}).then((response) => response.text())"
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(&expr, &mut page).unwrap(),
+            JsValue::String("referrer-ok".to_owned())
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_redirect_manual_returns_redirect_response() {
+        let (url, network_config, server) =
+            spawn_redirect_server("vixen-fetch-redirect-manual.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expr = format!(
+            "fetch(new Request({url:?}, {{ redirect: 'manual' }})).then((response) => response.text().then((body) => response.status + ':' + response.redirected + ':' + response.url + ':' + response.headers.get('location') + ':' + body))"
+        );
+
+        assert_eq!(
+            rt.evaluate(&expr).unwrap(),
+            JsValue::String(format!("302:false:{url}:/target:redirect body"))
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_redirect_error_rejects_redirect_response() {
+        let (url, network_config, server) = spawn_redirect_server("vixen-fetch-redirect-error.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expr = format!(
+            "fetch({url:?}, {{ redirect: 'error' }}).then(() => false, (err) => err instanceof TypeError && /redirect disallowed/.test(err.message))"
+        );
+
+        assert_eq!(rt.evaluate(&expr).unwrap(), JsValue::Bool(true));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_rejects_invalid_redirect_mode() {
+        let mut rt = JsRuntime::new().expect("engine init");
+
+        assert_eq!(
+            rt.evaluate("fetch('http://vixen-invalid-redirect-mode.com/payload', { redirect: 'elsewhere' }).then(() => false, (err) => err instanceof TypeError && /unsupported fetch redirect mode: elsewhere/.test(err.message))")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn fetch_cookies_persist_through_profile_store() {
+        let (base_url, network_config, server) = spawn_cookie_echo_server("vixen-cookie-store.com");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-cookie-store-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut rt =
+                JsRuntime::with_network_config_and_storage_path(network_config.clone(), &path)
+                    .expect("engine init");
+            let set_url = format!("{base_url}/set");
+            let expr = format!("fetch({set_url:?}).then((response) => response.text())");
+            assert_eq!(
+                rt.evaluate(&expr).unwrap(),
+                JsValue::String("set".to_owned())
+            );
+        }
+
+        {
+            let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
+                .expect("engine init");
+            let echo_url = format!("{base_url}/echo");
+            let expr = format!("fetch({echo_url:?}).then((response) => response.text())");
+            assert_eq!(
+                rt.evaluate(&expr).unwrap(),
+                JsValue::String("sid=abc".to_owned())
+            );
+        }
+
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fetch_credentials_omit_does_not_send_profile_cookies() {
+        let (base_url, network_config, server) =
+            spawn_cookie_echo_server("vixen-cookie-credentials-omit.com");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-cookie-credentials-omit-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut rt =
+                JsRuntime::with_network_config_and_storage_path(network_config.clone(), &path)
+                    .expect("engine init");
+            let set_url = format!("{base_url}/set");
+            let expr = format!("fetch({set_url:?}).then((response) => response.text())");
+            assert_eq!(
+                rt.evaluate(&expr).unwrap(),
+                JsValue::String("set".to_owned())
+            );
+        }
+
+        {
+            let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
+                .expect("engine init");
+            let echo_url = format!("{base_url}/echo");
+            let expr = format!(
+                "fetch(new Request({echo_url:?}, {{ credentials: 'omit' }})).then((response) => response.text())"
+            );
+            assert_eq!(rt.evaluate(&expr).unwrap(), JsValue::String(String::new()));
+        }
+
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fetch_credentials_omit_does_not_store_response_cookies() {
+        let (base_url, network_config, server) =
+            spawn_cookie_echo_server("vixen-cookie-credentials-store-omit.com");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-cookie-credentials-store-omit-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
+            .expect("engine init");
+        let set_url = format!("{base_url}/set");
+        let expr = format!(
+            "fetch({set_url:?}, {{ credentials: 'omit' }}).then((response) => response.text())"
+        );
+        assert_eq!(
+            rt.evaluate(&expr).unwrap(),
+            JsValue::String("set".to_owned())
+        );
+
+        let echo_url = format!("{base_url}/echo");
+        let expr = format!("fetch({echo_url:?}).then((response) => response.text())");
+        assert_eq!(rt.evaluate(&expr).unwrap(), JsValue::String(String::new()));
+
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fetch_get_writes_profile_cache_entry() {
+        let (url, network_config, server) =
+            spawn_fetch_server("vixen-fetch-cache.com", "cached body");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-fetch-cache-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
+                .expect("engine init");
+            let expr = format!("fetch({url:?}).then((response) => response.text())");
+            assert_eq!(
+                rt.evaluate(&expr).unwrap(),
+                JsValue::String("cached body".to_owned())
+            );
+        }
+
+        let parsed = url::Url::parse(&url).unwrap();
+        let origin_key = vixen_net::Origin::from_url(&parsed).partition_key();
+        let store = vixen_store::Store::open(&path).unwrap();
+        let entry = store.get_cache(&origin_key, &url).unwrap().unwrap();
+        assert_eq!(entry.status, 200);
+        assert_eq!(entry.body, b"cached body");
+        assert!(
+            entry
+                .headers
+                .iter()
+                .any(|(name, value)| name == "x-vixen-test" && value == "yes")
+        );
+
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fetch_no_cache_revalidates_cached_response() {
+        let (url, network_config, server) = spawn_revalidation_server("vixen-fetch-revalidate.com");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-fetch-revalidate-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut rt =
+                JsRuntime::with_network_config_and_storage_path(network_config.clone(), &path)
+                    .expect("engine init");
+            let expr = format!("fetch({url:?}).then((response) => response.text())");
+            assert_eq!(
+                rt.evaluate(&expr).unwrap(),
+                JsValue::String("cached-v1".to_owned())
+            );
+
+            let expr = format!(
+                "fetch({url:?}, {{ cache: 'no-cache' }}).then((response) => response.text().then((body) => response.status + ':' + response.headers.get('etag') + ':' + body), (err) => 'ERR:' + err.message)"
+            );
+            assert_eq!(
+                rt.evaluate(&expr).unwrap(),
+                JsValue::String("200:\"v1\":cached-v1".to_owned())
+            );
+        }
+
+        let parsed = url::Url::parse(&url).unwrap();
+        let origin_key = vixen_net::Origin::from_url(&parsed).partition_key();
+        let store = vixen_store::Store::open(&path).unwrap();
+        let entry = store.get_cache(&origin_key, &url).unwrap().unwrap();
+        assert_eq!(entry.status, 200);
+        assert_eq!(entry.body, b"cached-v1");
+
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fetch_no_store_skips_profile_cache_entry() {
+        let (url, network_config, server) =
+            spawn_fetch_server("vixen-fetch-no-store-cache.com", "uncached body");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-fetch-no-store-cache-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
+                .expect("engine init");
+            let expr = format!(
+                "fetch({url:?}, {{ cache: 'no-store' }}).then((response) => response.text())"
+            );
+            assert_eq!(
+                rt.evaluate(&expr).unwrap(),
+                JsValue::String("uncached body".to_owned())
+            );
+        }
+
+        let parsed = url::Url::parse(&url).unwrap();
+        let origin_key = vixen_net::Origin::from_url(&parsed).partition_key();
+        let store = vixen_store::Store::open(&path).unwrap();
+        assert!(store.get_cache(&origin_key, &url).unwrap().is_none());
+
+        server.join().unwrap();
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fetch_force_cache_reads_profile_cache_without_network() {
+        let (url, network_config, server) =
+            spawn_fetch_server("vixen-fetch-force-cache.com", "cached body");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-fetch-force-cache-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut rt =
+                JsRuntime::with_network_config_and_storage_path(network_config.clone(), &path)
+                    .expect("engine init");
+            let expr = format!("fetch({url:?}).then((response) => response.text())");
+            assert_eq!(
+                rt.evaluate(&expr).unwrap(),
+                JsValue::String("cached body".to_owned())
+            );
+        }
+
+        server.join().unwrap();
+
+        {
+            let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
+                .expect("engine init");
+            let expr = format!(
+                "fetch(new Request({url:?}, {{ cache: 'force-cache' }})).then((response) => response.text().then((body) => response.status + ':' + response.url + ':' + response.headers.get('x-vixen-test') + ':' + body))"
+            );
+            assert_eq!(
+                rt.evaluate(&expr).unwrap(),
+                JsValue::String(format!("200:{url}:yes:cached body"))
+            );
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fetch_only_if_cached_rejects_profile_cache_miss() {
+        let mut rt = JsRuntime::new().expect("engine init");
+
+        assert_eq!(
+            rt.evaluate("fetch('http://vixen-cache-miss.com/payload', { cache: 'only-if-cached' }).then(() => false, (err) => err instanceof TypeError && /fetch cache miss/.test(err.message))")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn fetch_rejects_invalid_cache_mode() {
+        let mut rt = JsRuntime::new().expect("engine init");
+
+        assert_eq!(
+            rt.evaluate("fetch('http://vixen-invalid-cache-mode.com/payload', { cache: 'stale-magic' }).then(() => false, (err) => err instanceof TypeError && /unsupported fetch cache mode: stale-magic/.test(err.message))")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+    }
+
+    #[test]
     fn fetch_blocks_private_hosts() {
         let mut rt = JsRuntime::new().expect("engine init");
 
         assert_eq!(
             rt.evaluate("fetch('http://127.0.0.1:9/').then(() => false, (err) => err instanceof TypeError && /blocked host/.test(err.message))")
                 .unwrap(),
+            JsValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn fetch_honors_page_connect_src_csp() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "https://page.test/index.html",
+            "<meta http-equiv='Content-Security-Policy' content=\"connect-src 'self'\"><main></main>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "fetch('https://example.org/api').then(() => false, (err) => err instanceof TypeError && /CSP connect-src/.test(err.message))",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn fetch_blocks_active_mixed_content_from_secure_pages() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html("https://secure.test/index.html", "<main></main>").unwrap();
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "fetch('http://example.org/api').then(() => false, (err) => err instanceof TypeError && /active mixed content/.test(err.message))",
+                &mut page,
+            )
+            .unwrap(),
             JsValue::Bool(true)
         );
     }

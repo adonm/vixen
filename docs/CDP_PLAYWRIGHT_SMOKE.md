@@ -15,11 +15,12 @@ exercises:
    `Page.getFrameTree`.
 3. `Page.navigate` to a local fixture with a button click listener, including
    Playwright `page.addInitScript()` execution before page scripts.
-4. `Runtime.evaluate` for DOM reads.
+4. `Runtime.evaluate` / `Runtime.awaitPromise` for DOM reads and promise handles.
 5. CDP DOM query plumbing: `DOM.getDocument`, `DOM.querySelector`,
    `DOM.querySelectorAll`, `DOM.describeNode`, and `DOM.resolveNode`.
 6. Top-level navigation network notifications: `Network.requestWillBeSent`,
-   `Network.responseReceived`, and `Network.loadingFinished`.
+   `Network.responseReceived`, and `Network.loadingFinished`; lifecycle opt-in
+   observes `init` / `commit` / `DOMContentLoaded` / `load`.
 7. `Input.dispatchMouseEvent` with `mousePressed` then `mouseReleased` over the button.
 8. The click handler mutates `textContent`, attributes/classes, inline style,
    and a small `createElement`/`appendChild`/`removeChild`/`replaceChildren`

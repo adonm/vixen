@@ -1,0 +1,15 @@
+<!doctype html>
+<title>Resource element reflection — Vixen fixture</title>
+<head>
+  <link id="preload" rel="preload stylesheet" href="https://cdn.example/app.css" as="style" media="screen" type="text/css" crossorigin="anonymous">
+  <style id="inline-style" media="screen" type="text/css" disabled>
+    body { color: rebeccapurple; }
+  </style>
+  <script id="module-script" src="scripts/app.js" type="module" async defer crossorigin="use-credentials">window.__vixen_should_not_run = true;</script>
+</head>
+<body>
+  <picture id="art">
+    <source id="wide-source" media="(min-width: 700px)" srcset="wide.png 1x" sizes="50vw" type="image/png" width="640" height="360">
+    <img id="fallback" src="fallback.png" alt="fallback">
+  </picture>
+</body>

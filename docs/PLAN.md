@@ -86,6 +86,12 @@ Rust with no upstream-crate dependencies.
    partitioning, schema per `docs/ARCHITECTURE.md` "App ID and profile
    paths".
 
+**Shell session restore slice landed.** `vixen-shell::profile` now uses the
+app-ID scoped profile database to load/save `vixen-store::SessionRecord` for the
+GTK shell. Startup falls back to the configured start page for an empty profile,
+restores persisted tab URLs and active tab when present, and clamps/truncates
+shell-written records to the store's bounded tab limits before persistence.
+
 **Gate:** `just gate-phase1` passes (`vixen-net` / `vixen-store`, `just audit`,
 and the `just fuzz-security` 1 M iteration targets).
 
@@ -517,11 +523,14 @@ subset of the matrix surface).
   animation interpolation layer reduces to) and the full `transform`
   property parser land with the 3D WebRender plumbing; this module is the
   arithmetic those slices reduce to.
-- `Page::evaluate_dom_expression` now exposes the first geometry host seam:
+- The runtime DOM host now exposes the first geometry host seam:
   `Element.getBoundingClientRect()` returns the Page layout box as a DOMRect
-  projection (`x`/`y`/`width`/`height`/`left`/`top`/`right`/`bottom`), and
-  `getClientRects().length` reports whether layout produced a box. It also
-  projects the read-only Geometry Interfaces value constructors
+  projection (`x`/`y`/`width`/`height`/`left`/`top`/`right`/`bottom`),
+  `getClientRects().length` reports whether layout produced a box,
+  client/offset/scroll metrics read the same rect, `getBoxQuads()` projects
+  a `DOMQuad` from that box, and Range rectangles reuse the same page-backed
+  geometry seam. It also projects the read-only Geometry Interfaces
+  value constructors
   (`DOMPoint`, `DOMRect.fromRect()`, `DOMQuad.fromRect()` / `getBounds()`, and
   `DOMMatrix` transform/`transformPoint()` smoke) until real JS host wrappers
   replace the string projection.
@@ -763,7 +772,12 @@ Each family lands with its WPT fixtures passing before moving on.
   focus/active element, viewport/window/screen state, language/userAgent). The
   runtime `Storage` host object now crosses explicit `deno_core` ops for
   in-memory `localStorage`/`sessionStorage` mutation through the same storage-key
-  validation and quota boundary the persistent host object will use. `JsRuntime`
+  validation and quota boundary the persistent host object will use.
+  `navigator.permissions.query()`, Notification permission reads, and
+  StorageManager persisted-state checks now cross an explicit permission op that
+  reads persisted `vixen-store::PermissionRecord` decisions by origin, returning
+  `prompt` / `default` for unknown decisions and rejecting unsupported names;
+  `navigator.storage.estimate()` reports bounded local-storage usage. `JsRuntime`
   now owns a persistent realm, so sequential evals retain globals, storage, and
   promise/event-loop state until the caller switches between non-page/page realms
   or navigates to a new page snapshot. The runtime `fetch()` MVP now crosses an
@@ -794,8 +808,13 @@ Each family lands with its WPT fixtures passing before moving on.
   per part, with CRLF discipline; the boundary generator is RFC 2046-capped.
 - `Page::evaluate_dom_expression` now reuses the same form entry-list builder
   for a read-only `FormData(form)` smoke seam (`get`/`getAll`/`has`, iterator
-  first-entry shape, plus file `name`/`type`/`size`) before mutable `FormData`
-  and submitter-aware form host objects land.
+  first-entry shape, plus file `name`/`type`/`size`). Runtime/CDP submit actions
+  now call the same Page-backed entry-list by stable node id, so idless forms,
+  successful submitter entries, and submitter `formaction` / `formmethod` /
+  `formenctype` overrides share the navigation path. Runtime form reset restores
+  default value/checked/selected state and honors cancelable `reset` events;
+  mutable `FormData` remains a narrow in-realm helper until full file/body
+  plumbing lands.
 - `vixen-engine::dataset` — WHATWG HTML § 3.2.6.9 `data-*` attribute ↔ dataset
   property-name bidirectional mapping (deserialise, serialise, collect),
   with the anti-collision rule (`-` followed by uppercase ⇒ not exposed).
@@ -896,8 +915,9 @@ Each family lands with its WPT fixtures passing before moving on.
   finer-grained DOM ops, and element record data is loaded through
   `op_vixen_dom_element_snapshot`. Element text/attribute reads plus read-only
   DOMTokenList/dataset data now use focused DOM ops, and element
-  `getBoundingClientRect()` / `getClientRects()` geometry reads now cross a
-  focused DOM rect op. Focused `CSS.supports`, `getComputedStyle`, and
+  `getBoundingClientRect()` / `getClientRects()` / `getBoxQuads()` geometry
+  reads plus client/offset/scroll metrics now cross a focused DOM rect op.
+  Focused `CSS.supports`, `getComputedStyle`, and
   CSSStyleSheet/CSSRule smoke evals now use the op-backed `script::cssom`
   extension, leaving imported full WebIDL manifests, Geometry Interface value
   constructors/forms/events/history/storage/fetch as the next host-object
@@ -939,7 +959,8 @@ remain `#![forbid(unsafe_code)]`, Rust-unit-tested.
   function. It normalizes through `Request`, validates via
   `vixen-net::validate_http_url`, routes HTTP(S) through `vixen-net::Network`,
   and resolves to `Response` with status, headers, URL, redirect flag, and text
-  body; policy/network failures reject the promise as `TypeError`.
+  body; policy/network failures reject the promise as `TypeError` and emit stable
+  fetch failure events for CDP `Network.loadingFailed` diagnostics.
 
 [`validate_header_name`]: ../../crates/vixen-engine/src/headers.rs
 [`validate_header_value`]: ../../crates/vixen-engine/src/headers.rs
@@ -1078,10 +1099,29 @@ family is now complete end-to-end.
   queries); wired into
   `fixtures/manifest.json`.
 - `Page::evaluate_dom_expression` now projects the read-only `<img>.currentSrc`
-  smoke surface for plain `srcset`/`sizes` images from `responsive_select` plus
-  a `matchMedia()` `.matches` / `.media` seam from `media_query`, proving
-  selected-image URL reflection and MediaQueryList shape until the full
-  `HTMLImageElement` / `MediaQueryList` host objects and resource fetch path land.
+  smoke surface for plain `srcset`/`sizes` images from `responsive_select`, plus
+  Page-backed `HTMLImageElement` alt/dimension/loading/decoding/complete/decode
+  reflection and a `matchMedia()` `.matches` / `.media` seam from `media_query`,
+  proving selected-image URL reflection and MediaQueryList shape until the full
+  image resource fetch path lands.
+- `fixtures/dom/media.html` covers the adjacent inert media-control seam:
+  `HTMLMediaElement` / audio / video identity/constants, booleans,
+  timing/volume state, `canPlayType()`, and promise-shaped `play()` without
+  claiming codec/decode support.
+- `fixtures/dom/resources.html` covers resource-element reflection for
+  `link` / `style` / `script` / `source` attributes, stylesheet ownership, and
+  `HTMLScriptElement.supports()` while parser-discovered script execution remains
+  a separate host-runtime slice.
+- `fixtures/dom/dialog-details.html` covers details/dialog open-state reflection,
+  including `show()` / `showModal()` / `close()` / `requestClose()` state updates
+  and the close-event automation hook.
+- `fixtures/dom/reflected-misc.html` widens the reflected-attribute host-object
+  seam across list, quote/time/edit, image-map, embedded-content, and table-cell
+  attributes that automation suites commonly probe before deeper layout/resource
+  semantics exist.
+- `fixtures/dom/progress-meter.html` covers progress/meter numeric host state
+  (`value` / `min` / `max` / `low` / `high` / `optimum` / `position`) plus label
+  associations for status-control automation probes.
 
 **Pure-logic foundation landed for CSS value-resolution + easing (Phase 3/6 prep).**
 The calculation + timing-function primitives the cascade (`calc()` reduction,

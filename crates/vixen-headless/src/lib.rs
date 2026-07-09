@@ -602,6 +602,7 @@ fn runtime_document_projection_eval(js: &str) -> bool {
             | "document.visibilityState"
             | "document.hidden"
             | "document.referrer"
+            | "document.cookie"
             | "document.hasFocus()"
             | "document.location.href"
             | "document.forms.length"
@@ -1447,6 +1448,7 @@ mod tests {
         assert!(uses_runtime_dom_eval("document.characterSet"));
         assert!(uses_runtime_dom_eval("document.contentType"));
         assert!(uses_runtime_dom_eval("document.visibilityState"));
+        assert!(uses_runtime_dom_eval("document.cookie"));
         assert!(uses_runtime_dom_eval("document.hasFocus()"));
         assert!(uses_runtime_dom_eval("document.location.href"));
         assert!(uses_runtime_dom_eval("location.href"));
@@ -1593,6 +1595,7 @@ mod tests {
         assert_eq!(run_dom_eval(&url, "document.readyState"), None);
         assert_eq!(run_dom_eval(&url, "document.baseURI"), None);
         assert_eq!(run_dom_eval(&url, "document.hasFocus()"), None);
+        assert_eq!(run_dom_eval(&url, "document.cookie"), None);
         assert_eq!(run_dom_eval(&url, "location.href"), None);
         assert_eq!(run_dom_eval(&url, "document.forms.length"), None);
         assert_eq!(run_dom_eval(&url, "document.activeElement.tagName"), None);

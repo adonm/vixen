@@ -4112,11 +4112,13 @@ dependencies = [
  "libadwaita",
  "libloading",
  "relm4",
+ "tempfile",
  "tokio",
  "url",
  "vixen-api",
  "vixen-engine",
  "vixen-net",
+ "vixen-store",
 ]
 
 [[package]]

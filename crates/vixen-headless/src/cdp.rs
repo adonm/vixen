@@ -7,7 +7,7 @@
 //! - `Target.createTarget`, `Target.closeTarget`, `Target.attachToTarget`, `Target.getTargets`
 //! - `Page.enable`, `Page.navigate`, `Page.loadEventFired`
 //! - `Page.captureScreenshot`, `Page.getLayoutMetrics`
-//! - `Runtime.enable`, `Runtime.evaluate`, `Runtime.addBinding`, `Runtime.consoleAPICalled`
+//! - `Runtime.enable`, `Runtime.evaluate`, `Runtime.awaitPromise`, `Runtime.addBinding`, `Runtime.consoleAPICalled`
 //! - `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`
 //!
 //! Architecture: the [`CdpDispatcher`] owns the per-connection state and is
@@ -37,7 +37,7 @@ use vixen_engine::history::HistoryEntry;
 use vixen_engine::page::Page;
 use vixen_engine::script::{
     JsBindingEvent, JsConsoleArg, JsConsoleEvent, JsConsoleValue, JsDialogEvent,
-    JsNavigationAction, JsRuntime, JsValue,
+    JsNavigationAction, JsNetworkEvent, JsRuntime, JsValue,
 };
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
@@ -122,6 +122,7 @@ pub struct CdpState {
     runtime_enabled: bool,
     network_enabled: bool,
     page_enabled: bool,
+    lifecycle_events_enabled: bool,
     isolated_world_name: Option<String>,
     log_enabled: bool,
     last_mouse_down: Option<MouseDownTarget>,
@@ -297,7 +298,8 @@ impl CdpState {
             }
             "Page.handleJavaScriptDialog" => self.page_handle_javascript_dialog(req),
             "Page.createIsolatedWorld" => self.page_create_isolated_world(req),
-            "Page.setLifecycleEventsEnabled" | "Page.bringToFront" => CdpDispatch::ok(json!({})),
+            "Page.setLifecycleEventsEnabled" => self.page_set_lifecycle_events_enabled(req),
+            "Page.bringToFront" => CdpDispatch::ok(json!({})),
             "Runtime.enable" => self.runtime_enable(req),
             "Runtime.disable" => {
                 self.runtime_enabled = false;
@@ -306,6 +308,7 @@ impl CdpState {
             "Runtime.evaluate" => self.runtime_evaluate(req),
             "Runtime.callFunctionOn" => self.runtime_call_function_on(req),
             "Runtime.getProperties" => self.runtime_get_properties(req),
+            "Runtime.awaitPromise" => self.runtime_await_promise(req),
             "Runtime.addBinding" => self.runtime_add_binding(req),
             "Runtime.releaseObject"
             | "Runtime.releaseObjectGroup"
@@ -653,6 +656,15 @@ impl CdpState {
                 ),
             ],
         )
+    }
+
+    fn page_set_lifecycle_events_enabled(&mut self, req: &CdpRequest) -> CdpDispatch {
+        self.lifecycle_events_enabled = req
+            .params
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        CdpDispatch::ok(json!({}))
     }
 
     fn page_navigate(&mut self, req: &CdpRequest) -> CdpDispatch {
@@ -1843,6 +1855,62 @@ impl CdpState {
         }
     }
 
+    fn runtime_await_promise(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(promise_object_id) = req.params.get("promiseObjectId").and_then(Value::as_str)
+        else {
+            return CdpDispatch::error(-32602, "Runtime.awaitPromise: missing `promiseObjectId`");
+        };
+        let return_by_value = req
+            .params
+            .get("returnByValue")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let promise_object_id_json =
+            serde_json::to_string(promise_object_id).unwrap_or_else(|_| "\"\"".into());
+        let await_expr = format!(
+            r#"(async () => {{
+                const __objectId = {promise_object_id_json};
+                const __store = globalThis.__vixenCdpObjects || Object.create(null);
+                if (!Object.prototype.hasOwnProperty.call(__store, __objectId)) {{
+                    throw new Error('Runtime.awaitPromise: object not found');
+                }}
+                return await __store[__objectId];
+            }})()"#,
+        );
+        let result = if return_by_value {
+            self.evaluate_serialized_value(&await_expr)
+                .map(|value| serialized_remote_object(&value))
+        } else {
+            let object_id = self.next_remote_object_id();
+            let object_id_json =
+                serde_json::to_string(&object_id).unwrap_or_else(|_| "\"\"".into());
+            let store_expr = format!(
+                "(async () => {{ globalThis.__vixenCdpObjects = globalThis.__vixenCdpObjects || Object.create(null); const __v = await ({await_expr}); globalThis.__vixenCdpObjects[{object_id_json}] = __v; return __v; }})()"
+            );
+            self.evaluate_js(&store_expr).map(|value| {
+                let stored_object_id =
+                    matches!(value, JsValue::Object).then_some(object_id.as_str());
+                self.remote_object_from_js_value(&value, stored_object_id)
+            })
+        };
+        match result {
+            Ok(remote_object) => {
+                let mut notifications = self.drain_side_effect_notifications(req);
+                match self.drain_navigation_notifications(req) {
+                    Ok(mut navigation_notifications) => {
+                        notifications.append(&mut navigation_notifications);
+                    }
+                    Err(err) => return CdpDispatch::error(-32603, err),
+                }
+                CdpDispatch::ok_with_notifications(
+                    json!({ "result": remote_object }),
+                    notifications,
+                )
+            }
+            Err(e) => self.runtime_exception_result(e, req),
+        }
+    }
+
     fn runtime_add_binding(&mut self, req: &CdpRequest) -> CdpDispatch {
         let Some(name) = req.params.get("name").and_then(Value::as_str) else {
             return CdpDispatch::error(-32602, "Runtime.addBinding: missing `name`");
@@ -2092,13 +2160,19 @@ impl CdpState {
                 }
                 JsNavigationAction::FormSubmit {
                     form_id,
+                    form_node_id,
+                    submitter_node_id,
                     action,
                     method,
                     ..
                 } => {
-                    if let Some(url) =
-                        self.form_submission_navigation_url(&form_id, &action, &method)?
-                    {
+                    if let Some(url) = self.form_submission_navigation_url(
+                        &form_id,
+                        form_node_id,
+                        submitter_node_id,
+                        &action,
+                        &method,
+                    )? {
                         self.navigate_from_action(url, false, session_id, &mut notifications)?;
                     }
                 }
@@ -2238,23 +2312,40 @@ impl CdpState {
     fn form_submission_navigation_url(
         &self,
         form_id: &str,
+        form_node_id: usize,
+        submitter_node_id: Option<usize>,
         action: &str,
         method: &str,
     ) -> Result<Option<String>, String> {
         let Some(page) = self.targets.first().and_then(|target| target.page.as_ref()) else {
             return Err("form submission has no page loaded".to_owned());
         };
-        let action = page
-            .resolve_url(action)
-            .unwrap_or_else(|| action.to_owned());
-        match method.to_ascii_lowercase().as_str() {
+        let submission = if form_node_id != 0 {
+            Some(page.form_submission_by_node_id(form_node_id, submitter_node_id)?)
+        } else if !form_id.is_empty() {
+            Some(page.form_submission(form_id)?)
+        } else {
+            None
+        };
+        let action = submission
+            .as_ref()
+            .map(|submission| submission.action.clone())
+            .unwrap_or_else(|| {
+                page.resolve_url(action)
+                    .unwrap_or_else(|| action.to_owned())
+            });
+        let method = submission
+            .as_ref()
+            .map(|submission| submission.method.clone())
+            .unwrap_or_else(|| method.to_owned())
+            .to_ascii_lowercase();
+        match method.as_str() {
             "dialog" => Ok(None),
             "post" => Ok(Some(action)),
             _ => {
-                if form_id.is_empty() {
+                let Some(submission) = submission else {
                     return Ok(Some(action));
-                }
-                let submission = page.form_submission(form_id)?;
+                };
                 Ok(Some(append_form_query(&action, &submission.body)?))
             }
         }
@@ -2456,6 +2547,11 @@ impl CdpState {
             json!({ "frameId": &frame_id }),
             session_id,
         ));
+        if self.lifecycle_events_enabled {
+            notifications.push(page_lifecycle_event_notification(
+                target, "init", timestamp, session_id,
+            ));
+        }
         if self.runtime_enabled {
             notifications.push(notification(
                 "Runtime.executionContextsCleared",
@@ -2468,6 +2564,11 @@ impl CdpState {
             json!({ "frame": frame_json(target) }),
             session_id,
         ));
+        if self.lifecycle_events_enabled {
+            notifications.push(page_lifecycle_event_notification(
+                target, "commit", timestamp, session_id,
+            ));
+        }
         if self.network_enabled {
             notifications.push(network_response_received_notification(
                 target, &frame_id, timestamp, session_id,
@@ -2486,31 +2587,24 @@ impl CdpState {
             json!({ "timestamp": timestamp }),
             session_id,
         ));
-        notifications.push(notification(
-            "Page.lifecycleEvent",
-            json!({
-                "frameId": target_frame_id(target),
-                "loaderId": format!("loader-{}", target.loader_id),
-                "name": "DOMContentLoaded",
-                "timestamp": timestamp,
-            }),
-            session_id,
-        ));
+        if self.lifecycle_events_enabled {
+            notifications.push(page_lifecycle_event_notification(
+                target,
+                "DOMContentLoaded",
+                timestamp,
+                session_id,
+            ));
+        }
         notifications.push(notification(
             "Page.loadEventFired",
             json!({ "timestamp": timestamp }),
             session_id,
         ));
-        notifications.push(notification(
-            "Page.lifecycleEvent",
-            json!({
-                "frameId": target_frame_id(target),
-                "loaderId": format!("loader-{}", target.loader_id),
-                "name": "load",
-                "timestamp": timestamp,
-            }),
-            session_id,
-        ));
+        if self.lifecycle_events_enabled {
+            notifications.push(page_lifecycle_event_notification(
+                target, "load", timestamp, session_id,
+            ));
+        }
         if self.network_enabled {
             notifications.push(network_loading_finished_notification(
                 target, timestamp, session_id,
@@ -2563,10 +2657,42 @@ impl CdpState {
             .collect()
     }
 
+    fn drain_network_notifications(&mut self, req: &CdpRequest) -> Vec<String> {
+        let events = match self.js.as_mut() {
+            Some(js) => js.drain_network_events().unwrap_or_default(),
+            None => Vec::new(),
+        };
+        if !self.network_enabled {
+            return Vec::new();
+        }
+        let session_id = req.session_id.as_deref();
+        let frame_id = self.current_frame_id_for_session(session_id);
+        let loader_id = self.current_loader_id_for_session(session_id);
+        let document_url = self
+            .target_for_session(session_id)
+            .map(|target| target.url.as_str().to_owned())
+            .unwrap_or_else(|| "about:blank".to_owned());
+        let timestamp = now_ms();
+        events
+            .into_iter()
+            .flat_map(|event| {
+                network_fetch_notifications(
+                    event,
+                    &frame_id,
+                    loader_id,
+                    &document_url,
+                    timestamp,
+                    session_id,
+                )
+            })
+            .collect()
+    }
+
     fn drain_side_effect_notifications(&mut self, req: &CdpRequest) -> Vec<String> {
         let mut notifications = self.drain_console_notifications(req);
         notifications.extend(self.drain_dialog_notifications(req));
         notifications.extend(self.drain_binding_notifications(req));
+        notifications.extend(self.drain_network_notifications(req));
         notifications
     }
 
@@ -2619,6 +2745,7 @@ impl CdpState {
             runtime_enabled: false,
             network_enabled: false,
             page_enabled: false,
+            lifecycle_events_enabled: false,
             isolated_world_name: None,
             log_enabled: false,
             last_mouse_down: None,
@@ -2761,6 +2888,24 @@ fn target_detached_notification_for_session(
 
 fn target_frame_id(target: &Target) -> String {
     format!("tab-{}", target.id)
+}
+
+fn page_lifecycle_event_notification(
+    target: &Target,
+    name: &str,
+    timestamp: u64,
+    session_id: Option<&str>,
+) -> String {
+    notification(
+        "Page.lifecycleEvent",
+        json!({
+            "frameId": target_frame_id(target),
+            "loaderId": format!("loader-{}", target.loader_id),
+            "name": name,
+            "timestamp": timestamp,
+        }),
+        session_id,
+    )
 }
 
 fn frame_json(target: &Target) -> Value {
@@ -3466,6 +3611,202 @@ fn network_loading_finished_notification(
     )
 }
 
+fn network_fetch_notifications(
+    event: JsNetworkEvent,
+    frame_id: &str,
+    loader_id: u64,
+    document_url: &str,
+    timestamp: u64,
+    session_id: Option<&str>,
+) -> Vec<String> {
+    match event {
+        JsNetworkEvent::Request {
+            request_id,
+            url,
+            method,
+        } => vec![network_fetch_request_will_be_sent_notification(
+            &request_id,
+            &url,
+            &method,
+            frame_id,
+            loader_id,
+            document_url,
+            timestamp,
+            session_id,
+        )],
+        JsNetworkEvent::Redirect {
+            request_id,
+            from,
+            status,
+            ..
+        } => vec![network_fetch_response_received_notification(
+            &request_id,
+            &from,
+            status,
+            frame_id,
+            loader_id,
+            timestamp,
+            session_id,
+        )],
+        JsNetworkEvent::Response {
+            request_id,
+            url,
+            status,
+        } => vec![
+            network_fetch_response_received_notification(
+                &request_id,
+                &url,
+                status,
+                frame_id,
+                loader_id,
+                timestamp,
+                session_id,
+            ),
+            network_fetch_loading_finished_notification(&request_id, timestamp, session_id),
+        ],
+        JsNetworkEvent::Failure {
+            request_id,
+            url,
+            error_text,
+            blocked_reason,
+        } => vec![network_fetch_loading_failed_notification(
+            &request_id,
+            &url,
+            &error_text,
+            blocked_reason.as_deref(),
+            timestamp,
+            session_id,
+        )],
+    }
+}
+
+fn network_fetch_request_will_be_sent_notification(
+    request_id: &str,
+    url: &str,
+    method: &str,
+    frame_id: &str,
+    loader_id: u64,
+    document_url: &str,
+    timestamp: u64,
+    session_id: Option<&str>,
+) -> String {
+    notification(
+        "Network.requestWillBeSent",
+        json!({
+            "requestId": request_id,
+            "loaderId": format!("loader-{loader_id}"),
+            "documentURL": document_url,
+            "request": {
+                "url": url,
+                "method": method,
+                "headers": {},
+                "mixedContentType": "none",
+                "initialPriority": "High",
+                "referrerPolicy": "strict-origin-when-cross-origin",
+            },
+            "timestamp": timestamp,
+            "wallTime": timestamp as f64 / 1000.0,
+            "initiator": { "type": "script" },
+            "type": "Fetch",
+            "frameId": frame_id,
+            "hasUserGesture": false,
+        }),
+        session_id,
+    )
+}
+
+fn network_fetch_response_received_notification(
+    request_id: &str,
+    url: &str,
+    status: u16,
+    frame_id: &str,
+    loader_id: u64,
+    timestamp: u64,
+    session_id: Option<&str>,
+) -> String {
+    notification(
+        "Network.responseReceived",
+        json!({
+            "requestId": request_id,
+            "loaderId": format!("loader-{loader_id}"),
+            "timestamp": timestamp,
+            "type": "Fetch",
+            "frameId": frame_id,
+            "response": {
+                "url": url,
+                "status": status,
+                "statusText": http_status_text(status),
+                "headers": {},
+                "mimeType": "text/plain",
+                "connectionReused": false,
+                "connectionId": 0,
+                "encodedDataLength": 0,
+                "securityState": "neutral",
+                "protocol": network_protocol_for_url(url),
+            },
+            "hasExtraInfo": false,
+        }),
+        session_id,
+    )
+}
+
+fn network_fetch_loading_finished_notification(
+    request_id: &str,
+    timestamp: u64,
+    session_id: Option<&str>,
+) -> String {
+    notification(
+        "Network.loadingFinished",
+        json!({
+            "requestId": request_id,
+            "timestamp": timestamp,
+            "encodedDataLength": 0,
+        }),
+        session_id,
+    )
+}
+
+fn network_fetch_loading_failed_notification(
+    request_id: &str,
+    url: &str,
+    error_text: &str,
+    blocked_reason: Option<&str>,
+    timestamp: u64,
+    session_id: Option<&str>,
+) -> String {
+    let mut params = serde_json::Map::new();
+    params.insert("requestId".to_owned(), json!(request_id));
+    params.insert("timestamp".to_owned(), json!(timestamp));
+    params.insert("type".to_owned(), json!("Fetch"));
+    params.insert("errorText".to_owned(), json!(error_text));
+    params.insert("canceled".to_owned(), json!(false));
+    if let Some(reason) = blocked_reason {
+        params.insert("blockedReason".to_owned(), json!(reason));
+    }
+    params.insert("url".to_owned(), json!(url));
+    notification("Network.loadingFailed", Value::Object(params), session_id)
+}
+
+fn http_status_text(status: u16) -> &'static str {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        303 => "See Other",
+        304 => "Not Modified",
+        307 => "Temporary Redirect",
+        308 => "Permanent Redirect",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        500 => "Internal Server Error",
+        _ => "",
+    }
+}
+
 fn network_request_id(target: &Target) -> String {
     format!("request-{}", target.loader_id)
 }
@@ -3530,6 +3871,40 @@ mod tests {
             params,
         };
         state.dispatch(&req).response.expect("success response")
+    }
+
+    fn spawn_fetch_server(
+        host: &str,
+        body: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = body.to_owned();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            handle,
+        )
     }
 
     /// All CDP dispatcher checks except runtime-backed `Runtime.evaluate`,
@@ -3841,6 +4216,109 @@ mod tests {
                 .as_str()
                 .is_some_and(|method| !method.starts_with("Network."))
         }));
+    }
+
+    #[test]
+    fn page_lifecycle_events_follow_enabled_flag() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("lifecycle.html");
+        std::fs::write(&html, "<title>Lifecycle</title>").unwrap();
+        let url = format!("file://{}", html.display());
+
+        let mut s = CdpState::default();
+        let navigate = |state: &mut CdpState, id| {
+            state.dispatch(&CdpRequest {
+                id,
+                session_id: None,
+                method: "Page.navigate".to_owned(),
+                params: json!({ "url": url.clone() }),
+            })
+        };
+
+        let default_outcome = navigate(&mut s, 1);
+        assert!(default_outcome.notifications.iter().all(|line| {
+            serde_json::from_str::<Value>(line).unwrap()["method"] != "Page.lifecycleEvent"
+        }));
+
+        dispatch_one(
+            &mut s,
+            "Page.setLifecycleEventsEnabled",
+            json!({ "enabled": true }),
+        );
+        let enabled_outcome = navigate(&mut s, 2);
+        let lifecycle_names = enabled_outcome
+            .notifications
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|event| event["method"] == "Page.lifecycleEvent")
+            .map(|event| event["params"]["name"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            lifecycle_names,
+            vec!["init", "commit", "DOMContentLoaded", "load"]
+        );
+
+        dispatch_one(
+            &mut s,
+            "Page.setLifecycleEventsEnabled",
+            json!({ "enabled": false }),
+        );
+        let disabled_outcome = navigate(&mut s, 3);
+        assert!(disabled_outcome.notifications.iter().all(|line| {
+            serde_json::from_str::<Value>(line).unwrap()["method"] != "Page.lifecycleEvent"
+        }));
+    }
+
+    #[test]
+    fn network_enable_emits_fetch_events_after_runtime_evaluate() {
+        let (url, network_config, server) = spawn_fetch_server("vixen-cdp-fetch.com", "cdp body");
+        let rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let mut s = CdpState::with_runtime(rt);
+        dispatch_one(&mut s, "Network.enable", json!({}));
+
+        let evaluate = CdpRequest {
+            id: 7,
+            session_id: None,
+            method: "Runtime.evaluate".to_owned(),
+            params: json!({
+                "expression": format!("fetch({url:?}).then((response) => response.text())"),
+                "returnByValue": true,
+            }),
+        };
+        let outcome = s.dispatch(&evaluate);
+        assert_eq!(
+            outcome.response.expect("evaluate response")["result"]["value"],
+            "cdp body"
+        );
+        let notifications = outcome
+            .notifications
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>();
+
+        let request = notifications
+            .iter()
+            .find(|event| event["method"] == "Network.requestWillBeSent")
+            .expect("fetch request event");
+        assert_eq!(request["params"]["type"], "Fetch");
+        assert_eq!(request["params"]["requestId"], "fetch-1");
+        assert_eq!(request["params"]["request"]["url"], url);
+        assert_eq!(request["params"]["request"]["method"], "GET");
+
+        let response = notifications
+            .iter()
+            .find(|event| event["method"] == "Network.responseReceived")
+            .expect("fetch response event");
+        assert_eq!(response["params"]["requestId"], "fetch-1");
+        assert_eq!(response["params"]["type"], "Fetch");
+        assert_eq!(response["params"]["response"]["status"], 200);
+
+        let finished = notifications
+            .iter()
+            .find(|event| event["method"] == "Network.loadingFinished")
+            .expect("fetch loadingFinished event");
+        assert_eq!(finished["params"]["requestId"], "fetch-1");
+        server.join().unwrap();
     }
 
     #[test]
@@ -4194,6 +4672,43 @@ mod tests {
             }),
         );
         assert_eq!(nested_ok["result"]["value"], true);
+    }
+
+    #[test]
+    fn runtime_await_promise_resolves_stored_promise_handles() {
+        let mut s = CdpState::default();
+        let remote = dispatch_one(
+            &mut s,
+            "Runtime.evaluate",
+            json!({ "expression": "Promise.resolve({ answer: 42, nested: { ok: true } })" }),
+        );
+        let promise_id = remote["result"]["objectId"].as_str().unwrap();
+
+        let by_value = dispatch_one(
+            &mut s,
+            "Runtime.awaitPromise",
+            json!({ "promiseObjectId": promise_id, "returnByValue": true }),
+        );
+        assert_eq!(by_value["result"]["type"], "object");
+        assert_eq!(by_value["result"]["value"]["answer"], 42);
+
+        let by_handle = dispatch_one(
+            &mut s,
+            "Runtime.awaitPromise",
+            json!({ "promiseObjectId": promise_id }),
+        );
+        let object_id = by_handle["result"]["objectId"].as_str().unwrap();
+        let properties = dispatch_one(
+            &mut s,
+            "Runtime.getProperties",
+            json!({ "objectId": object_id, "ownProperties": true }),
+        );
+        let props = properties["result"].as_array().unwrap();
+        let answer = props
+            .iter()
+            .find(|prop| prop["name"] == "answer")
+            .expect("answer property");
+        assert_eq!(answer["value"]["value"], 42);
     }
 
     #[test]

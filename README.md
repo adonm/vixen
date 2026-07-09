@@ -120,7 +120,11 @@ and reference material, plus:
   for `ValidityState` / `checkValidity()` smoke checks;
   `vixen-engine::form_submission` (the three WHATWG HTML § 4.10.21 encoders:
   `application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`,
-  now also feeding the Page-backed `FormData` entry-list + iterator smoke seam);
+  now also feeding the Page-backed `FormData` entry-list + iterator smoke seam
+  and runtime/CDP form submission by node id, including idless forms,
+  successful submitter entries, and submitter `formaction` / `formmethod` /
+  `formenctype` overrides; runtime form reset restores default value/checked/
+  selected state and honors cancelable `reset` events);
   `vixen-engine::dataset` (WHATWG HTML
   § 3.2.6.9 `data-*` ↔ `dataset` property-name bidirectional mapping, with
   the anti-collision rule, now reflected by the Page-backed `dataset` eval
@@ -132,10 +136,12 @@ and reference material, plus:
   `nodeType`, `ownerDocument`), plus `Event` / `CustomEvent` / `dispatchEvent()`
   smoke, CSSOM `CSS.supports()` / `document.styleSheets` / CSSStyleRule shape,
   viewport/window state (`innerWidth`, `visualViewport`, `screen`), DOMRect
-  geometry via `getBoundingClientRect()`, Geometry Interfaces value constructors
+  geometry via `getBoundingClientRect()` / `getClientRects()` plus
+  client/offset/scroll metrics, `getBoxQuads()`, and Range rectangles,
+  Geometry Interfaces value constructors
   (`DOMPoint`/`DOMRect`/`DOMQuad`/`DOMMatrix`), `DOMParser`, and `atob` / `btoa`
-  are also projected through `Page::evaluate_dom_expression`, while the first
-  focused document/query/element evals (`document.title`, simple
+  are also projected through `Page::evaluate_dom_expression`,
+  while the first focused document/query/element evals (`document.title`, simple
   `querySelector`/`getElementById`, `querySelectorAll().length`) plus read-only
   `classList`/`relList`/`sandbox` and `dataset` property reads now run through a
   `deno_core` `document` snapshot host-object seam. `JsRuntime` now owns a
@@ -158,8 +164,16 @@ and reference material, plus:
   iteration, `Blob`/`File`,
   read-only `Request`/`Response` state with forbidden-header filtering, static
   `Response.error()` / `Response.redirect()` / `Response.json()`, an op-backed
-  `fetch()` MVP that routes HTTP(S) through `vixen-net` for status/headers/body
-  and URL-policy/private-host rejection, `AbortController`/`AbortSignal`, and
+  `fetch()` MVP that routes HTTP(S) through `vixen-net` for request headers,
+  request bodies, status/headers/body, URL-policy/private-host rejection, page CSP `connect-src`,
+  referrer-policy header generation, active mixed-content blocking,
+  `same-origin`/`cors`/`no-cors` mode enforcement, CORS preflights for non-simple
+  methods/headers, CORS response filtering,
+  bounded profile cache reads/writes, and `cache: 'no-cache'` ETag /
+  Last-Modified revalidation, with stable request/redirect/response/failure event
+  traces drained by `JsRuntime` and surfaced as CDP `Network.*` notifications
+  (including `Network.loadingFailed` with a blocked reason for policy failures),
+  a minimal fetch-backed `XMLHttpRequest`, `AbortController`/`AbortSignal`, and
   `URLPattern` eval smoke checks. The
   DOM-serialisation surface:
   `vixen-engine::html_serialize` (WHATWG HTML § 13.2.9 fragment serialisation
@@ -174,7 +188,22 @@ and reference material, plus:
   feeds the Page-backed WPT adapter plus focused `deno_core` `classList` /
   `relList` / `sandbox` evals. Security
   meta `content` / `charset` reflection is likewise covered by Page-backed
-  eval checks before CSP/referrer enforcement consumes it. The CSS
+  eval checks before CSP/referrer enforcement consumes it, and
+  `navigator.permissions.query()`, `Notification.permission` /
+  `requestPermission()`, and `navigator.storage.persisted()` now cross a
+  profile-store permission op with unknown decisions staying `prompt` /
+  `default`; `navigator.storage.estimate()` reports bounded local-storage usage;
+  anchor URL decomposition (`href`,
+  `origin`, `protocol`, `host`, `pathname`, `search`, `hash`) is Page-backed for
+  link/navigation fixtures; `HTMLImageElement` reflection now covers
+  alt/dimensions/loading/decoding/complete/decode smoke; and inert
+  `HTMLMediaElement` / audio / video state reflection covers media-control
+  automation probes without claiming decode support. Resource element reflection
+  now covers `link` / `style` / `script` / `source` attributes plus
+  `HTMLScriptElement.supports()` smoke, and details/dialog open-state reflection
+  covers dialog show/close automation probes. Miscellaneous HTML reflected
+  attributes now cover lists, quotes/time edits, image maps, embedded content,
+  table-cell spans/headers, and progress/meter numeric state. The CSS
   Values 4 dimension family (`length`,
   `color`, `angle`, `time`, `resolution`) — the value primitives the
   cascade/layout/paint resolves against — is now complete for v1.0; `<length>`
@@ -207,8 +236,8 @@ and reference material, plus:
   models the DOM § 5.2 boundary-point pair + § 5.4 direction-aware
   selection (`add_range`/`collapse_to`/`extend_to`, the forward/backward
   direction) the editing commands and user-selection reflection reduce to,
-  now projected through read-only `document.createRange()` /
-  `getSelection()` eval smoke checks.
+  now projected through `document.createRange()` eval smoke checks, including
+  Range rectangles, plus `getSelection()` accessors.
   The session-history family (`history`) models the HTML § 7.1 entry-stack
   + the `history.pushState`/`replaceState`/`back`/`forward`/`go` surface +
   the `scrollRestoration` mode the `History` host hook + the navigation
@@ -271,9 +300,18 @@ and reference material, plus:
   Block) — ready for the DOM injection-sink host hooks to consult before
   accepting a string.
 - **Phase 8 (partial)** — the CDP WebSocket server (`vixen-headless::cdp`)
-  responds to the six required methods (`Browser.getVersion`,
-  `Target.createTarget`, `Target.attachToTarget`, `Page.navigate`,
-  `Page.loadEventFired`, `Runtime.evaluate`) with stable error codes.
+  covers the growing Playwright-facing surface: browser/target attach, page
+  navigation/load/lifecycle events, runtime evaluation/object properties and
+  `Runtime.awaitPromise`,
+  console/dialog/binding notifications, DOM query/resolve, network events,
+  screenshots, viewport/media emulation, and basic mouse/keyboard input with
+  stable error codes.
+- **Browser shell/profile slice** — the GTK shell now resolves production
+  app-ID profile paths on startup, restores tab URLs plus the active tab from
+  `vixen-store::SessionRecord`, and persists bounded restore state as tabs are
+  added, closed, selected, or finish loading. GTK-free profile helpers also route
+  explicit clear-data selections through the same app-ID scoped store while
+  preserving or clearing session restore per `ClearDataSelection`.
 
 Source for later phases lands per [`docs/PLAN.md`](docs/PLAN.md).
 

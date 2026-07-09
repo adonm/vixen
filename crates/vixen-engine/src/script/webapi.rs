@@ -16,9 +16,21 @@ use std::sync::{Arc, Mutex};
 use deno_core::serde_json::{Value, json};
 use deno_core::{Extension, ExtensionFileSource, OpState};
 use url::Url;
-use vixen_net::{CookieJar, Method, Network, NetworkConfig, TextResponse, validate_http_url};
-use vixen_store::Store;
+use vixen_net::{
+    ContentSecurityPolicy, CookieJar, CookieSnapshot, CorsCheckOutcome, CorsCredentialsMode,
+    CorsResponseHeaders, Method, MixedContentVerdict, Network, NetworkConfig, NetworkEvent, Origin,
+    RedirectMode, ResourceType, SameSite, TextResponse, classify_mixed_content, cors_check,
+    cors_filtered_headers,
+    referrer_policy::{
+        ReferrerPolicy, ReferrerValue, is_potentially_trustworthy, parse_referrer_policy,
+        resolve_referrer,
+    },
+    validate_http_url,
+};
+use vixen_store::{CacheEntry, CookieRecord, PermissionDecision, Store};
 
+use crate::doc::DocumentScriptItem;
+use crate::page::Page;
 use crate::storage_key::{
     MAX_PARTITION_BYTES, StorageKeyError, StorageKind, StorageQuota, validate_storage_key,
     validate_storage_value,
@@ -27,17 +39,105 @@ use crate::storage_key::{
 struct WebApiHost {
     storage: WebStorageHost,
     network: Result<Network, String>,
+    cookies: Arc<Mutex<CookieJar>>,
+    fetch_policy: Option<FetchPolicy>,
 }
 
 type StorageEntries = Vec<(String, String)>;
 type MemoryStorageMap = Arc<Mutex<HashMap<String, StorageEntries>>>;
 
 impl WebApiHost {
-    fn new(network_config: NetworkConfig, storage: WebStorageHost) -> Self {
+    fn new(
+        network_config: NetworkConfig,
+        storage: WebStorageHost,
+        fetch_policy: Option<FetchPolicy>,
+    ) -> Self {
         Self {
             storage,
             network: Network::new(network_config).map_err(|err| err.to_string()),
+            cookies: Arc::new(Mutex::new(CookieJar::default())),
+            fetch_policy,
         }
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct FetchPolicy {
+    csp: ContentSecurityPolicy,
+    origin: Origin,
+    context_url: Option<Url>,
+}
+
+impl FetchPolicy {
+    pub(super) fn from_page(page: &Page) -> Self {
+        let mut csp = page.csp().clone();
+        for item in page.document().script_execution_items() {
+            if let DocumentScriptItem::CspMeta(policy) = item {
+                csp.add_header(&policy);
+            }
+        }
+        let context_url = Url::parse(page.url()).ok();
+        let origin = context_url
+            .as_ref()
+            .map(Origin::from_url)
+            .unwrap_or_else(Origin::opaque);
+        Self {
+            csp,
+            origin,
+            context_url,
+        }
+    }
+
+    fn allows_connect(&self, url: &Url) -> bool {
+        self.csp.allows_fetch("connect-src", url, &self.origin)
+    }
+
+    fn mixed_content_verdict(&self, url: &Url) -> MixedContentVerdict {
+        let context_trustworthy = self
+            .context_url
+            .as_ref()
+            .is_some_and(is_potentially_trustworthy);
+        classify_mixed_content(context_trustworthy, url, ResourceType::Fetch, false)
+    }
+
+    fn is_cross_origin(&self, url: &Url) -> bool {
+        Origin::from_url(url) != self.origin
+    }
+
+    fn cors_origin(&self) -> String {
+        cors_origin_value(&self.origin)
+    }
+
+    fn referrer_header(
+        &self,
+        url: &Url,
+        policy_text: Option<&str>,
+    ) -> Result<Option<String>, String> {
+        let Some(source) = self.context_url.as_ref() else {
+            return Ok(None);
+        };
+        let policy = match policy_text.filter(|value| !value.is_empty()) {
+            Some(value) => parse_referrer_policy(value)
+                .ok_or_else(|| format!("unsupported fetch referrer policy: {value}"))?,
+            None => ReferrerPolicy::default(),
+        };
+        Ok(match resolve_referrer(policy, source, url) {
+            ReferrerValue::None => None,
+            ReferrerValue::Origin(value) | ReferrerValue::FullUrl(value) => Some(value),
+        })
+    }
+}
+
+fn cors_origin_value(origin: &Origin) -> String {
+    if origin.is_opaque() {
+        return "null".to_owned();
+    }
+    match (origin.scheme(), origin.host(), origin.port()) {
+        ("http", host, Some(80)) | ("https", host, Some(443)) => {
+            format!("{}://{}", origin.scheme(), host)
+        }
+        (_, host, Some(port)) => format!("{}://{}:{}", origin.scheme(), host, port),
+        (_, host, None) => format!("{}://{}", origin.scheme(), host),
     }
 }
 
@@ -91,14 +191,27 @@ deno_core::extension!(
         op_vixen_storage_set,
         op_vixen_storage_remove,
         op_vixen_storage_clear,
+        op_vixen_storage_estimate,
+        op_vixen_storage_persisted,
+        op_vixen_document_cookie_get,
+        op_vixen_document_cookie_set,
+        op_vixen_permission_query,
         op_vixen_fetch,
     ],
 );
 
-pub(super) fn extension(network_config: NetworkConfig, storage: WebStorageHost) -> Extension {
+pub(super) fn extension(
+    network_config: NetworkConfig,
+    storage: WebStorageHost,
+    fetch_policy: Option<FetchPolicy>,
+) -> Extension {
     let mut extension = vixen_webapi::init();
     extension.op_state_fn = Some(Box::new(move |state| {
-        state.put(WebApiHost::new(network_config, storage.clone()));
+        state.put(WebApiHost::new(
+            network_config.clone(),
+            storage.clone(),
+            fetch_policy.clone(),
+        ));
     }));
     extension.js_files = Cow::Owned(vec![ExtensionFileSource::new_computed(
         "ext:vixen_webapi/bootstrap.js",
@@ -214,26 +327,221 @@ fn op_vixen_fetch(
         Ok(method) => method,
         Err(message) => return fetch_error(message),
     };
+    let cache_mode = match parse_fetch_cache(
+        request
+            .get("cache")
+            .and_then(Value::as_str)
+            .unwrap_or("default"),
+    ) {
+        Ok(mode) => mode,
+        Err(message) => return fetch_error(message),
+    };
+    let fetch_mode = match parse_fetch_mode(
+        request
+            .get("mode")
+            .and_then(Value::as_str)
+            .unwrap_or("cors"),
+    ) {
+        Ok(mode) => mode,
+        Err(message) => return fetch_error(message),
+    };
+    let credentials_mode = match parse_fetch_credentials(
+        request
+            .get("credentials")
+            .and_then(Value::as_str)
+            .unwrap_or("same-origin"),
+    ) {
+        Ok(mode) => mode,
+        Err(message) => return fetch_error(message),
+    };
+    let redirect_mode = match parse_fetch_redirect(
+        request
+            .get("redirect")
+            .and_then(Value::as_str)
+            .unwrap_or("follow"),
+    ) {
+        Ok(mode) => mode,
+        Err(message) => return fetch_error(message),
+    };
+    let mut headers = match parse_fetch_headers(request.get("headers")) {
+        Ok(headers) => headers,
+        Err(message) => return fetch_error(message),
+    };
+    let author_headers = headers.clone();
+    let body = request
+        .get("body")
+        .and_then(Value::as_str)
+        .map(|value| value.as_bytes().to_vec());
     let url = match Url::parse(url_text) {
         Ok(url) => url,
-        Err(err) => return fetch_error(format!("invalid URL: {err}")),
-    };
-    if let Err(err) = validate_http_url(&url) {
-        return fetch_error(format!("URL rejected by policy: {err}"));
-    }
-
-    let network = {
-        let state = state.borrow();
-        let host = state.borrow::<WebApiHost>();
-        match &host.network {
-            Ok(network) => network.clone(),
-            Err(message) => return fetch_error(format!("network unavailable: {message}")),
+        Err(err) => {
+            return fetch_failure(
+                url_text,
+                method,
+                format!("invalid URL: {err}"),
+                "url-policy",
+            );
         }
     };
+    if let Err(err) = validate_http_url(&url) {
+        return fetch_failure(
+            url.as_str(),
+            method,
+            format!("URL rejected by policy: {err}"),
+            "url-policy",
+        );
+    }
 
-    match fetch_http_text_blocking(network, url, method) {
-        Ok(response) => fetch_response(response),
-        Err(message) => fetch_error(message),
+    let (network, cookies, cookie_store, fetch_policy) = {
+        let state = state.borrow();
+        let host = state.borrow::<WebApiHost>();
+        let network = match &host.network {
+            Ok(network) => network.clone(),
+            Err(message) => {
+                return fetch_failure(
+                    url.as_str(),
+                    method,
+                    format!("network unavailable: {message}"),
+                    "network",
+                );
+            }
+        };
+        (
+            network,
+            host.cookies.clone(),
+            web_storage_store(&host.storage),
+            host.fetch_policy.clone(),
+        )
+    };
+
+    if let Some(policy) = &fetch_policy
+        && !policy.allows_connect(&url)
+    {
+        return fetch_failure(
+            url.as_str(),
+            method,
+            "fetch blocked by CSP connect-src",
+            "csp",
+        );
+    }
+    if let Some(policy) = &fetch_policy
+        && policy.mixed_content_verdict(&url) == MixedContentVerdict::Block
+    {
+        return fetch_failure(
+            url.as_str(),
+            method,
+            "fetch blocked as active mixed content",
+            "mixed-content",
+        );
+    }
+    if let Some(policy) = &fetch_policy {
+        match policy.referrer_header(&url, request.get("referrerPolicy").and_then(Value::as_str)) {
+            Ok(Some(value)) => headers.push(("referer".to_owned(), value)),
+            Ok(None) => {}
+            Err(message) => return fetch_failure(url.as_str(), method, message, "policy"),
+        }
+    }
+    let cross_origin = fetch_policy
+        .as_ref()
+        .is_some_and(|policy| policy.is_cross_origin(&url));
+    if fetch_mode == FetchMode::SameOrigin && cross_origin {
+        return fetch_failure(
+            url.as_str(),
+            method,
+            "fetch blocked by mode same-origin",
+            "origin",
+        );
+    }
+    if cross_origin
+        && matches!(fetch_mode, FetchMode::Cors | FetchMode::NoCors)
+        && let Some(policy) = &fetch_policy
+    {
+        headers.push(("origin".to_owned(), policy.cors_origin()));
+    }
+    if cross_origin
+        && fetch_mode == FetchMode::Cors
+        && let Some(policy) = &fetch_policy
+    {
+        let unsafe_header_names = cors_unsafe_request_header_names(&author_headers);
+        if cors_preflight_required(method, &unsafe_header_names)
+            && let Err(message) = cors_preflight_blocking(
+                network.clone(),
+                url.clone(),
+                method,
+                policy.cors_origin(),
+                unsafe_header_names,
+            )
+        {
+            return fetch_failure(url.as_str(), method, message, "cors");
+        }
+    }
+    let send_credentials = credentials_mode.sends_credentials(cross_origin);
+    let revalidation_candidate = if method == Method::Get && cache_mode == FetchCacheMode::NoCache {
+        match fetch_cache_lookup(cookie_store.as_deref(), &url) {
+            Ok(candidate) => candidate,
+            Err(message) => return fetch_failure(url.as_str(), method, message, "cache"),
+        }
+    } else {
+        None
+    };
+    if let Some(candidate) = &revalidation_candidate {
+        add_cache_revalidation_headers(&mut headers, candidate);
+    }
+
+    if method == Method::Get
+        && matches!(
+            cache_mode,
+            FetchCacheMode::ForceCache | FetchCacheMode::OnlyIfCached
+        )
+    {
+        match fetch_cache_lookup(cookie_store.as_deref(), &url) {
+            Ok(Some(response)) => {
+                return match apply_fetch_visibility(
+                    response,
+                    fetch_mode,
+                    credentials_mode,
+                    fetch_policy.as_ref(),
+                    &url,
+                ) {
+                    Ok((response, response_type)) => fetch_response(response, response_type),
+                    Err(message) => fetch_error(message),
+                };
+            }
+            Ok(None) if cache_mode == FetchCacheMode::OnlyIfCached => {
+                return fetch_failure(url.as_str(), method, "fetch cache miss", "cache");
+            }
+            Ok(None) => {}
+            Err(message) => return fetch_failure(url.as_str(), method, message, "cache"),
+        }
+    }
+
+    match fetch_http_text_blocking(
+        network,
+        url.clone(),
+        method,
+        cache_mode,
+        send_credentials,
+        cross_origin,
+        redirect_mode,
+        headers,
+        body,
+        cookies,
+        cookie_store,
+    ) {
+        Ok(response) => match apply_fetch_visibility(
+            revalidated_response(response, revalidation_candidate),
+            fetch_mode,
+            credentials_mode,
+            fetch_policy.as_ref(),
+            &url,
+        ) {
+            Ok((response, response_type)) => fetch_response(response, response_type),
+            Err(message) => {
+                let reason = fetch_blocked_reason(&message);
+                fetch_failure(url.as_str(), method, message, reason)
+            }
+        },
+        Err(message) => fetch_failure(url.as_str(), method, message, "network"),
     }
 }
 
@@ -277,6 +585,104 @@ fn op_vixen_storage_clear(
     }
 }
 
+#[deno_core::op2]
+#[serde]
+fn op_vixen_storage_estimate(state: &mut OpState) -> deno_core::serde_json::Value {
+    let host = state.borrow::<WebApiHost>();
+    let usage = storage_entries(host, StorageKind::Local)
+        .map(|entries| storage_total_bytes(&entries))
+        .unwrap_or(0);
+    json!({
+        "ok": true,
+        "usage": usage,
+        "quota": MAX_PARTITION_BYTES,
+    })
+}
+
+#[deno_core::op2(fast)]
+fn op_vixen_storage_persisted(state: &mut OpState) -> bool {
+    let host = state.borrow::<WebApiHost>();
+    permission_state(host, "persistent-storage").is_ok_and(|state| state == "granted")
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_permission_query(
+    state: &mut OpState,
+    #[string] name: String,
+) -> deno_core::serde_json::Value {
+    let Some(kind) = canonical_permission_name(&name) else {
+        return json!({
+            "ok": false,
+            "message": format!("unsupported permission name: {name}"),
+        });
+    };
+    let host = state.borrow::<WebApiHost>();
+    match permission_state(host, kind) {
+        Ok(state) => json!({ "ok": true, "state": state }),
+        Err(message) => json!({ "ok": false, "message": message }),
+    }
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_document_cookie_get(
+    state: &mut OpState,
+    #[string] url_text: String,
+) -> deno_core::serde_json::Value {
+    let Ok(url) = Url::parse(&url_text) else {
+        return storage_error("invalid document URL for cookie read");
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return storage_value(Some(String::new()));
+    }
+
+    let host = state.borrow::<WebApiHost>();
+    let store = web_storage_store(&host.storage);
+    let origin_key = cookie_origin_key(&url);
+    match load_cookie_jar(&host.cookies, store.as_deref(), &origin_key) {
+        Ok(jar) => storage_value(Some(jar.document_cookie_string(&url))),
+        Err(message) => storage_error(message),
+    }
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_document_cookie_set(
+    state: &mut OpState,
+    #[string] url_text: String,
+    #[string] value: String,
+) -> deno_core::serde_json::Value {
+    let Ok(url) = Url::parse(&url_text) else {
+        return storage_error("invalid document URL for cookie write");
+    };
+    if !matches!(url.scheme(), "http" | "https") {
+        return json!({ "ok": true });
+    }
+
+    let host = state.borrow::<WebApiHost>();
+    let store = web_storage_store(&host.storage);
+    let origin_key = cookie_origin_key(&url);
+    let origin_host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let mut jar = match load_cookie_jar(&host.cookies, store.as_deref(), &origin_key) {
+        Ok(jar) => jar,
+        Err(message) => return storage_error(message),
+    };
+    if let Err(err) = jar.set_cookie(&value, &url, false) {
+        return storage_error(err.to_string());
+    }
+    match persist_cookie_jar(
+        &host.cookies,
+        store.as_deref(),
+        &origin_key,
+        &origin_host,
+        jar,
+    ) {
+        Ok(()) => json!({ "ok": true }),
+        Err(message) => storage_error(message),
+    }
+}
+
 fn parse_storage_kind(kind: &str) -> Option<StorageKind> {
     match kind {
         "local" => Some(StorageKind::Local),
@@ -298,27 +704,510 @@ fn parse_fetch_method(method: &str) -> Result<Method, String> {
     }
 }
 
-fn fetch_http_text_blocking(
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FetchCacheMode {
+    Default,
+    NoStore,
+    Reload,
+    NoCache,
+    ForceCache,
+    OnlyIfCached,
+}
+
+fn parse_fetch_cache(mode: &str) -> Result<FetchCacheMode, String> {
+    match mode {
+        "default" => Ok(FetchCacheMode::Default),
+        "no-store" => Ok(FetchCacheMode::NoStore),
+        "reload" => Ok(FetchCacheMode::Reload),
+        "no-cache" => Ok(FetchCacheMode::NoCache),
+        "force-cache" => Ok(FetchCacheMode::ForceCache),
+        "only-if-cached" => Ok(FetchCacheMode::OnlyIfCached),
+        other => Err(format!("unsupported fetch cache mode: {other}")),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FetchMode {
+    SameOrigin,
+    Cors,
+    NoCors,
+}
+
+fn parse_fetch_mode(mode: &str) -> Result<FetchMode, String> {
+    match mode {
+        "same-origin" => Ok(FetchMode::SameOrigin),
+        "cors" => Ok(FetchMode::Cors),
+        "no-cors" => Ok(FetchMode::NoCors),
+        other => Err(format!("unsupported fetch mode: {other}")),
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FetchCredentialsMode {
+    Omit,
+    SameOrigin,
+    Include,
+}
+
+impl FetchCredentialsMode {
+    fn sends_credentials(self, cross_origin: bool) -> bool {
+        match self {
+            FetchCredentialsMode::Omit => false,
+            FetchCredentialsMode::SameOrigin => !cross_origin,
+            FetchCredentialsMode::Include => true,
+        }
+    }
+
+    fn cors_mode(self) -> CorsCredentialsMode {
+        match self {
+            FetchCredentialsMode::Include => CorsCredentialsMode::Include,
+            FetchCredentialsMode::Omit | FetchCredentialsMode::SameOrigin => {
+                CorsCredentialsMode::Omit
+            }
+        }
+    }
+}
+
+fn parse_fetch_credentials(mode: &str) -> Result<FetchCredentialsMode, String> {
+    match mode {
+        "omit" => Ok(FetchCredentialsMode::Omit),
+        "same-origin" => Ok(FetchCredentialsMode::SameOrigin),
+        "include" => Ok(FetchCredentialsMode::Include),
+        other => Err(format!("unsupported fetch credentials mode: {other}")),
+    }
+}
+
+fn parse_fetch_redirect(mode: &str) -> Result<RedirectMode, String> {
+    match mode {
+        "follow" => Ok(RedirectMode::Follow),
+        "error" => Ok(RedirectMode::Error),
+        "manual" => Ok(RedirectMode::Manual),
+        other => Err(format!("unsupported fetch redirect mode: {other}")),
+    }
+}
+
+fn parse_fetch_headers(value: Option<&Value>) -> Result<Vec<(String, String)>, String> {
+    let Some(Value::Array(entries)) = value else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let Value::Array(pair) = entry else {
+            return Err("fetch headers must be [name, value] pairs".to_owned());
+        };
+        if pair.len() != 2 {
+            return Err("fetch headers must be [name, value] pairs".to_owned());
+        }
+        let Some(name) = pair[0].as_str() else {
+            return Err("fetch header name must be a string".to_owned());
+        };
+        let Some(value) = pair[1].as_str() else {
+            return Err("fetch header value must be a string".to_owned());
+        };
+        out.push((name.to_owned(), value.to_owned()));
+    }
+    Ok(out)
+}
+
+fn cors_unsafe_request_header_names(headers: &[(String, String)]) -> Vec<String> {
+    let mut out = Vec::new();
+    for (name, value) in headers {
+        let lower = name.to_ascii_lowercase();
+        if !is_cors_safelisted_request_header(&lower, value) && !out.contains(&lower) {
+            out.push(lower);
+        }
+    }
+    out
+}
+
+fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
+    match name {
+        "accept" | "accept-language" | "content-language" => true,
+        "content-type" => {
+            let essence = value
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            matches!(
+                essence.as_str(),
+                "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
+            )
+        }
+        _ => false,
+    }
+}
+
+fn cors_preflight_required(method: Method, unsafe_header_names: &[String]) -> bool {
+    !matches!(method, Method::Get | Method::Head | Method::Post) || !unsafe_header_names.is_empty()
+}
+
+fn cors_preflight_blocking(
     network: Network,
     url: Url,
     method: Method,
-) -> Result<TextResponse, String> {
+    request_origin: String,
+    unsafe_header_names: Vec<String>,
+) -> Result<(), String> {
     let handle = std::thread::Builder::new()
-        .name("vixen-fetch".to_owned())
+        .name("vixen-fetch-preflight".to_owned())
         .spawn(move || {
+            let mut headers = vec![
+                ("origin".to_owned(), request_origin.clone()),
+                (
+                    "access-control-request-method".to_owned(),
+                    method.as_str().to_owned(),
+                ),
+            ];
+            if !unsafe_header_names.is_empty() {
+                headers.push((
+                    "access-control-request-headers".to_owned(),
+                    unsafe_header_names.join(", "),
+                ));
+            }
             let rt = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .map_err(|err| format!("network runtime unavailable: {err}"))?;
             let mut network = network;
             let mut jar = CookieJar::default();
-            rt.block_on(network.get_text_with_cookies(&mut jar, &url, false, method))
-                .map_err(|err| err.to_string())
+            let response = rt
+                .block_on(
+                    network.get_text_with_cookies_redirect_mode_headers_and_body(
+                        &mut jar,
+                        &url,
+                        true,
+                        Method::Options,
+                        RedirectMode::Error,
+                        headers,
+                        None,
+                    ),
+                )
+                .map_err(|err| err.to_string())?;
+            validate_cors_preflight_response(
+                response,
+                &request_origin,
+                method,
+                &unsafe_header_names,
+            )
+        })
+        .map_err(|err| format!("fetch preflight worker spawn failed: {err}"))?;
+    handle
+        .join()
+        .map_err(|_| "fetch preflight worker panicked".to_owned())?
+}
+
+fn validate_cors_preflight_response(
+    response: TextResponse,
+    request_origin: &str,
+    method: Method,
+    unsafe_header_names: &[String],
+) -> Result<(), String> {
+    if !(200..=299).contains(&response.status) {
+        return Err(format!(
+            "fetch blocked by CORS preflight: HTTP {}",
+            response.status
+        ));
+    }
+    let cors_headers = CorsResponseHeaders::from_headers(
+        response
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+    );
+    match cors_check(&cors_headers, request_origin, CorsCredentialsMode::Omit) {
+        CorsCheckOutcome::Pass => {}
+        CorsCheckOutcome::Fail(err) => {
+            return Err(format!("fetch blocked by CORS preflight: {err}"));
+        }
+    }
+    let allowed_methods = &cors_headers.allow_methods;
+    let method_allowed = allowed_methods.iter().any(|value| value == "*")
+        || allowed_methods
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(method.as_str()));
+    if !method_allowed {
+        return Err(format!(
+            "fetch blocked by CORS preflight: method {} not allowed",
+            method.as_str()
+        ));
+    }
+    let wildcard_headers = cors_headers.allow_headers.iter().any(|value| value == "*");
+    for name in unsafe_header_names {
+        if !wildcard_headers && !cors_headers.allow_headers.iter().any(|value| value == name) {
+            return Err(format!(
+                "fetch blocked by CORS preflight: header {name} not allowed"
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn fetch_http_text_blocking(
+    network: Network,
+    url: Url,
+    method: Method,
+    cache_mode: FetchCacheMode,
+    send_credentials: bool,
+    cross_origin: bool,
+    redirect_mode: RedirectMode,
+    headers: Vec<(String, String)>,
+    body: Option<Vec<u8>>,
+    cookies: Arc<Mutex<CookieJar>>,
+    cookie_store: Option<Arc<Store>>,
+) -> Result<TextResponse, String> {
+    let handle = std::thread::Builder::new()
+        .name("vixen-fetch".to_owned())
+        .spawn(move || {
+            let origin_key = cookie_origin_key(&url);
+            let origin_host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+            let mut jar = if send_credentials {
+                load_cookie_jar(&cookies, cookie_store.as_deref(), &origin_key)?
+            } else {
+                CookieJar::default()
+            };
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|err| format!("network runtime unavailable: {err}"))?;
+            let mut network = network;
+            let response = rt
+                .block_on(
+                    network.get_text_with_cookies_redirect_mode_headers_and_body(
+                        &mut jar,
+                        &url,
+                        cross_origin,
+                        method,
+                        redirect_mode,
+                        headers,
+                        body,
+                    ),
+                )
+                .map_err(|err| err.to_string())?;
+            if send_credentials {
+                persist_cookie_jar(
+                    &cookies,
+                    cookie_store.as_deref(),
+                    &origin_key,
+                    &origin_host,
+                    jar,
+                )?;
+            }
+            if method == Method::Get
+                && cache_mode != FetchCacheMode::NoStore
+                && response.status != 304
+            {
+                persist_fetch_cache(cookie_store.as_deref(), &origin_key, &response)?;
+            }
+            Ok(response)
         })
         .map_err(|err| format!("fetch worker spawn failed: {err}"))?;
     handle
         .join()
         .map_err(|_| "fetch worker panicked".to_owned())?
+}
+
+fn add_cache_revalidation_headers(headers: &mut Vec<(String, String)>, cached: &TextResponse) {
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("if-none-match"))
+        && let Some(etag) = cached.header("etag")
+    {
+        headers.push(("if-none-match".to_owned(), etag.to_owned()));
+    }
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("if-modified-since"))
+        && let Some(last_modified) = cached.header("last-modified")
+    {
+        headers.push(("if-modified-since".to_owned(), last_modified.to_owned()));
+    }
+}
+
+fn revalidated_response(response: TextResponse, cached: Option<TextResponse>) -> TextResponse {
+    if response.status != 304 {
+        return response;
+    }
+    let Some(mut cached) = cached else {
+        return response;
+    };
+    cached.final_url = response.final_url;
+    cached.redirects = response.redirects;
+    cached.set_cookie = response.set_cookie;
+    cached.events = response.events;
+    for (name, value) in response.headers {
+        cached.headers.insert(name, value);
+    }
+    cached
+}
+
+fn web_storage_store(storage: &WebStorageHost) -> Option<Arc<Store>> {
+    match &storage.backend {
+        WebStorageBackend::Store(store) => Some(store.clone()),
+        WebStorageBackend::Memory(_) => None,
+    }
+}
+
+fn cookie_origin_key(url: &Url) -> String {
+    Origin::from_url(url).partition_key()
+}
+
+fn load_cookie_jar(
+    shared: &Arc<Mutex<CookieJar>>,
+    store: Option<&Store>,
+    origin_key: &str,
+) -> Result<CookieJar, String> {
+    let mut snapshots = Vec::new();
+    if let Some(store) = store {
+        for record in store
+            .cookies_for(origin_key)
+            .map_err(|err| err.to_string())?
+        {
+            snapshots.push(cookie_record_to_snapshot(record));
+        }
+    }
+    snapshots.extend(
+        shared
+            .lock()
+            .map_err(|_| "cookie jar poisoned".to_owned())?
+            .snapshots(),
+    );
+    Ok(CookieJar::from_snapshots(snapshots))
+}
+
+fn persist_cookie_jar(
+    shared: &Arc<Mutex<CookieJar>>,
+    store: Option<&Store>,
+    origin_key: &str,
+    origin_host: &str,
+    jar: CookieJar,
+) -> Result<(), String> {
+    let snapshots = jar.snapshots();
+    shared
+        .lock()
+        .map_err(|_| "cookie jar poisoned".to_owned())?
+        .replace_with_snapshots(snapshots.clone());
+
+    let Some(store) = store else {
+        return Ok(());
+    };
+    store
+        .clear_cookies(origin_key)
+        .map_err(|err| err.to_string())?;
+    for snapshot in snapshots
+        .into_iter()
+        .filter(|snapshot| cookie_snapshot_matches_host(snapshot, origin_host))
+    {
+        store
+            .put_cookie(origin_key, &cookie_snapshot_to_record(snapshot))
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+fn persist_fetch_cache(
+    store: Option<&Store>,
+    origin_key: &str,
+    response: &TextResponse,
+) -> Result<(), String> {
+    let Some(store) = store else {
+        return Ok(());
+    };
+    let entry = CacheEntry {
+        status: response.status,
+        headers: response
+            .headers
+            .iter()
+            .map(|(name, value)| (name.clone(), value.clone()))
+            .collect(),
+        body: response.body.as_bytes().to_vec(),
+        fetched_unix: current_unix_timestamp(),
+    };
+    store
+        .put_cache(origin_key, &response.final_url, &entry)
+        .map_err(|err| err.to_string())
+}
+
+fn fetch_cache_lookup(store: Option<&Store>, url: &Url) -> Result<Option<TextResponse>, String> {
+    let Some(store) = store else {
+        return Ok(None);
+    };
+    let origin_key = cookie_origin_key(url);
+    let Some(entry) = store
+        .get_cache(&origin_key, url.as_str())
+        .map_err(|err| err.to_string())?
+    else {
+        return Ok(None);
+    };
+    Ok(Some(TextResponse {
+        body: String::from_utf8_lossy(&entry.body).into_owned(),
+        headers: entry.headers.into_iter().collect(),
+        status: entry.status,
+        final_url: url.as_str().to_owned(),
+        set_cookie: Vec::new(),
+        redirects: 0,
+        events: Vec::new(),
+    }))
+}
+
+fn cookie_record_to_snapshot(record: CookieRecord) -> CookieSnapshot {
+    CookieSnapshot {
+        name: record.name,
+        value: record.value,
+        domain: record.domain,
+        host_only: record.host_only,
+        path: record.path,
+        expires_unix: record.expires_unix,
+        secure: record.secure,
+        http_only: record.http_only,
+        same_site: same_site_from_store(record.same_site),
+        creation_unix: record.creation_unix,
+    }
+}
+
+fn cookie_snapshot_to_record(snapshot: CookieSnapshot) -> CookieRecord {
+    CookieRecord {
+        name: snapshot.name,
+        value: snapshot.value,
+        domain: snapshot.domain,
+        host_only: snapshot.host_only,
+        path: snapshot.path,
+        expires_unix: snapshot.expires_unix,
+        secure: snapshot.secure,
+        http_only: snapshot.http_only,
+        same_site: same_site_to_store(snapshot.same_site),
+        creation_unix: snapshot.creation_unix,
+    }
+}
+
+fn same_site_from_store(value: u8) -> SameSite {
+    match value {
+        0 => SameSite::Strict,
+        2 => SameSite::None,
+        _ => SameSite::Lax,
+    }
+}
+
+fn same_site_to_store(value: SameSite) -> u8 {
+    match value {
+        SameSite::Strict => 0,
+        SameSite::Lax => 1,
+        SameSite::None => 2,
+    }
+}
+
+fn cookie_snapshot_matches_host(snapshot: &CookieSnapshot, host: &str) -> bool {
+    let host = host.to_ascii_lowercase();
+    let domain = snapshot.domain.to_ascii_lowercase();
+    host == domain || (!snapshot.host_only && host.ends_with(&format!(".{domain}")))
+}
+
+fn current_unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or_default()
 }
 
 fn storage_partition_key(host: &WebApiHost, kind: StorageKind) -> &str {
@@ -425,6 +1314,37 @@ fn storage_clear(host: &WebApiHost, kind: StorageKind) -> Result<(), String> {
     }
 }
 
+fn canonical_permission_name(name: &str) -> Option<&'static str> {
+    match name {
+        "geolocation" => Some("geolocation"),
+        "notifications" => Some("notifications"),
+        "camera" => Some("camera"),
+        "microphone" => Some("microphone"),
+        "clipboard-read" => Some("clipboard-read"),
+        "persistent-storage" => Some("persistent-storage"),
+        _ => None,
+    }
+}
+
+fn permission_state(host: &WebApiHost, kind: &'static str) -> Result<&'static str, String> {
+    let Some(policy) = host.fetch_policy.as_ref() else {
+        return Ok("prompt");
+    };
+    let WebStorageBackend::Store(store) = &host.storage.backend else {
+        return Ok("prompt");
+    };
+    let Some(record) = store
+        .permission(&policy.origin.partition_key(), kind)
+        .map_err(|err| format!("permission store read failed: {err}"))?
+    else {
+        return Ok("prompt");
+    };
+    Ok(match record.decision {
+        PermissionDecision::Granted => "granted",
+        PermissionDecision::Denied => "denied",
+    })
+}
+
 fn storage_check_quota(
     entries: &[(String, String)],
     key: &str,
@@ -465,7 +1385,62 @@ fn storage_value(value: Option<String>) -> deno_core::serde_json::Value {
     })
 }
 
-fn fetch_response(response: TextResponse) -> deno_core::serde_json::Value {
+fn apply_fetch_visibility(
+    mut response: TextResponse,
+    fetch_mode: FetchMode,
+    credentials_mode: FetchCredentialsMode,
+    fetch_policy: Option<&FetchPolicy>,
+    url: &Url,
+) -> Result<(TextResponse, &'static str), String> {
+    let Some(policy) = fetch_policy else {
+        return Ok((response, "basic"));
+    };
+    let visibility_url = Url::parse(&response.final_url).unwrap_or_else(|_| url.clone());
+    if !policy.is_cross_origin(&visibility_url) {
+        return Ok((response, "basic"));
+    }
+    match fetch_mode {
+        FetchMode::SameOrigin => Err("fetch blocked by mode same-origin".to_owned()),
+        FetchMode::NoCors => {
+            response.body.clear();
+            response.headers.clear();
+            response.status = 0;
+            response.final_url.clear();
+            response.set_cookie.clear();
+            Ok((response, "opaque"))
+        }
+        FetchMode::Cors => {
+            let cors_headers = CorsResponseHeaders::from_headers(
+                response
+                    .headers
+                    .iter()
+                    .map(|(name, value)| (name.as_str(), value.as_str())),
+            );
+            match cors_check(
+                &cors_headers,
+                &policy.cors_origin(),
+                credentials_mode.cors_mode(),
+            ) {
+                CorsCheckOutcome::Pass => {
+                    response.headers = cors_filtered_headers(
+                        response
+                            .headers
+                            .iter()
+                            .map(|(name, value)| (name.as_str(), value.as_str())),
+                        &cors_headers.expose_headers,
+                    )
+                    .into_iter()
+                    .map(|(name, value)| (name.to_ascii_lowercase(), value))
+                    .collect();
+                    Ok((response, "cors"))
+                }
+                CorsCheckOutcome::Fail(err) => Err(format!("fetch blocked by CORS: {err}")),
+            }
+        }
+    }
+}
+
+fn fetch_response(response: TextResponse, response_type: &str) -> deno_core::serde_json::Value {
     json!({
         "ok": true,
         "body": response.body,
@@ -473,7 +1448,66 @@ fn fetch_response(response: TextResponse) -> deno_core::serde_json::Value {
         "status": response.status,
         "finalUrl": response.final_url,
         "redirected": response.redirects > 0,
+        "responseType": response_type,
+        "events": response.events.into_iter().map(network_event_value).collect::<Vec<_>>(),
     })
+}
+
+fn network_event_value(event: NetworkEvent) -> deno_core::serde_json::Value {
+    match event {
+        NetworkEvent::RequestStart { url, method } => json!({
+            "type": "request",
+            "url": url,
+            "method": method.as_str(),
+        }),
+        NetworkEvent::Redirect { from, to, status } => json!({
+            "type": "redirect",
+            "from": from,
+            "to": to,
+            "status": status,
+        }),
+        NetworkEvent::Response { url, status } => json!({
+            "type": "response",
+            "url": url,
+            "status": status,
+        }),
+    }
+}
+
+fn fetch_failure(
+    url: &str,
+    method: Method,
+    message: impl Into<String>,
+    blocked_reason: &'static str,
+) -> deno_core::serde_json::Value {
+    let message = message.into();
+    json!({
+        "ok": false,
+        "message": message,
+        "events": [
+            {
+                "type": "request",
+                "url": url,
+                "method": method.as_str(),
+            },
+            {
+                "type": "failure",
+                "url": url,
+                "errorText": message,
+                "blockedReason": blocked_reason,
+            },
+        ],
+    })
+}
+
+fn fetch_blocked_reason(message: &str) -> &'static str {
+    if message.contains("CORS") || message.contains("cors") {
+        "cors"
+    } else if message.contains("same-origin") {
+        "origin"
+    } else {
+        "network"
+    }
 }
 
 fn fetch_error(message: impl Into<String>) -> deno_core::serde_json::Value {
@@ -511,6 +1545,9 @@ const WEB_API_BOOTSTRAP: &str = r#"
     op_vixen_storage_set,
     op_vixen_storage_remove,
     op_vixen_storage_clear,
+    op_vixen_storage_estimate,
+    op_vixen_storage_persisted,
+    op_vixen_permission_query,
     op_vixen_fetch,
   } = Deno.core.ops;
   const webidl = globalThis.__vixenWebidl;
@@ -604,6 +1641,26 @@ const WEB_API_BOOTSTRAP: &str = r#"
   defineGlobal('console', vixenConsole);
   defineGlobal('__vixenDrainConsoleEvents', function () {
     return consoleEvents.splice(0, consoleEvents.length);
+  });
+
+  // -----------------------------------------------------------------------
+  // Network event capture
+  // -----------------------------------------------------------------------
+
+  const networkEvents = [];
+  let networkRequestSequence = 0;
+
+  function recordNetworkEvents(events) {
+    if (!Array.isArray(events) || events.length === 0) return;
+    const requestId = 'fetch-' + (++networkRequestSequence);
+    for (const event of events) {
+      if (!event || typeof event !== 'object') continue;
+      networkEvents.push(Object.assign({ requestId }, event));
+    }
+  }
+
+  defineGlobal('__vixenDrainNetworkEvents', function () {
+    return networkEvents.splice(0, networkEvents.length);
   });
 
   // -----------------------------------------------------------------------
@@ -1687,9 +2744,9 @@ const WEB_API_BOOTSTRAP: &str = r#"
       defineReadonly(this, 'referrer', (init && init.referrer) || 'about:client', true);
       defineReadonly(this, 'referrerPolicy', (init && init.referrerPolicy) || '', true);
       defineReadonly(this, 'mode', (init && init.mode) || 'cors', true);
-      defineReadonly(this, 'credentials', (init && init.credentials) || 'same-origin', true);
-      defineReadonly(this, 'cache', (init && init.cache) || 'default', true);
-      defineReadonly(this, 'redirect', (init && init.redirect) || 'follow', true);
+      defineReadonly(this, 'credentials', init && Object.prototype.hasOwnProperty.call(init, 'credentials') ? init.credentials : (source && source.credentials) || 'same-origin', true);
+      defineReadonly(this, 'cache', init && Object.prototype.hasOwnProperty.call(init, 'cache') ? init.cache : (source && source.cache) || 'default', true);
+      defineReadonly(this, 'redirect', init && Object.prototype.hasOwnProperty.call(init, 'redirect') ? init.redirect : (source && source.redirect) || 'follow', true);
       defineReadonly(this, 'integrity', (init && init.integrity) || '', true);
       defineReadonly(this, 'keepalive', Boolean(init && init.keepalive), true);
       defineReadonly(this, 'signal', (init && init.signal) || new VixenAbortController().signal, true);
@@ -1712,7 +2769,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
       const status = init && init.status !== undefined ? finiteNumber(init.status, 200) : 200;
       const headers = filteredHeaders(init && init.headers, forbiddenResponseHeader);
       if (!info.isNull && info.contentType && !headers.has('content-type')) headers.set('Content-Type', info.contentType);
-      defineReadonly(this, 'type', 'default', true);
+      defineReadonly(this, 'type', (init && init.type) || 'default', true);
       defineReadonly(this, 'url', (init && init.url) || '', true);
       defineReadonly(this, 'redirected', Boolean(init && init.redirected), true);
       defineReadonly(this, 'status', status, true);
@@ -1723,7 +2780,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
       defineReadonly(this, 'body', info.isNull ? null : {}, true);
       defineReadonly(this, 'bodyUsed', false, true);
     }
-    clone() { return new VixenResponse(this.__vixenBodyText, { status: this.status, statusText: this.statusText, headers: this.headers, url: this.url, redirected: this.redirected }); }
+    clone() { return new VixenResponse(this.__vixenBodyText, { status: this.status, statusText: this.statusText, type: this.type, headers: this.headers, url: this.url, redirected: this.redirected }); }
     text() { return Promise.resolve(this.__vixenBodyText); }
     json() { return Promise.resolve(this.__vixenBodyText === '' ? null : JSON.parse(this.__vixenBodyText)); }
     blob() { return Promise.resolve(new VixenBlob([this.__vixenBodyText], { type: this.headers.get('content-type') || '' })); }
@@ -1764,12 +2821,14 @@ const WEB_API_BOOTSTRAP: &str = r#"
     } catch (err) {
       return Promise.reject(err);
     }
-    const result = op_vixen_fetch({ url: request.url, method: request.method });
+    const result = op_vixen_fetch({ url: request.url, method: request.method, mode: request.mode, cache: request.cache, credentials: request.credentials, redirect: request.redirect, referrerPolicy: request.referrerPolicy, headers: Array.from(request.headers.entries()), body: request.body === null ? null : request.__vixenBodyText });
+    recordNetworkEvents(result && result.events);
     if (!result || !result.ok) {
       return Promise.reject(new TypeError(result && result.message ? result.message : 'fetch failed'));
     }
-    return Promise.resolve(new VixenResponse(result.body, {
+    return Promise.resolve(new VixenResponse(result.responseType === 'opaque' ? null : result.body, {
       status: result.status,
+      type: result.responseType,
       headers: result.headers,
       url: result.finalUrl,
       redirected: result.redirected,
@@ -1777,6 +2836,121 @@ const WEB_API_BOOTSTRAP: &str = r#"
   }
 
   defineGlobal('fetch', fetch);
+
+  class VixenXMLHttpRequestUpload extends VixenEventTarget {}
+
+  function fireXhrEvent(target, type) {
+    const event = new Event(type);
+    target.dispatchEvent(event);
+  }
+
+  function setXhrReadyState(xhr, readyState) {
+    xhr.readyState = readyState;
+    fireXhrEvent(xhr, 'readystatechange');
+  }
+
+  class VixenXMLHttpRequest extends VixenEventTarget {
+    constructor() {
+      super();
+      defineData(this, 'readyState', 0, true);
+      defineData(this, 'timeout', 0, true);
+      defineData(this, 'withCredentials', false, true);
+      defineReadonly(this, 'upload', new VixenXMLHttpRequestUpload(), true);
+      defineData(this, 'responseURL', '', true);
+      defineData(this, 'status', 0, true);
+      defineData(this, 'statusText', '', true);
+      defineData(this, 'responseType', '', true);
+      defineData(this, 'response', '', true);
+      defineData(this, 'responseText', '', true);
+      defineData(this, 'responseXML', null, true);
+      defineData(this, '__vixenHeaders', new VixenHeaders(), false);
+      defineData(this, '__vixenMethod', 'GET', false);
+      defineData(this, '__vixenUrl', '', false);
+      defineData(this, '__vixenAsync', true, false);
+      defineData(this, '__vixenResponseHeaders', new VixenHeaders(), false);
+      defineData(this, '__vixenAborted', false, false);
+    }
+    open(method, url, async = true) {
+      this.__vixenMethod = String(method || 'GET').toUpperCase();
+      this.__vixenUrl = new VixenURL(String(url), typeof location !== 'undefined' ? location.href : undefined).href;
+      this.__vixenAsync = async !== false;
+      this.__vixenHeaders = new VixenHeaders();
+      this.__vixenResponseHeaders = new VixenHeaders();
+      this.__vixenAborted = false;
+      this.status = 0;
+      this.statusText = '';
+      this.responseURL = '';
+      this.response = '';
+      this.responseText = '';
+      setXhrReadyState(this, 1);
+    }
+    setRequestHeader(name, value) {
+      if (this.readyState !== 1) throw new Error('XMLHttpRequest is not open');
+      this.__vixenHeaders.append(name, value);
+    }
+    send(body = null) {
+      if (this.readyState !== 1) throw new Error('XMLHttpRequest is not open');
+      if (!this.__vixenAsync) throw new Error('synchronous XMLHttpRequest is not supported');
+      this.__vixenAborted = false;
+      const init = {
+        method: this.__vixenMethod,
+        headers: this.__vixenHeaders,
+        credentials: this.withCredentials ? 'include' : 'same-origin',
+      };
+      if (body !== null && body !== undefined) init.body = body;
+      fetch(this.__vixenUrl, init).then((res) => {
+        if (this.__vixenAborted) return;
+        this.status = res.status;
+        this.statusText = res.statusText || '';
+        this.responseURL = res.url || '';
+        this.__vixenResponseHeaders = new VixenHeaders(res.headers);
+        setXhrReadyState(this, 2);
+        return res.text().then((text) => {
+          if (this.__vixenAborted) return;
+          this.responseText = text;
+          this.response = text;
+          setXhrReadyState(this, 3);
+          setXhrReadyState(this, 4);
+          fireXhrEvent(this, 'load');
+          fireXhrEvent(this, 'loadend');
+        });
+      }).catch((err) => {
+        if (this.__vixenAborted) return;
+        this.status = 0;
+        this.statusText = '';
+        this.responseText = '';
+        this.response = '';
+        setXhrReadyState(this, 4);
+        fireXhrEvent(this, 'error');
+        fireXhrEvent(this, 'loadend');
+      });
+    }
+    abort() {
+      this.__vixenAborted = true;
+      this.status = 0;
+      this.statusText = '';
+      setXhrReadyState(this, 0);
+      fireXhrEvent(this, 'abort');
+      fireXhrEvent(this, 'loadend');
+    }
+    getResponseHeader(name) {
+      if (this.readyState < 2) return null;
+      return this.__vixenResponseHeaders.get(name);
+    }
+    getAllResponseHeaders() {
+      if (this.readyState < 2) return '';
+      return Array.from(this.__vixenResponseHeaders.entries()).map(([name, value]) => `${name}: ${value}\r\n`).join('');
+    }
+    overrideMimeType() {}
+  }
+
+  for (const [name, value] of [['UNSENT', 0], ['OPENED', 1], ['HEADERS_RECEIVED', 2], ['LOADING', 3], ['DONE', 4]]) {
+    defineReadonly(VixenXMLHttpRequest, name, value, true);
+    defineReadonly(VixenXMLHttpRequest.prototype, name, value, true);
+  }
+  webidl.adoptInterface('XMLHttpRequestUpload', VixenXMLHttpRequestUpload);
+  webidl.adoptInterface('XMLHttpRequest', VixenXMLHttpRequest);
+  defineGlobal('XMLHttpRequest', VixenXMLHttpRequest);
 
   // -----------------------------------------------------------------------
   // Abort, MutationObserver, structuredClone, DOMParser, platform globals
@@ -2083,7 +3257,71 @@ const WEB_API_BOOTSTRAP: &str = r#"
     }
   }
 
+  class VixenStorageManager {
+    estimate() {
+      return Promise.resolve().then(() => {
+        const result = unwrapStorageOp(op_vixen_storage_estimate());
+        return { usage: Number(result.usage) || 0, quota: Number(result.quota) || 0 };
+      });
+    }
+    persisted() { return Promise.resolve(Boolean(op_vixen_storage_persisted())); }
+    persist() { return this.persisted(); }
+  }
+
+  function unwrapPermissionOp(result) {
+    if (!result || !result.ok) throw new TypeError(result && result.message ? result.message : 'permission query failed');
+    return result;
+  }
+
+  class VixenPermissionStatus extends EventTarget {
+    constructor(name, state) {
+      super();
+      this.__vixenName = String(name);
+      this.__vixenState = String(state);
+      this.onchange = null;
+    }
+    get state() { return this.__vixenState; }
+    get onchange() { return this.__vixenOnchange || null; }
+    set onchange(value) { this.__vixenOnchange = value; }
+  }
+
+  class VixenPermissions {
+    query(descriptor = {}) {
+      return Promise.resolve().then(() => {
+        if (!descriptor || descriptor.name === undefined) throw new TypeError('permission descriptor.name is required');
+        const name = String(descriptor.name);
+        const result = unwrapPermissionOp(op_vixen_permission_query(name));
+        return new VixenPermissionStatus(name, result.state);
+      });
+    }
+  }
+
+  function notificationPermission() {
+    const state = unwrapPermissionOp(op_vixen_permission_query('notifications')).state;
+    return state === 'prompt' ? 'default' : state;
+  }
+
+  class VixenNotification extends EventTarget {
+    constructor(title = '', options = {}) {
+      super();
+      if (VixenNotification.permission !== 'granted') throw new TypeError('Notification permission is not granted');
+      this.title = String(title);
+      this.body = String(options && options.body !== undefined ? options.body : '');
+    }
+    static get permission() { return notificationPermission(); }
+    static requestPermission(callback = undefined) {
+      const permission = notificationPermission();
+      if (typeof callback === 'function') Promise.resolve().then(() => callback(permission));
+      return Promise.resolve(permission);
+    }
+    close() {}
+  }
+
   class VixenNavigator {
+    constructor() {
+      this.__vixenPermissions = new VixenPermissions();
+      this.__vixenStorageManager = new VixenStorageManager();
+    }
     get userAgent() { return 'Vixen/0.1'; }
     get language() { return 'en-US'; }
     get languages() { return ['en-US']; }
@@ -2091,6 +3329,8 @@ const WEB_API_BOOTSTRAP: &str = r#"
     get cookieEnabled() { return true; }
     get hardwareConcurrency() { return 1; }
     get maxTouchPoints() { return 0; }
+    get permissions() { return this.__vixenPermissions; }
+    get storage() { return this.__vixenStorageManager; }
     sendBeacon() { return false; }
     vibrate() { return false; }
   }
@@ -2140,6 +3380,10 @@ const WEB_API_BOOTSTRAP: &str = r#"
 
   webidl.adoptInterface('Performance', VixenPerformance);
   webidl.adoptInterface('Storage', VixenStorage);
+  webidl.adoptInterface('StorageManager', VixenStorageManager);
+  webidl.adoptInterface('PermissionStatus', VixenPermissionStatus);
+  webidl.adoptInterface('Permissions', VixenPermissions);
+  webidl.adoptInterface('Notification', VixenNotification);
   webidl.adoptInterface('Navigator', VixenNavigator);
 
   if (typeof globalThis.window === 'undefined') defineGlobal('window', globalThis);

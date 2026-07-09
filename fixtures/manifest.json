@@ -137,6 +137,10 @@
         { "type": "js-eval", "expr": "localStorage.getItem('missing')", "expected": "null" },
         { "type": "js-eval", "expr": "sessionStorage.length", "expected": "0" },
         { "type": "js-eval", "expr": "sessionStorage.removeItem('missing')", "expected": "undefined" },
+        { "type": "js-eval", "expr": "navigator.storage instanceof StorageManager", "expected": "true" },
+        { "type": "js-eval", "expr": "navigator.storage.persisted().then((persisted) => persisted)", "expected": "false" },
+        { "type": "js-eval", "expr": "navigator.storage.estimate().then(({ usage, quota }) => { localStorage.setItem('quota', 'ok'); return usage + ':' + (quota > usage); })", "expected": "0:true" },
+        { "type": "js-eval", "expr": "(() => { localStorage.setItem('quota', 'ok'); return navigator.storage.estimate().then(({ usage, quota }) => usage >= 7 && quota > usage); })()", "expected": "true" },
         { "type": "js-eval", "expr": "document.images.length", "expected": "0" },
         { "type": "js-eval", "expr": "document.links.length", "expected": "0" },
         { "type": "js-eval", "expr": "document.scripts.length", "expected": "0" },
@@ -154,6 +158,102 @@
         { "type": "js-eval", "expr": "structuredClone(new Set(['alpha','beta'])).has('beta')", "expected": "true" },
         { "type": "js-eval", "expr": "structuredClone(new TypeError('boom')).name", "expected": "TypeError" },
         { "type": "js-eval", "expr": "structuredClone(new TypeError('boom')).message", "expected": "boom" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/anchors.html",
+      "checks": [
+        { "type": "title", "expected": "Anchor URL reflection — Vixen fixture" },
+        { "type": "selector-count", "selector": "a", "expected": 2 },
+        { "type": "js-eval", "expr": "document.querySelector('#absolute').href", "expected": "https://example.com:8443/path/to/page?q=1#frag" },
+        { "type": "js-eval", "expr": "['origin','protocol','host','hostname','port','pathname','search','hash'].map((prop) => document.querySelector('#absolute')[prop]).join('|')", "expected": "https://example.com:8443|https:|example.com:8443|example.com|8443|/path/to/page|?q=1|#frag" },
+        { "type": "js-eval", "expr": "['target','download','rel','hreflang'].map((prop) => document.querySelector('#absolute')[prop]).join('|')", "expected": "_blank|report.pdf|noopener noreferrer|en" },
+        { "type": "js-eval", "expr": "document.querySelector('#empty').href", "expected": "" },
+        { "type": "js-eval", "expr": "(() => { const a = document.querySelector('#empty'); a.href = 'https://changed.test/new'; return a.getAttribute('href') + '|' + a.hostname; })()", "expected": "https://changed.test/new|changed.test" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/media.html",
+      "checks": [
+        { "type": "title", "expected": "Media element reflection — Vixen fixture" },
+        { "type": "selector-count", "selector": "video", "expected": 1 },
+        { "type": "selector-count", "selector": "audio", "expected": 1 },
+        { "type": "js-eval", "expr": "(() => { const v = document.querySelector('#movie'); return [v instanceof HTMLVideoElement, v instanceof HTMLMediaElement].join('|'); })()", "expected": "true|true" },
+        { "type": "js-eval", "expr": "(() => { const v = document.querySelector('#movie'); return [HTMLMediaElement.NETWORK_EMPTY, HTMLMediaElement.HAVE_NOTHING, v.NETWORK_EMPTY].join('|'); })()", "expected": "0|0|0" },
+        { "type": "js-eval", "expr": "(() => { const v = document.querySelector('#movie'); return [v.src, v.poster, v.preload, v.width, v.height].join('|'); })()", "expected": "media/movie.mp4|poster.png|metadata|640|360" },
+        { "type": "js-eval", "expr": "(() => { const v = document.querySelector('#movie'); return [v.controls, v.muted, v.defaultMuted, v.loop, v.autoplay, v.playsInline].join('|'); })()", "expected": "true|true|true|true|false|true" },
+        { "type": "js-eval", "expr": "(() => { const v = document.querySelector('#movie'); return [v.networkState, v.readyState, v.paused, v.ended, v.videoWidth, v.videoHeight].join('|'); })()", "expected": "0|0|true|false|0|0" },
+        { "type": "js-eval", "expr": "(() => { const v = document.querySelector('#movie'); return [Number.isNaN(v.duration), v.currentTime, v.volume].join('|'); })()", "expected": "true|0|1" },
+        { "type": "js-eval", "expr": "(() => { const v = document.querySelector('#movie'); v.currentTime = 12.5; v.volume = 0.25; v.muted = false; return [v.currentTime, v.volume, v.muted].join('|'); })()", "expected": "12.5|0.25|false" },
+        { "type": "js-eval", "expr": "document.querySelector('#movie').canPlayType('video/mp4')", "expected": "" },
+        { "type": "js-eval", "expr": "document.querySelector('#movie').play().then(() => 'resolved')", "expected": "resolved" },
+        { "type": "js-eval", "expr": "(() => { const a = document.querySelector('#sound'); return [a instanceof HTMLAudioElement, a.autoplay, a.preload, a.paused, a.volume].join('|'); })()", "expected": "true|true|none|true|1" },
+        { "type": "js-eval", "expr": "(() => { const v = document.querySelector('#movie'); v.controls = false; v.loop = false; v.poster = 'changed.png'; return [v.hasAttribute('controls'), v.hasAttribute('loop'), v.getAttribute('poster')].join('|'); })()", "expected": "false|false|changed.png" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/resources.html",
+      "checks": [
+        { "type": "title", "expected": "Resource element reflection — Vixen fixture" },
+        { "type": "selector-count", "selector": "link", "expected": 1 },
+        { "type": "selector-count", "selector": "style", "expected": 1 },
+        { "type": "selector-count", "selector": "script", "expected": 1 },
+        { "type": "selector-count", "selector": "source", "expected": 1 },
+        { "type": "js-eval", "expr": "(() => { const link = document.querySelector('#preload'); return [link.href, link.rel, link.as, link.media, link.type, link.crossOrigin].join('|'); })()", "expected": "https://cdn.example/app.css|preload stylesheet|style|screen|text/css|anonymous" },
+        { "type": "js-eval", "expr": "(() => { const link = document.querySelector('#preload'); link.as = 'fetch'; link.media = 'print'; return [link.relList.contains('stylesheet'), link.as, link.getAttribute('media')].join('|'); })()", "expected": "true|fetch|print" },
+        { "type": "js-eval", "expr": "(() => { const style = document.querySelector('#inline-style'); return [style.media, style.type, style.disabled, style.sheet.ownerNode === style].join('|'); })()", "expected": "screen|text/css|true|true" },
+        { "type": "js-eval", "expr": "(() => { const style = document.querySelector('#inline-style'); style.disabled = false; style.media = 'print'; return [style.hasAttribute('disabled'), style.getAttribute('media')].join('|'); })()", "expected": "false|print" },
+        { "type": "js-eval", "expr": "(() => { const script = document.querySelector('#module-script'); return [script.src, script.type, script.async, script.defer, script.crossOrigin, script.text.includes('__vixen_should_not_run')].join('|'); })()", "expected": "scripts/app.js|module|true|true|use-credentials|true" },
+        { "type": "js-eval", "expr": "(() => { const script = document.querySelector('#module-script'); return [HTMLScriptElement.supports('classic'), HTMLScriptElement.supports('module'), script.supports('importmap'), HTMLScriptElement.supports('application/json')].join('|'); })()", "expected": "true|true|true|false" },
+        { "type": "js-eval", "expr": "(() => { const source = document.querySelector('#wide-source'); return [source.media, source.srcset, source.sizes, source.type, source.width, source.height].join('|'); })()", "expected": "(min-width: 700px)|wide.png 1x|50vw|image/png|640|360" },
+        { "type": "js-eval", "expr": "(() => { const script = document.querySelector('#module-script'); script.async = false; script.defer = false; script.noModule = true; return [script.hasAttribute('async'), script.hasAttribute('defer'), script.hasAttribute('nomodule')].join('|'); })()", "expected": "false|false|true" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/dialog-details.html",
+      "checks": [
+        { "type": "title", "expected": "Dialog and details reflection — Vixen fixture" },
+        { "type": "selector-count", "selector": "details", "expected": 1 },
+        { "type": "selector-count", "selector": "dialog", "expected": 1 },
+        { "type": "js-eval", "expr": "(() => { const details = document.querySelector('#faq'); return [details.open, details.name, details.textContent.includes('Answer text.')].join('|'); })()", "expected": "true|help|true" },
+        { "type": "js-eval", "expr": "(() => { const details = document.querySelector('#faq'); details.open = false; details.name = 'support'; return [details.hasAttribute('open'), details.getAttribute('name')].join('|'); })()", "expected": "false|support" },
+        { "type": "js-eval", "expr": "(() => { const dialog = document.querySelector('#modal'); return [dialog.open, dialog.returnValue].join('|'); })()", "expected": "false|" },
+        { "type": "js-eval", "expr": "(() => { const dialog = document.querySelector('#modal'); dialog.show(); return [dialog.open, dialog.hasAttribute('open')].join('|'); })()", "expected": "true|true" },
+        { "type": "js-eval", "expr": "(() => { const dialog = document.querySelector('#modal'); dialog.show(); dialog.close('ok'); return [dialog.open, dialog.returnValue, dialog.hasAttribute('open')].join('|'); })()", "expected": "false|ok|false" },
+        { "type": "js-eval", "expr": "(() => { const dialog = document.querySelector('#modal'); dialog.showModal(); dialog.requestClose('cancel'); return [dialog.open, dialog.returnValue].join('|'); })()", "expected": "false|cancel" },
+        { "type": "js-eval", "expr": "(() => { const dialog = document.querySelector('#modal'); let seen = ''; dialog.addEventListener('close', () => { seen = dialog.returnValue; }); dialog.show(); dialog.close('done'); return seen; })()", "expected": "done" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/reflected-misc.html",
+      "checks": [
+        { "type": "title", "expected": "Misc reflected attributes — Vixen fixture" },
+        { "type": "selector-count", "selector": "blockquote", "expected": 1 },
+        { "type": "selector-count", "selector": "time", "expected": 1 },
+        { "type": "selector-count", "selector": "area", "expected": 1 },
+        { "type": "selector-count", "selector": "iframe", "expected": 1 },
+        { "type": "selector-count", "selector": "object", "expected": 1 },
+        { "type": "selector-count", "selector": "table", "expected": 1 },
+        { "type": "js-eval", "expr": "(() => { const q = document.querySelector('#quote'); const ins = document.querySelector('#inserted'); return [q.cite, ins.cite, ins.dateTime].join('|'); })()", "expected": "https://example.test/source|https://example.test/change|2026-07-09" },
+        { "type": "js-eval", "expr": "document.querySelector('#time').dateTime", "expected": "2026-07-09T12:00:00Z" },
+        { "type": "js-eval", "expr": "(() => { const ol = document.querySelector('#ordered'); const li = document.querySelector('#entry'); return [ol.reversed, ol.start, li.value].join('|'); })()", "expected": "true|7|4" },
+        { "type": "js-eval", "expr": "(() => { const data = document.querySelector('#datum'); data.value = '43'; return data.getAttribute('value') + ':' + data.value; })()", "expected": "43:43" },
+        { "type": "js-eval", "expr": "(() => { const area = document.querySelector('#hotspot'); return [area.alt, area.shape, area.coords, area.href, area.relList.contains('nofollow')].join('|'); })()", "expected": "Hotspot|rect|0,0,20,20|https://example.test/hot|true" },
+        { "type": "js-eval", "expr": "(() => { const frame = document.querySelector('#frame'); return [frame.src, frame.srcdoc.includes('child'), frame.allow, frame.sandbox.contains('allow-scripts'), frame.contentDocument === null, frame.contentWindow === null].join('|'); })()", "expected": "about:blank|true|fullscreen|true|true|true" },
+        { "type": "js-eval", "expr": "(() => { const object = document.querySelector('#object'); const param = document.querySelector('#param'); return [object.data, object.type, object.name, object.width, object.height, object.contentDocument === null, param.name, param.value].join('|'); })()", "expected": "movie.swf|application/x-shockwave-flash|legacy|320|200|true|quality|high" },
+        { "type": "js-eval", "expr": "(() => { const col = document.querySelector('#col'); const head = document.querySelector('#head'); return [col.span, head.colSpan, head.rowSpan, head.headers, head.scope, head.abbr].join('|'); })()", "expected": "2|2|1|h0|col|H" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/progress-meter.html",
+      "checks": [
+        { "type": "title", "expected": "Progress and meter reflection — Vixen fixture" },
+        { "type": "selector-count", "selector": "progress", "expected": 1 },
+        { "type": "selector-count", "selector": "meter", "expected": 1 },
+        { "type": "js-eval", "expr": "(() => { const progress = document.querySelector('#download'); return [progress.value, progress.max, progress.position, progress.labels.length].join('|'); })()", "expected": "25|100|0.25|1" },
+        { "type": "js-eval", "expr": "(() => { const progress = document.querySelector('#download'); progress.value = 50; progress.max = 200; return [progress.getAttribute('value'), progress.getAttribute('max'), progress.position].join('|'); })()", "expected": "50|200|0.25" },
+        { "type": "js-eval", "expr": "(() => { const meter = document.querySelector('#battery'); return [meter.value, meter.min, meter.max, meter.low, meter.high, meter.optimum, meter.labels.length].join('|'); })()", "expected": "6|0|10|3|8|9|1" },
+        { "type": "js-eval", "expr": "(() => { const meter = document.querySelector('#battery'); meter.value = 7; meter.low = 2; meter.high = 9; meter.optimum = 8; return [meter.getAttribute('value'), meter.low, meter.high, meter.optimum].join('|'); })()", "expected": "7|2|9|8" }
       ]
     },
     {
@@ -673,6 +773,11 @@
         { "type": "element-attribute", "selector": "#any-hover-source", "attribute": "media", "expected": "(any-hover: hover)" },
         { "type": "selector-count", "selector": "#no-sizes:not([sizes])", "expected": 1 },
         { "type": "js-eval", "expr": "document.querySelector('#mobile-first').currentSrc", "expected": "small.jpg" },
+        { "type": "js-eval", "expr": "document.querySelector('#mobile-first').alt", "expected": "mobile-first sizes" },
+        { "type": "js-eval", "expr": "document.querySelector('#mobile-first').width + 'x' + document.querySelector('#mobile-first').height", "expected": "320x180" },
+        { "type": "js-eval", "expr": "document.querySelector('#mobile-first').loading + ':' + document.querySelector('#mobile-first').decoding", "expected": "lazy:async" },
+        { "type": "js-eval", "expr": "document.querySelector('#mobile-first').complete", "expected": "true" },
+        { "type": "js-eval", "expr": "document.querySelector('#mobile-first').decode().then(() => 'decoded')", "expected": "decoded" },
         { "type": "js-eval", "expr": "document.querySelector('#three-tier').currentSrc", "expected": "768.jpg" },
         { "type": "js-eval", "expr": "document.querySelector('#density').currentSrc", "expected": "one.png" },
         { "type": "js-eval", "expr": "matchMedia('(min-width: 800px)').matches", "expected": "true" },
@@ -700,6 +805,19 @@
         { "type": "element-attribute", "selector": "#mixed", "attribute": "allow", "expected": "autoplay; fullscreen 'self'; camera (self 'https://trusted.test')" },
         { "type": "element-attribute", "selector": "#kitchen-sink", "attribute": "allow", "expected": "geolocation; microphone; camera; fullscreen; autoplay; encrypted-media; picture-in-picture; web-share" },
         { "type": "body-contains", "expected": "Permissions Policy delegation" }
+      ]
+    },
+    {
+      "url": "fixtures/security/permissions-api.html",
+      "checks": [
+        { "type": "title", "expected": "Permissions API — Vixen fixture" },
+        { "type": "body-contains", "expected": "Permissions default to prompt" },
+        { "type": "js-eval", "expr": "navigator.permissions instanceof Permissions", "expected": "true" },
+        { "type": "js-eval", "expr": "navigator.permissions.query({ name: 'geolocation' }).then((status) => status.state)", "expected": "prompt" },
+        { "type": "js-eval", "expr": "navigator.permissions.query({ name: 'camera' }).then((status) => status instanceof PermissionStatus && status.onchange === null)", "expected": "true" },
+        { "type": "js-eval", "expr": "navigator.permissions.query({ name: 'midi' }).then(() => false, (err) => err instanceof TypeError && /unsupported permission name/.test(err.message))", "expected": "true" },
+        { "type": "js-eval", "expr": "Notification.permission", "expected": "default" },
+        { "type": "js-eval", "expr": "Notification.requestPermission().then((permission) => permission)", "expected": "default" }
       ]
     },
     {

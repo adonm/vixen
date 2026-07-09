@@ -18,10 +18,43 @@ use relm4::{ComponentParts, ComponentSender, RelmApp, SimpleComponent};
 
 use crate::config;
 use crate::engine_worker::START_URI;
+use crate::profile::{self, ProfilePaths, ShellSession};
 use crate::tab::{TabChromeState, TabInit, TabModel, TabMsg, TabOutput};
 
 pub fn run() {
-    RelmApp::new(config::APP_ID).run::<BrowserApp>(START_URI.to_owned());
+    RelmApp::new(config::APP_ID).run::<BrowserApp>(BrowserInit::load());
+}
+
+#[derive(Debug, Clone)]
+struct BrowserInit {
+    profile_paths: Option<ProfilePaths>,
+    session: ShellSession,
+}
+
+impl BrowserInit {
+    fn load() -> Self {
+        let profile_paths = match profile::production_paths() {
+            Ok(paths) => Some(paths),
+            Err(err) => {
+                eprintln!("vixen: profile paths unavailable: {err}");
+                None
+            }
+        };
+        let session = profile_paths
+            .as_ref()
+            .and_then(|paths| match profile::load_shell_session(paths) {
+                Ok(record) => Some(profile::shell_session_from_record(&record, START_URI)),
+                Err(err) => {
+                    eprintln!("vixen: session restore unavailable: {err}");
+                    None
+                }
+            })
+            .unwrap_or_else(|| profile::shell_session_from_record(&Default::default(), START_URI));
+        Self {
+            profile_paths,
+            session,
+        }
+    }
 }
 
 struct BrowserApp {
@@ -30,6 +63,7 @@ struct BrowserApp {
     selected_state: TabChromeState,
     next_tab_id: u64,
     closing_from_model: Rc<Cell<bool>>,
+    profile_paths: Option<ProfilePaths>,
 }
 
 #[derive(Debug)]
@@ -58,7 +92,7 @@ struct BrowserWidgets {
 }
 
 impl SimpleComponent for BrowserApp {
-    type Init = String;
+    type Init = BrowserInit;
     type Input = AppMsg;
     type Output = ();
     type Root = libadwaita::ApplicationWindow;
@@ -73,7 +107,7 @@ impl SimpleComponent for BrowserApp {
     }
 
     fn init(
-        start_uri: Self::Init,
+        init: Self::Init,
         window: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
@@ -90,6 +124,7 @@ impl SimpleComponent for BrowserApp {
             selected_state: TabChromeState::default(),
             next_tab_id: 0,
             closing_from_model: closing_from_model.clone(),
+            profile_paths: init.profile_paths,
         };
 
         let tab_view = model.tabs.widget().clone();
@@ -153,8 +188,16 @@ impl SimpleComponent for BrowserApp {
         );
         connect_tab_view(&sender, &tab_view, closing_from_model);
 
-        model.add_tab(start_uri);
+        for uri in init.session.tabs {
+            model.push_tab(uri);
+        }
+        model.selected_index = init
+            .session
+            .active_index
+            .min(model.tabs.len().saturating_sub(1));
+        model.select_index(model.selected_index);
         model.refresh_selected_state();
+        model.persist_session();
 
         let widgets = BrowserWidgets {
             back_button,
@@ -178,6 +221,7 @@ impl SimpleComponent for BrowserApp {
             AppMsg::SelectionChanged(index) => {
                 self.selected_index = index.min(self.tabs.len().saturating_sub(1));
                 self.refresh_selected_state();
+                self.persist_session();
             }
             AppMsg::NavigateSelected(input) => {
                 self.send_to_selected(TabMsg::Navigate(input));
@@ -187,8 +231,12 @@ impl SimpleComponent for BrowserApp {
             AppMsg::BackSelected => self.send_to_selected(TabMsg::Back),
             AppMsg::ForwardSelected => self.send_to_selected(TabMsg::Forward),
             AppMsg::TabStateChanged(index, state) => {
+                let loaded = !state.is_loading;
                 if index.current_index() == self.selected_index {
                     self.selected_state = state;
+                }
+                if loaded {
+                    self.persist_session();
                 }
             }
         }
@@ -223,19 +271,23 @@ impl SimpleComponent for BrowserApp {
 
 impl BrowserApp {
     fn add_tab(&mut self, uri: String) {
-        let index = self.tabs.len();
-        let tab_id = self.next_tab_id;
-        self.next_tab_id = self.next_tab_id.saturating_add(1);
-        {
-            let mut tabs = self.tabs.guard();
-            tabs.push_back(TabInit {
-                id: tab_id,
-                start_uri: uri,
-            });
-        }
+        let index = self.push_tab(uri);
         self.selected_index = index;
         self.select_index(index);
         self.refresh_selected_state();
+        self.persist_session();
+    }
+
+    fn push_tab(&mut self, uri: String) -> usize {
+        let index = self.tabs.len();
+        let tab_id = self.next_tab_id;
+        self.next_tab_id = self.next_tab_id.saturating_add(1);
+        let mut tabs = self.tabs.guard();
+        tabs.push_back(TabInit {
+            id: tab_id,
+            start_uri: uri,
+        });
+        index
     }
 
     fn close_tab(&mut self, index: usize) {
@@ -255,6 +307,7 @@ impl BrowserApp {
         self.selected_index = self.selected_index.min(self.tabs.len().saturating_sub(1));
         self.select_index(self.selected_index);
         self.refresh_selected_state();
+        self.persist_session();
     }
 
     fn send_to_selected(&self, message: TabMsg) {
@@ -287,6 +340,24 @@ impl BrowserApp {
                 break;
             }
             current -= 1;
+        }
+    }
+
+    fn persist_session(&self) {
+        let Some(paths) = self.profile_paths.as_ref() else {
+            return;
+        };
+        let tabs = (0..self.tabs.len())
+            .filter_map(|index| self.tabs.get(index))
+            .map(|tab| tab.chrome_state().uri)
+            .filter(|uri| !uri.trim().is_empty())
+            .collect::<Vec<_>>();
+        if tabs.is_empty() {
+            return;
+        }
+        let record = profile::shell_session_record(tabs, self.selected_index);
+        if let Err(err) = profile::save_shell_session(paths, &record) {
+            eprintln!("vixen: session save failed: {err}");
         }
     }
 }

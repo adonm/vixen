@@ -27,55 +27,38 @@ vixen/                                  # workspace root
 │   │       ├── permissions.rs
 │   │       ├── origin.rs
 │   │       ├── fetch_types.rs
+│   │       ├── cors.rs / referrer_policy.rs / mixed_content.rs
 │   │       └── http_helpers.rs
-│   ├── vixen-store/                     # persistence (redb)
-│   │   └── src/lib.rs
-│   ├── vixen-engine/                      # engine integration glue + Vixen-owned layout
+│   ├── vixen-store/                     # single-file redb persistence
+│   │   └── src/lib.rs                   # bounded profile tables + clear-data
+│   ├── vixen-engine/                    # engine integration glue + Vixen-owned layout
 │   │   └── src/
 │   │       ├── lib.rs
-│   │       ├── engine.rs                # Engine: load lifecycle, history
+│   │       ├── page.rs                  # Page facade: URL, parsed DOM, style/layout/paint state
 │   │       ├── doc.rs                   # Document impl of Stylo TNode/TElement
-│   │       ├── style.rs                 # Stylo cascade driver
-│   │       ├── script.rs                # JS runtime seam backed by deno_core/V8
-│   │       ├── script/                  # host modules: ops/resources/bootstrap JS
-│   │       ├── layout.rs                # Vixen-owned Rust layout entry point
+│   │       ├── style_dom.rs / style_cascade.rs
+│   │       ├── script.rs                # JsRuntime seam backed by deno_core/V8
+│   │       ├── script/                  # host modules: webidl, webapi, dom, cssom, encoding
 │   │       ├── layout_tree.rs           # styled DOM → arena-backed layout tree
-│   │       ├── formatting_context.rs    # block/inline/flex/grid layout algorithms
-│   │       ├── paint.rs                 # display list → WebRender (single paint path; consumes the GlContext trait, two impls)
-│   │       ├── snapshot.rs              # PageSnapshot, ElementInfo
-│   │       ├── inspector.rs             # inspect_element_at, computed-style export
-│   │       ├── diagnostics.rs           # EngineDiagnostic shape
-│   │       ├── engine_error.rs          # typed errors + stable codes
-│   │       └── cleanup.rs               # navigation cleanup hooks
-│   ├── vixen-shell/                     # Relm4/libadwaita browser chrome (idiomatic Relm4)
+│   │       ├── line_layout.rs and focused layout/value modules
+│   │       ├── display_list.rs / paint.rs # single display-list → WebRender path
+│   │       ├── forms.rs / form_submission.rs / history.rs
+│   │       └── engine_error.rs          # typed errors + stable codes
+│   ├── vixen-shell/                     # Relm4/libadwaita browser chrome
 │   │   └── src/
-│   │       ├── lib.rs                   # run()
-│   │       ├── app.rs                   # top-level App component, root message enum
-│   │       ├── browser_window.rs        # window component (header bar, tab view, find bar slot)
-│   │       ├── tabs.rs                  # FactoryVecDeque<TabModel> — dynamic tab list
-│   │       ├── tab.rs                   # Tab component: owns EngineWorker, address bar, status row
-│   │       ├── location_entry.rs        # address/search component
-│   │       ├── find_bar.rs              # find-in-page component
-│   │       ├── engine_factory.rs        # creates EngineWorker + wraps gtk4::GLArea as GlAreaSurface (GlContext)
-│   │       ├── engine_worker.rs         # Relm4 Worker: owns Engine, posts EngineDelegate msgs
-│   │       ├── settings.rs              # GSettings wrapper
-│   │       ├── profile.rs               # app-ID scoped paths
-│   │       ├── config.rs                # APP_ID, VERSION
-│   │       └── modals/                  # about, preferences, shortcuts (relm4-components where possible)
-│   ├── vixen-wpt/                       # WPT harness
-│   │   └── src/
-│   │       ├── lib.rs                   # manifest, runner, WPT-style check types
-│   │       └── visual_hash.rs
-│   └── vixen-headless/                  # CLI
+│   │       ├── lib.rs                   # run(), app IDs
+│   │       ├── app.rs                   # top-level App component
+│   │       ├── tab.rs                   # Tab component and browser controls
+│   │       ├── engine_worker.rs         # background worker owns engine/network load
+│   │       └── surface.rs               # gtk4::GLArea-backed GlContext
+│   ├── vixen-wpt/                       # WPT/fixture harness
+│   │   └── src/                         # manifest, harness, checks, profiles, visual hashes
+│   └── vixen-headless/                  # CLI + CDP
 │       └── src/
-│           ├── lib.rs                   # HeadlessPage
-│           ├── main.rs                  # clap + arg dispatch
-│           ├── load.rs
-│           ├── inspect.rs
-│           ├── interact.rs
-│           ├── surface.rs               # SurfacelessSurface: EGL surfaceless GlContext impl
-│           ├── types.rs
-│           └── cdp.rs                   # CDP WebSocket server
+│           ├── lib.rs / main.rs
+│           ├── cdp.rs                   # CDP WebSocket server
+│           ├── interactions.rs
+│           └── surface.rs               # EGL surfaceless GlContext impl
 ├── src/
 │   └── main.rs                          # tiny: calls vixen_shell::run()
 ├── data/                                # GNOME app data (icons, desktop, gschema, metainfo)
@@ -102,23 +85,25 @@ vixen-shell           vixen-engine        vixen-wpt       vixen-headless
 (GTK4 + Relm4; owns   (Stylo, deno_core, (manifest +     (CLI + CDP; EGL
  gtk4::GLArea as       WebRender,         runner;          surfaceless
  GlAreaSurface;        html5ever, layout) consumes         SurfacelessSurface;
- EngineWorker/tab)                        EngineInspector  dev-dep: vixen-wpt)
-                          │
-                          ▼
-                       vixen-net   (leaf — HTTP, cookies, CSP,
-                                    URL policy, permissions;
-                                    no vixen-crate deps)
-
-vixen-store — standalone leaf (redb persistence; not yet wired into the
-              build, no vixen-crate dependencies today)
+ EngineWorker/tab,                        EngineInspector  dev-dep: vixen-wpt)
+ profile paths/session)    │
+        │        ┌─────────┴───────────┐
+        │        ▼                     ▼
+        └──► vixen-store           vixen-net
+     (leaf — redb profile     (leaf — HTTP, cookies,
+      persistence: cookies,    CSP, URL policy,
+      fetch cache, history,    permissions; no
+      session, Web Storage)    vixen-crate deps)
 ```
 
-The only edge into `vixen-net` is `vixen-engine → vixen-net`: the script host
-hooks delegate `fetch`/`document.cookie` into `vixen-net`, and URL policy /
-CSP are re-applied at every fetch from `script.rs`. The four engine
+The only edge into `vixen-net` is from `vixen-engine`. `vixen-store` remains a
+leaf crate, but both `vixen-engine` and the GTK-free `vixen-shell::profile` layer
+may open it: runtime host hooks persist normalized cookies/cache/storage/history,
+while shell startup/shutdown persists bounded tab session records. URL policy and
+option validation are re-applied at the JS → Rust boundary. The four engine
 consumers — `vixen-shell`, `vixen-engine`, `vixen-wpt`, `vixen-headless` — all
-depend on `vixen-api`; `vixen-net` and `vixen-store` are leaf crates with no
-dependencies on other vixen crates.
+depend on `vixen-api`; `vixen-net` and `vixen-store` have no dependencies on
+other vixen crates.
 
 **Boundary rules** (enforced by `cargo tree` audit in CI):
 
@@ -128,7 +113,7 @@ dependencies on other vixen crates.
 | `vixen-net`          | HTTP, cookies, CSP, URL policy, permissions   | GTK, JS engine, DOM, layout            |
 | `vixen-store`        | redb-backed persistence                       | Anything networked                     |
 | `vixen-engine`         | Stylo + `deno_core` JS runtime + layout + paint glue | GTK, EGL, CLI arg parsing (GL comes in via the `GlContext` trait) |
-| `vixen-shell`        | Browser chrome, Relm4/libadwaita, `GlAreaSurface` (`GlContext` impl) | Engine internals (only via `Engine`) |
+| `vixen-shell`        | Browser chrome, Relm4/libadwaita, `GlAreaSurface` (`GlContext` impl), GTK-free profile/session service | Engine internals (only via `Engine`) |
 | `vixen-headless`     | CLI args, screenshot/dump/CDP entry points, `SurfacelessSurface` (`GlContext` impl) | GTK, libadwaita                        |
 | `vixen-wpt`          | WPT manifest + runner + check types           | Engine internals                       |
 
@@ -137,34 +122,47 @@ dependencies on other vixen crates.
 ## Data flow per navigation
 
 ```
-URL
+URL / navigation request
  │
  ▼
-vixen-net::Network::get_text_with_cookies       (reqwest + rustls + URL/CSP policy)
- │  → TextResponse { body, headers, cookies, redirects }
+vixen-engine lifecycle boundary
+ │  validate navigation intent, assign origin/profile partition, emit diagnostics
+ │
+ ├──► vixen-store::Store
+ │    load persisted cookies/storage/cache/session data for the partition
+ │
  ▼
-vixen-engine::page::Page                         (URL + pipeline state facade)
+vixen-net::Network::{get_text_with_cookies*, RedirectMode}
+ │  reqwest + rustls; URL policy; manual redirects; request headers/bodies; cookie jar per hop
+ │  → TextResponse { body, headers, set_cookie, redirects, final_url, events }
+ │  script fetch applies mode/CORS preflight + visibility before exposing data to JS
+ │
+ ├──► vixen-store::Store
+ │    persist normalized cookies, GET cache entries, history/session state
+ │
+ ▼
+vixen-engine::page::Page                         (authoritative page state facade)
  │
  ▼
 html5ever::parse_document                        (HTML5 parser)
  │  → RcDom
  ▼
-vixen-engine::doc::Document::from_dom              (Stylo-compatible DOM)
+vixen-engine::doc::Document::from_dom            (Stylo-compatible DOM)
  │  → impls style::dom::TNode / TElement
  ▼
-vixen-engine::style::cascade                       (Stylo traversal)
+vixen-engine::style_cascade                      (Stylo traversal)
  │  → per-element ComputedValues
  ▼
-vixen-engine::layout::layout                       (Vixen-owned Rust layout; ADR-013)
- │  → positioned box tree
+Vixen-owned layout modules                       (ADR-013)
+ │  → positioned box tree / layout tree
  ▼
-vixen-engine::paint::build_display_list            (single display list)
+vixen-engine::display_list / paint               (single display list)
  │  → webrender::DisplayListBuilder
  ▼
-vixen-engine::paint::Renderer                      (single WebRender paint path)
+vixen-engine::paint::Renderer                    (single WebRender paint path)
  │  → GL framebuffer, via &dyn GlContext
  ▼
-GUI:  GlAreaSurface (wraps gtk4::GLArea)   OR   Headless: SurfacelessSurface (EGL surfaceless) → glReadPixels → PNG
+GUI: GlAreaSurface (gtk4::GLArea) OR Headless: SurfacelessSurface (EGL surfaceless) → glReadPixels → PNG
 ```
 
 One paint path. Two `GlContext` implementations: `GlAreaSurface`
@@ -199,14 +197,55 @@ adopt those generated interfaces. Pure value APIs may stay JS-only when that is
 smaller and state-free; page/network/storage/security-backed APIs cross a Rust
 op/resource boundary. See [`RUNTIME_WEB_PLATFORM.md`](RUNTIME_WEB_PLATFORM.md).
 
-The main design lesson from the first runtime-host and CDP/WPT migrations is to
-avoid parallel browser models. A feature is not considered browser-shaped until
-the same path serves all relevant seams: `Page` state, headless `--eval`, CDP,
-WPT fixtures, and the GUI where visible. Temporary string projections in
-`Page::evaluate_dom_expression` are allowed only as deletion targets while a
-`deno_core` host module catches up; new browser APIs should not start there.
-Likewise, automation must not grow an automation-only DOM, and layout/paint must
-not grow post-pass correction layers that hide bad authoritative state.
+The main design lesson from the runtime-host, storage, fetch/XHR, and CDP/WPT
+migrations is to avoid parallel browser models. A feature is not considered
+browser-shaped until the same path serves all relevant seams: `Page` state,
+headless `--eval`, CDP, WPT fixtures, and the GUI where visible.
+`Page::evaluate_dom_expression` is now a fail-closed compatibility shim, not a
+place to add behavior. New browser APIs must land as one of:
+
+- JS-only value APIs in a bootstrap, when they are pure and state-free;
+- `deno_core` ops/resources that validate at the JS → Rust boundary;
+- authoritative `Page`/DOM/layout state reachable by runtime, headless, CDP, and
+  GUI; or
+- leaf-crate policy/storage/network primitives called by the engine.
+
+Likewise, automation must not grow an automation-only DOM, profile state must not
+stay in runtime-only maps when a backing store exists, networking must not grow a
+test-only client path, and layout/paint must not grow post-pass correction layers
+that hide bad authoritative state.
+
+Implementation pattern to prefer after the recent fetch/CORS/cache/XHR work:
+
+1. Put the pure policy/data type in a leaf crate (`vixen-net`/`vixen-store`) when
+   it can be tested without JS or GTK.
+2. Add a narrow engine host op/resource that validates untrusted inputs near the
+   JS → Rust boundary and fails closed.
+3. Surface the behavior through the browser-visible seam (`Page`, fetch/XHR,
+   headless, CDP, or GUI), not through a test-only shortcut.
+4. Add event/diagnostic DTOs once automation or the shell needs observability;
+   keep them stable and small.
+5. Persist bounded profile state as soon as user-visible state exists, and wire it
+   into clear-data flows.
+
+Peer-browser issue trackers reinforce three additional design constraints:
+
+- **Host integration is an engine seam.** TLS roots, sandbox file allowlists,
+  fontconfig/font fallback, XDG directories, Flatpak portals, downloads, and
+  GL/EGL availability must be represented as explicit platform/profile services
+  with diagnostics. Do not bury them in shell-only code or unstructured logs.
+- **Reductions are part of the architecture.** Real-site failures should reduce
+  into local fixtures or WPT imports that exercise the same pipeline. A screenshot
+  without a reduced fixture is useful triage, not a regression guard.
+- **Inspection is not read-only in practice.** CDP/devtools snapshots, highlight
+  overlays, geometry queries, and mutation notifications can force style/layout
+  work at awkward times. Inspector surfaces must tolerate stale layout by
+  updating through explicit invalidation gates or returning stable errors; they
+  must never assume layout is current just because the page is inspectable.
+
+These rules deliberately keep platform, profile, inspector, and reduction
+workflows inside the browser design instead of treating them as late product
+polish.
 
 ---
 
@@ -216,14 +255,18 @@ Web content is untrusted. Validation lives at:
 
 | Boundary                              | Code                                       | Rule                                                                       |
 |---------------------------------------|--------------------------------------------|----------------------------------------------------------------------------|
-| Network fetch entry                   | `vixen-net::url_policy::validate_http_url` | SSRF / private-IP / reserved-TLD block (see `SPEC.md` "URL policy")        |
-| HTTP response → cookie jar            | `vixen-net::cookie::CookieJar::set_cookie` | RFC 6265 rules (see `SPEC.md` "Cookie contract")                           |
-| HTTP response → CSP                   | `vixen-net::csp::Enforcer::from_headers`   | Parse + store CSP for the document                                         |
-| Script execution                      | `vixen-engine::script::evaluate`             | CSP gating before `EvaluateScript`; compartment per origin                 |
-| JS → document.cookie                  | `vixen-net::cookie::set_document_cookie`   | HttpOnly rejected; domain/secure/samesite rules enforced                   |
-| JS → fetch / XHR                      | `vixen-engine::script` → `vixen-net`         | CSP `connect-src` enforcement; URL policy re-applied                       |
-| JS → localStorage/sessionStorage      | `vixen-store`                              | Per-origin partitioning; size limits enforced                              |
-| Persistence                           | `vixen-store`                              | Per-origin partitioning; never persist untrusted script output             |
+| Network/navigation fetch entry         | `vixen-net::url_policy::validate_http_url` | SSRF / private-IP / reserved-TLD block (see `SPEC.md` "URL policy")        |
+| HTTP redirect hop                      | `vixen-net::Network` + `RedirectMode`       | URL policy re-applied; `follow` / `manual` / `error` honored fail-closed    |
+| HTTP response → cookie jar             | `vixen-net::cookie::CookieJar::set_cookie` | RFC 6265 rules (see `SPEC.md` "Cookie contract")                           |
+| HTTP response → CSP                    | `vixen-net::csp::Enforcer::from_headers`   | Parse + store CSP for the document                                         |
+| Script execution                       | `vixen-engine::script::evaluate`            | CSP gating before `EvaluateScript`; compartment per origin                 |
+| JS → document.cookie                   | `script::dom`/`webapi` → `vixen-net`        | HttpOnly rejected; domain/secure/samesite rules enforced                   |
+| JS → fetch / XHR                       | `script::webapi` → `vixen-net`              | Validate method/mode/cache/credentials/redirect/body/headers; re-apply URL policy, CSP, CORS, mixed-content, referrer policy |
+| JS → localStorage/sessionStorage       | `script::webapi` → `vixen-store`            | Per-origin partitioning; key/value size limits enforced                    |
+| Runtime/profile persistence            | `vixen-store`                               | Persist only bounded, partitioned, normalized records                      |
+| Page mutation/navigation invalidation  | `Page` + engine lifecycle                   | One authoritative page state; update layout/paint/history from same commit |
+| Host platform integration              | Shell/profile/platform services             | Certs, fonts, XDG dirs, portals, GL/EGL fail with actionable diagnostics   |
+| Inspector/CDP snapshotting              | `EngineInspector` / CDP                     | Never crash on stale layout; update explicitly or return stable errors     |
 
 Every boundary **fails closed**. Unsupported operations return typed
 diagnostics with stable codes, never silent fallbacks.
@@ -365,13 +408,76 @@ between GUI and headless.
 Inside the profile dir:
 
 ```
-cookies.redb           # CookieEntry table
-fetch-cache.redb       # GET response cache
-history.redb           # visited URLs + timestamps
-session.redb           # open tabs at last quit (if session restore enabled)
-localstorage/<origin>/ # per-origin localStorage
-sessionstorage/<origin>/ # per-origin sessionStorage (cleared on exit)
+profile.redb             # one redb file opened by vixen-store::Store
+  cookies                # partitioned CookieRecord entries
+  fetch-cache            # bounded, partitioned GET response cache entries
+  history                # visited URLs + timestamps
+  session                # bounded SessionRecord tabs, active tab, scroll/focus/form restore hints
+  web-storage            # localStorage/sessionStorage entries by storage partition
+  downloads              # bounded profile-wide DownloadRecord history
+  permissions            # per-origin permission decisions
+  hsts                   # persisted HSTS/security-state records
+downloads/               # target directory for accepted downloads
+reports/                 # optional diagnostics/smoke artifacts
 ```
+
+The exact redb filename is chosen by the caller today; the architectural shape is
+one `Store` per profile with separate tables per concern. `vixen-store` never
+depends on URL/origin types: callers pass opaque partition keys such as
+`vixen_net::Origin::partition_key()`.
+
+Profile state should also grow bounded product tables as features land:
+favicons/icons (deduplicated blobs, not repeated base64 strings), settings, and
+clear-data tombstones. Each table needs a clear owner, size bounds, and a
+`vixen-store::ClearDataSelection` policy before it becomes part of the shell UI.
+
+---
+
+## Linux host-integration services
+
+Modern Linux compatibility is not just GTK. The shell/profile layer should expose
+small services to the engine instead of letting subsystems discover the host in
+ad-hoc ways:
+
+- certificate roots and optional custom CA bundle path;
+- font discovery/fallback configuration and warning suppression policy;
+- XDG user directories, especially downloads;
+- Flatpak portal handles for files, downloads, permissions, and external opens;
+- GL/EGL capability diagnostics for GUI and headless paths;
+- profile/cache/download directories scoped by app ID.
+
+`vixen-shell::profile` is the current GTK-free owner for app-ID scoped XDG data
+paths, the profile redb location, profile download/report directories, and the
+host XDG Downloads directory. It loads and saves the shell's bounded tab session
+record through `vixen-store`, clamps restore indices at the profile boundary, and
+falls back to the configured start page for empty profiles. It also routes
+explicit `ClearDataSelection` requests through the same app-ID scoped store,
+validates download destinations and “show in folder” targets against the known
+user/profile downloads roots, and stays available in default builds so headless
+and future profile services can reuse the same path policy without pulling GTK.
+
+Each service should produce structured diagnostics consumable by GUI error pages,
+headless text output, CDP, and WPT/fixture reports. “Works on my distro” is not a
+release criterion; Fedora/Arch/openSUSE/Debian-like cert/font/XDG layouts need
+controlled smoke coverage before beta.
+
+---
+
+## Reduction and real-site triage workflow
+
+When a real site fails, classify it first, then reduce it:
+
+1. network/security/platform (TLS, CSP, mixed content, sandbox, proxy, anti-bot),
+2. DOM/Web API/WebIDL/events/forms,
+3. layout/style/paint/compositor/text shaping,
+4. storage/profile/downloads/session,
+5. shell/chrome/platform UI,
+6. performance/reliability/crash.
+
+The preferred end state is a small local fixture or imported WPT profile plus a
+`COMPAT.md` note. If the bug cannot be reduced yet, keep the real-site command,
+screenshots, logs, and classification so it can drive later work without becoming
+a vague compatibility claim.
 
 ---
 

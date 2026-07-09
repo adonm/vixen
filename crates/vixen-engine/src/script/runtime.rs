@@ -21,10 +21,11 @@ pub(super) fn new_deno_runtime(
     network_config: NetworkConfig,
     storage: webapi::WebStorageHost,
 ) -> Result<DenoRuntimeInit, EngineError> {
+    let fetch_policy = page.map(webapi::FetchPolicy::from_page);
     let mut extensions = vec![
         webidl::extension(),
         encoding::extension(),
-        webapi::extension(network_config, storage),
+        webapi::extension(network_config, storage, fetch_policy),
     ];
     let mut dom_mutations = None;
     if let Some(page) = page {

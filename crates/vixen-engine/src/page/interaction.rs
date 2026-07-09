@@ -1,5 +1,7 @@
 //! Page-backed interaction projections for headless/inspector surfaces.
 
+use std::rc::Rc;
+
 use markup5ever_rcdom::{Handle, NodeData};
 use vixen_api::ElementInfo;
 
@@ -16,6 +18,7 @@ use crate::form_submission::{
 #[derive(Debug, Clone)]
 pub struct FormSubmissionSnapshot {
     pub form: ElementInfo,
+    pub submitter: Option<ElementInfo>,
     pub action: String,
     pub method: String,
     pub enctype: String,
@@ -56,8 +59,6 @@ impl Page {
 
     /// Build the entry list and encoded body for the form with `form_id`.
     pub fn form_submission(&self, form_id: &str) -> Result<FormSubmissionSnapshot, String> {
-        let form_node = find_element_by_id(&self.document.dom.document, form_id, Some("form"))
-            .ok_or_else(|| format!("no form with id '{form_id}'"))?;
         let form = self
             .query_selector_all("form")
             .map_err(|e| format!("internal form selector failed: {e}"))?
@@ -65,19 +66,82 @@ impl Page {
             .find(|element| element.id.as_deref() == Some(form_id))
             .ok_or_else(|| format!("no form with id '{form_id}'"))?;
 
-        let raw_action = node_attr(&form_node, "action")
+        self.form_submission_by_node_id(form.node_id, None)
+    }
+
+    /// Build the entry list and encoded body for a form by stable page node id.
+    ///
+    /// This is the browser-real submission seam used by runtime/CDP actions:
+    /// idless forms still submit, and a successful submitter can override
+    /// `action`/`method`/`enctype` and contribute its own name/value entry.
+    pub fn form_submission_by_node_id(
+        &self,
+        form_node_id: usize,
+        submitter_node_id: Option<usize>,
+    ) -> Result<FormSubmissionSnapshot, String> {
+        let form_node = find_element_by_node_id(&self.document.dom.document, form_node_id)
+            .ok_or_else(|| format!("no form node {form_node_id}"))?;
+        if node_tag(&form_node) != Some("form") {
+            return Err(format!("node {form_node_id} is not a form"));
+        }
+        let form = self
+            .document
+            .element_by_node_id(form_node_id)
+            .ok_or_else(|| format!("no form node {form_node_id}"))?
+            .into_element_info();
+
+        let submitter_node = submitter_node_id
+            .filter(|node_id| *node_id != 0)
+            .map(|node_id| {
+                find_element_by_node_id(&self.document.dom.document, node_id)
+                    .ok_or_else(|| format!("no submitter node {node_id}"))
+            })
+            .transpose()?;
+        if let Some(submitter) = &submitter_node {
+            if !is_submitter_control(submitter) {
+                return Err(format!(
+                    "node {} is not a submit button",
+                    submitter_node_id.unwrap_or_default()
+                ));
+            }
+            if !node_contains(&form_node, submitter) {
+                return Err(format!(
+                    "submitter node {} is not owned by form node {form_node_id}",
+                    submitter_node_id.unwrap_or_default()
+                ));
+            }
+        }
+        let submitter = submitter_node_id
+            .filter(|node_id| *node_id != 0)
+            .and_then(|node_id| self.document.element_by_node_id(node_id))
+            .map(|element| element.into_element_info());
+
+        let raw_action = submitter_node
+            .as_ref()
+            .and_then(|node| node_attr(node, "formaction"))
+            .filter(|action| !action.is_empty())
+            .or_else(|| node_attr(&form_node, "action"))
             .filter(|action| !action.is_empty())
             .unwrap_or_else(|| self.url.clone());
         let action = self.resolve_url(&raw_action).unwrap_or(raw_action);
-        let method = normalise_form_method(node_attr(&form_node, "method"));
-        let enctype = node_attr(&form_node, "enctype")
+        let method = normalise_form_method(
+            submitter_node
+                .as_ref()
+                .and_then(|node| node_attr(node, "formmethod"))
+                .or_else(|| node_attr(&form_node, "method")),
+        );
+        let enctype = submitter_node
+            .as_ref()
+            .and_then(|node| node_attr(node, "formenctype"))
+            .or_else(|| node_attr(&form_node, "enctype"))
             .as_deref()
             .and_then(FormEnctype::parse)
             .unwrap_or_default();
-        let entries = form_entries(&form_node);
+        let entries = form_entries(&form_node, submitter_node.as_ref());
         let (content_type, body) = encode_form_entries(enctype, &entries);
         Ok(FormSubmissionSnapshot {
             form,
+            submitter,
             action,
             method,
             enctype: enctype.mime_type().to_owned(),
@@ -92,20 +156,38 @@ fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
     !rect.is_empty() && x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
 }
 
-fn find_element_by_id(root: &Handle, id: &str, tag: Option<&str>) -> Option<Handle> {
-    if let NodeData::Element { name, .. } = &root.data {
-        let tag_matches = tag.is_none_or(|wanted| name.local.as_ref() == wanted);
-        if tag_matches && node_attr(root, "id").as_deref() == Some(id) {
+fn find_element_by_node_id(root: &Handle, node_id: usize) -> Option<Handle> {
+    let mut current = 0;
+    find_element_by_node_id_inner(root, node_id, &mut current)
+}
+
+fn find_element_by_node_id_inner(
+    root: &Handle,
+    node_id: usize,
+    current: &mut usize,
+) -> Option<Handle> {
+    if matches!(root.data, NodeData::Element { .. }) {
+        *current += 1;
+        if *current == node_id {
             return Some(root.clone());
         }
     }
+
     let children: Vec<Handle> = root.children.borrow().clone();
     for child in children {
-        if let Some(found) = find_element_by_id(&child, id, tag) {
+        if let Some(found) = find_element_by_node_id_inner(&child, node_id, current) {
             return Some(found);
         }
     }
     None
+}
+
+fn node_contains(root: &Handle, candidate: &Handle) -> bool {
+    if Rc::ptr_eq(root, candidate) {
+        return true;
+    }
+    let children: Vec<Handle> = root.children.borrow().clone();
+    children.iter().any(|child| node_contains(child, candidate))
 }
 
 fn node_tag(node: &Handle) -> Option<&str> {
@@ -164,27 +246,33 @@ fn encode_form_entries(enctype: FormEnctype, entries: &[FormEntry]) -> (String, 
     }
 }
 
-fn form_entries(form: &Handle) -> Vec<FormEntry> {
+fn form_entries(form: &Handle, submitter: Option<&Handle>) -> Vec<FormEntry> {
     let mut entries = Vec::new();
-    collect_form_entries(form, false, &mut entries);
+    collect_form_entries(form, false, submitter, &mut entries);
     entries
 }
 
-fn collect_form_entries(node: &Handle, disabled_ancestor: bool, entries: &mut Vec<FormEntry>) {
+fn collect_form_entries(
+    node: &Handle,
+    disabled_ancestor: bool,
+    submitter: Option<&Handle>,
+    entries: &mut Vec<FormEntry>,
+) {
     let tag = node_tag(node);
     let disabled_here = disabled_ancestor
         || (tag.is_some_and(is_disableable_form_element) && has_attr(node, "disabled"));
 
     if !disabled_here
         && let Some(tag) = tag
-        && let Some(entry) = form_entry_for_control(node, tag)
+        && let Some(entry) =
+            form_entry_for_control(node, tag, is_successful_submitter(node, submitter))
     {
         entries.push(entry);
     }
 
     let children: Vec<Handle> = node.children.borrow().clone();
     for child in children {
-        collect_form_entries(&child, disabled_here, entries);
+        collect_form_entries(&child, disabled_here, submitter, entries);
     }
 }
 
@@ -195,28 +283,61 @@ fn is_disableable_form_element(tag: &str) -> bool {
     )
 }
 
-fn form_entry_for_control(node: &Handle, tag: &str) -> Option<FormEntry> {
+fn is_successful_submitter(node: &Handle, submitter: Option<&Handle>) -> bool {
+    submitter.is_some_and(|submitter| Rc::ptr_eq(node, submitter))
+}
+
+fn is_submitter_control(node: &Handle) -> bool {
+    match node_tag(node) {
+        Some("button") => matches!(
+            node_attr(node, "type")
+                .unwrap_or_else(|| "submit".to_owned())
+                .to_ascii_lowercase()
+                .as_str(),
+            "" | "submit"
+        ),
+        Some("input") => matches!(
+            node_attr(node, "type")
+                .unwrap_or_else(|| "text".to_owned())
+                .to_ascii_lowercase()
+                .as_str(),
+            "submit" | "image"
+        ),
+        _ => false,
+    }
+}
+
+fn form_entry_for_control(
+    node: &Handle,
+    tag: &str,
+    successful_submitter: bool,
+) -> Option<FormEntry> {
     let name = node_attr(node, "name")?;
     if name.is_empty() {
         return None;
     }
     match tag {
-        "input" => input_form_entry(node, name),
+        "input" => input_form_entry(node, name, successful_submitter),
         "textarea" => Some(FormEntry::text(name, node_text_content(node))),
         "select" => Some(FormEntry::text(name, selected_option_value(node))),
-        // Buttons only contribute when they are the successful submitter. The
-        // headless `--submit-form <id>` action has no submitter argument yet.
-        "button" => None,
+        "button" => button_form_entry(node, name, successful_submitter),
         _ => None,
     }
 }
 
-fn input_form_entry(node: &Handle, name: String) -> Option<FormEntry> {
+fn input_form_entry(node: &Handle, name: String, successful_submitter: bool) -> Option<FormEntry> {
     let input_type = node_attr(node, "type")
         .unwrap_or_else(|| "text".to_owned())
         .to_ascii_lowercase();
     match input_type.as_str() {
-        "button" | "reset" | "submit" | "image" => None,
+        "button" | "reset" => None,
+        "submit" => successful_submitter
+            .then(|| FormEntry::text(name, node_attr(node, "value").unwrap_or_default())),
+        "image" => successful_submitter.then(|| {
+            // Pointer coordinates are not carried by the current click action;
+            // submit the deterministic origin coordinate pair for this narrow seam.
+            FormEntry::text(format!("{name}.x"), "0")
+        }),
         "checkbox" | "radio" => has_attr(node, "checked").then(|| {
             FormEntry::text(
                 name,
@@ -234,6 +355,17 @@ fn input_form_entry(node: &Handle, name: String) -> Option<FormEntry> {
             node_attr(node, "value").unwrap_or_default(),
         )),
     }
+}
+
+fn button_form_entry(node: &Handle, name: String, successful_submitter: bool) -> Option<FormEntry> {
+    if !successful_submitter {
+        return None;
+    }
+    let button_type = node_attr(node, "type")
+        .unwrap_or_else(|| "submit".to_owned())
+        .to_ascii_lowercase();
+    (button_type == "submit" || button_type.is_empty())
+        .then(|| FormEntry::text(name, node_attr(node, "value").unwrap_or_default()))
 }
 
 fn selected_option_value(select: &Handle) -> String {
@@ -317,6 +449,7 @@ mod tests {
         .unwrap();
 
         let submission = page.form_submission("contact").unwrap();
+        assert!(submission.submitter.is_none());
         assert_eq!(submission.method, "post");
         assert_eq!(submission.enctype, "application/x-www-form-urlencoded");
         let names: Vec<_> = submission
@@ -336,5 +469,42 @@ mod tests {
         assert!(body.contains("format=html"));
         assert!(!body.contains("skip="));
         assert!(!body.contains("submitter="));
+    }
+
+    #[test]
+    fn form_submission_by_node_id_honors_submitter_overrides() {
+        let page = Page::from_html(
+            "file:///forms/index.html",
+            "<form action='/default' method='post' enctype='text/plain'>\
+               <input name='q' value='rust'>\
+               <button id='go' name='submitter' value='send' formaction='next.html' formmethod='get' formenctype='application/x-www-form-urlencoded'>Go</button>\
+             </form>",
+        )
+        .unwrap();
+        let form = page.query_selector_all("form").unwrap()[0].clone();
+        let button = page.query_selector_all("#go").unwrap()[0].clone();
+
+        let submission = page
+            .form_submission_by_node_id(form.node_id, Some(button.node_id))
+            .unwrap();
+
+        assert_eq!(submission.form.node_id, form.node_id);
+        assert_eq!(
+            submission.submitter.as_ref().map(|s| s.node_id),
+            Some(button.node_id)
+        );
+        assert_eq!(submission.action, "file:///forms/next.html");
+        assert_eq!(submission.method, "get");
+        assert_eq!(submission.enctype, "application/x-www-form-urlencoded");
+        let names: Vec<_> = submission
+            .entries
+            .iter()
+            .map(|entry| entry.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["q", "submitter"]);
+        assert_eq!(
+            String::from_utf8(submission.body).unwrap(),
+            "q=rust&submitter=send"
+        );
     }
 }

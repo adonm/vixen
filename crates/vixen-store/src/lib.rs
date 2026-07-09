@@ -1,11 +1,11 @@
 //! vixen-store — redb-backed persistence.
 //!
-//! Per-origin partitioned storage for cookies, fetch cache, history, and
-//! sessions (docs/ARCHITECTURE.md "App ID and profile paths"). The crate is
-//! deliberately independent of `vixen-net`: callers pass an opaque
-//! `origin_key` (e.g. an `Origin::partition_key()`) so store never depends
-//! on networking. Every table namespaces by that key so cross-origin reads
-//! are impossible (docs/SPEC.md origin isolation).
+//! Per-origin partitioned storage for cookies, fetch cache, history, sessions,
+//! downloads, and Web Storage (docs/ARCHITECTURE.md "App ID and profile
+//! paths"). The crate is deliberately independent of `vixen-net`: callers pass
+//! an opaque `origin_key` (e.g. an `Origin::partition_key()`) so store never
+//! depends on networking. Every table namespaces by that key so cross-origin
+//! reads are impossible (docs/SPEC.md origin isolation).
 
 #![forbid(unsafe_code)]
 
@@ -23,7 +23,80 @@ const FETCH_CACHE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("fetch-c
 const HISTORY: TableDefinition<&[u8], &[u8]> = TableDefinition::new("history");
 const SESSION: TableDefinition<&[u8], &[u8]> = TableDefinition::new("session");
 const WEB_STORAGE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("web-storage");
+const DOWNLOADS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("downloads");
+const PERMISSIONS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("permissions");
+const HSTS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("hsts");
 const SESSION_KEY: &[u8] = b"open-tabs";
+const SESSION_RECORD_KEY: &[u8] = b"session-record-v1";
+pub const MAX_DOWNLOAD_RECORDS: usize = 512;
+pub const MAX_FETCH_CACHE_RECORDS: usize = 512;
+pub const MAX_SESSION_TABS: usize = 128;
+pub const MAX_SESSION_FORM_CONTROLS: usize = 512;
+const MAX_SESSION_URL_BYTES: usize = 8192;
+const MAX_SESSION_FIELD_BYTES: usize = 8192;
+const MAX_DOWNLOAD_FIELD_BYTES: usize = 8192;
+
+/// Profile-wide data groups cleared by browser clear-data flows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ClearDataSelection {
+    /// Partitioned HTTP cookies.
+    pub cookies: bool,
+    /// Partitioned GET response cache entries.
+    pub fetch_cache: bool,
+    /// Visited URL timestamps.
+    pub history: bool,
+    /// Saved open-tab session restore state.
+    pub session: bool,
+    /// `localStorage` / persisted `sessionStorage` partitions.
+    pub web_storage: bool,
+    /// Profile-wide download history.
+    pub downloads: bool,
+    /// Per-origin permission decisions.
+    pub permissions: bool,
+    /// HSTS and related persisted security state.
+    pub security_state: bool,
+}
+
+impl ClearDataSelection {
+    /// Clear every persisted profile table.
+    pub const fn all() -> Self {
+        Self {
+            cookies: true,
+            fetch_cache: true,
+            history: true,
+            session: true,
+            web_storage: true,
+            downloads: true,
+            permissions: true,
+            security_state: true,
+        }
+    }
+
+    /// Clear user-visible browsing data while preserving session restore.
+    pub const fn browsing_data() -> Self {
+        Self {
+            cookies: true,
+            fetch_cache: true,
+            history: true,
+            session: false,
+            web_storage: true,
+            downloads: true,
+            permissions: true,
+            security_state: true,
+        }
+    }
+
+    pub const fn is_empty(self) -> bool {
+        !self.cookies
+            && !self.fetch_cache
+            && !self.history
+            && !self.session
+            && !self.web_storage
+            && !self.downloads
+            && !self.permissions
+            && !self.security_state
+    }
+}
 
 /// Persistent store backed by a single redb file.
 pub struct Store {
@@ -52,6 +125,26 @@ pub enum StoreError {
     Utf8(#[from] std::string::FromUtf8Error),
     #[error("invalid web storage {field}: {reason}")]
     InvalidWebStorageInput {
+        field: &'static str,
+        reason: &'static str,
+    },
+    #[error("invalid download {field}: {reason}")]
+    InvalidDownloadInput {
+        field: &'static str,
+        reason: &'static str,
+    },
+    #[error("invalid session {field}: {reason}")]
+    InvalidSessionInput {
+        field: &'static str,
+        reason: &'static str,
+    },
+    #[error("invalid permission {field}: {reason}")]
+    InvalidPermissionInput {
+        field: &'static str,
+        reason: &'static str,
+    },
+    #[error("invalid security state {field}: {reason}")]
+    InvalidSecurityStateInput {
         field: &'static str,
         reason: &'static str,
     },
@@ -105,6 +198,9 @@ impl Store {
             let _ = w.open_table(HISTORY)?;
             let _ = w.open_table(SESSION)?;
             let _ = w.open_table(WEB_STORAGE)?;
+            let _ = w.open_table(DOWNLOADS)?;
+            let _ = w.open_table(PERMISSIONS)?;
+            let _ = w.open_table(HSTS)?;
         }
         w.commit()?;
         Ok(Self { db })
@@ -158,6 +254,27 @@ impl Store {
         Ok(())
     }
 
+    /// Remove every cookie in one origin partition and no other partition.
+    pub fn clear_cookies(&self, origin_key: &str) -> Result<()> {
+        let prefix = namespaced_prefix(origin_key);
+        let w = self.db.begin_write()?;
+        {
+            let mut t = w.open_table(COOKIES)?;
+            let mut keys = Vec::new();
+            for item in t.iter()? {
+                let (k, _) = item?;
+                if k.value().starts_with(prefix.as_slice()) {
+                    keys.push(k.value().to_vec());
+                }
+            }
+            for key in keys {
+                t.remove(key.as_slice())?;
+            }
+        }
+        w.commit()?;
+        Ok(())
+    }
+
     // --- Fetch cache --------------------------------------------------------
 
     pub fn put_cache(&self, origin_key: &str, url: &str, entry: &CacheEntry) -> Result<()> {
@@ -167,6 +284,21 @@ impl Store {
         {
             let mut t = w.open_table(FETCH_CACHE)?;
             t.insert(key.as_slice(), val.as_slice())?;
+            let mut records = Vec::new();
+            for item in t.iter()? {
+                let (k, v) = item?;
+                let entry = decode::<CacheEntry>(v.value())?;
+                records.push((k.value().to_vec(), entry.fetched_unix));
+            }
+            if records.len() > MAX_FETCH_CACHE_RECORDS {
+                records.sort_by(|(key_a, fetched_a), (key_b, fetched_b)| {
+                    fetched_a.cmp(fetched_b).then_with(|| key_a.cmp(key_b))
+                });
+                let remove_count = records.len() - MAX_FETCH_CACHE_RECORDS;
+                for (key, _) in records.into_iter().take(remove_count) {
+                    t.remove(key.as_slice())?;
+                }
+            }
         }
         w.commit()?;
         Ok(())
@@ -223,25 +355,281 @@ impl Store {
 
     /// Persist the list of open-tab URLs (session restore).
     pub fn save_session(&self, tabs: &[String]) -> Result<()> {
+        let record = SessionRecord {
+            tabs: tabs.to_vec(),
+            active_index: 0,
+            tab_states: Vec::new(),
+        };
+        self.save_session_record(&record)
+    }
+
+    /// Persist deterministic session-restore metadata.
+    pub fn save_session_record(&self, record: &SessionRecord) -> Result<()> {
+        validate_session_record(record)?;
+        let tabs = &record.tabs;
         let val = encode(tabs)?;
+        let record_val = encode(record)?;
         let w = self.db.begin_write()?;
         {
             let mut t = w.open_table(SESSION)?;
+            // Keep the legacy open-tabs value in sync so older callers remain
+            // compatible while newer shell/session code consumes active_index.
             t.insert(SESSION_KEY, val.as_slice())?;
+            t.insert(SESSION_RECORD_KEY, record_val.as_slice())?;
         }
         w.commit()?;
         Ok(())
     }
 
     pub fn load_session(&self) -> Result<Vec<String>> {
+        self.load_session_record().map(|record| record.tabs)
+    }
+
+    /// Load deterministic session-restore metadata, falling back to the legacy
+    /// open-tabs list for profiles written before active-tab tracking existed.
+    pub fn load_session_record(&self) -> Result<SessionRecord> {
         let r = self.db.begin_read()?;
         let t = r
             .open_table(SESSION)
             .map_err(|_| StoreError::MissingTable("session"))?;
-        match t.get(SESSION_KEY)? {
-            Some(v) => Ok(decode(v.value())?),
-            None => Ok(Vec::new()),
+        if let Some(v) = t.get(SESSION_RECORD_KEY)? {
+            let record = decode::<SessionRecord>(v.value())?;
+            validate_session_record(&record)?;
+            return Ok(record);
         }
+        match t.get(SESSION_KEY)? {
+            Some(v) => {
+                let tabs = decode::<Vec<String>>(v.value())?;
+                let record = SessionRecord {
+                    tabs,
+                    active_index: 0,
+                    tab_states: Vec::new(),
+                };
+                validate_session_record(&record)?;
+                Ok(record)
+            }
+            None => Ok(SessionRecord::default()),
+        }
+    }
+
+    // --- Downloads ----------------------------------------------------------
+
+    /// Insert or update one profile-wide download history record.
+    ///
+    /// The table is bounded so download-heavy sessions cannot grow the profile
+    /// without limit before the shell's clear-data UI exists.
+    pub fn put_download(&self, record: &DownloadRecord) -> Result<()> {
+        validate_download_record(record)?;
+        let key = record.id.to_be_bytes();
+        let val = encode(record)?;
+        let w = self.db.begin_write()?;
+        {
+            let mut t = w.open_table(DOWNLOADS)?;
+            t.insert(key.as_slice(), val.as_slice())?;
+            let mut records = Vec::new();
+            for item in t.iter()? {
+                let (k, v) = item?;
+                let rec = decode::<DownloadRecord>(v.value())?;
+                records.push((k.value().to_vec(), rec.started_unix, rec.id));
+            }
+            if records.len() > MAX_DOWNLOAD_RECORDS {
+                records.sort_by_key(|(_, started_unix, id)| (*started_unix, *id));
+                let remove_count = records.len() - MAX_DOWNLOAD_RECORDS;
+                for (key, _, _) in records.into_iter().take(remove_count) {
+                    t.remove(key.as_slice())?;
+                }
+            }
+        }
+        w.commit()?;
+        Ok(())
+    }
+
+    /// Return profile-wide downloads newest-first.
+    pub fn downloads(&self) -> Result<Vec<DownloadRecord>> {
+        let r = self.db.begin_read()?;
+        let t = r
+            .open_table(DOWNLOADS)
+            .map_err(|_| StoreError::MissingTable("downloads"))?;
+        let mut out = Vec::new();
+        for item in t.iter()? {
+            let (_, v) = item?;
+            out.push(decode::<DownloadRecord>(v.value())?);
+        }
+        out.sort_by(|a, b| {
+            b.started_unix
+                .cmp(&a.started_unix)
+                .then_with(|| b.id.cmp(&a.id))
+        });
+        Ok(out)
+    }
+
+    /// Remove every persisted download history record.
+    pub fn clear_downloads(&self) -> Result<()> {
+        let w = self.db.begin_write()?;
+        {
+            let mut t = w.open_table(DOWNLOADS)?;
+            let mut keys = Vec::new();
+            for item in t.iter()? {
+                let (k, _) = item?;
+                keys.push(k.value().to_vec());
+            }
+            for key in keys {
+                t.remove(key.as_slice())?;
+            }
+        }
+        w.commit()?;
+        Ok(())
+    }
+
+    /// Remove selected persisted profile data in one clear-data transaction.
+    pub fn clear_profile_data(&self, selection: ClearDataSelection) -> Result<()> {
+        if selection.is_empty() {
+            return Ok(());
+        }
+
+        let w = self.db.begin_write()?;
+        if selection.cookies {
+            clear_table(&w, COOKIES)?;
+        }
+        if selection.fetch_cache {
+            clear_table(&w, FETCH_CACHE)?;
+        }
+        if selection.history {
+            clear_table(&w, HISTORY)?;
+        }
+        if selection.session {
+            clear_table(&w, SESSION)?;
+        }
+        if selection.web_storage {
+            clear_table(&w, WEB_STORAGE)?;
+        }
+        if selection.downloads {
+            clear_table(&w, DOWNLOADS)?;
+        }
+        if selection.permissions {
+            clear_table(&w, PERMISSIONS)?;
+        }
+        if selection.security_state {
+            clear_table(&w, HSTS)?;
+        }
+        w.commit()?;
+        Ok(())
+    }
+
+    // --- Security state -----------------------------------------------------
+
+    /// Insert or update one HTTP Strict Transport Security entry keyed by host.
+    pub fn put_hsts(&self, record: &HstsRecord) -> Result<()> {
+        validate_hsts_record(record)?;
+        let key = hsts_key(&record.host);
+        let val = encode(record)?;
+        let w = self.db.begin_write()?;
+        {
+            let mut t = w.open_table(HSTS)?;
+            t.insert(key.as_slice(), val.as_slice())?;
+        }
+        w.commit()?;
+        Ok(())
+    }
+
+    /// Read one HSTS entry by host.
+    pub fn hsts(&self, host: &str) -> Result<Option<HstsRecord>> {
+        validate_hsts_host(host)?;
+        let r = self.db.begin_read()?;
+        let t = r
+            .open_table(HSTS)
+            .map_err(|_| StoreError::MissingTable("hsts"))?;
+        let key = hsts_key(host);
+        match t.get(key.as_slice())? {
+            Some(v) => Ok(Some(decode(v.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Remove an HSTS entry, e.g. after receiving `max-age=0`.
+    pub fn delete_hsts(&self, host: &str) -> Result<()> {
+        validate_hsts_host(host)?;
+        let w = self.db.begin_write()?;
+        {
+            let mut t = w.open_table(HSTS)?;
+            let key = hsts_key(host);
+            t.remove(key.as_slice())?;
+        }
+        w.commit()?;
+        Ok(())
+    }
+
+    // --- Permissions --------------------------------------------------------
+
+    /// Insert or update one per-origin permission decision.
+    pub fn put_permission(&self, record: &PermissionRecord) -> Result<()> {
+        validate_permission_record(record)?;
+        let key = namespaced_key(&record.origin_key, &record.kind);
+        let val = encode(record)?;
+        let w = self.db.begin_write()?;
+        {
+            let mut t = w.open_table(PERMISSIONS)?;
+            t.insert(key.as_slice(), val.as_slice())?;
+        }
+        w.commit()?;
+        Ok(())
+    }
+
+    /// Read one permission decision. Unknown permissions return `None` so the
+    /// caller can fail closed to its default prompt/deny behavior.
+    pub fn permission(&self, origin_key: &str, kind: &str) -> Result<Option<PermissionRecord>> {
+        validate_permission_text("origin_key", origin_key)?;
+        validate_permission_text("kind", kind)?;
+        let r = self.db.begin_read()?;
+        let t = r
+            .open_table(PERMISSIONS)
+            .map_err(|_| StoreError::MissingTable("permissions"))?;
+        let key = namespaced_key(origin_key, kind);
+        match t.get(key.as_slice())? {
+            Some(v) => Ok(Some(decode(v.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Return every permission decision for one origin partition.
+    pub fn permissions_for(&self, origin_key: &str) -> Result<Vec<PermissionRecord>> {
+        validate_permission_text("origin_key", origin_key)?;
+        let prefix = namespaced_prefix(origin_key);
+        let r = self.db.begin_read()?;
+        let t = r
+            .open_table(PERMISSIONS)
+            .map_err(|_| StoreError::MissingTable("permissions"))?;
+        let mut out = Vec::new();
+        for item in t.iter()? {
+            let (k, v) = item?;
+            if k.value().starts_with(prefix.as_slice()) {
+                out.push(decode::<PermissionRecord>(v.value())?);
+            }
+        }
+        out.sort_by(|a, b| a.kind.cmp(&b.kind));
+        Ok(out)
+    }
+
+    /// Remove every permission decision for one origin partition.
+    pub fn clear_permissions(&self, origin_key: &str) -> Result<()> {
+        validate_permission_text("origin_key", origin_key)?;
+        let prefix = namespaced_prefix(origin_key);
+        let w = self.db.begin_write()?;
+        {
+            let mut t = w.open_table(PERMISSIONS)?;
+            let mut keys = Vec::new();
+            for item in t.iter()? {
+                let (k, _) = item?;
+                if k.value().starts_with(prefix.as_slice()) {
+                    keys.push(k.value().to_vec());
+                }
+            }
+            for key in keys {
+                t.remove(key.as_slice())?;
+            }
+        }
+        w.commit()?;
+        Ok(())
     }
 
     // --- Web Storage --------------------------------------------------------
@@ -364,6 +752,26 @@ fn decode<T: DeserializeOwned>(bytes: &[u8]) -> Result<T> {
     serde_json::from_slice(bytes).map_err(StoreError::from)
 }
 
+fn clear_table(
+    tx: &redb::WriteTransaction,
+    table: TableDefinition<&'static [u8], &'static [u8]>,
+) -> Result<()> {
+    let mut table = tx.open_table(table)?;
+    let mut keys = Vec::new();
+    for item in table.iter()? {
+        let (key, _) = item?;
+        keys.push(key.value().to_vec());
+    }
+    for key in keys {
+        table.remove(key.as_slice())?;
+    }
+    Ok(())
+}
+
+fn hsts_key(host: &str) -> Vec<u8> {
+    host.to_ascii_lowercase().into_bytes()
+}
+
 /// Build `<origin_key> \x00 <name>` so origin partitions never collide.
 fn namespaced_key(origin_key: &str, name: &str) -> Vec<u8> {
     let mut k = Vec::with_capacity(origin_key.len() + 1 + name.len());
@@ -413,6 +821,210 @@ fn next_web_storage_sequence(
     Ok(max_sequence + 1)
 }
 
+fn validate_download_record(record: &DownloadRecord) -> Result<()> {
+    validate_download_text("filename", &record.filename, false)?;
+    validate_download_text("mime", &record.mime, true)?;
+    if let Some(source_url) = &record.source_url {
+        validate_download_text("source_url", source_url, false)?;
+    }
+    if let Some(destination_path) = &record.destination_path {
+        validate_download_text("destination_path", destination_path, false)?;
+    }
+    if let Some(error) = &record.error {
+        validate_download_text("error", error, false)?;
+    }
+    if let Some(total_bytes) = record.total_bytes
+        && record.received_bytes > total_bytes
+    {
+        return Err(StoreError::InvalidDownloadInput {
+            field: "received_bytes",
+            reason: "must not exceed total_bytes",
+        });
+    }
+    if record.updated_unix < record.started_unix {
+        return Err(StoreError::InvalidDownloadInput {
+            field: "updated_unix",
+            reason: "must be greater than or equal to started_unix",
+        });
+    }
+    Ok(())
+}
+
+fn validate_session_record(record: &SessionRecord) -> Result<()> {
+    if record.tabs.len() > MAX_SESSION_TABS {
+        return Err(StoreError::InvalidSessionInput {
+            field: "tabs",
+            reason: "exceeds maximum tab count",
+        });
+    }
+    if record.tabs.is_empty() {
+        if record.active_index != 0 {
+            return Err(StoreError::InvalidSessionInput {
+                field: "active_index",
+                reason: "must be zero for an empty session",
+            });
+        }
+        if !record.tab_states.is_empty() {
+            return Err(StoreError::InvalidSessionInput {
+                field: "tab_states",
+                reason: "must be empty for an empty session",
+            });
+        }
+        return Ok(());
+    }
+    if record.active_index >= record.tabs.len() {
+        return Err(StoreError::InvalidSessionInput {
+            field: "active_index",
+            reason: "must reference an existing tab",
+        });
+    }
+    if !record.tab_states.is_empty() && record.tab_states.len() != record.tabs.len() {
+        return Err(StoreError::InvalidSessionInput {
+            field: "tab_states",
+            reason: "must be empty or match the tab count",
+        });
+    }
+    for tab in &record.tabs {
+        validate_session_url(tab)?;
+    }
+    for state in &record.tab_states {
+        validate_tab_session_state(state)?;
+    }
+    Ok(())
+}
+
+fn validate_tab_session_state(state: &TabSessionState) -> Result<()> {
+    if let Some(focused_element) = &state.focused_element {
+        validate_session_field("focused_element", focused_element, false)?;
+    }
+    if state.form_controls.len() > MAX_SESSION_FORM_CONTROLS {
+        return Err(StoreError::InvalidSessionInput {
+            field: "form_controls",
+            reason: "exceeds maximum form control count",
+        });
+    }
+    for control in &state.form_controls {
+        validate_session_field("form_controls", &control.key, false)?;
+        validate_session_field("form_controls", &control.value, true)?;
+    }
+    Ok(())
+}
+
+fn validate_session_url(value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(StoreError::InvalidSessionInput {
+            field: "tabs",
+            reason: "must contain non-empty URLs",
+        });
+    }
+    if value.len() > MAX_SESSION_URL_BYTES {
+        return Err(StoreError::InvalidSessionInput {
+            field: "tabs",
+            reason: "URL exceeds maximum length",
+        });
+    }
+    if value.as_bytes().contains(&0) {
+        return Err(StoreError::InvalidSessionInput {
+            field: "tabs",
+            reason: "URL must not contain NUL bytes",
+        });
+    }
+    Ok(())
+}
+
+fn validate_session_field(field: &'static str, value: &str, allow_empty: bool) -> Result<()> {
+    if !allow_empty && value.is_empty() {
+        return Err(StoreError::InvalidSessionInput {
+            field,
+            reason: "must be non-empty",
+        });
+    }
+    if value.len() > MAX_SESSION_FIELD_BYTES {
+        return Err(StoreError::InvalidSessionInput {
+            field,
+            reason: "exceeds maximum length",
+        });
+    }
+    if value.as_bytes().contains(&0) {
+        return Err(StoreError::InvalidSessionInput {
+            field,
+            reason: "must not contain NUL bytes",
+        });
+    }
+    Ok(())
+}
+
+fn validate_permission_record(record: &PermissionRecord) -> Result<()> {
+    validate_permission_text("origin_key", &record.origin_key)?;
+    validate_permission_text("kind", &record.kind)?;
+    Ok(())
+}
+
+fn validate_permission_text(field: &'static str, value: &str) -> Result<()> {
+    if value.is_empty() {
+        return Err(StoreError::InvalidPermissionInput {
+            field,
+            reason: "must be non-empty",
+        });
+    }
+    if value.as_bytes().contains(&0) {
+        return Err(StoreError::InvalidPermissionInput {
+            field,
+            reason: "must not contain NUL bytes",
+        });
+    }
+    Ok(())
+}
+
+fn validate_hsts_record(record: &HstsRecord) -> Result<()> {
+    validate_hsts_host(&record.host)?;
+    if record.expires_unix < record.received_unix {
+        return Err(StoreError::InvalidSecurityStateInput {
+            field: "expires_unix",
+            reason: "must be greater than or equal to received_unix",
+        });
+    }
+    Ok(())
+}
+
+fn validate_hsts_host(host: &str) -> Result<()> {
+    if host.is_empty() {
+        return Err(StoreError::InvalidSecurityStateInput {
+            field: "host",
+            reason: "must be non-empty",
+        });
+    }
+    if host.as_bytes().contains(&0) {
+        return Err(StoreError::InvalidSecurityStateInput {
+            field: "host",
+            reason: "must not contain NUL bytes",
+        });
+    }
+    Ok(())
+}
+
+fn validate_download_text(field: &'static str, value: &str, allow_empty: bool) -> Result<()> {
+    if !allow_empty && value.is_empty() {
+        return Err(StoreError::InvalidDownloadInput {
+            field,
+            reason: "must be non-empty",
+        });
+    }
+    if value.len() > MAX_DOWNLOAD_FIELD_BYTES {
+        return Err(StoreError::InvalidDownloadInput {
+            field,
+            reason: "exceeds maximum length",
+        });
+    }
+    if value.as_bytes().contains(&0) {
+        return Err(StoreError::InvalidDownloadInput {
+            field,
+            reason: "must not contain NUL bytes",
+        });
+    }
+    Ok(())
+}
+
 // --- Record types -----------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -436,6 +1048,83 @@ pub struct CacheEntry {
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub fetched_unix: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionRecord {
+    pub tabs: Vec<String>,
+    pub active_index: usize,
+    /// Optional per-tab restore hints aligned with `tabs` when present.
+    ///
+    /// Legacy callers may leave this empty; callers that persist state should
+    /// write one entry per tab so restore can reapply scroll, focus, and form
+    /// control values without guessing across tabs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tab_states: Vec<TabSessionState>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TabSessionState {
+    pub scroll_x: u32,
+    pub scroll_y: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focused_element: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub form_controls: Vec<FormControlSessionState>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FormControlSessionState {
+    /// Caller-owned stable control key, such as a DOM path/name fingerprint.
+    pub key: String,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PermissionDecision {
+    Granted,
+    Denied,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PermissionRecord {
+    pub origin_key: String,
+    pub kind: String,
+    pub decision: PermissionDecision,
+    pub updated_unix: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HstsRecord {
+    pub host: String,
+    pub include_subdomains: bool,
+    pub expires_unix: i64,
+    pub received_unix: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum DownloadState {
+    InProgress,
+    Completed,
+    Failed,
+    Canceled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DownloadRecord {
+    pub id: u64,
+    pub source_url: Option<String>,
+    pub filename: String,
+    pub destination_path: Option<String>,
+    pub mime: String,
+    pub received_bytes: u64,
+    pub total_bytes: Option<u64>,
+    pub state: DownloadState,
+    pub started_unix: i64,
+    pub updated_unix: i64,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -467,6 +1156,80 @@ mod tests {
             same_site: 1,
             creation_unix: 1_000,
         }
+    }
+
+    fn download(id: u64, started_unix: i64) -> DownloadRecord {
+        DownloadRecord {
+            id,
+            source_url: Some(format!("https://example.test/file-{id}.bin")),
+            filename: format!("file-{id}.bin"),
+            destination_path: Some(format!("/home/user/Downloads/file-{id}.bin")),
+            mime: "application/octet-stream".to_owned(),
+            received_bytes: id * 10,
+            total_bytes: Some(10_000),
+            state: DownloadState::InProgress,
+            started_unix,
+            updated_unix: started_unix,
+            error: None,
+        }
+    }
+
+    fn cache_entry(fetched_unix: i64) -> CacheEntry {
+        CacheEntry {
+            status: 200,
+            headers: vec![("content-type".into(), "text/html".into())],
+            body: format!("<html>{fetched_unix}</html>").into_bytes(),
+            fetched_unix,
+        }
+    }
+
+    fn permission(origin_key: &str, kind: &str, decision: PermissionDecision) -> PermissionRecord {
+        PermissionRecord {
+            origin_key: origin_key.to_owned(),
+            kind: kind.to_owned(),
+            decision,
+            updated_unix: 1_234,
+        }
+    }
+
+    fn hsts(host: &str) -> HstsRecord {
+        HstsRecord {
+            host: host.to_owned(),
+            include_subdomains: true,
+            expires_unix: 2_000,
+            received_unix: 1_000,
+        }
+    }
+
+    fn populate_profile_data(store: &Store) {
+        store
+            .put_cookie("https://clear.test:443", &cookie("sid", "clear"))
+            .unwrap();
+        store
+            .put_cache(
+                "https://clear.test:443",
+                "https://clear.test/page",
+                &cache_entry(123),
+            )
+            .unwrap();
+        store
+            .record_visit("https://clear.test:443", "https://clear.test/page", 456)
+            .unwrap();
+        store
+            .save_session(&["https://clear.test/page".to_owned()])
+            .unwrap();
+        store
+            .put_storage_item("storage:local:https://clear.test:443", "theme", "dark")
+            .unwrap();
+        store.put_download(&download(99, 789)).unwrap();
+        store
+            .put_permission(&permission(
+                "https://clear.test:443",
+                "notifications",
+                PermissionDecision::Denied,
+            ))
+            .unwrap();
+        store.put_hsts(&hsts("clear.test")).unwrap();
     }
 
     #[test]
@@ -512,14 +1275,28 @@ mod tests {
     }
 
     #[test]
+    fn clear_cookies_is_origin_partitioned() {
+        let (_f, store) = fresh_store();
+        store
+            .put_cookie("https://a.test:443", &cookie("sid", "a"))
+            .unwrap();
+        store
+            .put_cookie("https://b.test:443", &cookie("sid", "b"))
+            .unwrap();
+
+        store.clear_cookies("https://a.test:443").unwrap();
+
+        assert!(store.cookies_for("https://a.test:443").unwrap().is_empty());
+        assert_eq!(
+            store.cookies_for("https://b.test:443").unwrap()[0].value,
+            "b"
+        );
+    }
+
+    #[test]
     fn fetch_cache_round_trips() {
         let (_f, store) = fresh_store();
-        let entry = CacheEntry {
-            status: 200,
-            headers: vec![("content-type".into(), "text/html".into())],
-            body: b"<html></html>".to_vec(),
-            fetched_unix: 1_234,
-        };
+        let entry = cache_entry(1_234);
         store
             .put_cache("https://a.test:443", "https://a.test/page", &entry)
             .unwrap();
@@ -534,6 +1311,49 @@ mod tests {
                 .get_cache("https://b.test:443", "https://a.test/page")
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn fetch_cache_is_bounded_to_newest_records() {
+        let (_f, store) = fresh_store();
+        let extra = 3;
+        for id in 0..(MAX_FETCH_CACHE_RECORDS as u64 + extra) {
+            store
+                .put_cache(
+                    "https://cache.test:443",
+                    &format!("https://cache.test/item-{id}"),
+                    &cache_entry(id as i64),
+                )
+                .unwrap();
+        }
+
+        assert!(
+            store
+                .get_cache("https://cache.test:443", "https://cache.test/item-0")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .get_cache(
+                    "https://cache.test:443",
+                    &format!("https://cache.test/item-{extra}")
+                )
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .get_cache(
+                    "https://cache.test:443",
+                    &format!(
+                        "https://cache.test/item-{}",
+                        MAX_FETCH_CACHE_RECORDS as u64 + extra - 1
+                    )
+                )
+                .unwrap()
+                .is_some()
         );
     }
 
@@ -710,9 +1530,512 @@ mod tests {
         let tabs = vec!["https://a.test/".to_owned(), "https://b.test/".to_owned()];
         store.save_session(&tabs).unwrap();
         assert_eq!(store.load_session().unwrap(), tabs);
+        assert_eq!(store.load_session_record().unwrap().active_index, 0);
         // Empty store → empty session.
         let (_f2, store2) = fresh_store();
         assert!(store2.load_session().unwrap().is_empty());
+    }
+
+    #[test]
+    fn session_record_round_trips_active_tab() {
+        let (_f, store) = fresh_store();
+        let record = SessionRecord {
+            tabs: vec![
+                "https://one.test/".to_owned(),
+                "https://two.test/".to_owned(),
+                "https://three.test/".to_owned(),
+            ],
+            active_index: 1,
+            tab_states: Vec::new(),
+        };
+
+        store.save_session_record(&record).unwrap();
+
+        assert_eq!(store.load_session_record().unwrap(), record);
+        assert_eq!(
+            store.load_session().unwrap(),
+            vec![
+                "https://one.test/".to_owned(),
+                "https://two.test/".to_owned(),
+                "https://three.test/".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn session_record_round_trips_tab_restore_state() {
+        let (_f, store) = fresh_store();
+        let record = SessionRecord {
+            tabs: vec![
+                "https://one.test/form".to_owned(),
+                "https://two.test/".to_owned(),
+            ],
+            active_index: 0,
+            tab_states: vec![
+                TabSessionState {
+                    scroll_x: 12,
+                    scroll_y: 345,
+                    focused_element: Some("form#login input[name=email]".to_owned()),
+                    form_controls: vec![
+                        FormControlSessionState {
+                            key: "email".to_owned(),
+                            value: "user@example.test".to_owned(),
+                            checked: None,
+                        },
+                        FormControlSessionState {
+                            key: "remember".to_owned(),
+                            value: "on".to_owned(),
+                            checked: Some(true),
+                        },
+                    ],
+                },
+                TabSessionState::default(),
+            ],
+        };
+
+        store.save_session_record(&record).unwrap();
+
+        assert_eq!(store.load_session_record().unwrap(), record);
+        assert_eq!(
+            store.load_session().unwrap(),
+            vec![
+                "https://one.test/form".to_owned(),
+                "https://two.test/".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn session_record_accepts_legacy_record_without_tab_states() {
+        let record: SessionRecord =
+            decode(br#"{"tabs":["https://legacy.test/"],"active_index":0}"#).unwrap();
+
+        assert_eq!(
+            record,
+            SessionRecord {
+                tabs: vec!["https://legacy.test/".to_owned()],
+                active_index: 0,
+                tab_states: Vec::new(),
+            }
+        );
+        validate_session_record(&record).unwrap();
+    }
+
+    #[test]
+    fn session_record_rejects_invalid_restore_state() {
+        let (_f, store) = fresh_store();
+        let err = store
+            .save_session_record(&SessionRecord {
+                tabs: vec!["https://one.test/".to_owned()],
+                active_index: 1,
+                tab_states: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidSessionInput {
+                field: "active_index",
+                ..
+            }
+        ));
+
+        let err = store
+            .save_session_record(&SessionRecord {
+                tabs: vec!["bad\0url".to_owned()],
+                active_index: 0,
+                tab_states: Vec::new(),
+            })
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidSessionInput { field: "tabs", .. }
+        ));
+
+        let err = store
+            .save_session_record(&SessionRecord {
+                tabs: vec!["https://one.test/".to_owned()],
+                active_index: 0,
+                tab_states: vec![TabSessionState::default(), TabSessionState::default()],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidSessionInput {
+                field: "tab_states",
+                ..
+            }
+        ));
+
+        let err = store
+            .save_session_record(&SessionRecord {
+                tabs: vec!["https://one.test/".to_owned()],
+                active_index: 0,
+                tab_states: vec![TabSessionState {
+                    focused_element: Some("bad\0focus".to_owned()),
+                    ..TabSessionState::default()
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidSessionInput {
+                field: "focused_element",
+                ..
+            }
+        ));
+
+        let err = store
+            .save_session_record(&SessionRecord {
+                tabs: vec!["https://one.test/".to_owned()],
+                active_index: 0,
+                tab_states: vec![TabSessionState {
+                    form_controls: (0..=MAX_SESSION_FORM_CONTROLS)
+                        .map(|id| FormControlSessionState {
+                            key: format!("field-{id}"),
+                            value: String::new(),
+                            checked: None,
+                        })
+                        .collect(),
+                    ..TabSessionState::default()
+                }],
+            })
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidSessionInput {
+                field: "form_controls",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn session_record_is_bounded() {
+        let (_f, store) = fresh_store();
+        let record = SessionRecord {
+            tabs: (0..=MAX_SESSION_TABS)
+                .map(|id| format!("https://tab-{id}.test/"))
+                .collect(),
+            active_index: 0,
+            tab_states: Vec::new(),
+        };
+
+        let err = store.save_session_record(&record).unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidSessionInput { field: "tabs", .. }
+        ));
+    }
+
+    #[test]
+    fn permissions_round_trip_and_partition_by_origin() {
+        let (_f, store) = fresh_store();
+        let a = permission(
+            "https://a.test:443",
+            "notifications",
+            PermissionDecision::Granted,
+        );
+        let b = permission("https://b.test:443", "camera", PermissionDecision::Denied);
+
+        store.put_permission(&a).unwrap();
+        store.put_permission(&b).unwrap();
+
+        assert_eq!(
+            store
+                .permission("https://a.test:443", "notifications")
+                .unwrap(),
+            Some(a.clone())
+        );
+        assert_eq!(
+            store.permissions_for("https://a.test:443").unwrap(),
+            vec![a]
+        );
+        assert_eq!(
+            store.permissions_for("https://b.test:443").unwrap(),
+            vec![b]
+        );
+        assert!(
+            store
+                .permission("https://a.test:443", "geolocation")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn clear_permissions_is_origin_scoped() {
+        let (_f, store) = fresh_store();
+        store
+            .put_permission(&permission(
+                "https://a.test:443",
+                "notifications",
+                PermissionDecision::Granted,
+            ))
+            .unwrap();
+        store
+            .put_permission(&permission(
+                "https://b.test:443",
+                "notifications",
+                PermissionDecision::Denied,
+            ))
+            .unwrap();
+
+        store.clear_permissions("https://a.test:443").unwrap();
+
+        assert!(
+            store
+                .permissions_for("https://a.test:443")
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            store.permissions_for("https://b.test:443").unwrap().len(),
+            1
+        );
+    }
+
+    #[test]
+    fn permissions_reject_ambiguous_keys() {
+        let (_f, store) = fresh_store();
+        let err = store
+            .put_permission(&permission(
+                "",
+                "notifications",
+                PermissionDecision::Granted,
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidPermissionInput {
+                field: "origin_key",
+                ..
+            }
+        ));
+
+        let err = store
+            .put_permission(&permission(
+                "https://a.test:443",
+                "bad\0permission",
+                PermissionDecision::Denied,
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidPermissionInput { field: "kind", .. }
+        ));
+    }
+
+    #[test]
+    fn hsts_round_trips_case_insensitive_host_key() {
+        let (_f, store) = fresh_store();
+        let record = hsts("Example.COM");
+
+        store.put_hsts(&record).unwrap();
+
+        assert_eq!(store.hsts("example.com").unwrap(), Some(record));
+    }
+
+    #[test]
+    fn hsts_delete_removes_security_state() {
+        let (_f, store) = fresh_store();
+        store.put_hsts(&hsts("delete.test")).unwrap();
+
+        store.delete_hsts("delete.test").unwrap();
+
+        assert!(store.hsts("delete.test").unwrap().is_none());
+    }
+
+    #[test]
+    fn hsts_rejects_invalid_records() {
+        let (_f, store) = fresh_store();
+        let mut invalid = hsts("");
+        let err = store.put_hsts(&invalid).unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidSecurityStateInput { field: "host", .. }
+        ));
+
+        invalid = hsts("example.test");
+        invalid.expires_unix = invalid.received_unix - 1;
+        let err = store.put_hsts(&invalid).unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidSecurityStateInput {
+                field: "expires_unix",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn downloads_round_trip_newest_first_and_update_by_id() {
+        let (_f, store) = fresh_store();
+        store.put_download(&download(1, 100)).unwrap();
+        store.put_download(&download(2, 200)).unwrap();
+
+        assert_eq!(
+            store
+                .downloads()
+                .unwrap()
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>(),
+            vec![2, 1]
+        );
+
+        let mut updated = download(1, 100);
+        updated.received_bytes = 10_000;
+        updated.state = DownloadState::Completed;
+        updated.updated_unix = 300;
+        store.put_download(&updated).unwrap();
+
+        let downloads = store.downloads().unwrap();
+        assert_eq!(downloads.len(), 2);
+        assert_eq!(downloads[1], updated);
+    }
+
+    #[test]
+    fn downloads_are_bounded_to_newest_records() {
+        let (_f, store) = fresh_store();
+        let extra = 3;
+        for id in 0..(MAX_DOWNLOAD_RECORDS as u64 + extra) {
+            store.put_download(&download(id, id as i64)).unwrap();
+        }
+
+        let downloads = store.downloads().unwrap();
+        assert_eq!(downloads.len(), MAX_DOWNLOAD_RECORDS);
+        assert_eq!(
+            downloads.first().unwrap().id,
+            MAX_DOWNLOAD_RECORDS as u64 + extra - 1
+        );
+        assert_eq!(downloads.last().unwrap().id, extra);
+    }
+
+    #[test]
+    fn clear_downloads_removes_history() {
+        let (_f, store) = fresh_store();
+        store.put_download(&download(1, 100)).unwrap();
+        store.put_download(&download(2, 200)).unwrap();
+
+        store.clear_downloads().unwrap();
+
+        assert!(store.downloads().unwrap().is_empty());
+    }
+
+    #[test]
+    fn clear_profile_data_removes_selected_groups_and_preserves_session() {
+        let (_f, store) = fresh_store();
+        populate_profile_data(&store);
+
+        store
+            .clear_profile_data(ClearDataSelection::browsing_data())
+            .unwrap();
+
+        assert!(
+            store
+                .cookies_for("https://clear.test:443")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .get_cache("https://clear.test:443", "https://clear.test/page")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .visits_for("https://clear.test:443", "https://clear.test/page")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            store
+                .storage_entries("storage:local:https://clear.test:443")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(store.downloads().unwrap().is_empty());
+        assert!(
+            store
+                .permissions_for("https://clear.test:443")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(store.hsts("clear.test").unwrap().is_none());
+        assert_eq!(
+            store.load_session().unwrap(),
+            vec!["https://clear.test/page".to_owned()]
+        );
+    }
+
+    #[test]
+    fn clear_profile_data_all_removes_session_restore_too() {
+        let (_f, store) = fresh_store();
+        populate_profile_data(&store);
+
+        store.clear_profile_data(ClearDataSelection::all()).unwrap();
+
+        assert!(store.load_session().unwrap().is_empty());
+        assert!(
+            store
+                .cookies_for("https://clear.test:443")
+                .unwrap()
+                .is_empty()
+        );
+        assert!(store.downloads().unwrap().is_empty());
+    }
+
+    #[test]
+    fn downloads_reject_invalid_records() {
+        let (_f, store) = fresh_store();
+        let mut invalid = download(1, 100);
+        invalid.filename.clear();
+        let err = store.put_download(&invalid).unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidDownloadInput {
+                field: "filename",
+                ..
+            }
+        ));
+
+        let mut invalid = download(1, 100);
+        invalid.received_bytes = 10;
+        invalid.total_bytes = Some(9);
+        let err = store.put_download(&invalid).unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidDownloadInput {
+                field: "received_bytes",
+                ..
+            }
+        ));
+
+        let mut invalid = download(1, 100);
+        invalid.destination_path = Some("/bad\0path".to_owned());
+        let err = store.put_download(&invalid).unwrap_err();
+        assert!(matches!(
+            err,
+            StoreError::InvalidDownloadInput {
+                field: "destination_path",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn downloads_persist_across_reopen() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("downloads.redb");
+        let record = download(42, 1_000);
+        {
+            let store = Store::open(&path).unwrap();
+            store.put_download(&record).unwrap();
+        }
+
+        let store = Store::open(&path).unwrap();
+        assert_eq!(store.downloads().unwrap(), vec![record]);
     }
 
     #[test]

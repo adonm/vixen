@@ -12,11 +12,11 @@
 use std::collections::HashSet;
 use std::net::SocketAddr;
 
-use reqwest::header::HeaderMap;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use url::Url;
 
 use crate::cookie::CookieJar;
-use crate::fetch_types::{Method, TextResponse};
+use crate::fetch_types::{Method, NetworkEvent, RedirectMode, TextResponse};
 use crate::url_policy::{UrlPolicyError, validate_http_url};
 
 /// Default upper bound on a response body (8 MiB). Navigation responses are
@@ -55,6 +55,8 @@ pub enum NetworkError {
     RedirectLoop { url: String },
     #[error("invalid redirect target from {url}")]
     InvalidRedirect { url: String },
+    #[error("redirect disallowed for {url}")]
+    RedirectDisallowed { url: String },
     #[error("response body too large: {actual} bytes > {limit} limit at {url}")]
     BodyTooLarge {
         limit: u64,
@@ -133,8 +135,86 @@ impl Network {
         cross_site: bool,
         method: Method,
     ) -> Result<TextResponse, NetworkError> {
+        self.get_text_with_cookies_and_redirect_mode(
+            jar,
+            url,
+            cross_site,
+            method,
+            RedirectMode::Follow,
+        )
+        .await
+    }
+
+    /// Fetch `url` as text using explicit redirect handling.
+    pub async fn get_text_with_cookies_and_redirect_mode(
+        &mut self,
+        jar: &mut CookieJar,
+        url: &Url,
+        cross_site: bool,
+        method: Method,
+        redirect_mode: RedirectMode,
+    ) -> Result<TextResponse, NetworkError> {
         validate_http_url(url)?;
-        self.fetch(jar, url.clone(), cross_site, method).await
+        self.fetch(
+            jar,
+            url.clone(),
+            cross_site,
+            method,
+            redirect_mode,
+            Vec::new(),
+            None,
+        )
+        .await
+    }
+
+    /// Fetch `url` as text using explicit redirect handling and caller-provided
+    /// request headers. Header names/values are validated at this network trust
+    /// boundary before the request leaves the process.
+    pub async fn get_text_with_cookies_redirect_mode_and_headers(
+        &mut self,
+        jar: &mut CookieJar,
+        url: &Url,
+        cross_site: bool,
+        method: Method,
+        redirect_mode: RedirectMode,
+        headers: Vec<(String, String)>,
+    ) -> Result<TextResponse, NetworkError> {
+        validate_http_url(url)?;
+        self.fetch(
+            jar,
+            url.clone(),
+            cross_site,
+            method,
+            redirect_mode,
+            headers,
+            None,
+        )
+        .await
+    }
+
+    /// Fetch `url` as text using explicit redirect handling, caller-provided
+    /// request headers, and an optional request body for non-GET/HEAD fetches.
+    pub async fn get_text_with_cookies_redirect_mode_headers_and_body(
+        &mut self,
+        jar: &mut CookieJar,
+        url: &Url,
+        cross_site: bool,
+        method: Method,
+        redirect_mode: RedirectMode,
+        headers: Vec<(String, String)>,
+        body: Option<Vec<u8>>,
+    ) -> Result<TextResponse, NetworkError> {
+        validate_http_url(url)?;
+        self.fetch(
+            jar,
+            url.clone(),
+            cross_site,
+            method,
+            redirect_mode,
+            headers,
+            body,
+        )
+        .await
     }
 
     async fn fetch(
@@ -143,20 +223,42 @@ impl Network {
         start: Url,
         cross_site: bool,
         method: Method,
+        redirect_mode: RedirectMode,
+        headers: Vec<(String, String)>,
+        body: Option<Vec<u8>>,
     ) -> Result<TextResponse, NetworkError> {
         let max = self.config.max_redirects;
         let limit = self.config.max_body_bytes;
         let mut current = start;
         let mut redirects = 0u32;
         let mut visited: HashSet<String> = HashSet::new();
+        let mut events = Vec::new();
 
         loop {
             visited.insert(current.to_string());
+            events.push(NetworkEvent::RequestStart {
+                url: current.to_string(),
+                method,
+            });
 
             let cookie_header = jar.cookies_for(&current, cross_site, method);
             let mut req = self.client.request(method.into(), current.clone());
+            for (name, value) in &headers {
+                let name = HeaderName::from_bytes(name.as_bytes()).map_err(|err| {
+                    NetworkError::Request {
+                        message: format!("invalid request header name {name}: {err}"),
+                    }
+                })?;
+                let value = HeaderValue::from_str(value).map_err(|err| NetworkError::Request {
+                    message: format!("invalid request header value for {name}: {err}"),
+                })?;
+                req = req.header(name, value);
+            }
             if !cookie_header.is_empty() {
                 req = req.header(reqwest::header::COOKIE, cookie_header);
+            }
+            if let Some(body) = &body {
+                req = req.body(body.clone());
             }
             let resp = req.send().await.map_err(map_reqwest_error)?;
 
@@ -174,7 +276,12 @@ impl Network {
 
             let status = resp.status().as_u16();
 
-            if resp.status().is_redirection() {
+            if is_followable_redirect(status) && redirect_mode != RedirectMode::Manual {
+                if redirect_mode == RedirectMode::Error {
+                    return Err(NetworkError::RedirectDisallowed {
+                        url: current.to_string(),
+                    });
+                }
                 if redirects as usize >= max {
                     return Err(NetworkError::TooManyRedirects {
                         max,
@@ -201,6 +308,11 @@ impl Network {
                 // URL policy re-applied at every fetch boundary (redirects
                 // included).
                 validate_http_url(&next)?;
+                events.push(NetworkEvent::Redirect {
+                    from: current.to_string(),
+                    to: next.to_string(),
+                    status,
+                });
                 redirects += 1;
                 current = next;
                 continue;
@@ -234,6 +346,10 @@ impl Network {
             // Content-Type `charset` parameter entirely, so non-UTF-8 response
             // bodies are silently mangled to U+FFFD.
             let body = String::from_utf8_lossy(&bytes).into_owned();
+            events.push(NetworkEvent::Response {
+                url: current.to_string(),
+                status,
+            });
 
             return Ok(TextResponse {
                 body,
@@ -242,6 +358,7 @@ impl Network {
                 final_url: current.to_string(),
                 set_cookie,
                 redirects,
+                events,
             });
         }
     }
@@ -261,6 +378,10 @@ fn flatten_headers(headers: &HeaderMap) -> std::collections::BTreeMap<String, St
             .or_insert_with(|| val.to_owned());
     }
     out
+}
+
+fn is_followable_redirect(status: u16) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308)
 }
 
 fn map_reqwest_error(e: reqwest::Error) -> NetworkError {
@@ -364,6 +485,7 @@ mod tests {
             },
             NetworkError::RedirectLoop { url: "u".into() },
             NetworkError::InvalidRedirect { url: "u".into() },
+            NetworkError::RedirectDisallowed { url: "u".into() },
             NetworkError::BodyTooLarge {
                 limit: 1,
                 actual: 2,
@@ -386,6 +508,16 @@ mod tests {
         let flat = flatten_headers(&h);
         assert_eq!(flat.get("content-type").unwrap(), "text/html");
         assert_eq!(flat.get("set-cookie").unwrap(), "a=1, b=2");
+    }
+
+    #[test]
+    fn redirect_classification_excludes_not_modified() {
+        for status in [301, 302, 303, 307, 308] {
+            assert!(is_followable_redirect(status));
+        }
+        for status in [300, 304, 305, 306, 309] {
+            assert!(!is_followable_redirect(status));
+        }
     }
 
     #[test]

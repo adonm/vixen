@@ -8,7 +8,7 @@
 #
 # Module layout (docs/ARCHITECTURE.md "Crate layout"):
 #   app.rs browser_window.rs tabs.rs tab.rs location_entry.rs find_bar.rs
-#   engine_factory.rs engine_worker.rs settings.rs profile.rs config.rs modals/
+#   engine_factory.rs engine_worker.rs settings.rs profile.rs (paths/session) config.rs modals/
 [package]
 name = "vixen-shell"
 version = "0.1.0"
@@ -37,12 +37,16 @@ gtk-shell = [
 vixen-api = { path = "../vixen-api" }
 vixen-engine = { path = "../vixen-engine", optional = true }
 vixen-net = { path = "../vixen-net", optional = true }
+vixen-store = { path = "../vixen-store" }
 gtk4 = { version = "0.9", optional = true }
 relm4 = { version = "0.9", features = ["libadwaita"], optional = true }
 libadwaita = { version = "0.7", optional = true }
 libloading = { version = "0.8", optional = true }
 tokio = { version = "1", features = ["rt"], optional = true }
 url = { version = "2", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lib]
 path = "src/lib.rs"

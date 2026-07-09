@@ -25,7 +25,7 @@
 //! engine_factory.rs  — creates EngineWorker + wraps gtk4::GLArea as GlAreaSurface
 //! engine_worker.rs   — Relm4 Worker: owns Engine, posts EngineDelegate msgs
 //! settings.rs        — GSettings wrapper
-//! profile.rs         — app-ID scoped paths
+//! profile.rs         — app-ID scoped paths + session persistence
 //! config.rs          — APP_ID, VERSION
 //! modals/            — about, preferences, shortcuts
 //! ```
@@ -41,6 +41,9 @@ pub mod config {
     /// Vixen version string (kept in sync with the workspace `Cargo.toml`).
     pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 }
+
+/// App-ID scoped profile, host-download paths, and shell session persistence.
+pub mod profile;
 
 #[cfg(feature = "gtk-shell")]
 mod app;

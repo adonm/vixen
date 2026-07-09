@@ -53,8 +53,9 @@ Current state:
   loaded through `op_vixen_dom_element_snapshot`; selector lookup,
   `Element.matches()`, element text/attribute reads, and read-only token/dataset
   surfaces delegate through focused DOM ops. Element geometry reads
-  (`getBoundingClientRect()` / `getClientRects()`) now cross a DOM rect op and
-  materialize Web-shaped rect/list objects on generated WebIDL prototypes.
+  (`getBoundingClientRect()` / `getClientRects()` / `getBoxQuads()`), Range
+  rectangles, and client/offset/scroll metrics now cross a DOM rect op and
+  materialize Web-shaped rect/list/quad objects on generated WebIDL prototypes.
 - `cssom.rs` registers the focused read-only CSSOM extension. `CSS.supports`,
   `getComputedStyle`, and `document.styleSheets`/CSSRule smoke data now cross
   explicit CSSOM ops and attach to generated CSSOM prototypes instead of being

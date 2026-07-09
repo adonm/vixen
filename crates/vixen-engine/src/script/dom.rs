@@ -545,8 +545,7 @@ fn form_entries_for_element(page: &Page, info: &ElementInfo) -> Option<Vec<FormE
     if !info.tag.eq_ignore_ascii_case("form") {
         return None;
     }
-    let id = info.id.as_deref()?;
-    page.form_submission(id)
+    page.form_submission_by_node_id(info.node_id, None)
         .ok()
         .map(|submission| submission.entries)
 }
@@ -915,6 +914,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
     op_vixen_dom_remove_element_attr,
     op_vixen_dom_set_element_inner_html,
     op_vixen_dom_set_control_value,
+    op_vixen_document_cookie_get,
+    op_vixen_document_cookie_set,
   } = Deno.core.ops;
   const webidl = globalThis.__vixenWebidl;
   const data = op_vixen_dom_snapshot();
@@ -990,6 +991,14 @@ const DOM_API_BOOTSTRAP: &str = r#"
   function unwrapDomOp(result) {
     if (!result.ok) throw new TypeError(result.message);
     return result;
+  }
+
+  function documentCookie() {
+    return unwrapDomOp(op_vixen_document_cookie_get(currentUrl)).value || '';
+  }
+
+  function setDocumentCookie(value) {
+    unwrapDomOp(op_vixen_document_cookie_set(currentUrl, String(value)));
   }
 
   function knownElementIds() {
@@ -2041,6 +2050,60 @@ const DOM_API_BOOTSTRAP: &str = r#"
     return new VixenDOMRectList(rect === null ? [] : [rect]);
   }
 
+  function integerCssPixels(value) {
+    const number = Number(value) || 0;
+    return Math.max(0, Math.trunc(number));
+  }
+
+  function elementClientWidth(element) {
+    if (element === vixenDocument.documentElement || element === vixenDocument.body) return integerCssPixels(globalThis.innerWidth);
+    const rect = elementRect(element.__vixenNodeId);
+    return rect ? integerCssPixels(rect.width) : 0;
+  }
+
+  function elementClientHeight(element) {
+    if (element === vixenDocument.documentElement || element === vixenDocument.body) return integerCssPixels(globalThis.innerHeight);
+    const rect = elementRect(element.__vixenNodeId);
+    return rect ? integerCssPixels(rect.height) : 0;
+  }
+
+  function elementScrollSize(element, axis) {
+    const rect = elementRect(element.__vixenNodeId);
+    const base = axis === 'x' ? elementClientWidth(element) : elementClientHeight(element);
+    if (!rect) return base;
+    let extent = axis === 'x' ? rect.x + base : rect.y + base;
+    for (const child of Array.from(element.children || [])) {
+      const childRect = elementRect(child.__vixenNodeId);
+      if (!childRect) continue;
+      extent = Math.max(extent, axis === 'x' ? childRect.x + childRect.width : childRect.y + childRect.height);
+    }
+    const origin = axis === 'x' ? rect.x : rect.y;
+    return Math.max(base, integerCssPixels(Math.ceil(extent - origin)));
+  }
+
+  function elementBoxQuad(element) {
+    const rect = elementRect(element.__vixenNodeId);
+    if (!rect) return [];
+    return [DOMQuad.fromRect({ x: rect.x, y: rect.y, width: rect.width, height: rect.height })];
+  }
+
+  function nodeGeometryElement(node) {
+    if (!node) return null;
+    if (node.nodeType === 1 && typeof node.__vixenNodeId === 'number' && elementRecord(node)) return node;
+    if (node.nodeType === 3 && node.parentElement) return node.parentElement;
+    if (node === vixenDocument) return vixenDocument.body || vixenDocument.documentElement;
+    return null;
+  }
+
+  function rangeGeometryRect(range) {
+    if (!range || range.collapsed) return null;
+    const target = range.__vixenGeometryNode
+      || nodeGeometryElement(range.startContainer)
+      || nodeGeometryElement(range.endContainer);
+    if (!target || typeof target.__vixenNodeId !== 'number') return null;
+    return elementRect(target.__vixenNodeId);
+  }
+
   let activeElementNodeId = data.activeElementNodeId;
 
   function cssPropertyName(name) {
@@ -2489,8 +2552,60 @@ const DOM_API_BOOTSTRAP: &str = r#"
     return elementAttribute(element.__vixenNodeId, name) || '';
   }
 
+  function nullableReflectedAttribute(element, name) {
+    const value = elementAttribute(element.__vixenNodeId, name);
+    return value === null ? null : value;
+  }
+
   function setReflectedAttribute(element, name, value) {
     setElementAttribute(element.__vixenNodeId, name, String(value));
+  }
+
+  function reflectedUnsigned(element, name) {
+    const value = Number.parseInt(reflectedAttribute(element, name), 10);
+    return Number.isFinite(value) && value >= 0 ? value : 0;
+  }
+
+  function reflectedInteger(element, name, missingDefault = 0) {
+    const value = Number.parseInt(reflectedAttribute(element, name), 10);
+    return Number.isFinite(value) ? value : missingDefault;
+  }
+
+  function setReflectedInteger(element, name, value) {
+    const number = Number(value);
+    setReflectedAttribute(element, name, String(Number.isFinite(number) ? Math.trunc(number) : 0));
+  }
+
+  function reflectedNumber(element, name, missingDefault = 0) {
+    const value = Number.parseFloat(reflectedAttribute(element, name));
+    return Number.isFinite(value) ? value : missingDefault;
+  }
+
+  function setReflectedNumber(element, name, value) {
+    const number = Number(value);
+    setReflectedAttribute(element, name, String(Number.isFinite(number) ? number : 0));
+  }
+
+  function setReflectedUnsigned(element, name, value) {
+    const number = Number(value);
+    setReflectedAttribute(element, name, String(Number.isFinite(number) && number >= 0 ? Math.trunc(number) : 0));
+  }
+
+  function elementUrlAttribute(element, name) {
+    const value = reflectedAttribute(element, name);
+    if (value === '') return null;
+    try { return new URL(value, data.baseURI || currentUrl); } catch (_) { return null; }
+  }
+
+  function elementUrlPart(element, name, part) {
+    const url = elementUrlAttribute(element, name);
+    return url ? url[part] : '';
+  }
+
+  function reflectedKeyword(element, name, allowed, missingDefault = '') {
+    const value = reflectedAttribute(element, name).trim().toLowerCase();
+    if (allowed.includes(value)) return value;
+    return missingDefault;
   }
 
   function reflectedFormMethod(element) {
@@ -2515,6 +2630,96 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   function rawElementType(element) {
     return reflectedAttribute(element, 'type').toLowerCase();
+  }
+
+  function mediaState(element) {
+    const record = elementRecord(element);
+    if (!record.__vixenMediaState) {
+      record.__vixenCurrentTime = 0;
+      record.__vixenVolume = 1;
+      record.__vixenMuted = booleanAttribute(element, 'muted');
+      record.__vixenMediaState = true;
+    }
+    return record;
+  }
+
+  function setMediaCurrentTime(element, value) {
+    const number = Number(value);
+    mediaState(element).__vixenCurrentTime = Number.isFinite(number) && number >= 0 ? number : 0;
+  }
+
+  function setMediaVolume(element, value) {
+    const number = Number(value);
+    if (!Number.isFinite(number) || number < 0 || number > 1) throw new RangeError('volume must be between 0 and 1');
+    mediaState(element).__vixenVolume = number;
+  }
+
+  function reflectedElementValue(element) {
+    const tag = elementTag(element);
+    if (tag === 'data' || tag === 'param') return reflectedAttribute(element, 'value');
+    if (tag === 'li') return reflectedInteger(element, 'value', 0);
+    if (tag === 'progress' || tag === 'meter') return reflectedNumber(element, 'value', 0);
+    return controlValue(element);
+  }
+
+  function setReflectedElementValue(element, value) {
+    const tag = elementTag(element);
+    if (tag === 'data' || tag === 'param') {
+      setReflectedAttribute(element, 'value', value);
+    } else if (tag === 'li') {
+      setReflectedInteger(element, 'value', value);
+    } else if (tag === 'progress' || tag === 'meter') {
+      setReflectedNumber(element, 'value', value);
+    } else {
+      setControlValue(element, value);
+    }
+  }
+
+  function numericMax(element) {
+    const tag = elementTag(element);
+    if (tag === 'progress' || tag === 'meter') return reflectedNumber(element, 'max', 1);
+    return reflectedAttribute(element, 'max');
+  }
+
+  function numericMin(element) {
+    return elementTag(element) === 'meter' ? reflectedNumber(element, 'min', 0) : reflectedAttribute(element, 'min');
+  }
+
+  function progressPosition(element) {
+    if (elementTag(element) !== 'progress' || elementAttribute(element.__vixenNodeId, 'value') === null) return -1;
+    const max = Math.max(0, numericMax(element));
+    if (max <= 0) return -1;
+    return Math.min(Math.max(0, reflectedNumber(element, 'value', 0)), max) / max;
+  }
+
+  function scriptTypeSupports(type) {
+    const value = String(type || '').trim().toLowerCase();
+    return value === 'classic' || value === 'module' || value === 'importmap' || value === 'speculationrules';
+  }
+
+  function dialogState(element) {
+    const record = elementRecord(element);
+    if (!Object.prototype.hasOwnProperty.call(record, '__vixenReturnValue')) record.__vixenReturnValue = '';
+    return record;
+  }
+
+  function setDialogOpen(element, value) {
+    if (elementTag(element) === 'dialog' || elementTag(element) === 'details') setBooleanAttribute(element, 'open', value);
+  }
+
+  function showDialog(element, modal = false) {
+    if (elementTag(element) !== 'dialog') return;
+    setBooleanAttribute(element, 'open', true);
+    dialogState(element).__vixenModal = Boolean(modal);
+  }
+
+  function closeDialog(element, returnValue = undefined) {
+    if (elementTag(element) !== 'dialog') return;
+    const record = dialogState(element);
+    if (returnValue !== undefined) record.__vixenReturnValue = String(returnValue);
+    setBooleanAttribute(element, 'open', false);
+    record.__vixenModal = false;
+    element.dispatchEvent(new Event('close'));
   }
 
   function elementType(element) {
@@ -2600,6 +2805,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
       record.selectionStart = value.length;
       record.selectionEnd = value.length;
       record.__vixenValueDirty = false;
+      if (elementTag(element) === 'input') record.defaultChecked = booleanAttribute(element, 'checked');
+      if (elementTag(element) === 'option') record.defaultSelected = booleanAttribute(element, 'selected');
       record.__vixenControlState = true;
     }
     return record;
@@ -2868,6 +3075,19 @@ const DOM_API_BOOTSTRAP: &str = r#"
     return elementAttribute(option.__vixenNodeId, 'label') || option.textContent;
   }
 
+  function optionDefaultSelected(option) {
+    const record = ensureControlState(option);
+    if (record.defaultSelected === undefined) record.defaultSelected = booleanAttribute(option, 'selected');
+    return Boolean(record.defaultSelected);
+  }
+
+  function setOptionDefaultSelected(option, selected) {
+    const record = ensureControlState(option);
+    record.defaultSelected = Boolean(selected);
+    if (selected) setElementAttribute(option.__vixenNodeId, 'selected', '');
+    else removeElementAttribute(option.__vixenNodeId, 'selected');
+  }
+
   function selectedOptionElements(select) {
     const options = optionElements(select);
     const selected = options.filter((option) => option.hasAttribute('selected'));
@@ -2883,14 +3103,35 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   function setOptionSelected(option, selected) {
     if (elementTag(option) !== 'option') return;
+    optionDefaultSelected(option);
     const parent = option.parentElement;
     if (selected && parent && elementTag(parent) === 'select' && !parent.multiple) {
       for (const sibling of optionElements(parent)) {
+        optionDefaultSelected(sibling);
         if (sibling !== option) sibling.removeAttribute('selected');
       }
     }
     if (selected) option.setAttribute('selected', '');
     else option.removeAttribute('selected');
+  }
+
+  function inputDefaultChecked(input) {
+    const record = ensureControlState(input);
+    if (record.defaultChecked === undefined) record.defaultChecked = booleanAttribute(input, 'checked');
+    return Boolean(record.defaultChecked);
+  }
+
+  function setInputDefaultChecked(input, checked) {
+    const record = ensureControlState(input);
+    record.defaultChecked = Boolean(checked);
+    if (checked) setElementAttribute(input.__vixenNodeId, 'checked', '');
+    else removeElementAttribute(input.__vixenNodeId, 'checked');
+  }
+
+  function setInputChecked(input, checked) {
+    inputDefaultChecked(input);
+    if (checked) setElementAttribute(input.__vixenNodeId, 'checked', '');
+    else removeElementAttribute(input.__vixenNodeId, 'checked');
   }
 
   function selectSelectedIndex(select) {
@@ -2943,16 +3184,60 @@ const DOM_API_BOOTSTRAP: &str = r#"
     if (!form) return;
     const submitEvent = new Event('submit', { bubbles: true, cancelable: true, composed: true });
     Object.defineProperty(submitEvent, 'submitter', { value: submitter || null, configurable: true });
-    if (form.dispatchEvent(submitEvent)) {
-      const action = elementAttribute(form.__vixenNodeId, 'action') || currentUrl;
-      queueNavigationAction({
-        type: 'form-submit',
-        formId: form.id || '',
-        formNodeId: form.__vixenNodeId,
-        submitterId: submitter ? (submitter.id || '') : '',
-        action: resolveNavigationUrl(action, data.baseURI || currentUrl),
-        method: (elementAttribute(form.__vixenNodeId, 'method') || 'get').toLowerCase(),
-      });
+    if (form.dispatchEvent(submitEvent)) queueFormSubmission(form, submitter);
+  }
+
+  function queueFormSubmission(form, submitter) {
+    if (!form) return;
+    const submitterAction = submitter ? elementAttribute(submitter.__vixenNodeId, 'formaction') : null;
+    const submitterMethod = submitter ? elementAttribute(submitter.__vixenNodeId, 'formmethod') : null;
+    const submitterEnctype = submitter ? elementAttribute(submitter.__vixenNodeId, 'formenctype') : null;
+    const action = submitterAction || elementAttribute(form.__vixenNodeId, 'action') || currentUrl;
+    queueNavigationAction({
+      type: 'form-submit',
+      formId: form.id || '',
+      formNodeId: form.__vixenNodeId,
+      submitterNodeId: submitter ? submitter.__vixenNodeId : 0,
+      submitterId: submitter ? (submitter.id || '') : '',
+      action: resolveNavigationUrl(action, data.baseURI || currentUrl),
+      method: (submitterMethod || elementAttribute(form.__vixenNodeId, 'method') || 'get').toLowerCase(),
+      enctype: (submitterEnctype || elementAttribute(form.__vixenNodeId, 'enctype') || 'application/x-www-form-urlencoded').toLowerCase(),
+    });
+  }
+
+  function resetFormDefault(form) {
+    if (!form) return;
+    const resetEvent = new Event('reset', { bubbles: true, cancelable: true, composed: true });
+    if (form.dispatchEvent(resetEvent)) resetFormControls(form);
+  }
+
+  function resetFormControls(form) {
+    for (const control of Array.from(form.querySelectorAll('input,textarea,select'))) resetControl(control);
+  }
+
+  function resetControl(control) {
+    const tag = elementTag(control);
+    if (tag === 'input') {
+      const type = elementType(control) || 'text';
+      if (type === 'checkbox' || type === 'radio') {
+        setInputChecked(control, inputDefaultChecked(control));
+        return;
+      }
+      if (type === 'file') {
+        setInputFiles(control, []);
+        return;
+      }
+      const record = ensureControlState(control);
+      applyControlValue(control, record.defaultValue || '', (record.defaultValue || '').length, (record.defaultValue || '').length);
+      return;
+    }
+    if (tag === 'textarea') {
+      const record = ensureControlState(control);
+      applyControlValue(control, record.defaultValue || '', (record.defaultValue || '').length, (record.defaultValue || '').length);
+      return;
+    }
+    if (tag === 'select') {
+      for (const option of optionElements(control)) setOptionSelected(option, optionDefaultSelected(option));
     }
   }
 
@@ -3120,11 +3405,13 @@ const DOM_API_BOOTSTRAP: &str = r#"
         return;
       }
       if (type === 'submit') submitFormDefault(findOwnerForm(target), target);
+      if (type === 'reset') resetFormDefault(findOwnerForm(target));
       return;
     }
     if (tag === 'button') {
       const type = elementType(target) || 'submit';
       if (type === 'submit') submitFormDefault(findOwnerForm(target), target);
+      if (type === 'reset') resetFormDefault(findOwnerForm(target));
       return;
     }
     if (tag === 'a') {
@@ -3180,16 +3467,21 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get nextSibling() { return wrapNodeById(elementRecord(this).nextSiblingNodeId ?? elementRecord(this).nextElementSiblingNodeId); }
     get previousElementSibling() { return wrapElementByNodeId(elementRecord(this).previousElementSiblingNodeId); }
     get nextElementSibling() { return wrapElementByNodeId(elementRecord(this).nextElementSiblingNodeId); }
-    get clientWidth() {
-      if (this === vixenDocument.documentElement || this === vixenDocument.body) return Number(globalThis.innerWidth) || 0;
-      const rect = elementRect(this.__vixenNodeId);
-      return rect ? Math.max(0, Math.trunc(Number(rect.width) || 0)) : 0;
-    }
-    get clientHeight() {
-      if (this === vixenDocument.documentElement || this === vixenDocument.body) return Number(globalThis.innerHeight) || 0;
-      const rect = elementRect(this.__vixenNodeId);
-      return rect ? Math.max(0, Math.trunc(Number(rect.height) || 0)) : 0;
-    }
+    get clientWidth() { return elementClientWidth(this); }
+    get clientHeight() { return elementClientHeight(this); }
+    get clientTop() { return 0; }
+    get clientLeft() { return 0; }
+    get scrollWidth() { return elementScrollSize(this, 'x'); }
+    get scrollHeight() { return elementScrollSize(this, 'y'); }
+    get scrollTop() { return Number(elementRecord(this).__vixenScrollTop) || 0; }
+    set scrollTop(value) { elementRecord(this).__vixenScrollTop = Math.max(0, Number(value) || 0); }
+    get scrollLeft() { return Number(elementRecord(this).__vixenScrollLeft) || 0; }
+    set scrollLeft(value) { elementRecord(this).__vixenScrollLeft = Math.max(0, Number(value) || 0); }
+    get offsetWidth() { const rect = elementRect(this.__vixenNodeId); return rect ? integerCssPixels(rect.width) : 0; }
+    get offsetHeight() { const rect = elementRect(this.__vixenNodeId); return rect ? integerCssPixels(rect.height) : 0; }
+    get offsetTop() { const rect = elementRect(this.__vixenNodeId); return rect ? Math.trunc(Number(rect.y) || 0) : 0; }
+    get offsetLeft() { const rect = elementRect(this.__vixenNodeId); return rect ? Math.trunc(Number(rect.x) || 0) : 0; }
+    get offsetParent() { return this === vixenDocument.body || this === vixenDocument.documentElement ? null : vixenDocument.body; }
     get textContent() { return elementText(this.__vixenNodeId); }
     set textContent(value) { setElementText(this.__vixenNodeId, value); }
     get innerText() { return elementText(this.__vixenNodeId); }
@@ -3230,6 +3522,12 @@ const DOM_API_BOOTSTRAP: &str = r#"
     set type(value) { setReflectedAttribute(this, 'type', String(value).toLowerCase()); }
     get name() { return elementName(this); }
     set name(value) { setReflectedAttribute(this, 'name', value); }
+    get content() { return reflectedAttribute(this, 'content'); }
+    set content(value) { setReflectedAttribute(this, 'content', value); }
+    get httpEquiv() { return reflectedAttribute(this, 'http-equiv'); }
+    set httpEquiv(value) { setReflectedAttribute(this, 'http-equiv', value); }
+    get charset() { return reflectedAttribute(this, 'charset'); }
+    set charset(value) { setReflectedAttribute(this, 'charset', value); }
     get method() { return reflectedFormMethod(this); }
     set method(value) { setReflectedAttribute(this, 'method', value); }
     get enctype() { return reflectedFormEnctype(this); }
@@ -3238,13 +3536,132 @@ const DOM_API_BOOTSTRAP: &str = r#"
     set encoding(value) { this.enctype = value; }
     get action() { return reflectedAttribute(this, 'action'); }
     set action(value) { setReflectedAttribute(this, 'action', value); }
+    get cite() { return reflectedAttribute(this, 'cite'); }
+    set cite(value) { setReflectedAttribute(this, 'cite', value); }
+    get dateTime() { return reflectedAttribute(this, 'datetime'); }
+    set dateTime(value) { setReflectedAttribute(this, 'datetime', value); }
+    get reversed() { return booleanAttribute(this, 'reversed'); }
+    set reversed(value) { setBooleanAttribute(this, 'reversed', value); }
+    get start() { return reflectedInteger(this, 'start', 1); }
+    set start(value) { setReflectedInteger(this, 'start', value); }
+    get href() { return elementUrlPart(this, 'href', 'href'); }
+    set href(value) { setReflectedAttribute(this, 'href', value); }
+    get origin() { return elementUrlPart(this, 'href', 'origin'); }
+    get protocol() { return elementUrlPart(this, 'href', 'protocol'); }
+    get host() { return elementUrlPart(this, 'href', 'host'); }
+    get hostname() { return elementUrlPart(this, 'href', 'hostname'); }
+    get port() { return elementUrlPart(this, 'href', 'port'); }
+    get pathname() { return elementUrlPart(this, 'href', 'pathname'); }
+    get search() { return elementUrlPart(this, 'href', 'search'); }
+    get hash() { return elementUrlPart(this, 'href', 'hash'); }
+    get target() { return reflectedAttribute(this, 'target'); }
+    set target(value) { setReflectedAttribute(this, 'target', value); }
+    get download() { return reflectedAttribute(this, 'download'); }
+    set download(value) { setReflectedAttribute(this, 'download', value); }
+    get rel() { return reflectedAttribute(this, 'rel'); }
+    set rel(value) { setReflectedAttribute(this, 'rel', value); }
+    get hreflang() { return reflectedAttribute(this, 'hreflang'); }
+    set hreflang(value) { setReflectedAttribute(this, 'hreflang', value); }
+    get coords() { return reflectedAttribute(this, 'coords'); }
+    set coords(value) { setReflectedAttribute(this, 'coords', value); }
+    get shape() { return reflectedAttribute(this, 'shape'); }
+    set shape(value) { setReflectedAttribute(this, 'shape', value); }
     get src() { return reflectedAttribute(this, 'src'); }
     set src(value) { setReflectedAttribute(this, 'src', value); }
     get srcset() { return reflectedAttribute(this, 'srcset'); }
     set srcset(value) { setReflectedAttribute(this, 'srcset', value); }
     get sizes() { return reflectedAttribute(this, 'sizes'); }
     set sizes(value) { setReflectedAttribute(this, 'sizes', value); }
+    get media() { return reflectedAttribute(this, 'media'); }
+    set media(value) { setReflectedAttribute(this, 'media', value); }
+    get as() { return reflectedAttribute(this, 'as'); }
+    set as(value) { setReflectedAttribute(this, 'as', value); }
+    get async() { return booleanAttribute(this, 'async'); }
+    set async(value) { setBooleanAttribute(this, 'async', value); }
+    get defer() { return booleanAttribute(this, 'defer'); }
+    set defer(value) { setBooleanAttribute(this, 'defer', value); }
+    get noModule() { return booleanAttribute(this, 'nomodule'); }
+    set noModule(value) { setBooleanAttribute(this, 'nomodule', value); }
+    get srcdoc() { return reflectedAttribute(this, 'srcdoc'); }
+    set srcdoc(value) { setReflectedAttribute(this, 'srcdoc', value); }
+    get allow() { return reflectedAttribute(this, 'allow'); }
+    set allow(value) { setReflectedAttribute(this, 'allow', value); }
+    get data() { return reflectedAttribute(this, 'data'); }
+    set data(value) { setReflectedAttribute(this, 'data', value); }
+    get span() { return reflectedUnsigned(this, 'span') || 1; }
+    set span(value) { setReflectedUnsigned(this, 'span', value); }
+    get colSpan() { return reflectedUnsigned(this, 'colspan') || 1; }
+    set colSpan(value) { setReflectedUnsigned(this, 'colspan', value); }
+    get rowSpan() { return reflectedUnsigned(this, 'rowspan') || 1; }
+    set rowSpan(value) { setReflectedUnsigned(this, 'rowspan', value); }
+    get headers() { return reflectedAttribute(this, 'headers'); }
+    set headers(value) { setReflectedAttribute(this, 'headers', value); }
+    get scope() { return reflectedAttribute(this, 'scope'); }
+    set scope(value) { setReflectedAttribute(this, 'scope', value); }
+    get abbr() { return reflectedAttribute(this, 'abbr'); }
+    set abbr(value) { setReflectedAttribute(this, 'abbr', value); }
+    get contentDocument() { return null; }
+    get contentWindow() { return null; }
     get currentSrc() { return imageCurrentSrc(this); }
+    get alt() { return reflectedAttribute(this, 'alt'); }
+    set alt(value) { setReflectedAttribute(this, 'alt', value); }
+    get crossOrigin() { return nullableReflectedAttribute(this, 'crossorigin'); }
+    set crossOrigin(value) { value === null ? this.removeAttribute('crossorigin') : setReflectedAttribute(this, 'crossorigin', value); }
+    get useMap() { return reflectedAttribute(this, 'usemap'); }
+    set useMap(value) { setReflectedAttribute(this, 'usemap', value); }
+    get isMap() { return booleanAttribute(this, 'ismap'); }
+    set isMap(value) { setBooleanAttribute(this, 'ismap', value); }
+    get width() { return reflectedUnsigned(this, 'width'); }
+    set width(value) { setReflectedUnsigned(this, 'width', value); }
+    get height() { return reflectedUnsigned(this, 'height'); }
+    set height(value) { setReflectedUnsigned(this, 'height', value); }
+    get naturalWidth() { return 0; }
+    get naturalHeight() { return 0; }
+    get complete() { return true; }
+    get loading() { return reflectedAttribute(this, 'loading') || 'eager'; }
+    set loading(value) { setReflectedAttribute(this, 'loading', value); }
+    get decoding() { return reflectedAttribute(this, 'decoding') || 'auto'; }
+    set decoding(value) { setReflectedAttribute(this, 'decoding', value); }
+    decode() { return Promise.resolve(); }
+    get autoplay() { return booleanAttribute(this, 'autoplay'); }
+    set autoplay(value) { setBooleanAttribute(this, 'autoplay', value); }
+    get loop() { return booleanAttribute(this, 'loop'); }
+    set loop(value) { setBooleanAttribute(this, 'loop', value); }
+    get controls() { return booleanAttribute(this, 'controls'); }
+    set controls(value) { setBooleanAttribute(this, 'controls', value); }
+    get muted() { return Boolean(mediaState(this).__vixenMuted); }
+    set muted(value) { mediaState(this).__vixenMuted = Boolean(value); }
+    get defaultMuted() { return booleanAttribute(this, 'muted'); }
+    set defaultMuted(value) { setBooleanAttribute(this, 'muted', value); }
+    get preload() { return reflectedKeyword(this, 'preload', ['none', 'metadata', 'auto']); }
+    set preload(value) { setReflectedAttribute(this, 'preload', value); }
+    get networkState() { return 0; }
+    get readyState() { return 0; }
+    get currentTime() { return Number(mediaState(this).__vixenCurrentTime) || 0; }
+    set currentTime(value) { setMediaCurrentTime(this, value); }
+    get duration() { return NaN; }
+    get paused() { return true; }
+    get ended() { return false; }
+    get volume() { return Number(mediaState(this).__vixenVolume); }
+    set volume(value) { setMediaVolume(this, value); }
+    get videoWidth() { return 0; }
+    get videoHeight() { return 0; }
+    get poster() { return reflectedAttribute(this, 'poster'); }
+    set poster(value) { setReflectedAttribute(this, 'poster', value); }
+    get playsInline() { return booleanAttribute(this, 'playsinline'); }
+    set playsInline(value) { setBooleanAttribute(this, 'playsinline', value); }
+    load() {}
+    play() { return Promise.resolve(); }
+    pause() {}
+    canPlayType(_type = '') { return ''; }
+    get open() { return booleanAttribute(this, 'open'); }
+    set open(value) { setDialogOpen(this, value); }
+    get returnValue() { return dialogState(this).__vixenReturnValue; }
+    set returnValue(value) { dialogState(this).__vixenReturnValue = String(value); }
+    show() { showDialog(this, false); }
+    showModal() { showDialog(this, true); }
+    close(returnValue = undefined) { closeDialog(this, returnValue); }
+    requestClose(returnValue = undefined) { closeDialog(this, returnValue); }
     get disabled() { return booleanAttribute(this, 'disabled'); }
     set disabled(value) { setBooleanAttribute(this, 'disabled', value); }
     get readOnly() { return booleanAttribute(this, 'readonly'); }
@@ -3257,6 +3674,17 @@ const DOM_API_BOOTSTRAP: &str = r#"
     set placeholder(value) { setReflectedAttribute(this, 'placeholder', value); }
     get autocomplete() { return reflectedAttribute(this, 'autocomplete'); }
     set autocomplete(value) { setReflectedAttribute(this, 'autocomplete', value); }
+    get min() { return numericMin(this); }
+    set min(value) { setReflectedAttribute(this, 'min', value); }
+    get max() { return numericMax(this); }
+    set max(value) { setReflectedAttribute(this, 'max', value); }
+    get low() { return elementTag(this) === 'meter' ? reflectedNumber(this, 'low', numericMin(this)) : 0; }
+    set low(value) { setReflectedNumber(this, 'low', value); }
+    get high() { return elementTag(this) === 'meter' ? reflectedNumber(this, 'high', numericMax(this)) : 0; }
+    set high(value) { setReflectedNumber(this, 'high', value); }
+    get optimum() { return elementTag(this) === 'meter' ? reflectedNumber(this, 'optimum', (numericMin(this) + numericMax(this)) / 2) : 0; }
+    set optimum(value) { setReflectedNumber(this, 'optimum', value); }
+    get position() { return progressPosition(this); }
     get htmlFor() { return reflectedAttribute(this, 'for'); }
     set htmlFor(value) { setReflectedAttribute(this, 'for', value); }
     get control() { return labelControlElement(this); }
@@ -3288,6 +3716,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
     }
     get label() { return elementTag(this) === 'option' ? optionLabel(this) : reflectedAttribute(this, 'label'); }
     set label(value) { setReflectedAttribute(this, 'label', value); }
+    get defaultSelected() { return elementTag(this) === 'option' ? optionDefaultSelected(this) : booleanAttribute(this, 'selected'); }
+    set defaultSelected(value) { if (elementTag(this) === 'option') setOptionDefaultSelected(this, Boolean(value)); else setBooleanAttribute(this, 'selected', value); }
     get selected() {
       if (elementTag(this) !== 'option') return booleanAttribute(this, 'selected');
       const parent = this.parentElement;
@@ -3298,8 +3728,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get index() { return elementTag(this) === 'option' ? optionIndex(this) : 0; }
     get files() { return inputFiles(this); }
     set files(value) { setInputFiles(this, value); }
-    get value() { return controlValue(this); }
-    set value(value) { setControlValue(this, value); }
+    get value() { return reflectedElementValue(this); }
+    set value(value) { setReflectedElementValue(this, value); }
     get willValidate() { return willValidateElement(this); }
     get validity() { return validityStateForElementOrForm(this); }
     checkValidity() { return checkValidityElement(this); }
@@ -3313,6 +3743,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
       if (elementTag(this) === 'input') setElementAttribute(this.__vixenNodeId, 'value', text);
       else if (elementTag(this) === 'textarea') setElementText(this.__vixenNodeId, text);
     }
+    get defaultChecked() { return elementTag(this) === 'input' ? inputDefaultChecked(this) : booleanAttribute(this, 'checked'); }
+    set defaultChecked(value) { if (elementTag(this) === 'input') setInputDefaultChecked(this, Boolean(value)); else setBooleanAttribute(this, 'checked', value); }
     get selectionStart() { return isTextEditableControl(this) ? controlSelection(this)[0] : null; }
     set selectionStart(value) {
       if (!isTextEditableControl(this)) return;
@@ -3328,7 +3760,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     setSelectionRange(start, end = start) { if (isTextEditableControl(this)) setControlSelection(this, start, end); }
     select() { if (isTextEditableControl(this)) setControlSelection(this, 0, controlValue(this).length); }
     get checked() { return this.hasAttribute('checked'); }
-    set checked(value) { if (Boolean(value)) this.setAttribute('checked', ''); else this.removeAttribute('checked'); }
+    set checked(value) { if (elementTag(this) === 'input') setInputChecked(this, Boolean(value)); else setBooleanAttribute(this, 'checked', value); }
     getAttribute(name) {
       return elementAttribute(this.__vixenNodeId, name);
     }
@@ -3390,8 +3822,12 @@ const DOM_API_BOOTSTRAP: &str = r#"
       this.dispatchEvent(new Event('blur', { composed: true }));
     }
     scrollIntoView() {}
+    submit() { if (elementTag(this) === 'form') queueFormSubmission(this, null); }
+    requestSubmit(submitter = undefined) { if (elementTag(this) === 'form') submitFormDefault(this, submitter && typeof submitter.__vixenNodeId === 'number' ? submitter : null); }
+    reset() { if (elementTag(this) === 'form') resetFormDefault(this); }
     getBoundingClientRect() { return new VixenDOMRectReadOnly(elementRect(this.__vixenNodeId)); }
     getClientRects() { return makeDOMRectList(elementRect(this.__vixenNodeId)); }
+    getBoxQuads() { return elementBoxQuad(this); }
   }
 
   webidl.adoptInterface('ValidityState', VixenValidityState);
@@ -3401,19 +3837,31 @@ const DOM_API_BOOTSTRAP: &str = r#"
     'id', 'className', 'tagName', 'nodeName', 'localName', 'namespaceURI', 'prefix', 'nodeType', 'isConnected',
     'ownerDocument', 'parentNode', 'parentElement', 'childNodes', 'children', 'firstChild',
     'lastChild', 'firstElementChild', 'lastElementChild', 'childElementCount', 'previousSibling',
-    'nextSibling', 'previousElementSibling', 'nextElementSibling', 'clientWidth', 'clientHeight', 'textContent', 'innerText', 'text',
+    'nextSibling', 'previousElementSibling', 'nextElementSibling', 'clientWidth', 'clientHeight', 'clientTop', 'clientLeft',
+    'scrollWidth', 'scrollHeight', 'scrollTop', 'scrollLeft', 'offsetWidth', 'offsetHeight', 'offsetTop', 'offsetLeft', 'offsetParent',
+    'textContent', 'innerText', 'text',
     'innerHTML', 'outerHTML', 'attributes', 'classList', 'relList', 'sandbox', 'dataset', 'style', 'sheet',
-    'hidden', 'title', 'lang', 'dir', 'type', 'name', 'method', 'enctype', 'encoding', 'action', 'src', 'srcset', 'sizes', 'currentSrc', 'disabled', 'readOnly', 'required', 'multiple',
-    'placeholder', 'autocomplete', 'htmlFor', 'control', 'labels', 'contentEditable', 'isContentEditable',
-    'options', 'selectedOptions', 'selectedIndex', 'length', 'size', 'label', 'selected', 'index',
+    'hidden', 'title', 'lang', 'dir', 'type', 'name', 'content', 'httpEquiv', 'charset', 'method', 'enctype', 'encoding', 'action',
+    'cite', 'dateTime', 'reversed', 'start',
+    'href', 'origin', 'protocol', 'host', 'hostname', 'port', 'pathname', 'search', 'hash', 'target', 'download', 'rel', 'hreflang', 'coords', 'shape',
+    'src', 'srcset', 'sizes', 'media', 'as', 'async', 'defer', 'noModule', 'srcdoc', 'allow', 'data', 'span', 'colSpan', 'rowSpan', 'headers', 'scope', 'abbr',
+    'contentDocument', 'contentWindow',
+    'currentSrc', 'alt', 'crossOrigin', 'useMap', 'isMap', 'width', 'height', 'naturalWidth', 'naturalHeight', 'complete', 'loading', 'decoding', 'decode',
+    'autoplay', 'loop', 'controls', 'muted', 'defaultMuted', 'preload', 'networkState', 'readyState', 'currentTime', 'duration', 'paused', 'ended', 'volume',
+    'videoWidth', 'videoHeight', 'poster', 'playsInline', 'load', 'play', 'pause', 'canPlayType',
+    'open', 'returnValue', 'show', 'showModal', 'close', 'requestClose',
+    'disabled', 'readOnly', 'required', 'multiple',
+    'placeholder', 'autocomplete', 'min', 'max', 'low', 'high', 'optimum', 'position', 'htmlFor', 'control', 'labels', 'contentEditable', 'isContentEditable',
+    'options', 'selectedOptions', 'selectedIndex', 'length', 'size', 'label', 'defaultSelected', 'selected', 'index',
     'files', 'value', 'willValidate', 'validity', 'checkValidity', 'reportValidity', 'setCustomValidity',
-    'defaultValue', 'selectionStart', 'selectionEnd', 'setSelectionRange', 'select', 'checked',
+    'defaultValue', 'defaultChecked', 'selectionStart', 'selectionEnd', 'setSelectionRange', 'select', 'checked',
     'getAttribute', 'hasAttribute', 'setAttribute', 'removeAttribute', 'toggleAttribute',
     'getAttributeNames', 'hasAttributes', 'matches', 'closest', 'appendChild', 'removeChild',
     'insertBefore', 'replaceChildren', 'append', 'prepend', 'click', 'focus', 'blur',
+    'submit', 'requestSubmit', 'reset',
     'scrollIntoView',
     'querySelector', 'querySelectorAll', 'getElementsByTagName', 'getElementsByClassName',
-    'getBoundingClientRect', 'getClientRects',
+    'getBoundingClientRect', 'getClientRects', 'getBoxQuads',
   ];
 
   function installElementMembers(interfaceName) {
@@ -3428,6 +3876,34 @@ const DOM_API_BOOTSTRAP: &str = r#"
   for (const interfaceName of new Set(htmlElementInterfaceByTag.values())) {
     installElementMembers(interfaceName);
   }
+
+  function installInterfaceConstants(interfaceName, entries) {
+    const constructor = webidl.interfaceConstructor(interfaceName);
+    for (const [name, value] of entries) {
+      Object.defineProperty(constructor, name, { value, enumerable: true, configurable: false });
+      Object.defineProperty(constructor.prototype, name, { value, enumerable: true, configurable: false });
+    }
+  }
+
+  installInterfaceConstants('HTMLMediaElement', [
+    ['NETWORK_EMPTY', 0], ['NETWORK_IDLE', 1], ['NETWORK_LOADING', 2], ['NETWORK_NO_SOURCE', 3],
+    ['HAVE_NOTHING', 0], ['HAVE_METADATA', 1], ['HAVE_CURRENT_DATA', 2], ['HAVE_FUTURE_DATA', 3], ['HAVE_ENOUGH_DATA', 4],
+  ]);
+
+  function installScriptElementSupports() {
+    const supports = (type) => scriptTypeSupports(type);
+    const constructor = webidl.interfaceConstructor('HTMLScriptElement');
+    const constructorDescriptor = Object.getOwnPropertyDescriptor(constructor, 'supports');
+    if (!constructorDescriptor || constructorDescriptor.configurable) {
+      Object.defineProperty(constructor, 'supports', { value: supports, enumerable: true, configurable: true });
+    }
+    const prototypeDescriptor = Object.getOwnPropertyDescriptor(constructor.prototype, 'supports');
+    if (!prototypeDescriptor || prototypeDescriptor.configurable) {
+      Object.defineProperty(constructor.prototype, 'supports', { value: supports, enumerable: true, configurable: true });
+    }
+  }
+
+  installScriptElementSupports();
 
   class VixenFormData {
     constructor(form = undefined) {
@@ -3495,10 +3971,11 @@ const DOM_API_BOOTSTRAP: &str = r#"
       defineWritableValue(this, 'startOffset', 0);
       defineWritableValue(this, 'endOffset', 0);
       defineWritableValue(this, 'commonAncestorContainer', vixenDocument);
+      defineWritableValue(this, '__vixenGeometryNode', null, false);
     }
     get collapsed() { return this.startContainer === this.endContainer && this.startOffset === this.endOffset; }
-    setStart(node, offset) { this.startContainer = node; this.startOffset = Number(offset) || 0; }
-    setEnd(node, offset) { this.endContainer = node; this.endOffset = Number(offset) || 0; }
+    setStart(node, offset) { this.startContainer = node; this.startOffset = Number(offset) || 0; this.__vixenGeometryNode = null; }
+    setEnd(node, offset) { this.endContainer = node; this.endOffset = Number(offset) || 0; this.__vixenGeometryNode = null; }
     collapse(toStart = false) {
       if (toStart) {
         this.endContainer = this.startContainer;
@@ -3508,9 +3985,32 @@ const DOM_API_BOOTSTRAP: &str = r#"
         this.startOffset = this.endOffset;
       }
     }
-    selectNode(node) { this.startContainer = node.parentNode || vixenDocument; this.endContainer = this.startContainer; this.startOffset = 0; this.endOffset = 1; }
-    selectNodeContents(node) { this.startContainer = node; this.endContainer = node; this.startOffset = 0; this.endOffset = node.childNodes ? node.childNodes.length : 0; }
-    cloneRange() { const range = new VixenRange(); range.startContainer = this.startContainer; range.endContainer = this.endContainer; range.startOffset = this.startOffset; range.endOffset = this.endOffset; return range; }
+    selectNode(node) {
+      this.startContainer = node.parentNode || vixenDocument;
+      this.endContainer = this.startContainer;
+      this.startOffset = 0;
+      this.endOffset = 1;
+      this.commonAncestorContainer = this.startContainer;
+      this.__vixenGeometryNode = nodeGeometryElement(node);
+    }
+    selectNodeContents(node) {
+      this.startContainer = node;
+      this.endContainer = node;
+      this.startOffset = 0;
+      this.endOffset = node.childNodes ? node.childNodes.length : 0;
+      this.commonAncestorContainer = node;
+      this.__vixenGeometryNode = nodeGeometryElement(node);
+    }
+    cloneRange() {
+      const range = new VixenRange();
+      range.startContainer = this.startContainer;
+      range.endContainer = this.endContainer;
+      range.startOffset = this.startOffset;
+      range.endOffset = this.endOffset;
+      range.commonAncestorContainer = this.commonAncestorContainer;
+      range.__vixenGeometryNode = this.__vixenGeometryNode;
+      return range;
+    }
     detach() {}
     deleteContents() {}
     extractContents() { return null; }
@@ -3520,6 +4020,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
     isPointInRange() { return false; }
     comparePoint() { return 0; }
     intersectsNode() { return false; }
+    getBoundingClientRect() { return new VixenDOMRectReadOnly(rangeGeometryRect(this)); }
+    getClientRects() { return makeDOMRectList(rangeGeometryRect(this)); }
     toString() { return ''; }
   }
 
@@ -3762,6 +4264,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get visibilityState() { return 'visible'; }
     get hidden() { return false; }
     get referrer() { return ''; }
+    get cookie() { return documentCookie(); }
+    set cookie(value) { setDocumentCookie(value); }
     get defaultView() { return globalThis; }
     get location() { return globalThis.location; }
     get documentElement() { return wrapElementByNodeId(data.documentElementNodeId); }
@@ -3977,6 +4481,7 @@ mod tests {
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_element_attr"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_element_inner_html"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_control_value"));
+        assert!(DOM_API_BOOTSTRAP.contains("op_vixen_document_cookie_set"));
         assert!(!DOM_API_BOOTSTRAP.contains("data.elements"));
 
         let page = Page::from_html(

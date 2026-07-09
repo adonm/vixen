@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Permissions API — Vixen fixture</title>
+  <!--
+    Exercises the browser-visible Permissions API query surface. The runtime
+    host hook resolves `navigator.permissions.query({ name })` through the
+    profile permission table when a profile store is available; unknown decisions
+    remain `prompt` and are treated as not granted by callers until the shell/user
+    grants them. Unsupported names reject instead of silently granting.
+  -->
+</head>
+<body>
+  <h1>Permissions API query</h1>
+  <p id="summary">Permissions default to prompt until profile state grants or denies them.</p>
+</body>
+</html>

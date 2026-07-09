@@ -57,6 +57,23 @@ pub struct Cookie {
     seq: u64,
 }
 
+/// Serializable cookie state for profile stores. This intentionally mirrors the
+/// public, policy-relevant fields of [`Cookie`] without exposing the jar's FIFO
+/// sequence internals.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CookieSnapshot {
+    pub name: String,
+    pub value: String,
+    pub domain: String,
+    pub host_only: bool,
+    pub path: String,
+    pub expires_unix: Option<i64>,
+    pub secure: bool,
+    pub http_only: bool,
+    pub same_site: SameSite,
+    pub creation_unix: i64,
+}
+
 /// Why a `Set-Cookie` / `document.cookie` write was rejected.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum CookieError {
@@ -120,6 +137,77 @@ impl CookieJar {
 
     fn now(&self) -> OffsetDateTime {
         (self.now)()
+    }
+
+    /// Rehydrate a jar from trusted profile-store records.
+    pub fn from_snapshots<I>(snapshots: I) -> Self
+    where
+        I: IntoIterator<Item = CookieSnapshot>,
+    {
+        let mut jar = Self::default();
+        jar.replace_with_snapshots(snapshots);
+        jar
+    }
+
+    /// Replace all cookies with trusted profile-store records. Expired records
+    /// are discarded at the trust boundary.
+    pub fn replace_with_snapshots<I>(&mut self, snapshots: I)
+    where
+        I: IntoIterator<Item = CookieSnapshot>,
+    {
+        self.cookies.clear();
+        self.next_seq.store(0, Ordering::Relaxed);
+        let now = self.now();
+        for snapshot in snapshots {
+            let expires = snapshot
+                .expires_unix
+                .and_then(|ts| OffsetDateTime::from_unix_timestamp(ts).ok());
+            let created =
+                OffsetDateTime::from_unix_timestamp(snapshot.creation_unix).unwrap_or(now);
+            let cookie = Cookie {
+                name: snapshot.name,
+                value: snapshot.value,
+                domain: snapshot.domain.to_ascii_lowercase(),
+                host_only: snapshot.host_only,
+                path: if snapshot.path.is_empty() {
+                    "/".to_owned()
+                } else {
+                    snapshot.path
+                },
+                expires,
+                created,
+                last_access: now,
+                secure: snapshot.secure,
+                http_only: snapshot.http_only,
+                same_site: snapshot.same_site,
+                seq: 0,
+            };
+            if is_expired(&cookie, now) {
+                continue;
+            }
+            let _ = self.upsert(cookie);
+        }
+    }
+
+    /// Snapshot unexpired cookies for profile persistence.
+    pub fn snapshots(&self) -> Vec<CookieSnapshot> {
+        let now = self.now();
+        self.cookies
+            .iter()
+            .filter(|cookie| !is_expired(cookie, now))
+            .map(|cookie| CookieSnapshot {
+                name: cookie.name.clone(),
+                value: cookie.value.clone(),
+                domain: cookie.domain.clone(),
+                host_only: cookie.host_only,
+                path: cookie.path.clone(),
+                expires_unix: cookie.expires.map(|expires| expires.unix_timestamp()),
+                secure: cookie.secure,
+                http_only: cookie.http_only,
+                same_site: cookie.same_site,
+                creation_unix: cookie.created.unix_timestamp(),
+            })
+            .collect()
     }
 
     /// Store a cookie parsed from a `Set-Cookie` header value.
@@ -731,6 +819,26 @@ mod tests {
 
     fn jar(t: OffsetDateTime) -> CookieJar {
         CookieJar::with_clock(fixed(t))
+    }
+
+    #[test]
+    fn cookie_snapshots_round_trip_and_drop_expired_records() {
+        let t = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let mut jar = jar(t);
+        let url = Url::parse("https://example.com/path/page.html").unwrap();
+        jar.set_cookie("sid=abc; Path=/path; HttpOnly; SameSite=Strict", &url, true)
+            .unwrap();
+        jar.set_cookie("old=gone; Max-Age=0", &url, true).unwrap();
+
+        let snapshots = jar.snapshots();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].name, "sid");
+        assert!(snapshots[0].http_only);
+        assert_eq!(snapshots[0].same_site, SameSite::Strict);
+
+        let mut restored = CookieJar::with_clock(fixed(t));
+        restored.replace_with_snapshots(snapshots);
+        assert_eq!(restored.cookies_for(&url, false, Method::Get), "sid=abc");
     }
 
     fn now() -> OffsetDateTime {
