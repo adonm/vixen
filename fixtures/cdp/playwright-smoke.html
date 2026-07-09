@@ -5,14 +5,58 @@
   body { margin: 0; font: 16px sans-serif; }
   #hit { display: block; width: 120px; height: 40px; background: #2b6; }
   #status { width: 200px; height: 30px; background: #eee; }
+  #status.clicked { background: #fd0; }
 </style>
 <button id="hit">Hit me</button>
 <p id="status">waiting</p>
+<div id="dynamic-root"></div>
+<input id="default-check" type="checkbox" name="agree">
+<label>Extra check <input id="playwright-check" type="checkbox" name="extra"></label>
+<form id="smoke-form"><button id="submit" type="submit">Submit</button></form>
+<form id="nav-form" action="playwright-next.html">
+  <label>Typed name <input id="typed-name" name="typed" value=""></label>
+  <label>Typed body <textarea id="typed-body" name="body"></textarea></label>
+  <button id="nav-submit" type="submit">Go</button>
+</form>
 <script>
   globalThis.__smokeClicks = 0;
+  globalThis.__eventOrder = [];
+  document.addEventListener('click', (event) => { if (event.target.id === 'hit') globalThis.__eventOrder.push('document-capture'); }, true);
+  document.body.addEventListener('click', (event) => { if (event.target.id === 'hit') globalThis.__eventOrder.push('body-capture'); }, true);
+  document.body.addEventListener('click', (event) => { if (event.target.id === 'hit') globalThis.__eventOrder.push('body-bubble'); });
+  document.querySelector('#smoke-form').addEventListener('submit', (event) => {
+    globalThis.__submitSeen = event.target.id;
+    event.preventDefault();
+  });
   document.querySelector('#hit').addEventListener('click', () => {
+    globalThis.__eventOrder.push('target');
+    if (!globalThis.__smokeObserverInstalled) {
+      globalThis.__smokeObserverInstalled = true;
+      new MutationObserver((records) => {
+        globalThis.__smokeObserver = records
+          .map((record) => record.type + ':' + (record.attributeName || '') + ':' + (record.target.id || record.target.nodeName))
+          .join('|');
+      }).observe(document.body, { attributes: true, childList: true, subtree: true, attributeOldValue: true });
+    }
     globalThis.__smokeClicks += 1;
-    document.querySelector('#status').textContent = 'clicked:' + globalThis.__smokeClicks;
+    const status = document.querySelector('#status');
+    status.textContent = 'clicked:' + globalThis.__smokeClicks;
+    status.classList.add('clicked');
+    status.setAttribute('data-clicked', String(globalThis.__smokeClicks));
+    status.style.width = '140px';
+    const root = document.querySelector('#dynamic-root');
+    const dynamic = document.createElement('span');
+    dynamic.id = 'dynamic';
+    dynamic.className = 'badge';
+    dynamic.textContent = 'dynamic:' + globalThis.__smokeClicks;
+    const gone = document.createElement('em');
+    gone.id = 'gone';
+    gone.textContent = 'gone';
+    root.appendChild(gone);
+    root.removeChild(gone);
+    root.replaceChildren(dynamic, ' ready');
+    document.querySelector('#default-check').click();
+    document.querySelector('#submit').click();
     console.log('playwright-click', globalThis.__smokeClicks);
   });
 </script>

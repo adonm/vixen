@@ -495,7 +495,7 @@ fn run_extract_selector(url: &str, sel: &str, viewport: (u32, u32)) -> ExitCode 
 
 /// `--url file://… --eval '1+2'` → load the page context then prints `3`.
 fn run_eval(url: &str, js: &str) -> ExitCode {
-    let page = match load_page(url) {
+    let mut page = match load_page(url) {
         Ok(page) => page,
         Err(e) => {
             eprintln!("error: {e}");
@@ -527,11 +527,11 @@ fn run_eval(url: &str, js: &str) -> ExitCode {
     // `--url` is the page context. Legacy broad DOM smoke expressions are
     // handled above; the first DOM host-object slice falls through here so the
     // JS runtime sees a real `document` snapshot in the global.
-    if let Err(e) = rt.execute_page_scripts(&page) {
+    if let Err(e) = rt.execute_page_scripts(&mut page) {
         eprintln!("error: page script failed: {e}");
         return ExitCode::FAILURE;
     }
-    match rt.evaluate_with_page(js, &page) {
+    match rt.evaluate_with_page_mut(js, &mut page) {
         Ok(value) => {
             println!("{}", value.to_display());
             ExitCode::SUCCESS
@@ -566,17 +566,47 @@ fn run_dom_eval_on_page(page: &Page, js: &str) -> Option<Result<String, String>>
 
 pub(crate) fn uses_runtime_dom_eval(js: &str) -> bool {
     let js = js.trim_start();
-    matches!(
-        js,
-        "document.title" | "document.URL" | "document.documentURI" | "document.readyState"
-    ) || runtime_web_api_eval(js)
+    runtime_document_projection_eval(js)
+        || runtime_location_eval(js)
+        || runtime_web_api_eval(js)
         || simple_query_selector_eval(js, "document.querySelector(")
         || simple_get_element_by_id_eval(js)
         || simple_query_selector_all_length_eval(js)
         || simple_document_element_eval(js, "document.body")
         || simple_document_element_eval(js, "document.documentElement")
+        || simple_document_element_eval(js, "document.activeElement")
+        || simple_document_collection_length_eval(js, "document.getElementsByTagName(")
+        || simple_document_collection_length_eval(js, "document.getElementsByClassName(")
         || simple_get_computed_style_eval(js)
         || simple_cssom_eval(js)
+}
+
+fn runtime_document_projection_eval(js: &str) -> bool {
+    matches!(
+        js,
+        "document.title"
+            | "document.URL"
+            | "document.documentURI"
+            | "document.readyState"
+            | "document.baseURI"
+            | "document.compatMode"
+            | "document.characterSet"
+            | "document.charset"
+            | "document.contentType"
+            | "document.visibilityState"
+            | "document.hidden"
+            | "document.referrer"
+            | "document.hasFocus()"
+            | "document.location.href"
+            | "document.forms.length"
+            | "document.images.length"
+            | "document.links.length"
+            | "document.scripts.length"
+    )
+}
+
+fn runtime_location_eval(js: &str) -> bool {
+    matches!(js, "location.href" | "window.location.href")
 }
 
 fn runtime_web_api_eval(js: &str) -> bool {
@@ -605,6 +635,8 @@ fn runtime_web_api_eval(js: &str) -> bool {
         || js.starts_with("sessionStorage.")
         || js.starts_with("history.")
         || js.starts_with("window.history.")
+        || js.starts_with("document.querySelector(")
+        || js.starts_with("document.getElementById(")
         || js.starts_with("matchMedia(")
         || js.starts_with("window.matchMedia(")
 }
@@ -668,6 +700,19 @@ fn simple_query_selector_all_length_eval(js: &str) -> bool {
         return false;
     };
     tail == ").length" && is_simple_dom_host_selector(selector)
+}
+
+fn simple_document_collection_length_eval(js: &str, prefix: &str) -> bool {
+    let Some((name, tail)) = single_string_arg_call_tail(js, prefix) else {
+        return false;
+    };
+    if tail != ").length" {
+        return false;
+    }
+    if prefix == "document.getElementsByTagName(" {
+        return name == "*" || is_simple_dom_host_selector_atom(name);
+    }
+    is_simple_dom_host_selector_atom(name)
 }
 
 fn simple_get_computed_style_eval(js: &str) -> bool {
@@ -1005,18 +1050,23 @@ struct LoadedSource {
 fn load_url_source(url: &str) -> Result<LoadedSource, String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
     match parsed.scheme() {
-        "file" => parsed
-            .to_file_path()
-            .map_err(|_| "file:// URL has no local path".to_string())
-            .and_then(|p| {
-                let html = std::fs::read_to_string(&p)
-                    .map_err(|e| format!("read {}: {e}", p.display()))?;
-                Ok(LoadedSource {
-                    final_url: parsed.to_string(),
-                    html,
-                    headers: Vec::new(),
+        "file" => {
+            let mut path_url = parsed.clone();
+            path_url.set_query(None);
+            path_url.set_fragment(None);
+            path_url
+                .to_file_path()
+                .map_err(|_| "file:// URL has no local path".to_string())
+                .and_then(|p| {
+                    let html = std::fs::read_to_string(&p)
+                        .map_err(|e| format!("read {}: {e}", p.display()))?;
+                    Ok(LoadedSource {
+                        final_url: parsed.to_string(),
+                        html,
+                        headers: Vec::new(),
+                    })
                 })
-            }),
+        }
         "http" | "https" => fetch_http_source(parsed),
         scheme => Err(format!(
             "{scheme}: URLs are not supported by the headless source loader"
@@ -1336,7 +1386,7 @@ mod tests {
         let html = dir.path().join("title.html");
         std::fs::write(
             &html,
-            "<html><head><title>DOM title</title><style>#lead { color: blue; }</style><link id='theme' rel='stylesheet alternate'></head><body><p id='lead' class='note callout' data-author-name='ada'>body</p><iframe id='frame' sandbox='allow-scripts'></iframe></body></html>",
+            "<html><head><title>DOM title</title><style>#lead { color: blue; }</style><link id='theme' rel='stylesheet alternate'></head><body><p id='lead' class='note callout' data-author-name='ada'>body</p><form id='f' method='POST' enctype='multipart/form-data' action='/submit'></form><iframe id='frame' sandbox='allow-scripts'></iframe></body></html>",
         )
         .unwrap();
         let url = format!("file://{}", html.display());
@@ -1344,10 +1394,31 @@ mod tests {
         assert!(uses_runtime_dom_eval("document.title"));
         assert!(uses_runtime_dom_eval("document.readyState"));
         assert!(uses_runtime_dom_eval("document.URL"));
+        assert!(uses_runtime_dom_eval("document.baseURI"));
+        assert!(uses_runtime_dom_eval("document.compatMode"));
+        assert!(uses_runtime_dom_eval("document.characterSet"));
+        assert!(uses_runtime_dom_eval("document.contentType"));
+        assert!(uses_runtime_dom_eval("document.visibilityState"));
+        assert!(uses_runtime_dom_eval("document.hasFocus()"));
+        assert!(uses_runtime_dom_eval("document.location.href"));
+        assert!(uses_runtime_dom_eval("location.href"));
+        assert!(uses_runtime_dom_eval("window.location.href"));
+        assert!(uses_runtime_dom_eval("document.forms.length"));
+        assert!(uses_runtime_dom_eval("document.images.length"));
+        assert!(uses_runtime_dom_eval("document.links.length"));
+        assert!(uses_runtime_dom_eval("document.scripts.length"));
         assert!(uses_runtime_dom_eval("document.documentElement.tagName"));
+        assert!(uses_runtime_dom_eval("document.activeElement.tagName"));
+        assert!(uses_runtime_dom_eval(
+            "document.getElementsByTagName('p').length"
+        ));
+        assert!(uses_runtime_dom_eval(
+            "document.getElementsByClassName('note').length"
+        ));
         assert!(uses_runtime_dom_eval(
             "document.querySelector('#lead').textContent"
         ));
+        assert!(uses_runtime_dom_eval("document.querySelector('#f').method"));
         assert!(uses_runtime_dom_eval(
             "document.getElementById('lead').tagName"
         ));
@@ -1414,11 +1485,28 @@ mod tests {
         assert!(uses_runtime_dom_eval(
             "matchMedia('(min-width: 800px)').matches"
         ));
-        assert!(!uses_runtime_dom_eval(
+        assert!(uses_runtime_dom_eval(
             "document.querySelector('#lead').classList.add('new')"
         ));
         assert_eq!(run_dom_eval(&url, "document.title"), None);
         assert_eq!(run_dom_eval(&url, "document.readyState"), None);
+        assert_eq!(run_dom_eval(&url, "document.baseURI"), None);
+        assert_eq!(run_dom_eval(&url, "document.hasFocus()"), None);
+        assert_eq!(run_dom_eval(&url, "location.href"), None);
+        assert_eq!(run_dom_eval(&url, "document.forms.length"), None);
+        assert_eq!(run_dom_eval(&url, "document.activeElement.tagName"), None);
+        assert_eq!(
+            run_dom_eval(&url, "document.getElementsByTagName('p').length"),
+            None
+        );
+        assert_eq!(
+            run_dom_eval(&url, "document.getElementsByClassName('note').length"),
+            None
+        );
+        assert_eq!(
+            run_dom_eval(&url, "document.querySelector('#f').method"),
+            None
+        );
         assert_eq!(
             run_dom_eval(&url, "document.querySelector('#lead').matches('.note')"),
             None

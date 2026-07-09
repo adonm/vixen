@@ -10,7 +10,7 @@ feature.
 
 ## Current measured local fixture baseline
 
-As of 2026-07-07, `fixtures/manifest.json` contains 52 local fixtures plus
+As of 2026-07-09, `fixtures/manifest.json` contains 52 local fixtures plus
 199 imported smoke fixtures:
 
 | Category | Fixtures |
@@ -31,7 +31,7 @@ As of 2026-07-07, `fixtures/manifest.json` contains 52 local fixtures plus
 | selectors | 50 |
 | **Total** | **251** |
 
-Total manifest checks: **1816**.
+Total manifest checks: **1841**.
 
 Current check mix:
 
@@ -45,6 +45,7 @@ Current check mix:
 | `element-attribute` | 132 |
 | `layout-box` | 104 |
 | `body-contains` | 66 |
+| `visual-hash` | 25 |
 | `no-critical-diagnostics` | 20 |
 | `ref-equivalent` | 11 |
 | `display-list-contains` | 3 |
@@ -58,7 +59,9 @@ flex row/column, grid, overflow coordinate/paint, and fragment-backed text paint
 fixtures with `layout-box` and `display-list-contains` assertions. The paint
 category includes three local `ref-equivalent` smoke fixtures against the stable
 display-list render projection. The harness now reports overall, per-category,
-and local/imported pass rates; imported upstream WPT layout/paint coverage is
+and local/imported pass rates; Page-backed fixture `js-eval` checks now exercise
+the `deno_core` runtime host first and fall back to the legacy Page projection
+only for unsupported expressions. Imported upstream WPT layout/paint coverage is
 still tracked separately below. Imported selector smoke has reached the
 50-fixture target,
 including focused `:has()` child/descendant/adjacent-sibling/general-sibling and

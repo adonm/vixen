@@ -369,6 +369,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
   } = Deno.core.ops;
   const webidl = globalThis.__vixenWebidl;
   const textEncoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
+  const textDecoder = typeof TextDecoder === 'function' ? new TextDecoder() : null;
   const startEpoch = Date.now();
 
   function defineGlobal(name, value) {
@@ -394,6 +395,19 @@ const WEB_API_BOOTSTRAP: &str = r#"
       enumerable,
       configurable: true,
     });
+  }
+
+  function syncIndexedValues(target, values) {
+    const previous = Number(target.__vixenIndexedLength) || 0;
+    for (let i = 0; i < previous; i++) delete target[String(i)];
+    for (let i = 0; i < values.length; i++) {
+      Object.defineProperty(target, String(i), {
+        value: values[i],
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    defineData(target, '__vixenIndexedLength', values.length, false);
   }
 
   // -----------------------------------------------------------------------
@@ -446,6 +460,31 @@ const WEB_API_BOOTSTRAP: &str = r#"
     return consoleEvents.splice(0, consoleEvents.length);
   });
 
+  // -----------------------------------------------------------------------
+  // Modal dialogs
+  // -----------------------------------------------------------------------
+
+  const dialogEvents = [];
+
+  function recordDialog(type, message, defaultPrompt) {
+    dialogEvents.push({ type, message: String(message), defaultPrompt: String(defaultPrompt ?? '') });
+  }
+
+  defineGlobal('alert', function (message = '') {
+    recordDialog('alert', message, '');
+  });
+  defineGlobal('confirm', function (message = '') {
+    recordDialog('confirm', message, '');
+    return true;
+  });
+  defineGlobal('prompt', function (message = '', defaultValue = '') {
+    recordDialog('prompt', message, defaultValue);
+    return String(defaultValue ?? '');
+  });
+  defineGlobal('__vixenDrainDialogEvents', function () {
+    return dialogEvents.splice(0, dialogEvents.length);
+  });
+
   function copyPrototypeMembers(source, target) {
     for (const name of Reflect.ownKeys(source)) {
       if (name === 'constructor') continue;
@@ -464,12 +503,61 @@ const WEB_API_BOOTSTRAP: &str = r#"
     return textEncoder ? textEncoder.encode(string).length : string.length;
   }
 
+  function bytesFromString(value) {
+    const string = String(value);
+    if (textEncoder) return textEncoder.encode(string);
+    const bytes = new Uint8Array(string.length);
+    for (let i = 0; i < string.length; i++) bytes[i] = string.charCodeAt(i) & 0xff;
+    return bytes;
+  }
+
+  function bytesFromPart(part) {
+    if (part instanceof VixenBlob) return part.__vixenBytes.slice();
+    if (part instanceof ArrayBuffer) return new Uint8Array(part).slice();
+    if (ArrayBuffer.isView && ArrayBuffer.isView(part)) {
+      return new Uint8Array(part.buffer, part.byteOffset, part.byteLength).slice();
+    }
+    return bytesFromString(part);
+  }
+
+  function concatBytes(parts) {
+    const total = parts.reduce((sum, part) => sum + part.length, 0);
+    const out = new Uint8Array(total);
+    let offset = 0;
+    for (const part of parts) {
+      out.set(part, offset);
+      offset += part.length;
+    }
+    return out;
+  }
+
+  function textFromBytes(bytes) {
+    if (textDecoder) return textDecoder.decode(bytes);
+    let out = '';
+    for (const byte of bytes) out += String.fromCharCode(byte);
+    return out;
+  }
+
   // -----------------------------------------------------------------------
   // Event / EventTarget
   // -----------------------------------------------------------------------
 
   const listeners = new WeakMap();
   const eventState = new WeakMap();
+
+  const CAPTURING_PHASE = 1;
+  const AT_TARGET = 2;
+  const BUBBLING_PHASE = 3;
+
+  function listenerOptions(options) {
+    if (options === undefined || options === null) return { capture: false, once: false, passive: false };
+    if (typeof options === 'boolean') return { capture: Boolean(options), once: false, passive: false };
+    return {
+      capture: Boolean(options.capture),
+      once: Boolean(options.once),
+      passive: Boolean(options.passive),
+    };
+  }
 
   function listenerList(target, type, create) {
     let byType = listeners.get(target);
@@ -486,37 +574,99 @@ const WEB_API_BOOTSTRAP: &str = r#"
     return list;
   }
 
+  function invokeEventListeners(target, event, phase, capture) {
+    const state = eventState.get(event);
+    if (state.stopped) return;
+    state.currentTarget = target;
+    state.eventPhase = phase;
+    const list = listenerList(target, state.type, false) || [];
+    for (const entry of list.slice()) {
+      if (state.immediateStopped) break;
+      if (entry.capture !== capture && phase !== AT_TARGET) continue;
+      if (phase === AT_TARGET && entry.capture !== capture) continue;
+      if (!list.includes(entry)) continue;
+      if (entry.passive) state.inPassiveListener = true;
+      if (typeof entry.callback === 'function') {
+        entry.callback.call(target, event);
+      } else if (entry.callback && typeof entry.callback.handleEvent === 'function') {
+        entry.callback.handleEvent(event);
+      }
+      state.inPassiveListener = false;
+      if (entry.once) {
+        const index = list.indexOf(entry);
+        if (index >= 0) list.splice(index, 1);
+      }
+    }
+    state.currentTarget = null;
+  }
+
+  function invokeEventHandlerAttribute(target, event) {
+    const handler = target && target['on' + event.type];
+    if (typeof handler === 'function') handler.call(target, event);
+  }
+
+  function eventPathFor(target, event) {
+    const hook = globalThis.__vixenEventPathForTarget;
+    if (typeof hook === 'function') {
+      const path = hook(target, event);
+      if (Array.isArray(path) && path.length > 0) return path;
+    }
+    return [target];
+  }
+
+  function runDefaultAction(target, event) {
+    const hook = globalThis.__vixenRunDefaultAction;
+    if (typeof hook !== 'function') return;
+    const state = eventState.get(event);
+    if (!state || state.defaultPrevented) return;
+    hook(target, event);
+  }
+
   class VixenEventTarget {
-    addEventListener(type, callback) {
+    addEventListener(type, callback, options = undefined) {
       if (callback === null || callback === undefined) return;
       const eventType = String(type);
+      const parsed = listenerOptions(options);
       const list = listenerList(this, eventType, true);
-      if (!list.includes(callback)) list.push(callback);
+      if (!list.some((entry) => entry.callback === callback && entry.capture === parsed.capture)) {
+        list.push({ callback, capture: parsed.capture, once: parsed.once, passive: parsed.passive });
+      }
     }
-    removeEventListener(type, callback) {
+    removeEventListener(type, callback, options = undefined) {
       const list = listenerList(this, String(type), false);
       if (!list) return;
-      const index = list.indexOf(callback);
+      const capture = listenerOptions(options).capture;
+      const index = list.findIndex((entry) => entry.callback === callback && entry.capture === capture);
       if (index >= 0) list.splice(index, 1);
     }
     dispatchEvent(event) {
       const state = eventState.get(event);
       if (!state) throw new TypeError('dispatchEvent expects an Event');
+      if (state.dispatching) throw new TypeError('Event is already being dispatched');
+      state.dispatching = true;
+      state.stopped = false;
+      state.immediateStopped = false;
       state.target = this;
-      state.currentTarget = this;
-      state.eventPhase = 2;
-      state.path = [this];
-      const list = listenerList(this, state.type, false) || [];
-      for (const callback of list.slice()) {
-        if (state.immediateStopped) break;
-        if (typeof callback === 'function') {
-          callback.call(this, event);
-        } else if (callback && typeof callback.handleEvent === 'function') {
-          callback.handleEvent(event);
+      const path = eventPathFor(this, event);
+      state.path = path.slice();
+
+      for (let i = path.length - 1; i >= 1; i--) {
+        invokeEventListeners(path[i], event, CAPTURING_PHASE, true);
+        if (state.stopped) break;
+      }
+      if (!state.stopped) invokeEventListeners(this, event, AT_TARGET, true);
+      if (!state.immediateStopped) invokeEventListeners(this, event, AT_TARGET, false);
+      if (!state.immediateStopped) invokeEventHandlerAttribute(this, event);
+      if (state.bubbles && !state.stopped) {
+        for (let i = 1; i < path.length; i++) {
+          invokeEventListeners(path[i], event, BUBBLING_PHASE, false);
+          if (state.stopped) break;
         }
       }
+      state.dispatching = false;
       state.currentTarget = null;
       state.eventPhase = 0;
+      runDefaultAction(this, event);
       return !(state.cancelable && state.defaultPrevented);
     }
   }
@@ -531,6 +681,8 @@ const WEB_API_BOOTSTRAP: &str = r#"
         defaultPrevented: false,
         stopped: false,
         immediateStopped: false,
+        inPassiveListener: false,
+        dispatching: false,
         target: null,
         currentTarget: null,
         eventPhase: 0,
@@ -556,9 +708,14 @@ const WEB_API_BOOTSTRAP: &str = r#"
     }
     preventDefault() {
       const state = eventState.get(this);
-      if (state.cancelable) state.defaultPrevented = true;
+      if (state.cancelable && !state.inPassiveListener) state.defaultPrevented = true;
     }
     composedPath() { return eventState.get(this).path.slice(); }
+  }
+
+  for (const [name, value] of [['NONE', 0], ['CAPTURING_PHASE', CAPTURING_PHASE], ['AT_TARGET', AT_TARGET], ['BUBBLING_PHASE', BUBBLING_PHASE]]) {
+    defineReadonly(VixenEvent, name, value, false);
+    defineReadonly(VixenEvent.prototype, name, value, false);
   }
 
   class VixenCustomEvent extends VixenEvent {
@@ -605,11 +762,76 @@ const WEB_API_BOOTSTRAP: &str = r#"
     }
   }
 
+  class VixenWheelEvent extends VixenMouseEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      const opts = init || {};
+      defineReadonly(this, 'deltaX', Number(opts.deltaX) || 0, false);
+      defineReadonly(this, 'deltaY', Number(opts.deltaY) || 0, false);
+      defineReadonly(this, 'deltaZ', Number(opts.deltaZ) || 0, false);
+      defineReadonly(this, 'deltaMode', Number(opts.deltaMode) || 0, false);
+    }
+  }
+
+  for (const [name, value] of [['DOM_DELTA_PIXEL', 0], ['DOM_DELTA_LINE', 1], ['DOM_DELTA_PAGE', 2]]) {
+    defineReadonly(VixenWheelEvent, name, value, false);
+    defineReadonly(VixenWheelEvent.prototype, name, value, false);
+  }
+
+  class VixenKeyboardEvent extends VixenUIEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      const opts = init || {};
+      defineReadonly(this, 'key', opts.key === undefined ? '' : String(opts.key), false);
+      defineReadonly(this, 'code', opts.code === undefined ? '' : String(opts.code), false);
+      defineReadonly(this, 'location', Number(opts.location) || 0, false);
+      defineReadonly(this, 'ctrlKey', Boolean(opts.ctrlKey), false);
+      defineReadonly(this, 'shiftKey', Boolean(opts.shiftKey), false);
+      defineReadonly(this, 'altKey', Boolean(opts.altKey), false);
+      defineReadonly(this, 'metaKey', Boolean(opts.metaKey), false);
+      defineReadonly(this, 'repeat', Boolean(opts.repeat), false);
+      defineReadonly(this, 'isComposing', Boolean(opts.isComposing), false);
+    }
+    getModifierState(key) {
+      switch (String(key)) {
+        case 'Control': return this.ctrlKey;
+        case 'Shift': return this.shiftKey;
+        case 'Alt': return this.altKey;
+        case 'Meta': return this.metaKey;
+        default: return false;
+      }
+    }
+  }
+
+  class VixenInputEvent extends VixenUIEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      const opts = init || {};
+      defineReadonly(this, 'data', opts.data === undefined ? null : (opts.data === null ? null : String(opts.data)), false);
+      defineReadonly(this, 'isComposing', Boolean(opts.isComposing), false);
+      defineReadonly(this, 'inputType', opts.inputType === undefined ? '' : String(opts.inputType), false);
+      defineReadonly(this, 'dataTransfer', opts.dataTransfer || null, false);
+    }
+    getTargetRanges() { return []; }
+  }
+
   webidl.adoptInterface('EventTarget', VixenEventTarget);
   webidl.adoptInterface('Event', VixenEvent);
   webidl.adoptInterface('CustomEvent', VixenCustomEvent);
   webidl.adoptInterface('UIEvent', VixenUIEvent);
   webidl.adoptInterface('MouseEvent', VixenMouseEvent);
+  webidl.adoptInterface('WheelEvent', VixenWheelEvent);
+  webidl.adoptInterface('KeyboardEvent', VixenKeyboardEvent);
+  webidl.adoptInterface('InputEvent', VixenInputEvent);
+  for (const name of ['addEventListener', 'removeEventListener', 'dispatchEvent']) {
+    if (typeof globalThis[name] !== 'function') {
+      Object.defineProperty(globalThis, name, {
+        value: VixenEventTarget.prototype[name],
+        writable: true,
+        configurable: true,
+      });
+    }
+  }
 
   // -----------------------------------------------------------------------
   // Geometry Interfaces
@@ -760,6 +982,68 @@ const WEB_API_BOOTSTRAP: &str = r#"
     return out;
   }
 
+  function minor3(m, dropRow, dropCol) {
+    const values = [];
+    for (let col = 0; col < 4; col++) {
+      if (col === dropCol) continue;
+      for (let row = 0; row < 4; row++) {
+        if (row === dropRow) continue;
+        values.push(m[col * 4 + row]);
+      }
+    }
+    return values[0] * (values[4] * values[8] - values[5] * values[7]) -
+      values[3] * (values[1] * values[8] - values[2] * values[7]) +
+      values[6] * (values[1] * values[5] - values[2] * values[4]);
+  }
+
+  function determinantMatrix(m) {
+    let det = 0;
+    for (let col = 0; col < 4; col++) {
+      det += (col % 2 === 0 ? 1 : -1) * m[col * 4] * minor3(m, 0, col);
+    }
+    return det;
+  }
+
+  function inverseMatrix(m) {
+    const det = determinantMatrix(m);
+    if (det === 0 || !Number.isFinite(det)) return new Array(16).fill(NaN);
+    const out = new Array(16).fill(0);
+    for (let row = 0; row < 4; row++) {
+      for (let col = 0; col < 4; col++) {
+        const sign = (row + col) % 2 === 0 ? 1 : -1;
+        out[col * 4 + row] = sign * minor3(m, col, row) / det;
+      }
+    }
+    return out;
+  }
+
+  function parseMatrixNumberList(input, expected, label) {
+    const parts = input.includes(',') ? input.split(',') : input.trim().split(/\s+/);
+    if (parts.length !== expected || parts.some((part) => part.trim() === '')) {
+      throw new TypeError(label + ' must contain ' + expected + ' numbers');
+    }
+    const values = parts.map((part) => Number(part.trim()));
+    if (values.some((value) => !Number.isFinite(value))) {
+      throw new TypeError(label + ' only accepts finite numbers');
+    }
+    return values;
+  }
+
+  function matrixFromCssTransform(input) {
+    const value = String(input).trim();
+    if (value === '' || value.toLowerCase() === 'none') return identityMatrix();
+    let match = value.match(/^matrix\((.*)\)$/i);
+    if (match) {
+      const values = parseMatrixNumberList(match[1], 6, 'matrix()');
+      return matrixFromInit(values);
+    }
+    match = value.match(/^matrix3d\((.*)\)$/i);
+    if (match) {
+      return parseMatrixNumberList(match[1], 16, 'matrix3d()');
+    }
+    throw new TypeError('DOMMatrix.setMatrixValue only supports none, matrix(), and matrix3d()');
+  }
+
   function translatedMatrix(tx, ty, tz) {
     const m = identityMatrix();
     m[12] = tx; m[13] = ty; m[14] = tz;
@@ -814,7 +1098,11 @@ const WEB_API_BOOTSTRAP: &str = r#"
         m[8] === 0 && m[9] === 0 && m[11] === 0 && m[14] === 0 && m[10] === 1 && m[15] === 1;
     }
     get isIdentity() { return this.__vixenMatrix.every((v, i) => v === identityMatrix()[i]); }
-    _new(matrix) { return new VixenDOMMatrix(matrix); }
+    _new(matrix) {
+      const out = new VixenDOMMatrix();
+      out.__vixenMatrix.splice(0, 16, ...matrix);
+      return out;
+    }
     multiply(other = undefined) { return this._new(multiplyMatrix(this.__vixenMatrix, matrixFromInit(other))); }
     translate(tx = 0, ty = 0, tz = 0) { return this._new(multiplyMatrix(this.__vixenMatrix, translatedMatrix(finiteNumber(tx), finiteNumber(ty), finiteNumber(tz)))); }
     scale(sx = 1, sy = sx, sz = 1) { return this._new(multiplyMatrix(this.__vixenMatrix, scaledMatrix(finiteNumber(sx, 1), finiteNumber(sy, finiteNumber(sx, 1)), finiteNumber(sz, 1)))); }
@@ -823,7 +1111,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
     skewY(angle = 0) { return this._new(multiplyMatrix(this.__vixenMatrix, skewYMatrix(angle))); }
     flipX() { return this.scale(-1, 1, 1); }
     flipY() { return this.scale(1, -1, 1); }
-    inverse() { throw new TypeError('DOMMatrix.inverse is not implemented by Vixen yet'); }
+    inverse() { return this._new(inverseMatrix(this.__vixenMatrix)); }
     transformPoint(point = {}) {
       const p = pointInit(point);
       const m = this.__vixenMatrix;
@@ -855,7 +1143,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
     skewXSelf(angle = 0) { return this._replace(this.skewX(angle).__vixenMatrix); }
     skewYSelf(angle = 0) { return this._replace(this.skewY(angle).__vixenMatrix); }
     invertSelf() { return this._replace(this.inverse().__vixenMatrix); }
-    setMatrixValue() { throw new TypeError('DOMMatrix.setMatrixValue is not implemented by Vixen yet'); }
+    setMatrixValue(transformList = '') { return this._replace(matrixFromCssTransform(transformList)); }
   }
 
   copyPrototypeMembers(VixenDOMMatrixReadOnly.prototype, VixenDOMMatrix.prototype);
@@ -1093,15 +1381,25 @@ const WEB_API_BOOTSTRAP: &str = r#"
 
   class VixenBlob {
     constructor(parts = [], options = {}) {
-      defineReadonly(this, '__vixenParts', Array.from(parts, (part) => part instanceof VixenBlob ? part.__vixenText : String(part)), false);
-      defineReadonly(this, '__vixenText', this.__vixenParts.join(''), false);
-      defineReadonly(this, 'size', byteLength(this.__vixenText), true);
+      const byteParts = Array.from(parts, bytesFromPart);
+      const bytes = concatBytes(byteParts);
+      defineReadonly(this, '__vixenParts', byteParts.map((part) => part.slice()), false);
+      defineReadonly(this, '__vixenBytes', bytes, false);
+      defineReadonly(this, '__vixenText', textFromBytes(bytes), false);
+      defineReadonly(this, 'size', bytes.length, true);
       defineReadonly(this, 'type', normalizeMime(options && options.type), true);
     }
-    slice(start = 0, end = this.size, type = '') { return new VixenBlob([this.__vixenText.slice(start, end)], { type }); }
+    slice(start = 0, end = this.size, type = '') {
+      const size = this.size;
+      const from = Number.isFinite(Number(start)) ? Number(start) : 0;
+      const to = Number.isFinite(Number(end)) ? Number(end) : size;
+      const relativeStart = from < 0 ? Math.max(size + Math.trunc(from), 0) : Math.min(Math.trunc(from), size);
+      const relativeEnd = to < 0 ? Math.max(size + Math.trunc(to), 0) : Math.min(Math.trunc(to), size);
+      return new VixenBlob([this.__vixenBytes.slice(relativeStart, Math.max(relativeStart, relativeEnd))], { type });
+    }
     text() { return Promise.resolve(this.__vixenText); }
-    arrayBuffer() { return Promise.resolve(textEncoder.encode(this.__vixenText).buffer); }
-    bytes() { return Promise.resolve(textEncoder.encode(this.__vixenText)); }
+    arrayBuffer() { return Promise.resolve(this.__vixenBytes.slice().buffer); }
+    bytes() { return Promise.resolve(this.__vixenBytes.slice()); }
     stream() { return null; }
   }
 
@@ -1112,6 +1410,112 @@ const WEB_API_BOOTSTRAP: &str = r#"
       defineReadonly(this, 'lastModified', options && options.lastModified !== undefined ? finiteNumber(options.lastModified, 0) : Date.now(), true);
       defineReadonly(this, 'webkitRelativePath', '', true);
     }
+  }
+
+  class VixenFileList {
+    constructor(files = []) {
+      const list = Array.from(files).filter((file) => file instanceof VixenFile);
+      defineReadonly(this, '__vixenFiles', Object.freeze(list.slice()), false);
+      syncIndexedValues(this, this.__vixenFiles);
+    }
+    get length() { return this.__vixenFiles.length; }
+    item(index) {
+      const n = Number(index);
+      return Number.isInteger(n) && n >= 0 && n < this.__vixenFiles.length ? this.__vixenFiles[n] : null;
+    }
+    entries() { return this.__vixenFiles.entries(); }
+    keys() { return this.__vixenFiles.keys(); }
+    values() { return this.__vixenFiles.values(); }
+    [Symbol.iterator]() { return this.values(); }
+  }
+
+  class VixenDataTransferItem {
+    constructor(kind, type, value) {
+      defineReadonly(this, '__vixenValue', value, false);
+      defineReadonly(this, 'kind', String(kind), true);
+      defineReadonly(this, 'type', normalizeMime(type), true);
+    }
+    getAsFile() { return this.kind === 'file' ? this.__vixenValue : null; }
+    getAsString(callback) {
+      if (this.kind !== 'string' || typeof callback !== 'function') return;
+      callback(String(this.__vixenValue));
+    }
+  }
+
+  class VixenDataTransferItemList {
+    constructor() {
+      defineReadonly(this, '__vixenItems', [], false);
+      syncIndexedValues(this, this.__vixenItems);
+    }
+    get length() { return this.__vixenItems.length; }
+    item(index) {
+      const n = Number(index);
+      return Number.isInteger(n) && n >= 0 && n < this.__vixenItems.length ? this.__vixenItems[n] : null;
+    }
+    add(data, type = '') {
+      let item;
+      if (data instanceof VixenFile) item = new VixenDataTransferItem('file', data.type, data);
+      else item = new VixenDataTransferItem('string', type, String(data));
+      this.__vixenItems.push(item);
+      syncIndexedValues(this, this.__vixenItems);
+      return item;
+    }
+    remove(index) {
+      const n = Number(index);
+      if (Number.isInteger(n) && n >= 0 && n < this.__vixenItems.length) this.__vixenItems.splice(n, 1);
+      syncIndexedValues(this, this.__vixenItems);
+    }
+    clear() {
+      this.__vixenItems.splice(0, this.__vixenItems.length);
+      syncIndexedValues(this, this.__vixenItems);
+    }
+    entries() { return this.__vixenItems.entries(); }
+    keys() { return this.__vixenItems.keys(); }
+    values() { return this.__vixenItems.values(); }
+    [Symbol.iterator]() { return this.values(); }
+  }
+
+  class VixenDataTransfer {
+    constructor() {
+      defineReadonly(this, 'items', new VixenDataTransferItemList(), true);
+      defineData(this, 'dropEffect', 'none', true);
+      defineData(this, 'effectAllowed', 'all', true);
+    }
+    get files() {
+      return new VixenFileList(this.items.__vixenItems.map((item) => item.getAsFile()).filter((file) => file !== null));
+    }
+    get types() {
+      const types = [];
+      for (const item of this.items) {
+        const type = item.kind === 'file' ? 'Files' : item.type;
+        if (type && !types.includes(type)) types.push(type);
+      }
+      return Object.freeze(types);
+    }
+    getData(type) {
+      const normalized = normalizeMime(type);
+      const item = this.items.__vixenItems.find((entry) => entry.kind === 'string' && entry.type === normalized);
+      return item ? String(item.__vixenValue) : '';
+    }
+    setData(type, data) {
+      const normalized = normalizeMime(type);
+      this.clearData(normalized);
+      this.items.__vixenItems.push(new VixenDataTransferItem('string', normalized, String(data)));
+      syncIndexedValues(this.items, this.items.__vixenItems);
+    }
+    clearData(type = undefined) {
+      if (type === undefined) this.items.clear();
+      else {
+        const normalized = normalizeMime(type);
+        for (let i = this.items.__vixenItems.length - 1; i >= 0; i--) {
+          if (this.items.__vixenItems[i].kind === 'string' && this.items.__vixenItems[i].type === normalized) {
+            this.items.__vixenItems.splice(i, 1);
+          }
+        }
+        syncIndexedValues(this.items, this.items.__vixenItems);
+      }
+    }
+    setDragImage() {}
   }
 
   function bodyInfo(body) {
@@ -1188,9 +1592,11 @@ const WEB_API_BOOTSTRAP: &str = r#"
       return response;
     }
     static json(data, init = {}) {
-      const response = new VixenResponse(JSON.stringify(data), init);
-      if (!response.headers.has('content-type')) response.headers.set('Content-Type', 'application/json');
-      return response;
+      const nextInit = Object.assign({}, init || {});
+      const headers = filteredHeaders(nextInit.headers, forbiddenResponseHeader);
+      if (!headers.has('content-type')) headers.set('Content-Type', 'application/json');
+      nextInit.headers = headers;
+      return new VixenResponse(JSON.stringify(data), nextInit);
     }
     static redirect(url, status = 302) { return new VixenResponse(null, { status, headers: [['Location', new VixenURL(url).href]] }); }
   }
@@ -1198,6 +1604,10 @@ const WEB_API_BOOTSTRAP: &str = r#"
   webidl.adoptInterface('Headers', VixenHeaders);
   webidl.adoptInterface('Blob', VixenBlob);
   webidl.adoptInterface('File', VixenFile);
+  webidl.adoptInterface('FileList', VixenFileList);
+  webidl.adoptInterface('DataTransferItem', VixenDataTransferItem);
+  webidl.adoptInterface('DataTransferItemList', VixenDataTransferItemList);
+  webidl.adoptInterface('DataTransfer', VixenDataTransfer);
   webidl.adoptInterface('Request', VixenRequest);
   webidl.adoptInterface('Response', VixenResponse);
 
@@ -1241,11 +1651,136 @@ const WEB_API_BOOTSTRAP: &str = r#"
     abort(reason = undefined) { this.signal.__vixenAbortState.aborted = true; this.signal.__vixenAbortState.reason = reason; }
   }
 
+  const mutationObservers = new Set();
+  let mutationDeliveryScheduled = false;
+
+  function queueMicrotaskCompat(callback) {
+    Promise.resolve().then(callback);
+  }
+
+  if (typeof globalThis.queueMicrotask !== 'function') {
+    defineGlobal('queueMicrotask', (callback) => {
+      if (typeof callback !== 'function') throw new TypeError('queueMicrotask callback must be a function');
+      queueMicrotaskCompat(callback);
+    });
+  }
+
+  function mutationNodeList(nodes) {
+    const hook = globalThis.__vixenMakeNodeList;
+    if (typeof hook === 'function') return hook(nodes || []);
+    const list = Array.from(nodes || []);
+    list.item = function (index) {
+      const n = Number(index);
+      return Number.isInteger(n) && n >= 0 && n < list.length ? list[n] : null;
+    };
+    return list;
+  }
+
+  class VixenMutationRecord {
+    constructor(record) {
+      defineReadonly(this, 'type', record.type, true);
+      defineReadonly(this, 'target', record.target || null, true);
+      defineReadonly(this, 'addedNodes', mutationNodeList(record.addedNodes), true);
+      defineReadonly(this, 'removedNodes', mutationNodeList(record.removedNodes), true);
+      defineReadonly(this, 'previousSibling', record.previousSibling || null, true);
+      defineReadonly(this, 'nextSibling', record.nextSibling || null, true);
+      defineReadonly(this, 'attributeName', record.attributeName || null, true);
+      defineReadonly(this, 'attributeNamespace', record.attributeNamespace || null, true);
+      defineReadonly(this, 'oldValue', record.oldValue === undefined ? null : record.oldValue, true);
+    }
+  }
+
+  function normalizeMutationOptions(options = {}) {
+    const normalized = {
+      childList: Boolean(options.childList),
+      attributes: Boolean(options.attributes),
+      attributeFilter: Array.isArray(options.attributeFilter)
+        ? options.attributeFilter.map((name) => String(name).toLowerCase())
+        : null,
+      attributeOldValue: Boolean(options.attributeOldValue),
+      characterData: Boolean(options.characterData),
+      characterDataOldValue: Boolean(options.characterDataOldValue),
+      subtree: Boolean(options.subtree),
+    };
+    if (normalized.attributeOldValue || normalized.attributeFilter !== null) normalized.attributes = true;
+    if (normalized.characterDataOldValue) normalized.characterData = true;
+    if (!normalized.childList && !normalized.attributes && !normalized.characterData) {
+      throw new TypeError('MutationObserver.observe requires childList, attributes, or characterData');
+    }
+    return normalized;
+  }
+
+  function mutationRecordMatchesOptions(record, options) {
+    if (record.type === 'childList') return options.childList;
+    if (record.type === 'attributes') {
+      if (!options.attributes) return false;
+      return options.attributeFilter === null || options.attributeFilter.includes(String(record.attributeName || '').toLowerCase());
+    }
+    if (record.type === 'characterData') return options.characterData;
+    return false;
+  }
+
+  function mutationTargetInScope(root, target, options) {
+    if (root === target) return true;
+    if (!options.subtree) return false;
+    const hook = globalThis.__vixenNodeContains;
+    return typeof hook === 'function' && hook(root, target);
+  }
+
+  function tailorMutationRecord(record, options) {
+    const tailored = Object.assign({}, record);
+    if (record.type === 'attributes' && !options.attributeOldValue) tailored.oldValue = null;
+    if (record.type === 'characterData' && !options.characterDataOldValue) tailored.oldValue = null;
+    return new VixenMutationRecord(tailored);
+  }
+
+  function scheduleMutationDelivery() {
+    if (mutationDeliveryScheduled) return;
+    mutationDeliveryScheduled = true;
+    queueMicrotaskCompat(() => {
+      mutationDeliveryScheduled = false;
+      for (const observer of Array.from(mutationObservers)) observer.__vixenDeliver();
+    });
+  }
+
+  function queueMutationRecord(record) {
+    for (const observer of mutationObservers) {
+      for (const registration of observer.__vixenRegistrations) {
+        if (!mutationTargetInScope(registration.target, record.target, registration.options)) continue;
+        if (!mutationRecordMatchesOptions(record, registration.options)) continue;
+        observer.__vixenRecords.push(tailorMutationRecord(record, registration.options));
+        break;
+      }
+    }
+    if ([...mutationObservers].some((observer) => observer.__vixenRecords.length > 0)) {
+      scheduleMutationDelivery();
+    }
+  }
+
   class VixenMutationObserver {
-    constructor(callback) { defineReadonly(this, '__vixenCallback', callback, false); }
-    observe() {}
-    disconnect() {}
-    takeRecords() { return []; }
+    constructor(callback) {
+      if (typeof callback !== 'function') throw new TypeError('MutationObserver callback must be a function');
+      defineReadonly(this, '__vixenCallback', callback, false);
+      defineReadonly(this, '__vixenRecords', [], false);
+      defineReadonly(this, '__vixenRegistrations', [], false);
+      mutationObservers.add(this);
+    }
+    observe(target, options = {}) {
+      if (target === null || (typeof target !== 'object' && typeof target !== 'function')) {
+        throw new TypeError('MutationObserver.observe target must be a Node');
+      }
+      const normalized = normalizeMutationOptions(options);
+      const existing = this.__vixenRegistrations.find((registration) => registration.target === target);
+      if (existing) existing.options = normalized;
+      else this.__vixenRegistrations.push({ target, options: normalized });
+    }
+    disconnect() { this.__vixenRegistrations.splice(0, this.__vixenRegistrations.length); }
+    takeRecords() { return this.__vixenRecords.splice(0, this.__vixenRecords.length); }
+    __vixenDeliver() {
+      const records = this.takeRecords();
+      if (records.length === 0) return;
+      this.__vixenCallback.call(this, records, this);
+    }
   }
 
   function cloneValue(value, seen = new Map()) {
@@ -1320,8 +1855,11 @@ const WEB_API_BOOTSTRAP: &str = r#"
 
   webidl.adoptInterface('AbortSignal', VixenAbortSignal);
   webidl.adoptInterface('AbortController', VixenAbortController);
+  webidl.adoptInterface('MutationRecord', VixenMutationRecord);
   webidl.adoptInterface('MutationObserver', VixenMutationObserver);
   webidl.adoptInterface('DOMParser', VixenDOMParser);
+
+  defineGlobal('__vixenQueueMutationRecord', queueMutationRecord);
 
   defineGlobal('structuredClone', cloneValue);
 
@@ -1413,19 +1951,46 @@ const WEB_API_BOOTSTRAP: &str = r#"
 
   function mediaMatches(query) {
     const q = String(query).toLowerCase();
-    if (q.includes('print')) return false;
-    if (q.includes('prefers-color-scheme: light')) return true;
-    if (q.includes('orientation: landscape')) return true;
+    const width = Number(globalThis.innerWidth) || 800;
+    const height = Number(globalThis.innerHeight) || 600;
+    const media = globalThis.__vixenEmulatedMedia || {};
+    const mediaType = String(media.media || 'screen').toLowerCase();
+    const colorScheme = String(media.colorScheme || 'light').toLowerCase();
+    if (q.includes('print') && mediaType !== 'print') return false;
+    if (q.includes('screen') && mediaType === 'print') return false;
+    const requestedColorScheme = q.match(/prefers-color-scheme:\s*(dark|light|no-preference)/);
+    if (requestedColorScheme && colorScheme !== requestedColorScheme[1]) return false;
+    if (q.includes('orientation: landscape')) return width >= height;
+    if (q.includes('orientation: portrait')) return height > width;
     const min = q.match(/min-width:\s*(\d+)px/);
-    if (min && 800 < Number(min[1])) return false;
+    if (min && width < Number(min[1])) return false;
     const max = q.match(/max-width:\s*(\d+)px/);
-    if (max && 800 > Number(max[1])) return false;
-    return q.includes('screen') || q.includes('min-width') || q.includes('max-width') || q.trim() === 'all';
+    if (max && width > Number(max[1])) return false;
+    return q.includes('screen') || q.includes('print') || q.includes('min-width') || q.includes('max-width') || q.includes('prefers-color-scheme') || q.trim() === 'all';
   }
 
   function matchMedia(query) {
     return { media: String(query), matches: mediaMatches(query), onchange: null, addEventListener() {}, removeEventListener() {}, dispatchEvent() { return true; } };
   }
+
+  let nextTimerId = 1;
+  function runSoon(callback, args) {
+    const id = nextTimerId++;
+    if (typeof callback === 'function') {
+      Promise.resolve().then(() => callback(...args));
+    } else {
+      Promise.resolve().then(() => globalThis.eval(String(callback)));
+    }
+    return id;
+  }
+  function setTimeoutShim(callback, timeout = 0, ...args) { return runSoon(callback, args); }
+  function clearTimeoutShim(id) {}
+  function setIntervalShim(callback, timeout = 0, ...args) { return runSoon(callback, args); }
+  function clearIntervalShim(id) {}
+  function requestAnimationFrameShim(callback) {
+    return runSoon((cb) => cb(performance.now()), [callback]);
+  }
+  function cancelAnimationFrameShim(id) {}
 
   webidl.adoptInterface('Performance', VixenPerformance);
   webidl.adoptInterface('Storage', VixenStorage);
@@ -1441,6 +2006,12 @@ const WEB_API_BOOTSTRAP: &str = r#"
   defineGlobal('screen', { width: 800, height: 600, availWidth: 800, availHeight: 600, colorDepth: 24, pixelDepth: 24 });
   defineGlobal('visualViewport', { offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, width: 800, height: 600, scale: 1 });
   defineGlobal('matchMedia', matchMedia);
+  defineGlobal('setTimeout', setTimeoutShim);
+  defineGlobal('clearTimeout', clearTimeoutShim);
+  defineGlobal('setInterval', setIntervalShim);
+  defineGlobal('clearInterval', clearIntervalShim);
+  defineGlobal('requestAnimationFrame', requestAnimationFrameShim);
+  defineGlobal('cancelAnimationFrame', cancelAnimationFrameShim);
   Object.defineProperties(globalThis, {
     innerWidth: { value: 800, writable: true, configurable: true },
     innerHeight: { value: 600, writable: true, configurable: true },

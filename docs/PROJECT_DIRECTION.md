@@ -13,6 +13,13 @@ The product should feel closer to Ghostty than to a kitchen-sink browser:
 small, fast to build, efficient to run, easy to iterate on, and boringly
 reliable.
 
+The ambition is still a real browser, not a demo shell. Vixen should eventually
+be able to load a measured corridor of everyday sites, preserve profile state,
+handle forms/navigation/storage securely, expose a useful Playwright/CDP surface,
+and publish honest compatibility numbers. The constraint is not lower ambition;
+it is refusing duplicate engines, duplicate renderers, broad unbacked API shape,
+and UI features that do not move the browser toward daily usefulness.
+
 ## Primary users
 
 - Desktop Linux users who want a focused daily browser.

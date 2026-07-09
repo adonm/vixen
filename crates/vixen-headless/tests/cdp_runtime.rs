@@ -221,12 +221,43 @@ fn runtime_evaluate_surface() {
     let html = dir.path().join("cdp-dom-host.html");
     std::fs::write(
         &html,
-        "<html><head><title>CDP DOM</title><style>body { margin: 0; } #hit { width: 80px; height: 30px; display: block; } #lead { color: blue; font-size: 20px !important; } p { margin-left: 4px; } #box { width: 40px; height: 20px; }</style><link id='theme' rel='stylesheet alternate'><script>globalThis.__cdpInline = 40; localStorage.setItem('cdp-inline', 'ran');</script><script>globalThis.__cdpInline += 2;</script><script src='cdp-external.js'></script></head><body><button id='hit'>Hit</button><script>document.querySelector('#hit').addEventListener('click', () => { globalThis.__cdpClicked = (globalThis.__cdpClicked || 0) + 1; console.log('clicked', document.querySelector('#hit').id); });</script><p id='lead' class='note note callout' data-role='copy' data-author-name='ada' style='font-size: 18px; margin-left: 10px'>Hello <b>CDP</b></p><div id='box'>Box</div><form id='contact'><input name='name' value='Ada'></form><iframe id='frame' sandbox='allow-scripts allow-same-origin'></iframe></body></html>",
+        "<html><head><title>CDP DOM</title><style>body { margin: 0; } #hit { width: 80px; height: 30px; display: block; } #lead { color: blue; font-size: 20px !important; } p { margin-left: 4px; } #box { width: 40px; height: 20px; }</style><link id='theme' rel='stylesheet alternate'><script>globalThis.__cdpInline = 40; localStorage.setItem('cdp-inline', 'ran');</script><script>globalThis.__cdpInline += 2;</script><script src='cdp-external.js'></script></head><body><button id='hit'>Hit</button><p id='status'>waiting</p><div id='dynamic-root'></div><script>document.querySelector('#hit').addEventListener('click', () => { globalThis.__cdpClicked = (globalThis.__cdpClicked || 0) + 1; const status = document.querySelector('#status'); status.textContent = 'clicked:' + globalThis.__cdpClicked; status.classList.add('clicked'); status.setAttribute('data-clicked', String(globalThis.__cdpClicked)); status.style.width = '140px'; const root = document.querySelector('#dynamic-root'); const dynamic = document.createElement('span'); dynamic.id = 'dynamic'; dynamic.className = 'badge'; dynamic.textContent = 'dynamic:' + globalThis.__cdpClicked; const gone = document.createElement('em'); gone.id = 'gone'; gone.textContent = 'gone'; root.appendChild(gone); root.removeChild(gone); root.replaceChildren(dynamic, ' ready'); console.log('clicked', document.querySelector('#hit').id); });</script><p id='lead' class='note note callout' data-role='copy' data-author-name='ada' style='font-size: 18px; margin-left: 10px'>Hello <b>CDP</b></p><div id='box'>Box</div><form id='contact'><input name='name' value='Ada'></form><iframe id='frame' sandbox='allow-scripts allow-same-origin'></iframe></body></html>",
     )
     .unwrap();
     let url = format!("file://{}", html.display());
     let v = dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
-    assert_eq!(v["frameId"], "main");
+    assert_eq!(v["frameId"], "tab-1");
+
+    dispatch_one(
+        &mut s,
+        "Emulation.setDeviceMetricsOverride",
+        json!({ "width": 500, "height": 320, "deviceScaleFactor": 1, "mobile": false }),
+    );
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "`${innerWidth}x${innerHeight}:${document.documentElement.clientWidth}x${document.documentElement.clientHeight}:${matchMedia('(max-width: 600px)').matches}`" }),
+    );
+    assert_eq!(v["result"]["type"], "string");
+    assert_eq!(v["result"]["value"], "500x320:500x320:true");
+    dispatch_one(&mut s, "Emulation.clearDeviceMetricsOverride", json!({}));
+
+    dispatch_one(
+        &mut s,
+        "Emulation.setEmulatedMedia",
+        json!({
+            "media": "print",
+            "features": [{ "name": "prefers-color-scheme", "value": "dark" }]
+        }),
+    );
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "`${matchMedia('screen').matches}:${matchMedia('print').matches}:${matchMedia('(prefers-color-scheme: dark)').matches}:${matchMedia('(prefers-color-scheme: light)').matches}`" }),
+    );
+    assert_eq!(v["result"]["type"], "string");
+    assert_eq!(v["result"]["value"], "false:true:true:false");
+    dispatch_one(&mut s, "Emulation.setEmulatedMedia", json!({}));
 
     let v = dispatch_one(
         &mut s,
@@ -261,6 +292,30 @@ fn runtime_evaluate_surface() {
     );
     assert_eq!(v["result"]["type"], "number");
     assert_eq!(v["result"]["value"], 1);
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.querySelector('#status').textContent" }),
+    );
+    assert_eq!(v["result"]["type"], "string");
+    assert_eq!(v["result"]["value"], "clicked:1");
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "(() => document.querySelector('#status').classList.contains('clicked') + ':' + document.querySelector('#status').getAttribute('data-clicked') + ':' + document.querySelector('#status').style.width)()" }),
+    );
+    assert_eq!(v["result"]["type"], "string");
+    assert_eq!(v["result"]["value"], "true:1:140px");
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "(() => document.querySelector('#dynamic').textContent + ':' + document.querySelector('#dynamic').className + ':' + (document.querySelector('#gone') === null) + ':' + document.querySelector('#dynamic-root').textContent)()" }),
+    );
+    assert_eq!(v["result"]["type"], "string");
+    assert_eq!(v["result"]["value"], "dynamic:1:badge:true:dynamic:1 ready");
 
     let v = dispatch_one(
         &mut s,
@@ -430,6 +485,34 @@ fn runtime_evaluate_surface() {
     assert_eq!(v["result"]["type"], "string");
     assert_eq!(v["result"]["value"], "Ada");
 
+    dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "(() => { const field = document.querySelector('input[name=name]'); globalThis.__keyEvents = []; field.addEventListener('keydown', (event) => __keyEvents.push('keydown:' + event.key)); field.addEventListener('input', (event) => __keyEvents.push('input:' + event.inputType + ':' + event.data)); field.addEventListener('change', () => __keyEvents.push('change')); field.addEventListener('keyup', (event) => __keyEvents.push('keyup:' + event.key)); field.focus(); field.select(); return 'ready'; })()" }),
+    );
+    let v = dispatch_one(
+        &mut s,
+        "Input.dispatchKeyEvent",
+        json!({ "type": "keyDown", "key": "B", "code": "KeyB", "text": "B" }),
+    );
+    assert_eq!(v, json!({}));
+    let v = dispatch_one(
+        &mut s,
+        "Input.dispatchKeyEvent",
+        json!({ "type": "keyUp", "key": "B", "code": "KeyB" }),
+    );
+    assert_eq!(v, json!({}));
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "(() => { const form = document.getElementById('contact'); const field = document.querySelector('input[name=name]'); return field.value + ':' + new FormData(form).get('name') + ':' + __keyEvents.join('>'); })()" }),
+    );
+    assert_eq!(v["result"]["type"], "string");
+    assert_eq!(
+        v["result"]["value"],
+        "B:B:keydown:B>input:insertText:B>change>keyup:B"
+    );
+
     let v = dispatch_one(
         &mut s,
         "Runtime.evaluate",
@@ -454,7 +537,7 @@ fn runtime_evaluate_surface() {
     .unwrap();
     let blocked_url = format!("file://{}", blocked_html.display());
     let v = dispatch_one(&mut s, "Page.navigate", json!({ "url": blocked_url }));
-    assert_eq!(v["frameId"], "main");
+    assert_eq!(v["frameId"], "tab-1");
 
     let v = dispatch_one(
         &mut s,
@@ -486,6 +569,158 @@ fn runtime_evaluate_surface() {
         lines[1]["params"]["exceptionDetails"]["code"],
         codes::SCRIPT_EVAL
     );
+}
+
+#[test]
+fn runtime_navigation_history_and_form_actions_update_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let one = dir.path().join("one.html");
+    let two = dir.path().join("two.html");
+    std::fs::write(
+        &one,
+        "<title>One</title><form id='f' action='two.html'><input name='q' value='rust'><textarea name='body'></textarea><button id='go'>Go</button></form>",
+    )
+    .unwrap();
+    std::fs::write(&two, "<title>Two</title><p id='dest'>Arrived</p>").unwrap();
+
+    let one_url = format!("file://{}", one.display());
+    let mut s = CdpState::default();
+    dispatch_one(&mut s, "Runtime.enable", json!({}));
+    dispatch_one(&mut s, "Page.navigate", json!({ "url": one_url }));
+
+    let lines = dispatch_lines(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "location.assign('two.html'); 'queued'" }),
+    );
+    assert_eq!(lines[0]["result"]["result"]["value"], "queued");
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["method"] == "Page.loadEventFired")
+    );
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.title" }),
+    );
+    assert_eq!(v["result"]["value"], "Two");
+
+    dispatch_one(&mut s, "Page.reload", json!({}));
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.title" }),
+    );
+    assert_eq!(v["result"]["value"], "Two");
+
+    let history = dispatch_one(&mut s, "Page.getNavigationHistory", json!({}));
+    assert_eq!(history["currentIndex"], 1);
+    assert_eq!(history["entries"].as_array().unwrap().len(), 2);
+    let one_entry_id = history["entries"][0]["id"].as_u64().unwrap();
+    let two_entry_id = history["entries"][1]["id"].as_u64().unwrap();
+
+    dispatch_one(
+        &mut s,
+        "Page.navigateToHistoryEntry",
+        json!({ "entryId": one_entry_id }),
+    );
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.title" }),
+    );
+    assert_eq!(v["result"]["value"], "One");
+    dispatch_one(
+        &mut s,
+        "Page.navigateToHistoryEntry",
+        json!({ "entryId": two_entry_id }),
+    );
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.title" }),
+    );
+    assert_eq!(v["result"]["value"], "Two");
+
+    dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "history.back(); 'back'" }),
+    );
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.title" }),
+    );
+    assert_eq!(v["result"]["value"], "One");
+
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "history.pushState({ ok: 7 }, '', 'state.html'); history.length + ':' + history.state.ok + ':' + location.href.endsWith('/state.html')" }),
+    );
+    assert_eq!(v["result"]["value"], "2:7:true");
+    let targets = dispatch_one(&mut s, "Target.getTargets", json!({}));
+    assert!(
+        targets["targetInfos"][0]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with("/state.html")
+    );
+
+    dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "const q = document.querySelector('input[name=q]'); q.focus(); q.select(); 'focused'" }),
+    );
+    for ch in ["f", "e", "r", "r", "i", "s"] {
+        dispatch_one(
+            &mut s,
+            "Input.dispatchKeyEvent",
+            json!({ "type": "keyDown", "key": ch, "text": ch }),
+        );
+        dispatch_one(
+            &mut s,
+            "Input.dispatchKeyEvent",
+            json!({ "type": "keyUp", "key": ch }),
+        );
+    }
+    dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "const body = document.querySelector('textarea[name=body]'); body.focus(); body.select(); 'body-focused'" }),
+    );
+    for ch in ["h", "e", "l", "l", "o", " ", "c", "d", "p"] {
+        dispatch_one(
+            &mut s,
+            "Input.dispatchKeyEvent",
+            json!({ "type": "keyDown", "key": ch, "text": ch }),
+        );
+        dispatch_one(
+            &mut s,
+            "Input.dispatchKeyEvent",
+            json!({ "type": "keyUp", "key": ch }),
+        );
+    }
+
+    dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.querySelector('#go').click(); 'submitted'" }),
+    );
+    let targets = dispatch_one(&mut s, "Target.getTargets", json!({}));
+    let final_url = targets["targetInfos"][0]["url"].as_str().unwrap();
+    assert!(
+        final_url.ends_with("/two.html?q=ferris&body=hello+cdp"),
+        "{final_url}"
+    );
+    let v = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": "document.title" }),
+    );
+    assert_eq!(v["result"]["value"], "Two");
 }
 
 #[test]

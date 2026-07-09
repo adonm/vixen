@@ -159,7 +159,17 @@ fn computed_style_property_value(properties: &[(String, String)], property: &str
         .iter()
         .find(|(name, _)| computed_style_property_matches(name, property))
         .map(|(_, value)| value.clone())
-        .unwrap_or_default()
+        .unwrap_or_else(|| initial_computed_style_value(property).to_owned())
+}
+
+fn initial_computed_style_value(property: &str) -> &'static str {
+    match property.to_ascii_lowercase().as_str() {
+        "visibility" => "visible",
+        "cursor" => "auto",
+        "opacity" => "1",
+        "pointer-events" => "auto",
+        _ => "",
+    }
 }
 
 fn computed_style_property_matches(name: &str, property: &str) -> bool {
@@ -193,7 +203,52 @@ const CSSOM_API_BOOTSTRAP: &str = r#"
     return value.replace(/[A-Z]/g, (ch) => '-' + ch.toLowerCase()).replace(/_/g, '-');
   }
 
+  function localComputedStyleValue(property) {
+    const name = cssPropertyName(property);
+    if (name === 'display') return 'inline';
+    if (name === 'visibility') return 'visible';
+    if (name === 'cursor') return 'auto';
+    return '';
+  }
+
+  function dynamicStyleValue(nodeId, property) {
+    const document = globalThis.document;
+    if (!document || typeof document.querySelectorAll !== 'function') return null;
+    const elements = document.querySelectorAll('*');
+    let element = null;
+    for (const candidate of elements) {
+      if (candidate && candidate.__vixenNodeId === nodeId) {
+        element = candidate;
+        break;
+      }
+    }
+    if (!element) return null;
+    const name = cssPropertyName(property);
+    let value = null;
+    const styles = document.querySelectorAll('style');
+    for (const style of styles) {
+      if (!style || !(style.__vixenNodeId < 0)) continue;
+      const cssText = String(style.textContent || '');
+      const rulePattern = /([^{}]+)\{([^{}]+)\}/g;
+      let match;
+      while ((match = rulePattern.exec(cssText)) !== null) {
+        const selector = match[1].trim();
+        if (!selector || typeof element.matches !== 'function' || !element.matches(selector)) continue;
+        for (const declaration of match[2].split(';')) {
+          const index = declaration.indexOf(':');
+          if (index === -1) continue;
+          const prop = cssPropertyName(declaration.slice(0, index).trim());
+          if (prop === name) value = declaration.slice(index + 1).replace(/!important\s*$/i, '').trim();
+        }
+      }
+    }
+    return value;
+  }
+
   function computedStyleValue(nodeId, property) {
+    if (Number(nodeId) < 0) return localComputedStyleValue(property);
+    const dynamic = dynamicStyleValue(nodeId, property);
+    if (dynamic !== null) return dynamic;
     return unwrapCssomOp(op_vixen_computed_style_property(nodeId, String(property))).value;
   }
 

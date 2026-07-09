@@ -199,6 +199,15 @@ adopt those generated interfaces. Pure value APIs may stay JS-only when that is
 smaller and state-free; page/network/storage/security-backed APIs cross a Rust
 op/resource boundary. See [`RUNTIME_WEB_PLATFORM.md`](RUNTIME_WEB_PLATFORM.md).
 
+The main design lesson from the first runtime-host and CDP/WPT migrations is to
+avoid parallel browser models. A feature is not considered browser-shaped until
+the same path serves all relevant seams: `Page` state, headless `--eval`, CDP,
+WPT fixtures, and the GUI where visible. Temporary string projections in
+`Page::evaluate_dom_expression` are allowed only as deletion targets while a
+`deno_core` host module catches up; new browser APIs should not start there.
+Likewise, automation must not grow an automation-only DOM, and layout/paint must
+not grow post-pass correction layers that hide bad authoritative state.
+
 ---
 
 ## Trust boundaries

@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use vixen_api::{ElementInfo, EngineDiagnostic, PageSnapshot};
 use vixen_engine::page::Page;
+use vixen_engine::script::JsRuntime;
 use vixen_wpt::harness::{HarnessEngine, RgbaScreenshot};
 
 /// Shared Page-backed WPT harness adapter for committed manifests and optional
@@ -59,9 +60,14 @@ impl HarnessEngine for PageHarnessEngine {
     }
 
     fn eval(&self, expr: &str) -> Result<String, String> {
-        self.page.evaluate_dom_expression(expr).unwrap_or_else(|| {
-            Err("eval not available on the read-only Page harness adapter".into())
-        })
+        match JsRuntime::new().and_then(|mut runtime| runtime.evaluate_with_page(expr, &self.page))
+        {
+            Ok(value) => Ok(value.to_display()),
+            Err(runtime_error) => self
+                .page
+                .evaluate_dom_expression(expr)
+                .unwrap_or_else(|| Err(runtime_error.to_string())),
+        }
     }
 
     fn display_list(&self, vw: u32, vh: u32) -> Result<String, String> {
@@ -105,38 +111,8 @@ pub fn workspace_root() -> std::path::PathBuf {
 }
 
 pub fn assert_clean_report(report: &vixen_wpt::harness::Report) {
-    let mut failures = Vec::new();
-    for fixture in &report.fixtures {
-        for (check, outcome) in &fixture.results {
-            match outcome {
-                vixen_wpt::check::Outcome::Pass => {}
-                vixen_wpt::check::Outcome::Fail(msg) => failures.push(format!(
-                    "{} [{}:{}] :: {:?} → FAIL: {}",
-                    fixture.url,
-                    fixture.source.as_str(),
-                    fixture.category,
-                    check,
-                    msg
-                )),
-                vixen_wpt::check::Outcome::Skipped(msg) => failures.push(format!(
-                    "{} [{}:{}] :: {:?} → SKIP: {}",
-                    fixture.url,
-                    fixture.source.as_str(),
-                    fixture.category,
-                    check,
-                    msg
-                )),
-            }
-        }
-    }
-
-    assert!(
-        report.is_clean(),
-        "{}\nFailures:\n{}",
-        report.summary_text(),
-        failures.join("\n")
-    );
-    eprintln!("{}", report.summary_text());
+    assert!(report.is_clean(), "{}", report.detailed_text());
+    eprintln!("{}", report.detailed_text());
 }
 
 #[allow(dead_code)]

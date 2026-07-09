@@ -26,6 +26,7 @@ mod webidl;
 pub struct JsRuntime {
     network_config: vixen_net::NetworkConfig,
     runtime: Option<deno_core::JsRuntime>,
+    dom_mutations: Option<dom::DomMutationSink>,
     realm_key: RealmKey,
 }
 
@@ -65,6 +66,21 @@ pub struct JsConsoleArg {
     pub description: String,
 }
 
+/// A page modal dialog event captured from the current JS realm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsDialogEvent {
+    pub kind: String,
+    pub message: String,
+    pub default_prompt: String,
+}
+
+/// A CDP runtime binding call captured from the current JS realm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsBindingEvent {
+    pub name: String,
+    pub payload: String,
+}
+
 /// JSON-scalar console argument values preserved across the runtime boundary.
 #[derive(Debug, Clone, PartialEq)]
 pub enum JsConsoleValue {
@@ -72,6 +88,38 @@ pub enum JsConsoleValue {
     Number(f64),
     Bool(bool),
     Null,
+}
+
+/// A host-visible navigation/history action queued by the page realm.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JsNavigationAction {
+    Navigate {
+        url: String,
+        replace: bool,
+    },
+    SetContent {
+        html: String,
+    },
+    FormSubmit {
+        form_id: String,
+        form_node_id: usize,
+        submitter_id: Option<String>,
+        action: String,
+        method: String,
+    },
+    HistoryPush {
+        url: String,
+        state_json: String,
+        title: String,
+    },
+    HistoryReplace {
+        url: String,
+        state_json: String,
+        title: String,
+    },
+    HistoryTraverse {
+        delta: i32,
+    },
 }
 
 impl JsValue {
@@ -109,10 +157,11 @@ impl JsRuntime {
     pub fn with_network_config(
         network_config: vixen_net::NetworkConfig,
     ) -> Result<Self, EngineError> {
-        let runtime = runtime::new_deno_runtime(None, network_config.clone())?;
+        let init = runtime::new_deno_runtime(None, network_config.clone())?;
         Ok(Self {
             network_config,
-            runtime: Some(runtime),
+            runtime: Some(init.runtime),
+            dom_mutations: init.dom_mutations,
             realm_key: RealmKey::NoPage,
         })
     }
@@ -130,6 +179,18 @@ impl JsRuntime {
         self.evaluate_with_page_context(src, Some(page))
     }
 
+    /// Evaluate in a persistent page realm and commit supported DOM mutations
+    /// back to the authoritative [`Page`] after the script completes.
+    pub fn evaluate_with_page_mut(
+        &mut self,
+        src: &str,
+        page: &mut Page,
+    ) -> Result<JsValue, EngineError> {
+        let value = self.evaluate_with_page_context(src, Some(&*page))?;
+        self.apply_dom_mutations(page)?;
+        Ok(value)
+    }
+
     /// Execute classic page scripts in document order, using the persistent
     /// page realm for `page`.
     ///
@@ -139,7 +200,7 @@ impl JsRuntime {
     /// HTTP(S) fetches cross `vixen-net` URL policy, and `nosniff` is enforced
     /// before execution. Blocked/failed subresources are skipped; JavaScript
     /// exceptions still surface as [`codes::SCRIPT_EVAL`] errors.
-    pub fn execute_page_scripts(&mut self, page: &Page) -> Result<usize, EngineError> {
+    pub fn execute_page_scripts(&mut self, page: &mut Page) -> Result<usize, EngineError> {
         let items = page.document().script_execution_items();
         if !items.iter().any(|item| {
             matches!(
@@ -179,7 +240,7 @@ impl JsRuntime {
                         page,
                         &script,
                     )? {
-                        self.evaluate_with_page(&source, page)?;
+                        self.evaluate_with_page_mut(&source, page)?;
                         executed += 1;
                     }
                 }
@@ -195,6 +256,7 @@ impl JsRuntime {
     /// new URL and DOM snapshot are byte-for-byte identical.
     pub fn reset_realm(&mut self) {
         self.runtime = None;
+        self.dom_mutations = None;
         self.realm_key = RealmKey::NoPage;
     }
 
@@ -217,6 +279,77 @@ impl JsRuntime {
         match runtime::js_value_from_global(runtime, result)? {
             JsValue::String(json) => parse_console_events(&json),
             _ => Ok(Vec::new()),
+        }
+    }
+
+    /// Drain modal dialogs recorded in the current realm. CDP turns these into
+    /// `Page.javascriptDialogOpening` notifications.
+    pub fn drain_dialog_events(&mut self) -> Result<Vec<JsDialogEvent>, EngineError> {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let result = runtime
+            .execute_script(
+                "vixen-dialog-drain.js",
+                "JSON.stringify(globalThis.__vixenDrainDialogEvents ? globalThis.__vixenDrainDialogEvents() : [])".to_owned(),
+            )
+            .map_err(|_| {
+                EngineError::script(codes::SCRIPT_EVAL, "failed to drain dialog events")
+            })?;
+        let result = runtime::resolve_value(runtime, result)?;
+        match runtime::js_value_from_global(runtime, result)? {
+            JsValue::String(json) => parse_dialog_events(&json),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// Drain CDP runtime binding calls recorded in the current realm.
+    pub fn drain_binding_events(&mut self) -> Result<Vec<JsBindingEvent>, EngineError> {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let result = runtime
+            .execute_script(
+                "vixen-binding-drain.js",
+                "JSON.stringify(globalThis.__vixenDrainBindingEvents ? globalThis.__vixenDrainBindingEvents() : [])".to_owned(),
+            )
+            .map_err(|_| {
+                EngineError::script(codes::SCRIPT_EVAL, "failed to drain binding events")
+            })?;
+        let result = runtime::resolve_value(runtime, result)?;
+        match runtime::js_value_from_global(runtime, result)? {
+            JsValue::String(json) => parse_binding_events(&json),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// Drain navigation/history/form-submit actions recorded in the current
+    /// page realm. Non-page realms and pages without queued actions return an
+    /// empty list.
+    pub fn drain_navigation_actions(&mut self) -> Result<Vec<JsNavigationAction>, EngineError> {
+        let Some(runtime) = self.runtime.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let result = runtime
+            .execute_script(
+                "vixen-navigation-drain.js",
+                "JSON.stringify(globalThis.__vixenDrainNavigationActions ? globalThis.__vixenDrainNavigationActions() : [])".to_owned(),
+            )
+            .map_err(|_| {
+                EngineError::script(codes::SCRIPT_EVAL, "failed to drain navigation actions")
+            })?;
+        let result = runtime::resolve_value(runtime, result)?;
+        match runtime::js_value_from_global(runtime, result)? {
+            JsValue::String(json) => parse_navigation_actions(&json),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    /// Keep the persistent page realm associated with `page` after the host has
+    /// applied a same-document navigation that JS already reflected locally.
+    pub fn sync_page_realm_key(&mut self, page: &Page) {
+        if self.runtime.is_some() {
+            self.realm_key = RealmKey::Page(page_realm_key(page));
         }
     }
 
@@ -244,10 +377,62 @@ impl JsRuntime {
             .unwrap_or(RealmKey::NoPage);
         if self.realm_key != target || self.runtime.is_none() {
             self.runtime = None;
-            let runtime = runtime::new_deno_runtime(page, self.network_config.clone())?;
-            self.runtime = Some(runtime);
+            let init = runtime::new_deno_runtime(page, self.network_config.clone())?;
+            self.runtime = Some(init.runtime);
+            self.dom_mutations = init.dom_mutations;
             self.realm_key = target;
         }
+        Ok(())
+    }
+
+    fn apply_dom_mutations(&mut self, page: &mut Page) -> Result<(), EngineError> {
+        let Some(sink) = self.dom_mutations.as_ref() else {
+            return Ok(());
+        };
+        let mutations = sink.take();
+        if mutations.is_empty() {
+            return Ok(());
+        }
+
+        for mutation in mutations {
+            match mutation {
+                dom::DomMutation::SetDocumentTitle { value } => page
+                    .set_title(&value)
+                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+                dom::DomMutation::SetTextContent { node_id, value } => page
+                    .set_element_text_content(node_id, &value)
+                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+                dom::DomMutation::SetAttribute {
+                    node_id,
+                    name,
+                    value,
+                } => page
+                    .set_element_attribute(node_id, &name, &value)
+                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+                dom::DomMutation::RemoveAttribute { node_id, name } => page
+                    .remove_element_attribute(node_id, &name)
+                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+                dom::DomMutation::SetInnerHtml { node_id, html } => page
+                    .set_element_inner_html(node_id, &html)
+                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+                dom::DomMutation::SetControlValue {
+                    node_id,
+                    element_id,
+                    name,
+                    tag,
+                    value,
+                } => page
+                    .set_form_control_value(
+                        node_id,
+                        element_id.as_deref(),
+                        name.as_deref(),
+                        &tag,
+                        &value,
+                    )
+                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+            }
+        }
+        self.realm_key = RealmKey::Page(page_realm_key(page));
         Ok(())
     }
 }
@@ -315,6 +500,175 @@ fn parse_console_value(value: &deno_core::serde_json::Value) -> JsConsoleValue {
     } else {
         JsConsoleValue::Null
     }
+}
+
+fn parse_dialog_events(json: &str) -> Result<Vec<JsDialogEvent>, EngineError> {
+    let value: deno_core::serde_json::Value =
+        deno_core::serde_json::from_str(json).map_err(|err| {
+            EngineError::script(
+                codes::SCRIPT_EVAL,
+                format!("dialog event parse failed: {err}"),
+            )
+        })?;
+    let Some(events) = value.as_array() else {
+        return Ok(Vec::new());
+    };
+    Ok(events.iter().map(parse_dialog_event).collect())
+}
+
+fn parse_dialog_event(value: &deno_core::serde_json::Value) -> JsDialogEvent {
+    JsDialogEvent {
+        kind: value
+            .get("type")
+            .and_then(deno_core::serde_json::Value::as_str)
+            .unwrap_or("alert")
+            .to_owned(),
+        message: value
+            .get("message")
+            .and_then(deno_core::serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        default_prompt: value
+            .get("defaultPrompt")
+            .and_then(deno_core::serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    }
+}
+
+fn parse_binding_events(json: &str) -> Result<Vec<JsBindingEvent>, EngineError> {
+    let value: deno_core::serde_json::Value =
+        deno_core::serde_json::from_str(json).map_err(|err| {
+            EngineError::script(
+                codes::SCRIPT_EVAL,
+                format!("binding event parse failed: {err}"),
+            )
+        })?;
+    let Some(events) = value.as_array() else {
+        return Ok(Vec::new());
+    };
+    Ok(events.iter().map(parse_binding_event).collect())
+}
+
+fn parse_binding_event(value: &deno_core::serde_json::Value) -> JsBindingEvent {
+    JsBindingEvent {
+        name: value
+            .get("name")
+            .and_then(deno_core::serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+        payload: value
+            .get("payload")
+            .and_then(deno_core::serde_json::Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
+    }
+}
+
+fn parse_navigation_actions(json: &str) -> Result<Vec<JsNavigationAction>, EngineError> {
+    let value: deno_core::serde_json::Value =
+        deno_core::serde_json::from_str(json).map_err(|err| {
+            EngineError::script(
+                codes::SCRIPT_EVAL,
+                format!("navigation action parse failed: {err}"),
+            )
+        })?;
+    let Some(actions) = value.as_array() else {
+        return Ok(Vec::new());
+    };
+    actions.iter().map(parse_navigation_action).collect()
+}
+
+fn parse_navigation_action(
+    value: &deno_core::serde_json::Value,
+) -> Result<JsNavigationAction, EngineError> {
+    let kind = value
+        .get("type")
+        .and_then(deno_core::serde_json::Value::as_str)
+        .unwrap_or_default();
+    match kind {
+        "navigate" => Ok(JsNavigationAction::Navigate {
+            url: required_action_string(value, "url")?,
+            replace: value
+                .get("replace")
+                .and_then(deno_core::serde_json::Value::as_bool)
+                .unwrap_or(false),
+        }),
+        "set-content" => Ok(JsNavigationAction::SetContent {
+            html: required_action_string(value, "html")?,
+        }),
+        "form-submit" => Ok(JsNavigationAction::FormSubmit {
+            form_id: required_action_string(value, "formId")?,
+            form_node_id: value
+                .get("formNodeId")
+                .and_then(deno_core::serde_json::Value::as_u64)
+                .unwrap_or_default() as usize,
+            submitter_id: value
+                .get("submitterId")
+                .and_then(deno_core::serde_json::Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(ToOwned::to_owned),
+            action: required_action_string(value, "action")?,
+            method: value
+                .get("method")
+                .and_then(deno_core::serde_json::Value::as_str)
+                .unwrap_or("get")
+                .to_ascii_lowercase(),
+        }),
+        "history-push" => Ok(JsNavigationAction::HistoryPush {
+            url: required_action_string(value, "url")?,
+            state_json: value
+                .get("stateJson")
+                .and_then(deno_core::serde_json::Value::as_str)
+                .unwrap_or("null")
+                .to_owned(),
+            title: value
+                .get("title")
+                .and_then(deno_core::serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        }),
+        "history-replace" => Ok(JsNavigationAction::HistoryReplace {
+            url: required_action_string(value, "url")?,
+            state_json: value
+                .get("stateJson")
+                .and_then(deno_core::serde_json::Value::as_str)
+                .unwrap_or("null")
+                .to_owned(),
+            title: value
+                .get("title")
+                .and_then(deno_core::serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+        }),
+        "history-traverse" => Ok(JsNavigationAction::HistoryTraverse {
+            delta: value
+                .get("delta")
+                .and_then(deno_core::serde_json::Value::as_i64)
+                .unwrap_or_default()
+                .clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        }),
+        other => Err(EngineError::script(
+            codes::SCRIPT_EVAL,
+            format!("unsupported navigation action: {other}"),
+        )),
+    }
+}
+
+fn required_action_string(
+    value: &deno_core::serde_json::Value,
+    name: &str,
+) -> Result<String, EngineError> {
+    value
+        .get(name)
+        .and_then(deno_core::serde_json::Value::as_str)
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            EngineError::script(
+                codes::SCRIPT_EVAL,
+                format!("navigation action missing string field `{name}`"),
+            )
+        })
 }
 
 fn page_realm_key(page: &Page) -> String {
@@ -442,12 +796,12 @@ pub fn evaluate_inline_page_script(
     rt: &mut JsRuntime,
     csp: Option<&vixen_net::csp::ContentSecurityPolicy>,
     origin: &vixen_net::Origin,
-    page: &Page,
+    page: &mut Page,
     src: &str,
     nonce: Option<&str>,
 ) -> Result<JsValue, EngineError> {
     enforce_inline_script_csp(csp, origin, src, nonce)?;
-    rt.evaluate_with_page(src, page)
+    rt.evaluate_with_page_mut(src, page)
 }
 
 fn enforce_inline_script_csp(
@@ -713,6 +1067,28 @@ mod tests {
             JsValue::Int32(22)
         );
         assert_eq!(
+            rt.evaluate(
+                "new DOMMatrix().translate(10, 20).inverse().transformPoint(new DOMPoint(10, 20)).x"
+            )
+            .unwrap(),
+            JsValue::Int32(0)
+        );
+        assert_eq!(
+            rt.evaluate("Number.isNaN(new DOMMatrix([0, 0, 0, 0, 0, 0]).inverse().m11)")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate("new DOMMatrix().setMatrixValue('matrix(1, 0, 0, 1, 5, 6)').e")
+                .unwrap(),
+            JsValue::Int32(5)
+        );
+        assert_eq!(
+            rt.evaluate("new DOMMatrix().setMatrixValue('none').isIdentity")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
             rt.evaluate("new Headers([['Content-Type', ' text/plain '], ['X-Test', 'a'], ['X-Test', 'b']]).get('x-test')")
                 .unwrap(),
             JsValue::String("a, b".to_owned())
@@ -723,9 +1099,19 @@ mod tests {
             JsValue::Int32(4)
         );
         assert_eq!(
+            rt.evaluate("new Blob([new Uint8Array([72, 105])]).text()")
+                .unwrap(),
+            JsValue::String("Hi".to_owned())
+        );
+        assert_eq!(
             rt.evaluate("new File(['hello'], 'note.txt', { type: 'text/plain', lastModified: 42 }).lastModified")
                 .unwrap(),
             JsValue::Int32(42)
+        );
+        assert_eq!(
+            rt.evaluate("(() => { const dt = new DataTransfer(); dt.items.add(new File([new Uint8Array([65, 66])], 'ab.txt', { type: 'text/plain' })); return dt.files.length + ':' + dt.files[0].name + ':' + dt.files[0].size + ':' + dt.types[0]; })()")
+                .unwrap(),
+            JsValue::String("1:ab.txt:2:Files".to_owned())
         );
         assert_eq!(
             rt.evaluate("new Response('Created', { status: 201 }).headers.get('content-type')")
@@ -834,12 +1220,33 @@ mod tests {
             JsValue::String("file:///dom-host.html".to_owned())
         );
         assert_eq!(
+            rt.evaluate_with_page(
+                "document.compatMode + ':' + document.characterSet + ':' + document.contentType + ':' + document.visibilityState + ':' + document.hidden + ':' + document.referrer + ':' + document.hasFocus()",
+                &page
+            )
+            .unwrap(),
+            JsValue::String("CSS1Compat:UTF-8:text/html:visible:false::true".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "location.href === document.location.href && window.location.href === document.URL",
+                &page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
             rt.evaluate_with_page("document.head instanceof HTMLHeadElement", &page)
                 .unwrap(),
             JsValue::Bool(true)
         );
         assert_eq!(
             rt.evaluate_with_page("document.body instanceof HTMLBodyElement", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.activeElement === document.body", &page)
                 .unwrap(),
             JsValue::Bool(true)
         );
@@ -895,6 +1302,14 @@ mod tests {
             JsValue::String("P".to_owned())
         );
         assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#lead').namespaceURI + ':' + document.querySelector('#lead').prefix",
+                &page
+            )
+            .unwrap(),
+            JsValue::String("http://www.w3.org/1999/xhtml:null".to_owned())
+        );
+        assert_eq!(
             rt.evaluate_with_page("document.querySelector('#lead').className", &page)
                 .unwrap(),
             JsValue::String("note note callout".to_owned())
@@ -943,6 +1358,16 @@ mod tests {
         );
         assert_eq!(
             rt.evaluate_with_page("document.querySelectorAll('.note').length", &page)
+                .unwrap(),
+            JsValue::Int32(1)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.getElementsByTagName('p').length", &page)
+                .unwrap(),
+            JsValue::Int32(1)
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.getElementsByClassName('note').length", &page)
                 .unwrap(),
             JsValue::Int32(1)
         );
@@ -1245,7 +1670,7 @@ mod tests {
 
         let geometry_page = Page::from_html(
             "file:///dom-geometry-host.html",
-            "<style>#box { width: 40px; height: 20px; }</style><main><div id='box'>Box</div></main>",
+            "<style>#box { width: 40px; height: 20px; }</style><main><div id='box'>Box</div><input id='empty'><input id='check' type='checkbox'><button id='named'>Hit me</button></main>",
         )
         .unwrap();
         assert_eq!(
@@ -1312,10 +1737,90 @@ mod tests {
             .unwrap(),
             JsValue::Int32(40)
         );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.documentElement.parentNode === document && document.documentElement.parentElement === null",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#box').getRootNode() === document && document.contains(document.querySelector('#box'))",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "Node.ELEMENT_NODE + ':' + Node.TEXT_NODE + ':' + document.nodeType",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::String("1:3:9".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.elementFromPoint(10, 10).id", &geometry_page)
+                .unwrap(),
+            JsValue::String("box".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page("document.elementsFromPoint(10, 10)[0].id", &geometry_page)
+                .unwrap(),
+            JsValue::String("box".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#box').scrollIntoView(); 'done'",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::String("done".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#empty').getBoundingClientRect().width > 0",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "document.querySelector('#check').getBoundingClientRect().width",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::Int32(13)
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const text = document.querySelector('#named').firstChild; return document.querySelector('#named').childNodes.length + ':' + text.nodeType + ':' + text.data + ':' + (text.parentNode.id); })()",
+                &geometry_page
+            )
+            .unwrap(),
+            JsValue::String("1:3:Hit me:named".to_owned())
+        );
+
+        let actionability_page = Page::from_html(
+            "file:///dom-actionability-host.html",
+            "<form><label>Typed name <input id='typed-name'></label><label>Typed body <textarea id='typed-body'></textarea></label></form>",
+        )
+        .unwrap();
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const input = document.querySelector('#typed-name'); const r = input.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit && hit.id; })()",
+                &actionability_page
+            )
+            .unwrap(),
+            JsValue::String("typed-name".to_owned())
+        );
 
         let form_page = Page::from_html(
             "file:///dom-formdata-host.html",
-            "<form id='contact'><input name='name' value='Ada'><textarea name='body'>Hello</textarea><input type='checkbox' name='format' value='html' checked></form><form id='upload' enctype='multipart/form-data'><input type='file' name='attachment'></form>",
+            "<form id='contact'><label id='name-label' for='name-input'>Name</label><input id='name-input' name='name' value='Ada'><label id='body-label'>Body<textarea name='body'>Hello</textarea></label><input type='checkbox' name='format' value='html' checked><select name='plan'><option value='free'>Free</option><option value='pro' selected>Pro</option></select></form><form id='upload' enctype='multipart/form-data'><input type='file' name='attachment'></form>",
         )
         .unwrap();
         assert_eq!(
@@ -1341,6 +1846,84 @@ mod tests {
             )
             .unwrap(),
             JsValue::String("application/octet-stream".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const form = document.getElementById('upload'); const input = form.querySelector('input'); const dt = new DataTransfer(); dt.items.add(new File([new Uint8Array([65, 66])], 'ab.txt', { type: 'text/plain' })); input.files = dt.files; const file = new FormData(form).get('attachment'); return input.files.length + ':' + input.files[0].name + ':' + input.value + ':' + file.name + ':' + file.size + ':' + file.type; })()",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("1:ab.txt:C:\\fakepath\\ab.txt:ab.txt:2:text/plain".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const input = document.querySelector('[name=name]'); const textarea = document.querySelector('[name=body]'); return input.type + ':' + input.disabled + ':' + input.readOnly + ':' + input.isContentEditable + ':' + input.name + ':' + textarea.type; })()",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("text:false:false:false:name:textarea".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const input = document.querySelector('[name=name]'); input.disabled = true; input.readOnly = true; return input.hasAttribute('disabled') + ':' + input.disabled + ':' + input.hasAttribute('readonly') + ':' + input.readOnly; })()",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("true:true:true:true".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const input = document.querySelector('[name=name]'); const textarea = document.querySelector('[name=body]'); const explicit = document.querySelector('#name-label'); const nested = document.querySelector('#body-label'); return explicit.htmlFor + ':' + explicit.control.id + ':' + input.labels.length + ':' + input.labels[0].id + ':' + nested.control.name + ':' + textarea.labels[0].id; })()",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("name-input:name-input:1:name-label:body:body-label".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const explicit = document.querySelector('#name-label'); const nested = document.querySelector('#body-label'); return explicit.firstChild.nodeType + ':' + explicit.firstChild.nodeValue + ':' + nested.firstChild.nodeValue; })()",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("3:Name:Body".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const select = document.querySelector('[name=plan]'); return select.options.length + ':' + select.length + ':' + select.size + ':' + select.value + ':' + select.selectedIndex + ':' + select.selectedOptions[0].label + ':' + select.options[1].index; })()",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("2:2:0:pro:1:Pro:1".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const select = document.querySelector('[name=plan]'); select.options[0].selected = true; return select.value + ':' + select.selectedIndex + ':' + select.options[1].selected; })()",
+                &form_page
+            )
+            .unwrap(),
+            JsValue::String("free:0:false".to_owned())
+        );
+
+        let reflected_form_page = Page::from_html(
+            "file:///dom-reflected-form-host.html",
+            "<form id='f' method='POST' enctype='multipart/form-data' action='/submit'></form><form id='default'></form>",
+        )
+        .unwrap();
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const form = document.querySelector('#f'); return form.method + ':' + form.enctype + ':' + form.encoding + ':' + form.action; })()",
+                &reflected_form_page
+            )
+            .unwrap(),
+            JsValue::String("post:multipart/form-data:multipart/form-data:/submit".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "(() => { const form = document.querySelector('#default'); form.method = 'wat'; form.enctype = 'wat'; return form.method + ':' + form.enctype; })()",
+                &reflected_form_page
+            )
+            .unwrap(),
+            JsValue::String("get:application/x-www-form-urlencoded".to_owned())
         );
 
         let traversal_page = Page::from_html(
@@ -1512,9 +2095,312 @@ mod tests {
     }
 
     #[test]
+    fn page_text_content_mutation_updates_page_facade_and_paint_inputs() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///mutate.html",
+            "<html><head><style>body { margin: 0; } #status { display: block; width: 200px; height: 30px; }</style></head><body><p id='status'>waiting</p></body></html>",
+        )
+        .unwrap();
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "const s = document.querySelector('#status'); s.textContent = 'clicked'; s.textContent",
+                &mut page,
+            )
+            .unwrap();
+
+        assert_eq!(value, JsValue::String("clicked".to_owned()));
+        assert_eq!(page.text_content(), "clicked");
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#status').textContent"),
+            Some(Ok("clicked".to_owned()))
+        );
+        assert!(page.dump_lines((200, 100)).contains("clicked"));
+        assert!(page.dump_display_list((200, 100)).contains("clicked"));
+    }
+
+    #[test]
+    fn page_attribute_style_and_structural_mutations_update_page_dom() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///structural-mutate.html",
+            "<html><head><style>body { margin: 0; } #status { display: inline; }</style></head><body><div id='container'><span id='keep'>keep</span></div><p id='status'>waiting</p></body></html>",
+        )
+        .unwrap();
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "const status = document.querySelector('#status');\
+                 status.setAttribute('data-state', 'ready');\
+                 status.classList.add('active');\
+                 status.style.display = 'block';\
+                 status.style.width = '120px';\
+                 const container = document.querySelector('#container');\
+                 const made = document.createElement('div');\
+                 made.id = 'made';\
+                 made.className = 'chip';\
+                 made.textContent = 'made';\
+                 container.appendChild(made);\
+                 const gone = document.createElement('em');\
+                 gone.id = 'gone';\
+                 gone.textContent = 'gone';\
+                 container.appendChild(gone);\
+                 container.removeChild(gone);\
+                 const replacement = document.createElement('p');\
+                 replacement.id = 'replacement';\
+                 replacement.textContent = 'fresh';\
+                 container.replaceChildren(made, replacement, ' tail');\
+                 document.querySelector('#made').textContent + ':' +\
+                   document.querySelector('#replacement').textContent + ':' +\
+                   (document.querySelector('#gone') === null)",
+                &mut page,
+            )
+            .unwrap();
+
+        assert_eq!(value, JsValue::String("made:fresh:true".to_owned()));
+        assert_eq!(
+            page.evaluate_dom_expression(
+                "document.querySelector('#status').getAttribute('data-state')"
+            ),
+            Some(Ok("ready".to_owned()))
+        );
+        assert_eq!(
+            page.evaluate_dom_expression(
+                "document.querySelector('#status').classList.contains('active')"
+            ),
+            Some(Ok("true".to_owned()))
+        );
+        let status_id = page.query_selector_all("#status").unwrap()[0].node_id;
+        let computed = page.computed_style(status_id);
+        assert!(computed.contains(&("display".to_owned(), "block".to_owned())));
+        assert!(computed.contains(&("width".to_owned(), "120px".to_owned())));
+        assert_eq!(page.query_selector_all("#made").unwrap().len(), 1);
+        assert_eq!(page.query_selector_all("#replacement").unwrap().len(), 1);
+        assert!(page.query_selector_all("#gone").unwrap().is_empty());
+        let lines = page.dump_lines((240, 120));
+        assert!(page.text_content().contains("made"));
+        assert!(lines.contains("fresh"));
+        assert!(lines.contains("tail"));
+    }
+
+    #[test]
+    fn page_dynamic_inline_script_elements_execute_when_inserted() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///dynamic-script.html",
+            "<html><body><main id='host'></main></body></html>",
+        )
+        .unwrap();
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "const script = document.createElement('script');
+                 script.text = \"document.body.setAttribute('data-script-ran', 'yes'); globalThis.__dynamicScriptRan = 12;\";
+                 document.body.appendChild(script);
+                 document.body.getAttribute('data-script-ran') + ':' + globalThis.__dynamicScriptRan",
+                &mut page,
+            )
+            .unwrap();
+
+        assert_eq!(value, JsValue::String("yes:12".to_owned()));
+        assert_eq!(page.query_selector_all("script").unwrap().len(), 1);
+        assert_eq!(
+            page.evaluate_dom_expression("document.body.getAttribute('data-script-ran')"),
+            Some(Ok("yes".to_owned()))
+        );
+    }
+
+    #[test]
+    fn page_dynamic_style_elements_expose_sheet_and_update_cascade() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///dynamic-style.html",
+            "<html><head></head><body><div id='target'>target</div></body></html>",
+        )
+        .unwrap();
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "const style = document.createElement('style');
+                 style.textContent = '#target { display: block; width: 123px; }';
+                 let loaded = false;
+                 style.onload = () => { loaded = true; };
+                 document.head.appendChild(style);
+                 String(!!style.sheet) + ':' + loaded + ':' + getComputedStyle(document.querySelector('#target')).width",
+                &mut page,
+            )
+            .unwrap();
+
+        assert_eq!(value, JsValue::String("true:true:123px".to_owned()));
+        let target = page.query_selector_all("#target").unwrap()[0].node_id;
+        let computed = page.computed_style(target);
+        assert!(computed.contains(&("width".to_owned(), "123px".to_owned())));
+    }
+
+    #[test]
+    fn page_mutation_observer_and_event_defaults_run_in_page_realm() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///observer-events.html",
+            "<html><body><form id='form'><div id='parent'><input id='check' type='checkbox' name='agree'><button id='submit'>Send</button></div></form></body></html>",
+        )
+        .unwrap();
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "new Promise((resolve) => {\
+                   const order = [];\
+                   const recordsSeen = [];\
+                   const parent = document.querySelector('#parent');\
+                   const check = document.querySelector('#check');\
+                   const form = document.querySelector('#form');\
+                   document.addEventListener('click', () => order.push('document-capture'), true);\
+                   document.body.addEventListener('click', () => order.push('body-capture'), true);\
+                   parent.addEventListener('click', () => order.push('parent-capture'), true);\
+                   parent.addEventListener('click', () => order.push('parent-bubble'));\
+                   check.addEventListener('click', () => order.push('target'));\
+                   check.addEventListener('change', () => order.push('change'));\
+                   form.addEventListener('submit', (event) => { order.push('submit'); event.preventDefault(); });\
+                   const observer = new MutationObserver((records) => {\
+                     for (const record of records) recordsSeen.push(record.type + ':' + (record.attributeName || '') + ':' + record.target.id);\
+                     resolve(order.join('>') + '|' + check.checked + '|' + recordsSeen.join(',') + '|' + String(globalThis.__vixenLastFormSubmit));\
+                   });\
+                   observer.observe(document.body, { attributes: true, childList: true, subtree: true, attributeOldValue: true });\
+                   check.click();\
+                   document.querySelector('#submit').click();\
+                 })",
+                &mut page,
+            )
+            .unwrap();
+
+        assert_eq!(
+            value,
+            JsValue::String(
+                "document-capture>body-capture>parent-capture>target>parent-bubble>change>document-capture>body-capture>parent-capture>parent-bubble>submit|true|attributes:checked:check|undefined"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            page.evaluate_dom_expression("document.querySelector('#check').checked"),
+            Some(Ok("true".to_owned()))
+        );
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "(() => {\
+                   const check = document.querySelector('#check');\
+                   check.checked = false;\
+                   check.addEventListener('click', (event) => event.preventDefault(), { once: true });\
+                   const returned = check.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, composed: true }));\
+                   return returned + ':' + check.checked;\
+                 })()",
+                &mut page,
+            )
+            .unwrap();
+        assert_eq!(value, JsValue::String("false:false".to_owned()));
+    }
+
+    #[test]
+    fn page_editable_controls_update_value_selection_events_and_form_data() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///editable-controls.html",
+            "<html><body><div id='dynamic-root'></div><form id='form' action='submit.html'><input id='name' name='name' value='Ada'><textarea id='body' name='body'>Hello</textarea><button id='go'>Go</button></form></body></html>",
+        )
+        .unwrap();
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "(() => {\
+                   const input = document.querySelector('#name');\
+                   const body = document.querySelector('#body');\
+                   const events = [];\
+                   const dynamic = document.createElement('span');\
+                   dynamic.id = 'inserted-before-form';\
+                   dynamic.textContent = 'inserted';\
+                   document.querySelector('#dynamic-root').replaceChildren(dynamic);\
+                   input.addEventListener('keydown', (event) => events.push('keydown:' + event.key));\
+                   input.addEventListener('input', (event) => events.push('input:' + event.inputType + ':' + event.data));\
+                   input.addEventListener('change', () => events.push('change'));\
+                   input.addEventListener('keyup', (event) => events.push('keyup:' + event.key));\
+                   input.focus();\
+                   input.select();\
+                   globalThis.__vixenDispatchKeyEvent('keyDown', { key: 'Z', code: 'KeyZ', text: 'Z', inputText: 'Z', applyText: true });\
+                   globalThis.__vixenDispatchKeyEvent('keyUp', { key: 'Z', code: 'KeyZ' });\
+                   body.value = 'Typed body';\
+                   return input.value + '|' + input.selectionStart + '|' + input.selectionEnd + '|' +\
+                     new FormData(document.querySelector('#form')).get('name') + '|' +\
+                     new FormData(document.querySelector('#form')).get('body') + '|' + events.join('>');\
+                 })()",
+                &mut page,
+            )
+            .unwrap();
+
+        assert_eq!(
+            value,
+            JsValue::String(
+                "Z|1|1|Z|Typed body|keydown:Z>input:insertText:Z>change>keyup:Z".to_owned()
+            )
+        );
+        let submission = page.form_submission("form").unwrap();
+        assert_eq!(
+            String::from_utf8(submission.body).unwrap(),
+            "name=Z&body=Typed+body"
+        );
+    }
+
+    #[test]
+    fn page_navigation_actions_drain_from_page_realm() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///nav/index.html",
+            "<html><body><a id='next' href='next.html'>Next</a><form id='form' action='submit.html'><button id='go'>Go</button></form></body></html>",
+        )
+        .unwrap();
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "history.pushState({ ok: 1 }, 'title', 'state.html');\
+                 document.querySelector('#next').click();\
+                 document.querySelector('#go').click();\
+                 history.length + ':' + history.state.ok + ':' + location.href",
+                &mut page,
+            )
+            .unwrap();
+        assert_eq!(
+            value,
+            JsValue::String("2:1:file:///nav/state.html".to_owned())
+        );
+
+        assert_eq!(
+            rt.drain_navigation_actions().unwrap(),
+            vec![
+                JsNavigationAction::HistoryPush {
+                    url: "file:///nav/state.html".to_owned(),
+                    state_json: r#"{"ok":1}"#.to_owned(),
+                    title: "title".to_owned(),
+                },
+                JsNavigationAction::Navigate {
+                    url: "file:///nav/next.html".to_owned(),
+                    replace: false,
+                },
+                JsNavigationAction::FormSubmit {
+                    form_id: "form".to_owned(),
+                    form_node_id: page.query_selector_all("#form").unwrap()[0].node_id,
+                    submitter_id: Some("go".to_owned()),
+                    action: "file:///nav/submit.html".to_owned(),
+                    method: "get".to_owned(),
+                },
+            ]
+        );
+        assert_eq!(rt.drain_navigation_actions().unwrap(), Vec::new());
+    }
+
+    #[test]
     fn page_inline_scripts_run_in_page_realm_and_honor_csp() {
         let mut rt = JsRuntime::new().expect("engine init");
-        let page = Page::from_html(
+        let mut page = Page::from_html(
             "https://example.com/inline.html",
             "<html><head><title>Inline</title></head><body>\
              <script>globalThis.__inlineCount = 40; localStorage.setItem('inline', 'ran');</script>\
@@ -1523,7 +2409,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(rt.execute_page_scripts(&page).unwrap(), 2);
+        assert_eq!(rt.execute_page_scripts(&mut page).unwrap(), 2);
         assert_eq!(
             rt.evaluate_with_page(
                 "__inlineCount + ':' + localStorage.getItem('inline') + ':' + document.title",
@@ -1533,26 +2419,26 @@ mod tests {
             JsValue::String("42:ran:Inline".to_owned())
         );
 
-        let blocked = Page::from_html(
+        let mut blocked = Page::from_html(
             "https://example.com/blocked.html",
             "<meta http-equiv='Content-Security-Policy' content=\"script-src 'self'\">\
              <script>globalThis.__blockedInline = true;</script>",
         )
         .unwrap();
-        assert_eq!(rt.execute_page_scripts(&blocked).unwrap(), 0);
+        assert_eq!(rt.execute_page_scripts(&mut blocked).unwrap(), 0);
         assert_eq!(
             rt.evaluate_with_page("typeof __blockedInline", &blocked)
                 .unwrap(),
             JsValue::String("undefined".to_owned())
         );
 
-        let header_blocked = Page::from_html_with_headers(
+        let mut header_blocked = Page::from_html_with_headers(
             "https://example.com/header-blocked.html",
             "<script>globalThis.__headerBlockedInline = true;</script>",
             [("Content-Security-Policy", "script-src 'self'")],
         )
         .unwrap();
-        assert_eq!(rt.execute_page_scripts(&header_blocked).unwrap(), 0);
+        assert_eq!(rt.execute_page_scripts(&mut header_blocked).unwrap(), 0);
         assert_eq!(
             rt.evaluate_with_page("typeof __headerBlockedInline", &header_blocked)
                 .unwrap(),
@@ -1573,9 +2459,9 @@ mod tests {
              <script>globalThis.__externalOrder = 'inline';</script>\
              <script src='app.js'></script>"
         );
-        let page = Page::from_html(format!("{base_url}/page.html"), &html).unwrap();
+        let mut page = Page::from_html(format!("{base_url}/page.html"), &html).unwrap();
 
-        assert_eq!(rt.execute_page_scripts(&page).unwrap(), 2);
+        assert_eq!(rt.execute_page_scripts(&mut page).unwrap(), 2);
         assert_eq!(
             rt.evaluate_with_page(
                 "__externalOrder + ':' + localStorage.getItem('external-script')",
@@ -1592,13 +2478,13 @@ mod tests {
             &[("Content-Type", "text/javascript")],
         );
         let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
-        let page = Page::from_html(
+        let mut page = Page::from_html(
             format!("{base_url}/page.html"),
             "<meta http-equiv='Content-Security-Policy' content=\"script-src 'nonce-ext'\">\
              <script src='/nonce.js' nonce='ext'></script>",
         )
         .unwrap();
-        assert_eq!(rt.execute_page_scripts(&page).unwrap(), 1);
+        assert_eq!(rt.execute_page_scripts(&mut page).unwrap(), 1);
         assert_eq!(
             rt.evaluate_with_page("__externalNonceRan", &page).unwrap(),
             JsValue::Bool(true)
@@ -1606,13 +2492,13 @@ mod tests {
         server.join().unwrap();
 
         let mut rt = JsRuntime::new().expect("engine init");
-        let nonce_blocked = Page::from_html(
+        let mut nonce_blocked = Page::from_html(
             "https://example.com/nonce-blocked.html",
             "<meta http-equiv='Content-Security-Policy' content=\"script-src 'nonce-ext'\">\
              <script src='https://cdn.example/app.js' nonce='wrong'></script>",
         )
         .unwrap();
-        assert_eq!(rt.execute_page_scripts(&nonce_blocked).unwrap(), 0);
+        assert_eq!(rt.execute_page_scripts(&mut nonce_blocked).unwrap(), 0);
         assert_eq!(
             rt.evaluate_with_page("typeof __externalNonceBlocked", &nonce_blocked)
                 .unwrap(),
@@ -1620,25 +2506,25 @@ mod tests {
         );
 
         let mut rt = JsRuntime::new().expect("engine init");
-        let csp_blocked = Page::from_html(
+        let mut csp_blocked = Page::from_html(
             "https://example.com/csp-blocked.html",
             "<meta http-equiv='Content-Security-Policy' content=\"script-src 'self'\">\
              <script src='https://cdn.example/app.js'></script>",
         )
         .unwrap();
-        assert_eq!(rt.execute_page_scripts(&csp_blocked).unwrap(), 0);
+        assert_eq!(rt.execute_page_scripts(&mut csp_blocked).unwrap(), 0);
         assert_eq!(
             rt.evaluate_with_page("typeof __externalCspBlocked", &csp_blocked)
                 .unwrap(),
             JsValue::String("undefined".to_owned())
         );
 
-        let policy_blocked = Page::from_html(
+        let mut policy_blocked = Page::from_html(
             "http://vixen-url-policy.com/page.html",
             "<script src='http://127.0.0.1:9/app.js'></script>",
         )
         .unwrap();
-        assert_eq!(rt.execute_page_scripts(&policy_blocked).unwrap(), 0);
+        assert_eq!(rt.execute_page_scripts(&mut policy_blocked).unwrap(), 0);
         assert_eq!(
             rt.evaluate_with_page("typeof __externalPolicyBlocked", &policy_blocked)
                 .unwrap(),
@@ -1654,12 +2540,12 @@ mod tests {
             ],
         );
         let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
-        let page = Page::from_html(
+        let mut page = Page::from_html(
             format!("{base_url}/page.html"),
             "<script src='/blocked.js'></script>",
         )
         .unwrap();
-        assert_eq!(rt.execute_page_scripts(&page).unwrap(), 0);
+        assert_eq!(rt.execute_page_scripts(&mut page).unwrap(), 0);
         assert_eq!(
             rt.evaluate_with_page("typeof __externalNosniffBlocked", &page)
                 .unwrap(),

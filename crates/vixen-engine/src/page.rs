@@ -63,6 +63,7 @@ pub use interaction::FormSubmissionSnapshot;
 pub struct Page {
     url: String,
     document: Document,
+    history: SessionHistory,
     csp: ContentSecurityPolicy,
     author_stylesheet: AuthorStylesheet,
     diagnostics: Vec<EngineDiagnostic>,
@@ -80,11 +81,14 @@ impl Page {
     /// by the caller for now (`vixen-headless` reads `file://`; the future
     /// network path will call into `vixen-net` before this boundary).
     pub fn from_html(url: impl Into<String>, html: &str) -> Result<Self, PageError> {
+        let url = url.into();
         let document = Document::parse(html)?;
         let author_stylesheet = AuthorStylesheet::from_blocks(&document.style_blocks());
+        let history = initial_session_history(&url);
         Ok(Self {
-            url: url.into(),
+            url,
             document,
+            history,
             csp: ContentSecurityPolicy::new(),
             author_stylesheet,
             diagnostics: Vec::new(),
@@ -102,12 +106,15 @@ impl Page {
     where
         I: IntoIterator<Item = (&'a str, &'a str)>,
     {
+        let url = url.into();
         let document = Document::parse(html)?;
         let csp = ContentSecurityPolicy::from_headers(headers);
         let author_stylesheet = AuthorStylesheet::from_blocks(&document.style_blocks());
+        let history = initial_session_history(&url);
         Ok(Self {
-            url: url.into(),
+            url,
             document,
+            history,
             csp,
             author_stylesheet,
             diagnostics: Vec::new(),
@@ -119,10 +126,98 @@ impl Page {
         &self.url
     }
 
+    /// The current session-history model associated with this page snapshot.
+    pub fn session_history(&self) -> &SessionHistory {
+        &self.history
+    }
+
+    /// Replace the session-history model after a navigation/history host hook.
+    /// The loaded URL is kept in sync with the current history entry.
+    pub fn set_session_history(&mut self, history: SessionHistory) {
+        if let Some(url) = history.url() {
+            self.url = url.to_owned();
+        }
+        self.history = history;
+    }
+
+    /// Resolve `input` against the document base URL as an absolute URL string.
+    pub fn resolve_url(&self, input: &str) -> Option<String> {
+        resolve_url_string(input, &self.document_base_uri())
+    }
+
+    /// History state serialised by the current JS host hook, if any.
+    pub fn history_state_json(&self) -> Option<String> {
+        self.history
+            .state()
+            .map(|state| String::from_utf8_lossy(state).into_owned())
+    }
+
     /// The parsed document. Kept available for narrow integration seams while
     /// existing code migrates to the facade methods.
     pub fn document(&self) -> &Document {
         &self.document
+    }
+
+    /// Apply the first runtime-backed DOM mutation slice: `Element.textContent`
+    /// writes replace the element's child subtree in the authoritative Page DOM,
+    /// so later layout/paint/headless/CDP reads see the changed document.
+    pub fn set_element_text_content(&mut self, node_id: usize, value: &str) -> Result<(), String> {
+        self.document.set_element_text_content(node_id, value)?;
+        self.refresh_author_stylesheet();
+        Ok(())
+    }
+
+    /// Set or replace an element attribute in the authoritative Page DOM.
+    pub fn set_element_attribute(
+        &mut self,
+        node_id: usize,
+        name: &str,
+        value: &str,
+    ) -> Result<(), String> {
+        self.document.set_element_attribute(node_id, name, value)?;
+        self.refresh_author_stylesheet();
+        Ok(())
+    }
+
+    /// Remove an element attribute in the authoritative Page DOM.
+    pub fn remove_element_attribute(&mut self, node_id: usize, name: &str) -> Result<(), String> {
+        self.document.remove_element_attribute(node_id, name)?;
+        self.refresh_author_stylesheet();
+        Ok(())
+    }
+
+    /// Set the document title from a runtime-produced `document.title` or
+    /// `document.write()` mutation.
+    pub fn set_title(&mut self, value: &str) -> Result<(), String> {
+        self.document.set_title(value)
+    }
+
+    /// Replace an element's child subtree from a runtime-produced HTML fragment.
+    pub fn set_element_inner_html(&mut self, node_id: usize, html: &str) -> Result<(), String> {
+        self.document.set_element_inner_html(node_id, html)?;
+        self.refresh_author_stylesheet();
+        Ok(())
+    }
+
+    /// Commit a live `<input>`/`<textarea>` value from the JS realm. The primary
+    /// key is the page-realm node id; id/name/tag are fallbacks for structural
+    /// mutations that inserted elements before the control in document order.
+    pub fn set_form_control_value(
+        &mut self,
+        node_id: usize,
+        element_id: Option<&str>,
+        name: Option<&str>,
+        tag: &str,
+        value: &str,
+    ) -> Result<(), String> {
+        self.document
+            .set_form_control_value(node_id, element_id, name, tag, value)?;
+        self.refresh_author_stylesheet();
+        Ok(())
+    }
+
+    fn refresh_author_stylesheet(&mut self) {
+        self.author_stylesheet = AuthorStylesheet::from_blocks(&self.document.style_blocks());
     }
 
     /// Enforcing CSP delivered with the document response headers.
@@ -175,13 +270,14 @@ impl Page {
             "document.baseURI" => return Some(Ok(self.document_base_uri())),
             "document.hasFocus()" => return Some(Ok("true".into())),
             "history.length" | "window.history.length" => {
-                return Some(Ok(initial_session_history(&self.url).length().to_string()));
+                return Some(Ok(self.history.length().to_string()));
             }
             "history.state" | "window.history.state" => {
-                return Some(Ok(history_state_value(&initial_session_history(&self.url))));
+                return Some(Ok(history_state_value(&self.history)));
             }
             "history.scrollRestoration" | "window.history.scrollRestoration" => {
-                return Some(Ok(initial_session_history(&self.url)
+                return Some(Ok(self
+                    .history
                     .scroll_restoration()
                     .to_keyword()
                     .to_owned()));

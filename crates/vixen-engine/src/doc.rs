@@ -8,12 +8,13 @@
 //! `Document` is the parse tree behind `vixen_engine::page::Page`, the
 //! headless CLI, and the WPT snapshot surface.
 
-use std::cell::Ref;
+use std::cell::{Ref, RefCell};
 use std::rc::Rc;
 
 use html5ever::parse_document;
-use markup5ever_rcdom::{Handle, NodeData, RcDom};
-use tendril::stream::TendrilSink;
+use markup5ever::{Attribute, LocalName, QualName, ns};
+use markup5ever_rcdom::{Handle, Node, NodeData, RcDom};
+use tendril::{StrTendril, stream::TendrilSink};
 
 /// A parsed HTML document (owns the `RcDom`).
 pub struct Document {
@@ -81,6 +82,26 @@ impl Document {
             }
         });
         out
+    }
+
+    /// Set or create the document `<title>` text.
+    pub fn set_title(&mut self, value: &str) -> Result<(), String> {
+        if let Some(title) = first_element_by_tag(&self.dom.document, "title") {
+            replace_element_text_content(&title, value);
+            return Ok(());
+        }
+
+        let head = first_element_by_tag(&self.dom.document, "head")
+            .ok_or_else(|| "document has no <head> element".to_owned())?;
+        let title_dom = parse_document(RcDom::default(), Default::default())
+            .one("<!doctype html><html><head><title></title></head><body></body></html>");
+        let title = first_element_by_tag(&title_dom.document, "title")
+            .ok_or_else(|| "title template parser produced no <title>".to_owned())?;
+        replace_element_text_content(&title, value);
+        title.parent.set(None);
+        title.parent.set(Some(Rc::downgrade(&head)));
+        head.children.borrow_mut().push(title);
+        Ok(())
     }
 
     /// Concatenated visible text (text nodes, in document order). Comments
@@ -245,6 +266,293 @@ impl Document {
         dump_node(&self.dom.document, 0, &mut buf);
         buf
     }
+
+    /// Replace an element's children with a single text node, mirroring the DOM
+    /// `Element.textContent = ...` mutation at the current Page boundary.
+    pub fn set_element_text_content(&mut self, node_id: usize, value: &str) -> Result<(), String> {
+        let element = self
+            .element_handle_by_node_id(node_id)
+            .ok_or_else(|| format!("DOM mutation target not found: node {node_id}"))?;
+
+        let mut new_children = Vec::new();
+        if !value.is_empty() {
+            new_children.push(Node::new(NodeData::Text {
+                contents: RefCell::new(value.into()),
+            }));
+        }
+        replace_children(&element, new_children);
+
+        Ok(())
+    }
+
+    /// Set or replace an HTML attribute on an element by stable node id.
+    pub fn set_element_attribute(
+        &mut self,
+        node_id: usize,
+        name: &str,
+        value: &str,
+    ) -> Result<(), String> {
+        let name = normalize_html_attribute_name(name)?;
+        let element = self
+            .element_handle_by_node_id(node_id)
+            .ok_or_else(|| format!("DOM mutation target not found: node {node_id}"))?;
+        let NodeData::Element { attrs, .. } = &element.data else {
+            return Err(format!(
+                "DOM mutation target is not an element: node {node_id}"
+            ));
+        };
+
+        let mut attrs = attrs.borrow_mut();
+        if let Some(attr) = attrs
+            .iter_mut()
+            .find(|attr| attr.name.local.as_ref() == name.as_str())
+        {
+            attr.value = StrTendril::from(value);
+        } else {
+            attrs.push(Attribute {
+                name: html_attribute_qual_name(&name),
+                value: StrTendril::from(value),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Remove an HTML attribute from an element by stable node id.
+    pub fn remove_element_attribute(&mut self, node_id: usize, name: &str) -> Result<(), String> {
+        let name = normalize_html_attribute_name(name)?;
+        let element = self
+            .element_handle_by_node_id(node_id)
+            .ok_or_else(|| format!("DOM mutation target not found: node {node_id}"))?;
+        let NodeData::Element { attrs, .. } = &element.data else {
+            return Err(format!(
+                "DOM mutation target is not an element: node {node_id}"
+            ));
+        };
+
+        attrs
+            .borrow_mut()
+            .retain(|attr| attr.name.local.as_ref() != name.as_str());
+
+        Ok(())
+    }
+
+    /// Replace an element's child subtree with an HTML fragment, mirroring the
+    /// structural DOM mutation boundary (`innerHTML`, `appendChild`,
+    /// `replaceChildren`) used by the JS runtime host bridge.
+    pub fn set_element_inner_html(&mut self, node_id: usize, html: &str) -> Result<(), String> {
+        let element = self
+            .element_handle_by_node_id(node_id)
+            .ok_or_else(|| format!("DOM mutation target not found: node {node_id}"))?;
+        match &element.data {
+            NodeData::Element { .. } => {}
+            _ => {
+                return Err(format!(
+                    "DOM mutation target is not an element: node {node_id}"
+                ));
+            }
+        };
+
+        let fragment_dom = parse_document(RcDom::default(), Default::default())
+            .one(format!("<!doctype html><html><body>{html}</body></html>"));
+        let body = first_element_by_tag(&fragment_dom.document, "body")
+            .ok_or_else(|| "DOM mutation fragment parser produced no body".to_owned())?;
+        let mut new_children = {
+            let mut body_children = body.children.borrow_mut();
+            let children = body_children.clone();
+            body_children.clear();
+            children
+        };
+        for child in &new_children {
+            child.parent.set(None);
+        }
+        replace_children(&element, std::mem::take(&mut new_children));
+
+        Ok(())
+    }
+
+    /// Commit a live form-control value. Falls back from the page-realm node id
+    /// to id/name/tag matching because structural mutations can shift the
+    /// document-order node ids used by the current lightweight DOM bridge.
+    pub fn set_form_control_value(
+        &mut self,
+        node_id: usize,
+        element_id: Option<&str>,
+        control_name: Option<&str>,
+        tag: &str,
+        value: &str,
+    ) -> Result<(), String> {
+        let tag = tag.trim().to_ascii_lowercase();
+        if !matches!(tag.as_str(), "input" | "textarea") {
+            return Err(format!("unsupported form control value target: {tag}"));
+        }
+        let element_id = element_id.filter(|value| !value.is_empty());
+        let control_name = control_name.filter(|value| !value.is_empty());
+        let element = self
+            .element_handle_by_node_id(node_id)
+            .filter(|node| control_identity_matches(node, &tag, element_id, control_name))
+            .or_else(|| find_control_by_identity(&self.dom.document, &tag, element_id, None))
+            .or_else(|| find_control_by_identity(&self.dom.document, &tag, None, control_name))
+            .ok_or_else(|| format!("DOM form control target not found: node {node_id}"))?;
+
+        match element_tag_name(&element).as_deref() {
+            Some("input") => set_html_attribute_on_element(&element, "value", value),
+            Some("textarea") => {
+                replace_element_text_content(&element, value);
+                Ok(())
+            }
+            _ => Err(format!(
+                "DOM form control target is not editable: node {node_id}"
+            )),
+        }
+    }
+
+    fn element_handle_by_node_id(&self, node_id: usize) -> Option<Handle> {
+        let idx = node_id.checked_sub(1)?;
+        let mut current = 0;
+        let mut found = None;
+        walk(&self.dom.document, &mut |node| {
+            if found.is_some() {
+                return;
+            }
+            if matches!(node.data, NodeData::Element { .. }) {
+                if current == idx {
+                    found = Some(Rc::clone(node));
+                }
+                current += 1;
+            }
+        });
+        found
+    }
+}
+
+fn normalize_html_attribute_name(name: &str) -> Result<String, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("DOM mutation attribute name must not be empty".to_owned());
+    }
+    if name.bytes().any(|byte| {
+        byte.is_ascii_whitespace() || matches!(byte, b'\0' | b'"' | b'\'' | b'>' | b'/' | b'=')
+    }) {
+        return Err(format!("DOM mutation attribute name is invalid: {name}"));
+    }
+    Ok(name.to_ascii_lowercase())
+}
+
+fn html_attribute_qual_name(name: &str) -> QualName {
+    QualName::new(None, ns!(), LocalName::from(name))
+}
+
+fn set_html_attribute_on_element(element: &Handle, name: &str, value: &str) -> Result<(), String> {
+    let name = normalize_html_attribute_name(name)?;
+    let NodeData::Element { attrs, .. } = &element.data else {
+        return Err("DOM mutation target is not an element".to_owned());
+    };
+
+    let mut attrs = attrs.borrow_mut();
+    if let Some(attr) = attrs
+        .iter_mut()
+        .find(|attr| attr.name.local.as_ref() == name.as_str())
+    {
+        attr.value = StrTendril::from(value);
+    } else {
+        attrs.push(Attribute {
+            name: html_attribute_qual_name(&name),
+            value: StrTendril::from(value),
+        });
+    }
+    Ok(())
+}
+
+fn replace_element_text_content(element: &Handle, value: &str) {
+    let mut new_children = Vec::new();
+    if !value.is_empty() {
+        new_children.push(Node::new(NodeData::Text {
+            contents: RefCell::new(value.into()),
+        }));
+    }
+    replace_children(element, new_children);
+}
+
+fn replace_children(parent: &Handle, new_children: Vec<Handle>) {
+    let mut children = parent.children.borrow_mut();
+    for child in children.iter() {
+        child.parent.set(None);
+    }
+    children.clear();
+    for child in new_children {
+        child.parent.set(Some(Rc::downgrade(parent)));
+        children.push(child);
+    }
+}
+
+fn element_tag_name(node: &Handle) -> Option<String> {
+    match &node.data {
+        NodeData::Element { name, .. } => Some(name.local.to_string()),
+        _ => None,
+    }
+}
+
+fn element_attr_value(node: &Handle, wanted: &str) -> Option<String> {
+    let NodeData::Element { attrs, .. } = &node.data else {
+        return None;
+    };
+    attrs
+        .borrow()
+        .iter()
+        .find(|attr| attr.name.local.as_ref() == wanted)
+        .map(|attr| attr.value.to_string())
+}
+
+fn control_identity_matches(
+    node: &Handle,
+    tag: &str,
+    element_id: Option<&str>,
+    control_name: Option<&str>,
+) -> bool {
+    if element_tag_name(node).as_deref() != Some(tag) {
+        return false;
+    }
+    if let Some(id) = element_id {
+        return element_attr_value(node, "id").as_deref() == Some(id);
+    }
+    if let Some(name) = control_name {
+        return element_attr_value(node, "name").as_deref() == Some(name);
+    }
+    true
+}
+
+fn find_control_by_identity(
+    root: &Handle,
+    tag: &str,
+    element_id: Option<&str>,
+    control_name: Option<&str>,
+) -> Option<Handle> {
+    let mut found = None;
+    walk(root, &mut |node| {
+        if found.is_some() {
+            return;
+        }
+        if control_identity_matches(node, tag, element_id, control_name) {
+            found = Some(Rc::clone(node));
+        }
+    });
+    found
+}
+
+fn first_element_by_tag(root: &Handle, tag: &str) -> Option<Handle> {
+    let mut found = None;
+    walk(root, &mut |node| {
+        if found.is_some() {
+            return;
+        }
+        if let NodeData::Element { name, .. } = &node.data
+            && name.local.as_ref() == tag
+        {
+            found = Some(Rc::clone(node));
+        }
+    });
+    found
 }
 
 /// First text child of `node`, trimmed.

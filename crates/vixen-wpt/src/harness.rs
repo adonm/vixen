@@ -157,6 +157,45 @@ impl Report {
         }
         out
     }
+
+    /// Text-first report with stable aggregate lines followed by actionable
+    /// failing/skipped check details. Intended for humans and automation logs;
+    /// clean reports are identical to [`Self::summary_text`].
+    pub fn detailed_text(&self) -> String {
+        let mut out = self.summary_text();
+        let mut wrote_header = false;
+        for fixture in &self.fixtures {
+            if fixture.failed == 0 && fixture.skipped == 0 {
+                continue;
+            }
+            if !wrote_header {
+                out.push_str("failures:\n");
+                wrote_header = true;
+            }
+            out.push_str(&format!(
+                "fixture {} [{}:{}] checks={} passed={} failed={} skipped={}\n",
+                fixture.url,
+                fixture.source.as_str(),
+                fixture.category,
+                fixture.results.len(),
+                fixture.passed,
+                fixture.failed,
+                fixture.skipped,
+            ));
+            for (check, outcome) in &fixture.results {
+                match outcome {
+                    Outcome::Pass => {}
+                    Outcome::Fail(message) => {
+                        out.push_str(&format!("  FAIL {:?}: {}\n", check, message));
+                    }
+                    Outcome::Skipped(message) => {
+                        out.push_str(&format!("  SKIP {:?}: {}\n", check, message));
+                    }
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Run every check in `fixture` against `engine`.
@@ -378,5 +417,26 @@ mod tests {
         assert_eq!(report.failed, 0);
         assert_eq!(report.skipped, 1);
         assert!(!report.is_clean());
+    }
+
+    #[test]
+    fn detailed_text_includes_actionable_unclean_checks() {
+        let manifest: Manifest = serde_json::from_str(
+            r#"{"fixtures":[{"url":"fixtures/dom/a.html","category":"dom","checks":[{"type":"title","expected":"X"},{"type":"visual-hash","expected":"h"}]}]}"#,
+        )
+        .unwrap();
+        let report = run_manifest(&manifest, |_| {
+            Box::new(MockEngine {
+                snapshot: snap(),
+                ..Default::default()
+            })
+        });
+        let text = report.detailed_text();
+
+        assert!(text.contains("# wpt-report"));
+        assert!(text.contains("failures:"));
+        assert!(text.contains("fixture fixtures/dom/a.html [local:dom]"));
+        assert!(text.contains("FAIL Title"));
+        assert!(text.contains("SKIP VisualHash"));
     }
 }

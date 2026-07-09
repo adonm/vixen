@@ -65,7 +65,10 @@ impl Page {
             .find(|element| element.id.as_deref() == Some(form_id))
             .ok_or_else(|| format!("no form with id '{form_id}'"))?;
 
-        let action = node_attr(&form_node, "action").unwrap_or_else(|| self.url.clone());
+        let raw_action = node_attr(&form_node, "action")
+            .filter(|action| !action.is_empty())
+            .unwrap_or_else(|| self.url.clone());
+        let action = self.resolve_url(&raw_action).unwrap_or(raw_action);
         let method = normalise_form_method(node_attr(&form_node, "method"));
         let enctype = node_attr(&form_node, "enctype")
             .as_deref()

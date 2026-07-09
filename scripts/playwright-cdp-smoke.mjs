@@ -33,6 +33,25 @@ function waitForServer(child) {
   });
 }
 
+async function evaluateValue(session, expression) {
+  const result = await session.send('Runtime.evaluate', { expression });
+  if (result.exceptionDetails) {
+    fail(`Runtime.evaluate raised: ${JSON.stringify(result.exceptionDetails)}`);
+  }
+  return result.result?.value;
+}
+
+async function waitForValue(session, expression, predicate, label) {
+  const deadline = Date.now() + 5000;
+  let value;
+  while (Date.now() < deadline) {
+    value = await evaluateValue(session, expression);
+    if (predicate(value)) return value;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  fail(`${label} did not settle: ${JSON.stringify(value)}`);
+}
+
 async function stopServer(child) {
   if (child.exitCode !== null) return;
   child.kill('SIGTERM');
@@ -59,6 +78,30 @@ async function waitForClickConsole(session, action) {
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   fail('did not receive Runtime.consoleAPICalled for click');
+}
+
+function codeForTextChar(char) {
+  if (char === ' ') return 'Space';
+  const upper = char.toUpperCase();
+  if (/^[A-Z]$/.test(upper)) return `Key${upper}`;
+  if (/^[0-9]$/.test(char)) return `Digit${char}`;
+  return '';
+}
+
+async function typeText(session, text) {
+  for (const char of text) {
+    await session.send('Input.dispatchKeyEvent', {
+      type: 'keyDown',
+      key: char,
+      code: codeForTextChar(char),
+      text: char,
+    });
+    await session.send('Input.dispatchKeyEvent', {
+      type: 'keyUp',
+      key: char,
+      code: codeForTextChar(char),
+    });
+  }
 }
 
 async function main() {
@@ -89,10 +132,18 @@ async function main() {
       fail('Target.getTargets returned no page targets');
     }
 
+    await page.addInitScript(() => {
+      globalThis.__playwrightInitScriptValue = 'vixen-init-script';
+    });
+
     await session.send('Page.navigate', { url: fixtureUrl });
-    const title = await session.send('Runtime.evaluate', { expression: 'document.title' });
-    if (title.result?.value !== 'Vixen CDP Playwright Smoke') {
+    const title = await evaluateValue(session, 'document.title');
+    if (title !== 'Vixen CDP Playwright Smoke') {
       fail(`unexpected document title: ${JSON.stringify(title)}`);
+    }
+    const initScriptValue = await evaluateValue(session, 'globalThis.__playwrightInitScriptValue');
+    if (initScriptValue !== 'vixen-init-script') {
+      fail(`Playwright page.addInitScript() did not run on navigation: ${JSON.stringify(initScriptValue)}`);
     }
 
     const consoleEvent = await waitForClickConsole(session, async () => {
@@ -115,9 +166,41 @@ async function main() {
       fail(`unexpected click console payload: ${JSON.stringify(consoleEvent)}`);
     }
 
-    const clicked = await session.send('Runtime.evaluate', { expression: '__smokeClicks' });
-    if (clicked.result?.value !== 1) {
+    const clicked = await evaluateValue(session, '__smokeClicks');
+    if (clicked !== 1) {
       fail(`click did not update JS state: ${JSON.stringify(clicked)}`);
+    }
+
+    const status = await evaluateValue(session, "document.querySelector('#status').textContent");
+    if (status !== 'clicked:1') {
+      fail(`click textContent mutation did not reach DOM: ${JSON.stringify(status)}`);
+    }
+
+    const statusAttrs = await evaluateValue(session, "(() => document.querySelector('#status').classList.contains('clicked') + ':' + document.querySelector('#status').getAttribute('data-clicked') + ':' + document.querySelector('#status').style.width)()");
+    if (statusAttrs !== 'true:1:140px') {
+      fail(`click attribute/class/style mutations did not reach DOM: ${JSON.stringify(statusAttrs)}`);
+    }
+
+    const structural = await evaluateValue(session, "(() => document.querySelector('#dynamic').textContent + ':' + document.querySelector('#dynamic').className + ':' + (document.querySelector('#gone') === null) + ':' + document.querySelector('#dynamic-root').textContent)()");
+    if (structural !== 'dynamic:1:badge:true:dynamic:1 ready') {
+      fail(`click structural mutations did not reach DOM: ${JSON.stringify(structural)}`);
+    }
+
+    const eventOrder = await evaluateValue(session, '__eventOrder.join(\'>\')');
+    if (eventOrder !== 'document-capture>body-capture>target>body-bubble') {
+      fail(`click event propagation order was wrong: ${JSON.stringify(eventOrder)}`);
+    }
+
+    const defaults = await evaluateValue(session, "(() => document.querySelector('#default-check').checked + ':' + String(globalThis.__submitSeen) + ':' + String(globalThis.__vixenLastFormSubmit))()");
+    if (defaults !== 'true:smoke-form:undefined') {
+      fail(`click default actions did not run correctly: ${JSON.stringify(defaults)}`);
+    }
+
+    const observer = await waitForValue(session, 'globalThis.__smokeObserver || null', (value) => typeof value === 'string', 'MutationObserver');
+    for (const expected of ['attributes:class:status', 'attributes:data-clicked:status', 'childList::dynamic-root', 'attributes:checked:default-check']) {
+      if (!observer.includes(expected)) {
+        fail(`MutationObserver missed ${expected}: ${JSON.stringify(observer)}`);
+      }
     }
 
     const screenshot = await session.send('Page.captureScreenshot', {
@@ -128,6 +211,292 @@ async function main() {
     const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
     if (!png.subarray(0, 8).equals(signature)) {
       fail('Page.captureScreenshot did not return a PNG');
+    }
+
+    const playwrightPng = await page.screenshot({
+      clip: { x: 0, y: 0, width: 160, height: 100 },
+      timeout: 5000,
+    });
+    if (!playwrightPng.subarray(0, 8).equals(signature)) {
+      fail('Playwright page.screenshot() did not return a PNG');
+    }
+
+    await page.setViewportSize({ width: 500, height: 320 });
+    const viewportInfo = await page.evaluate(() => `${innerWidth}x${innerHeight}:${document.documentElement.clientWidth}x${document.documentElement.clientHeight}:${matchMedia('(max-width: 600px)').matches}`);
+    if (viewportInfo !== '500x320:500x320:true') {
+      fail(`Playwright page.setViewportSize() did not update viewport globals: ${JSON.stringify(viewportInfo)}`);
+    }
+    const viewportMetrics = await session.send('Page.getLayoutMetrics');
+    if (viewportMetrics.cssLayoutViewport?.clientWidth !== 500 || viewportMetrics.cssLayoutViewport?.clientHeight !== 320) {
+      fail(`CDP layout metrics did not reflect viewport override: ${JSON.stringify(viewportMetrics.cssLayoutViewport)}`);
+    }
+    await page.setViewportSize({ width: 800, height: 600 });
+
+    await page.emulateMedia({ media: 'print', colorScheme: 'dark' });
+    const mediaInfo = await page.evaluate(() => `${matchMedia('screen').matches}:${matchMedia('print').matches}:${matchMedia('(prefers-color-scheme: dark)').matches}:${matchMedia('(prefers-color-scheme: light)').matches}`);
+    if (mediaInfo !== 'false:true:true:false') {
+      fail(`Playwright page.emulateMedia() did not update matchMedia(): ${JSON.stringify(mediaInfo)}`);
+    }
+    await page.emulateMedia({ media: 'screen', colorScheme: 'light' });
+
+    const hitBox = await page.locator('#hit').boundingBox({ timeout: 5000 });
+    if (!hitBox || hitBox.width <= 0 || hitBox.height <= 0) {
+      fail(`Playwright locator.boundingBox() returned no hit box: ${JSON.stringify(hitBox)}`);
+    }
+    await page.locator('#hit').click({ timeout: 5000 });
+    const highLevelStatus = await page.locator('#status').textContent({ timeout: 5000 });
+    if (highLevelStatus !== 'clicked:2') {
+      fail(`Playwright locator.click() did not update DOM: ${JSON.stringify(highLevelStatus)}`);
+    }
+    await page.evaluate(() => {
+      globalThis.__playwrightHoverEvents = [];
+      const status = document.querySelector('#status');
+      for (const type of ['mouseover', 'mouseenter', 'mousemove']) {
+        status.addEventListener(type, () => globalThis.__playwrightHoverEvents.push(type));
+      }
+    });
+    await page.locator('#status').hover({ timeout: 5000 });
+    const hoverEvents = await page.evaluate(() => globalThis.__playwrightHoverEvents.join('>'));
+    for (const expected of ['mouseover', 'mouseenter', 'mousemove']) {
+      if (!hoverEvents.split('>').includes(expected)) {
+        fail(`Playwright locator.hover() missed ${expected}: ${JSON.stringify(hoverEvents)}`);
+      }
+    }
+    await page.evaluate(() => {
+      globalThis.__playwrightDoubleClickEvents = [];
+      const status = document.querySelector('#status');
+      for (const type of ['click', 'dblclick']) {
+        status.addEventListener(type, (event) => globalThis.__playwrightDoubleClickEvents.push(`${type}:${event.detail}`));
+      }
+    });
+    await page.locator('#status').dblclick({ timeout: 5000 });
+    const doubleClickEvents = await page.evaluate(() => globalThis.__playwrightDoubleClickEvents.join('>'));
+    if (doubleClickEvents !== 'click:1>click:2>dblclick:2') {
+      fail(`Playwright locator.dblclick() event order was wrong: ${JSON.stringify(doubleClickEvents)}`);
+    }
+    await page.evaluate(() => {
+      globalThis.__playwrightContextMenuEvents = [];
+      const status = document.querySelector('#status');
+      for (const type of ['mousedown', 'mouseup', 'contextmenu']) {
+        status.addEventListener(type, (event) => globalThis.__playwrightContextMenuEvents.push(`${type}:${event.button}`));
+      }
+    });
+    await page.locator('#status').click({ button: 'right', timeout: 5000 });
+    const contextMenuEvents = await page.evaluate(() => globalThis.__playwrightContextMenuEvents.join('>'));
+    if (contextMenuEvents !== 'mousedown:2>mouseup:2>contextmenu:2') {
+      fail(`Playwright right-click contextmenu events were wrong: ${JSON.stringify(contextMenuEvents)}`);
+    }
+    await page.evaluate(() => {
+      globalThis.__playwrightWheelEvents = [];
+      document.querySelector('#status').addEventListener('wheel', (event) => globalThis.__playwrightWheelEvents.push(`${event.deltaX}:${event.deltaY}:${event.deltaMode}`));
+    });
+    const statusBoxForWheel = await page.locator('#status').boundingBox({ timeout: 5000 });
+    if (!statusBoxForWheel) {
+      fail('Playwright locator.boundingBox() returned no status box for wheel');
+    }
+    await page.mouse.move(statusBoxForWheel.x + 5, statusBoxForWheel.y + 5);
+    await page.mouse.wheel(4, 25);
+    const wheelEvents = await page.evaluate(() => globalThis.__playwrightWheelEvents.join('>'));
+    if (wheelEvents !== '4:25:0') {
+      fail(`Playwright page.mouse.wheel() events were wrong: ${JSON.stringify(wheelEvents)}`);
+    }
+
+    const roleText = await page.getByRole('button', { name: 'Hit me' }).textContent({ timeout: 5000 });
+    if (roleText !== 'Hit me') {
+      fail(`Playwright getByRole() did not resolve button name: ${JSON.stringify(roleText)}`);
+    }
+
+    await page.getByLabel('Extra check').check({ timeout: 5000 });
+    const extraChecked = await page.locator('#playwright-check').isChecked({ timeout: 5000 });
+    if (extraChecked !== true) {
+      fail(`Playwright getByLabel().check() did not update checkbox state: ${JSON.stringify(extraChecked)}`);
+    }
+
+    await page.evaluate(() => {
+      const host = document.createElement('label');
+      host.id = 'playwright-plan-host';
+      host.append('Plan ');
+      const select = document.createElement('select');
+      select.id = 'playwright-plan';
+      for (const [value, text] of [['free', 'Free'], ['pro', 'Pro']]) {
+        const option = document.createElement('option');
+        option.value = value;
+        option.textContent = text;
+        select.appendChild(option);
+      }
+      host.appendChild(select);
+      document.body.appendChild(host);
+    });
+    const selectedPlan = await page.getByLabel('Plan').selectOption('pro', { timeout: 5000 });
+    const planValue = await page.locator('#playwright-plan').inputValue({ timeout: 5000 });
+    if (selectedPlan[0] !== 'pro' || planValue !== 'pro') {
+      fail(`Playwright getByLabel().selectOption() did not update select state: ${JSON.stringify({ selectedPlan, planValue })}`);
+    }
+    await page.evaluate(() => {
+      const host = document.querySelector('#playwright-plan-host');
+      if (host?.parentNode) host.parentNode.removeChild(host);
+    });
+
+    await page.getByLabel('Typed name').fill('Probe', { timeout: 5000 });
+    const highLevelInput = await page.locator('#typed-name').inputValue({ timeout: 5000 });
+    if (highLevelInput !== 'Probe') {
+      fail(`Playwright getByLabel().fill() did not update input value: ${JSON.stringify(highLevelInput)}`);
+    }
+    await page.getByLabel('Typed body').fill('Body probe', { timeout: 5000 });
+    const highLevelTextArea = await page.locator('#typed-body').inputValue({ timeout: 5000 });
+    if (highLevelTextArea !== 'Body probe') {
+      fail(`Playwright getByLabel().fill() did not update textarea value: ${JSON.stringify(highLevelTextArea)}`);
+    }
+    await page.locator('#typed-name').click({ timeout: 5000 });
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('Keyed');
+    const keyboardInput = await page.locator('#typed-name').inputValue({ timeout: 5000 });
+    if (keyboardInput !== 'Keyed') {
+      fail(`Playwright high-level keyboard input did not update focused input: ${JSON.stringify(keyboardInput)}`);
+    }
+
+    await page.evaluate(() => {
+      globalThis.__playwrightUploadEvents = [];
+      const label = document.createElement('label');
+      label.id = 'playwright-upload-label';
+      label.append('Upload file ');
+      const input = document.createElement('input');
+      input.id = 'playwright-upload';
+      input.type = 'file';
+      input.name = 'upload';
+      input.addEventListener('input', () => globalThis.__playwrightUploadEvents.push('input'));
+      input.addEventListener('change', () => globalThis.__playwrightUploadEvents.push('change'));
+      label.appendChild(input);
+      document.body.appendChild(label);
+    });
+    await page.getByLabel('Upload file').setInputFiles(fixture, { timeout: 5000 });
+    const uploadInfo = JSON.parse(await page.evaluate(() => {
+      const input = document.querySelector('#playwright-upload');
+      const file = input.files && input.files[0];
+      return JSON.stringify({
+        length: input.files ? input.files.length : 0,
+        name: file ? file.name : '',
+        type: file ? file.type : '',
+        size: file ? file.size : 0,
+        value: input.value,
+        events: globalThis.__playwrightUploadEvents.join('>'),
+      });
+    }));
+    if (uploadInfo.length !== 1 || uploadInfo.name !== path.basename(fixture) || uploadInfo.type !== 'text/html' || uploadInfo.size <= 0 || !uploadInfo.value.endsWith(path.basename(fixture)) || uploadInfo.events !== 'input>change') {
+      fail(`Playwright locator.setInputFiles() did not update file input: ${JSON.stringify(uploadInfo)}`);
+    }
+
+    await session.send('Runtime.evaluate', {
+      expression: "const name = document.querySelector('#typed-name'); name.focus(); name.select(); 'name-ready'",
+    });
+    await typeText(session, 'Vixen');
+    await session.send('Runtime.evaluate', {
+      expression: "const body = document.querySelector('#typed-body'); body.focus(); body.select(); 'body-ready'",
+    });
+    await typeText(session, 'Hello CDP');
+    const formData = await evaluateValue(session, "(() => { const form = document.querySelector('#nav-form'); return new FormData(form).get('typed') + ':' + new FormData(form).get('body'); })()");
+    if (formData !== 'Vixen:Hello CDP') {
+      fail(`typed form data was wrong before submit: ${JSON.stringify(formData)}`);
+    }
+
+    await Promise.all([
+      page.waitForURL(/playwright-next\.html\?typed=Vixen&body=Hello\+CDP$/, { timeout: 5000 }),
+      page.locator('#nav-submit').click({ timeout: 5000 }),
+    ]);
+    const navigatedTitle = await page.title();
+    if (navigatedTitle !== 'Vixen CDP Navigation Smoke') {
+      fail(`typed form did not navigate: ${JSON.stringify(navigatedTitle)}`);
+    }
+    const query = await evaluateValue(session, 'location.search');
+    if (query !== '?typed=Vixen&body=Hello+CDP') {
+      fail(`typed form query was wrong after submit: ${JSON.stringify(query)}`);
+    }
+
+    await page.goBack({ waitUntil: 'load', timeout: 5000 });
+    const backTitle = await page.title();
+    if (backTitle !== 'Vixen CDP Playwright Smoke') {
+      fail(`Playwright page.goBack() landed on wrong title: ${JSON.stringify(backTitle)}`);
+    }
+    await page.goForward({ waitUntil: 'load', timeout: 5000 });
+    const forwardTitle = await page.title();
+    if (forwardTitle !== 'Vixen CDP Navigation Smoke') {
+      fail(`Playwright page.goForward() landed on wrong title: ${JSON.stringify(forwardTitle)}`);
+    }
+    await page.reload({ waitUntil: 'load', timeout: 5000 });
+    const reloadTitle = await page.title();
+    if (reloadTitle !== 'Vixen CDP Navigation Smoke') {
+      fail(`Playwright page.reload() landed on wrong title: ${JSON.stringify(reloadTitle)}`);
+    }
+
+    await page.setContent('<!doctype html><title>Vixen CDP Set Content</title><main id="set-content">Hello setContent</main>', { waitUntil: 'load', timeout: 5000 });
+    const setContentTitle = await page.title();
+    const setContentText = await page.locator('#set-content').textContent({ timeout: 5000 });
+    if (setContentTitle !== 'Vixen CDP Set Content' || setContentText !== 'Hello setContent') {
+      fail(`Playwright page.setContent() did not replace content: ${JSON.stringify({ setContentTitle, setContentText })}`);
+    }
+
+    await page.addScriptTag({ content: 'globalThis.__playwrightAddedScriptTag = 7;' });
+    const addedScriptTagValue = await page.evaluate(() => globalThis.__playwrightAddedScriptTag ?? null);
+    if (addedScriptTagValue !== 7) {
+      fail(`Playwright page.addScriptTag({ content }) did not execute: ${JSON.stringify(addedScriptTagValue)}`);
+    }
+
+    await page.addStyleTag({ content: '#set-content { width: 177px; }' });
+    const addedStyleWidth = await page.locator('#set-content').evaluate((element) => getComputedStyle(element).width, { timeout: 5000 });
+    if (addedStyleWidth !== '177px') {
+      fail(`Playwright page.addStyleTag({ content }) did not affect computed style: ${JSON.stringify(addedStyleWidth)}`);
+    }
+
+    let exposedPayload = null;
+    await page.exposeFunction('fromHost', (value) => {
+      exposedPayload = value;
+      return `echo:${value}`;
+    });
+    await page.evaluate(() => {
+      globalThis.fromHost('vixen-binding');
+      globalThis.__playwrightExposedFunctionQueued = true;
+    });
+    const exposedQueued = await page.evaluate(() => globalThis.__playwrightExposedFunctionQueued === true);
+    if (exposedQueued !== true) {
+      fail('Playwright page.exposeFunction() did not install a callable function');
+    }
+    const exposedDeadline = Date.now() + 5000;
+    while (exposedPayload !== 'vixen-binding' && Date.now() < exposedDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    if (exposedPayload !== 'vixen-binding') {
+      fail(`Playwright page.exposeFunction() did not receive binding payload: ${JSON.stringify(exposedPayload)}`);
+    }
+
+    const extraPage = await context.newPage();
+    if (extraPage.isClosed()) {
+      fail('Playwright context.newPage() returned a closed page');
+    }
+    await extraPage.close();
+    if (!extraPage.isClosed()) {
+      fail('Playwright page.close() did not close the created page');
+    }
+
+    const objectHandle = await page.evaluateHandle(() => ({ answer: 42 }));
+    const answerHandle = await objectHandle.getProperty('answer');
+    const answerValue = await answerHandle.jsonValue();
+    if (answerValue !== 42) {
+      fail(`Playwright JSHandle.getProperty() did not read object property: ${JSON.stringify(answerValue)}`);
+    }
+    await answerHandle.dispose();
+    await objectHandle.dispose();
+
+    const dialogPromise = new Promise((resolve) => {
+      page.once('dialog', async (dialog) => {
+        const info = `${dialog.type()}:${dialog.message()}`;
+        await dialog.accept();
+        resolve(info);
+      });
+    });
+    await page.evaluate(() => alert('hello dialog'));
+    const dialogInfo = await dialogPromise;
+    if (dialogInfo !== 'alert:hello dialog') {
+      fail(`Playwright dialog event was wrong: ${JSON.stringify(dialogInfo)}`);
     }
 
     console.log('playwright-cdp-smoke ok');
