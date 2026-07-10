@@ -19,13 +19,13 @@
 //! app.rs             — top-level App component, root message enum
 //! browser_window.rs  — window component (header bar, tab view, find bar slot)
 //! tabs.rs            — FactoryVecDeque<TabModel> — dynamic tab list
-//! tab.rs             — Tab component: owns EngineWorker, address bar, status row
+//! tab.rs             — Tab component: presentation state and paint snapshots
 //! location_entry.rs  — address/search component
 //! find_bar.rs        — find-in-page component
 //! engine_factory.rs  — creates EngineWorker + wraps gtk4::GLArea as GlAreaSurface
-//! engine_worker.rs   — Relm4 Worker: owns Engine, posts EngineDelegate msgs
+//! engine_worker.rs   — app-level Relm4 Worker: owns one shared BrowserCore
 //! settings.rs        — GSettings wrapper
-//! profile.rs         — app-ID scoped paths + session persistence
+//! profile.rs         — app-ID scoped paths and host download services
 //! config.rs          — APP_ID, VERSION
 //! modals/            — about, preferences, shortcuts
 //! ```
@@ -42,8 +42,15 @@ pub mod config {
     pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 }
 
-/// App-ID scoped profile, host-download paths, and shell session persistence.
+/// App-ID scoped profile paths and host download services.
 pub mod profile;
+
+/// GTK-independent address-bar normalization.
+pub mod address;
+
+/// GTK-independent multi-context adapter over the production BrowserCore.
+#[cfg(feature = "browser-core")]
+pub mod browser_adapter;
 
 #[cfg(feature = "gtk-shell")]
 mod app;

@@ -27,17 +27,19 @@ Autonomous commit/push policy is defined in
 
 Every alpha slice should satisfy these rules:
 
-1. **Visible seam first.** Prefer code that reaches `vixen_engine::page::Page`,
-   `vixen-headless`, CDP, or a committed WPT/fixture check. Pure prep is fine
-   only when the next visible seam is named in the same change or docs.
+1. **Visible seam first.** Prefer code that reaches the engine-owned browser/
+   context/document path, `vixen-headless`, CDP, or a committed WPT/fixture
+   check. A `Page` slice must preserve BrowserCore ownership and name the live
+   document seam it advances. Pure prep is fine only when the next visible seam
+   is named.
 2. **One trust boundary at a time.** For security-sensitive paths, name the
    boundary, validate near it, fail closed, and surface stable error codes.
-3. **Reuse pure modules.** JS host objects, Page projections, CLI, and
-   CDP should call the same Rust implementation instead of growing parallel
-   behavior.
+3. **Reuse pure modules without duplicating ownership.** JS host objects, Page
+   projections, CLI, and CDP should call the same Rust implementation, but only
+   the browser core decides lifecycle, commit, cancellation, and persistence.
 4. **Partial APIs must be explicit.** A subset may ship in alpha if unsupported
-   inputs fail closed and the supported shape is documented in `COMPAT.md`,
-   `PLAN.md`, or `MILESTONES.md`.
+   inputs fail closed and the supported behavior is documented in `COMPAT.md`.
+   Interface shape without a backing subsystem must be labeled shape-only.
 5. **No silent architecture drift.** New dependencies, crate edges, rendering
    paths, process boundaries, or storage/network policy changes must be backed by
    an ADR/update in `DECISIONS.md` or an explicit plan note.
@@ -110,8 +112,9 @@ Alpha speed is acceptable only while these budgets stay visible:
 
 - Non-test modules should stay below 1,000 lines. If a module crosses that while
   moving fast, create the split in the next tock before widening the feature.
-- Prefer boring data flow over framework gravity: DTOs in `vixen-api`, pipeline
-  state in `Page`, browser-facing adapters in headless/CDP/shell.
+- Prefer boring data flow over framework gravity: DTOs in `vixen-api`, lifecycle
+  and pipeline state in the engine-owned browser/context/document graph, and
+  browser-facing adapters in headless/CDP/shell.
 - Avoid duplicate parsers/matchers. If a Page string projection and a JS host
   object both need behavior, extract or call the same Rust
   module.

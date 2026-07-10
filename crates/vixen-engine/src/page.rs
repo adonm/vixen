@@ -33,7 +33,7 @@ use crate::style_dom::Selector;
 use crate::whatwg_url::{parse as parse_url, parse_with_base as parse_url_with_base};
 
 mod interaction;
-pub use interaction::FormSubmissionSnapshot;
+pub use interaction::{FormSubmissionSnapshot, PageSelection};
 
 /// A loaded page at the current vertical integration boundary.
 pub struct Page {
@@ -43,6 +43,8 @@ pub struct Page {
     csp: ContentSecurityPolicy,
     author_stylesheet: AuthorStylesheet,
     diagnostics: Vec<EngineDiagnostic>,
+    focused_element_node_id: Option<usize>,
+    selection: Option<PageSelection>,
 }
 
 /// Errors produced while constructing a [`Page`].
@@ -68,6 +70,8 @@ impl Page {
             csp: ContentSecurityPolicy::new(),
             author_stylesheet,
             diagnostics: Vec::new(),
+            focused_element_node_id: None,
+            selection: None,
         })
     }
 
@@ -94,6 +98,8 @@ impl Page {
             csp,
             author_stylesheet,
             diagnostics: Vec::new(),
+            focused_element_node_id: None,
+            selection: None,
         })
     }
 
@@ -126,6 +132,27 @@ impl Page {
         self.history
             .state()
             .map(|state| String::from_utf8_lossy(state).into_owned())
+    }
+
+    /// The page-owned focused element, if focus has moved away from the
+    /// document's default body element in the current browsing session.
+    pub fn focused_element_node_id(&self) -> Option<usize> {
+        self.focused_element_node_id
+    }
+
+    /// Persist the focused element across runtime realm replacement.
+    pub fn set_focused_element_node_id(&mut self, node_id: Option<usize>) {
+        self.focused_element_node_id = node_id;
+    }
+
+    /// The page-owned single-range selection projection.
+    pub fn selection(&self) -> Option<PageSelection> {
+        self.selection
+    }
+
+    /// Persist document/element selection boundaries across runtime realms.
+    pub fn set_selection(&mut self, selection: Option<PageSelection>) {
+        self.selection = selection;
     }
 
     /// The parsed document. Kept available for narrow integration seams while

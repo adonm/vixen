@@ -29,7 +29,8 @@ architecture frozen and validated, with API surface still allowed to move.
       surface" with stable error codes preserved
 - [ ] WPT target profile in `docs/COMPAT.md` is green; measured pass counts
       are published for every supported category
-- [ ] Binary sizes meet §"Binary size gates" below
+- [ ] GUI/headless artifact sizes are published from `just size-fp` and meet the
+      accepted baseline/regression policy in §"Binary size gates" below
 - [ ] `docs/COMPAT.md` published with honest capability matrix
 - [ ] `just audit` passes (`cargo audit` + `cargo deny check`)
 - [ ] `just check` passes
@@ -143,7 +144,8 @@ drop the flag.
   the repo
 - Every check type in `SPEC.md` passes its existing assertions
 - The new `ref-equivalent` check works against at least 3 fixtures
-- Reports pass count/rate per category and overall
+- Reports pass count/rate overall, per category, per source, and per
+  source×category
 - Separates local Vixen fixtures from imported upstream WPT fixtures so release
   notes can state exactly what was measured
 
@@ -165,15 +167,15 @@ drop the flag.
 
 ## Binary size gates
 
-Stripped release builds must meet:
+`just size-fp` builds and measures the real Flatpak GUI artifact and the stripped
+release headless binary. The active `deno_core`/V8 + GTK + WebRender dependency
+graph does not yet have an accepted reproducible baseline, so the command is
+measurement-only rather than enforcing invented limits.
 
-| Binary              | Target |
-|---------------------|-------:|
-| `vixen` (GUI)       | remeasure with `deno_core`/V8 before release |
-| `vixen-headless`    | remeasure with `deno_core`/V8 before release |
-
-Measured via `just size-fp`. Any change exceeding +50 KiB must document
-justification in the commit message.
+Before beta, publish the environment, artifact paths, GUI/headless byte counts,
+and install-size method here. Then adopt explicit warning/failure regression
+thresholds against that baseline. A release is blocked if its measured artifacts
+exceed those accepted thresholds without a documented product tradeoff.
 
 ---
 

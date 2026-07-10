@@ -8,28 +8,30 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use deno_core::serde_json::{Value, json};
 use deno_core::{Extension, ExtensionFileSource, OpState};
 use url::Url;
 use vixen_net::{
     ContentSecurityPolicy, CookieJar, CookieSnapshot, CorsCheckOutcome, CorsCredentialsMode,
-    CorsResponseHeaders, Method, MixedContentVerdict, Network, NetworkConfig, NetworkEvent, Origin,
-    RedirectMode, ResourceType, SameSite, TextResponse, classify_mixed_content, cors_check,
-    cors_filtered_headers,
+    CorsResponseHeaders, IntegrityOutcome, Method, MixedContentVerdict, Network, NetworkConfig,
+    NetworkEvent, Origin, RedirectMode, ResourceType, SameSite, TextRequest, TextResponse,
+    classify_mixed_content, cors_check, cors_filtered_headers, parse_integrity,
     referrer_policy::{
         ReferrerPolicy, ReferrerValue, is_potentially_trustworthy, parse_referrer_policy,
         resolve_referrer,
     },
-    validate_http_url,
+    validate_http_url, verify_integrity,
 };
 use vixen_store::{CacheEntry, CookieRecord, PermissionDecision, Store};
 
 use crate::doc::DocumentScriptItem;
+use crate::headers::is_cors_safelisted_request_header;
 use crate::page::Page;
 use crate::storage_key::{
     MAX_PARTITION_BYTES, StorageKeyError, StorageKind, StorageQuota, validate_storage_key,
@@ -41,6 +43,27 @@ struct WebApiHost {
     network: Result<Network, String>,
     cookies: Arc<Mutex<CookieJar>>,
     fetch_policy: Option<FetchPolicy>,
+    extra_http_headers: ExtraHttpHeaders,
+    cache_disabled: CacheDisabledFlag,
+    preflight_cache: Arc<Mutex<PreflightCache>>,
+    permission_overrides: PermissionOverrides,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct RuntimeNetworkState {
+    cookies: Arc<Mutex<CookieJar>>,
+    preflight_cache: Arc<Mutex<PreflightCache>>,
+}
+
+impl RuntimeNetworkState {
+    pub(super) fn clear(&self, cookies: bool, preflight_cache: bool) {
+        if cookies && let Ok(mut jar) = self.cookies.lock() {
+            *jar = CookieJar::default();
+        }
+        if preflight_cache && let Ok(mut cache) = self.preflight_cache.lock() {
+            *cache = PreflightCache::default();
+        }
+    }
 }
 
 type StorageEntries = Vec<(String, String)>;
@@ -50,14 +73,142 @@ impl WebApiHost {
     fn new(
         network_config: NetworkConfig,
         storage: WebStorageHost,
+        runtime_network_state: RuntimeNetworkState,
         fetch_policy: Option<FetchPolicy>,
+        extra_http_headers: ExtraHttpHeaders,
+        cache_disabled: CacheDisabledFlag,
+        permission_overrides: PermissionOverrides,
     ) -> Self {
         Self {
             storage,
             network: Network::new(network_config).map_err(|err| err.to_string()),
-            cookies: Arc::new(Mutex::new(CookieJar::default())),
+            cookies: runtime_network_state.cookies,
             fetch_policy,
+            extra_http_headers,
+            cache_disabled,
+            preflight_cache: runtime_network_state.preflight_cache,
+            permission_overrides,
         }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct PermissionOverrides {
+    grants: Arc<Mutex<HashMap<Option<String>, Vec<String>>>>,
+}
+
+impl PermissionOverrides {
+    pub(super) fn replace(&self, origin: Option<String>, grants: Vec<String>) {
+        if let Ok(mut entries) = self.grants.lock() {
+            entries.insert(origin, grants);
+        }
+    }
+
+    pub(super) fn reset(&self) {
+        if let Ok(mut entries) = self.grants.lock() {
+            entries.clear();
+        }
+    }
+
+    fn decision(&self, origin: Option<&str>, kind: &str) -> Result<Option<bool>, String> {
+        let entries = self
+            .grants
+            .lock()
+            .map_err(|_| "permission override map poisoned".to_owned())?;
+        let exact = origin
+            .map(str::to_owned)
+            .and_then(|origin| entries.get(&Some(origin)));
+        let grants = exact.or_else(|| entries.get(&None));
+        Ok(grants.map(|grants| grants.iter().any(|grant| grant == kind)))
+    }
+}
+
+const MAX_PREFLIGHT_CACHE_ENTRIES: usize = 128;
+const MAX_PREFLIGHT_CACHE_AGE: Duration = Duration::from_secs(2 * 60 * 60);
+const DEFAULT_PREFLIGHT_CACHE_AGE: Duration = Duration::from_secs(5);
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PreflightCacheKey {
+    request_origin: String,
+    target_origin: String,
+    credentials_mode: CorsCredentialsMode,
+}
+
+#[derive(Debug, Clone)]
+struct PreflightCacheEntry {
+    key: PreflightCacheKey,
+    allow_methods: Vec<String>,
+    allow_headers: Vec<String>,
+    expires_at: Instant,
+}
+
+#[derive(Debug, Default)]
+struct PreflightCache {
+    entries: VecDeque<PreflightCacheEntry>,
+}
+
+impl PreflightCache {
+    fn allows(
+        &mut self,
+        key: &PreflightCacheKey,
+        method: Method,
+        unsafe_header_names: &[String],
+        now: Instant,
+    ) -> bool {
+        self.entries.retain(|entry| entry.expires_at > now);
+        self.entries.iter().any(|entry| {
+            entry.key == *key
+                && preflight_method_allowed(&entry.allow_methods, method, key.credentials_mode)
+                && preflight_headers_allowed(
+                    &entry.allow_headers,
+                    unsafe_header_names,
+                    key.credentials_mode,
+                )
+        })
+    }
+
+    fn insert(&mut self, entry: PreflightCacheEntry) {
+        self.entries.push_back(entry);
+        while self.entries.len() > MAX_PREFLIGHT_CACHE_ENTRIES {
+            self.entries.pop_front();
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+pub(super) struct ExtraHttpHeaders {
+    entries: Arc<Mutex<Vec<(String, String)>>>,
+}
+
+#[derive(Clone, Default)]
+pub(super) struct CacheDisabledFlag {
+    value: Arc<Mutex<bool>>,
+}
+
+impl CacheDisabledFlag {
+    pub(super) fn set(&self, disabled: bool) {
+        if let Ok(mut guard) = self.value.lock() {
+            *guard = disabled;
+        }
+    }
+
+    fn snapshot(&self) -> bool {
+        self.value.lock().map(|guard| *guard).unwrap_or(false)
+    }
+}
+
+impl ExtraHttpHeaders {
+    pub(super) fn set(&self, entries: Vec<(String, String)>) {
+        if let Ok(mut guard) = self.entries.lock() {
+            *guard = entries;
+        }
+    }
+
+    fn snapshot(&self) -> Vec<(String, String)> {
+        self.entries
+            .lock()
+            .map(|guard| guard.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -180,6 +331,10 @@ impl WebStorageBackend {
             .map(|store| Self::Store(Arc::new(store)))
             .map_err(|err| err.to_string())
     }
+
+    pub(super) fn from_store(store: Arc<Store>) -> Self {
+        Self::Store(store)
+    }
 }
 
 deno_core::extension!(
@@ -196,6 +351,7 @@ deno_core::extension!(
         op_vixen_document_cookie_get,
         op_vixen_document_cookie_set,
         op_vixen_permission_query,
+        op_vixen_crypto_random_bytes,
         op_vixen_fetch,
     ],
 );
@@ -203,14 +359,22 @@ deno_core::extension!(
 pub(super) fn extension(
     network_config: NetworkConfig,
     storage: WebStorageHost,
+    runtime_network_state: RuntimeNetworkState,
     fetch_policy: Option<FetchPolicy>,
+    extra_http_headers: ExtraHttpHeaders,
+    cache_disabled: CacheDisabledFlag,
+    permission_overrides: PermissionOverrides,
 ) -> Extension {
     let mut extension = vixen_webapi::init();
     extension.op_state_fn = Some(Box::new(move |state| {
         state.put(WebApiHost::new(
             network_config.clone(),
             storage.clone(),
+            runtime_network_state.clone(),
             fetch_policy.clone(),
+            extra_http_headers.clone(),
+            cache_disabled.clone(),
+            permission_overrides.clone(),
         ));
     }));
     extension.js_files = Cow::Owned(vec![ExtensionFileSource::new_computed(
@@ -367,7 +531,11 @@ fn op_vixen_fetch(
         Ok(headers) => headers,
         Err(message) => return fetch_error(message),
     };
-    let author_headers = headers.clone();
+    let integrity = request
+        .get("integrity")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned();
     let body = request
         .get("body")
         .and_then(Value::as_str)
@@ -392,7 +560,15 @@ fn op_vixen_fetch(
         );
     }
 
-    let (network, cookies, cookie_store, fetch_policy) = {
+    let (
+        network,
+        cookies,
+        cookie_store,
+        fetch_policy,
+        extra_http_headers,
+        cache_disabled,
+        preflight_cache,
+    ) = {
         let state = state.borrow();
         let host = state.borrow::<WebApiHost>();
         let network = match &host.network {
@@ -411,8 +587,13 @@ fn op_vixen_fetch(
             host.cookies.clone(),
             web_storage_store(&host.storage),
             host.fetch_policy.clone(),
+            host.extra_http_headers.snapshot(),
+            host.cache_disabled.snapshot(),
+            host.preflight_cache.clone(),
         )
     };
+    headers.extend(extra_http_headers);
+    let author_headers = headers.clone();
 
     if let Some(policy) = &fetch_policy
         && !policy.allows_connect(&url)
@@ -470,25 +651,33 @@ fn op_vixen_fetch(
                 method,
                 policy.cors_origin(),
                 unsafe_header_names,
+                credentials_mode.cors_mode(),
+                preflight_cache,
             )
         {
             return fetch_failure(url.as_str(), method, message, "cors");
         }
     }
     let send_credentials = credentials_mode.sends_credentials(cross_origin);
-    let revalidation_candidate = if method == Method::Get && cache_mode == FetchCacheMode::NoCache {
-        match fetch_cache_lookup(cookie_store.as_deref(), &url) {
-            Ok(candidate) => candidate,
-            Err(message) => return fetch_failure(url.as_str(), method, message, "cache"),
-        }
-    } else {
-        None
-    };
+    let revalidation_candidate =
+        if !cache_disabled && method == Method::Get && cache_mode == FetchCacheMode::NoCache {
+            match fetch_cache_lookup(cookie_store.as_deref(), &url) {
+                Ok(candidate) => candidate,
+                Err(message) => return fetch_failure(url.as_str(), method, message, "cache"),
+            }
+        } else {
+            None
+        };
     if let Some(candidate) = &revalidation_candidate {
         add_cache_revalidation_headers(&mut headers, candidate);
     }
 
-    if method == Method::Get
+    if cache_disabled && method == Method::Get && cache_mode == FetchCacheMode::OnlyIfCached {
+        return fetch_failure(url.as_str(), method, "fetch cache disabled", "cache");
+    }
+
+    if !cache_disabled
+        && method == Method::Get
         && matches!(
             cache_mode,
             FetchCacheMode::ForceCache | FetchCacheMode::OnlyIfCached
@@ -496,6 +685,12 @@ fn op_vixen_fetch(
     {
         match fetch_cache_lookup(cookie_store.as_deref(), &url) {
             Ok(Some(response)) => {
+                let response = match apply_fetch_integrity(response, &integrity) {
+                    Ok(response) => response,
+                    Err(message) => {
+                        return fetch_failure(url.as_str(), method, message, "integrity");
+                    }
+                };
                 return match apply_fetch_visibility(
                     response,
                     fetch_mode,
@@ -517,31 +712,56 @@ fn op_vixen_fetch(
 
     match fetch_http_text_blocking(
         network,
-        url.clone(),
-        method,
-        cache_mode,
-        send_credentials,
-        cross_origin,
-        redirect_mode,
-        headers,
-        body,
-        cookies,
-        cookie_store,
-    ) {
-        Ok(response) => match apply_fetch_visibility(
-            revalidated_response(response, revalidation_candidate),
-            fetch_mode,
-            credentials_mode,
-            fetch_policy.as_ref(),
-            &url,
-        ) {
-            Ok((response, response_type)) => fetch_response(response, response_type),
-            Err(message) => {
-                let reason = fetch_blocked_reason(&message);
-                fetch_failure(url.as_str(), method, message, reason)
-            }
+        TextRequest {
+            url: url.clone(),
+            cross_site: cross_origin,
+            method,
+            redirect_mode,
+            headers,
+            body,
         },
-        Err(message) => fetch_failure(url.as_str(), method, message, "network"),
+        send_credentials,
+        cookies,
+        cookie_store.clone(),
+    ) {
+        Ok(response) => {
+            let response = revalidated_response(response, revalidation_candidate);
+            let response = match apply_fetch_integrity(response, &integrity) {
+                Ok(response) => response,
+                Err(message) => {
+                    return fetch_failure(url.as_str(), method, message, "integrity");
+                }
+            };
+            if !cache_disabled
+                && method == Method::Get
+                && cache_mode != FetchCacheMode::NoStore
+                && response.status != 304
+                && let Err(message) = persist_fetch_cache(
+                    cookie_store.as_deref(),
+                    &cookie_origin_key(&url),
+                    &response,
+                )
+            {
+                return fetch_failure(url.as_str(), method, message, "cache");
+            }
+            match apply_fetch_visibility(
+                response,
+                fetch_mode,
+                credentials_mode,
+                fetch_policy.as_ref(),
+                &url,
+            ) {
+                Ok((response, response_type)) => fetch_response(response, response_type),
+                Err(message) => {
+                    let reason = fetch_blocked_reason(&message);
+                    fetch_failure(url.as_str(), method, message, reason)
+                }
+            }
+        }
+        Err(message) => {
+            let reason = fetch_blocked_reason(&message);
+            fetch_failure(url.as_str(), method, message, reason)
+        }
     }
 }
 
@@ -621,6 +841,25 @@ fn op_vixen_permission_query(
     match permission_state(host, kind) {
         Ok(state) => json!({ "ok": true, "state": state }),
         Err(message) => json!({ "ok": false, "message": message }),
+    }
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_crypto_random_bytes(len: u32) -> deno_core::serde_json::Value {
+    if len > 65_536 {
+        return json!({
+            "ok": false,
+            "message": "Crypto.getRandomValues quota exceeded",
+        });
+    }
+    let mut bytes = vec![0; len as usize];
+    match getrandom::fill(&mut bytes) {
+        Ok(()) => json!({ "ok": true, "bytes": bytes }),
+        Err(err) => json!({
+            "ok": false,
+            "message": format!("secure random source unavailable: {err}"),
+        }),
     }
 }
 
@@ -820,25 +1059,6 @@ fn cors_unsafe_request_header_names(headers: &[(String, String)]) -> Vec<String>
     out
 }
 
-fn is_cors_safelisted_request_header(name: &str, value: &str) -> bool {
-    match name {
-        "accept" | "accept-language" | "content-language" => true,
-        "content-type" => {
-            let essence = value
-                .split(';')
-                .next()
-                .unwrap_or_default()
-                .trim()
-                .to_ascii_lowercase();
-            matches!(
-                essence.as_str(),
-                "application/x-www-form-urlencoded" | "multipart/form-data" | "text/plain"
-            )
-        }
-        _ => false,
-    }
-}
-
 fn cors_preflight_required(method: Method, unsafe_header_names: &[String]) -> bool {
     !matches!(method, Method::Get | Method::Head | Method::Post) || !unsafe_header_names.is_empty()
 }
@@ -849,7 +1069,22 @@ fn cors_preflight_blocking(
     method: Method,
     request_origin: String,
     unsafe_header_names: Vec<String>,
+    credentials_mode: CorsCredentialsMode,
+    cache: Arc<Mutex<PreflightCache>>,
 ) -> Result<(), String> {
+    let key = PreflightCacheKey {
+        request_origin: request_origin.clone(),
+        target_origin: Origin::from_url(&url).partition_key(),
+        credentials_mode,
+    };
+    if cache
+        .lock()
+        .map_err(|_| "CORS preflight cache poisoned".to_owned())?
+        .allows(&key, method, &unsafe_header_names, Instant::now())
+    {
+        return Ok(());
+    }
+
     let handle = std::thread::Builder::new()
         .name("vixen-fetch-preflight".to_owned())
         .spawn(move || {
@@ -873,29 +1108,48 @@ fn cors_preflight_blocking(
             let mut network = network;
             let mut jar = CookieJar::default();
             let response = rt
-                .block_on(
-                    network.get_text_with_cookies_redirect_mode_headers_and_body(
-                        &mut jar,
-                        &url,
-                        true,
-                        Method::Options,
-                        RedirectMode::Error,
+                .block_on(network.get_text_with_cookies_request(
+                    &mut jar,
+                    TextRequest {
+                        url,
+                        cross_site: true,
+                        method: Method::Options,
+                        redirect_mode: RedirectMode::Error,
                         headers,
-                        None,
-                    ),
-                )
+                        body: None,
+                    },
+                ))
                 .map_err(|err| err.to_string())?;
             validate_cors_preflight_response(
                 response,
                 &request_origin,
                 method,
                 &unsafe_header_names,
+                credentials_mode,
             )
         })
         .map_err(|err| format!("fetch preflight worker spawn failed: {err}"))?;
-    handle
+    let cors_headers = handle
         .join()
-        .map_err(|_| "fetch preflight worker panicked".to_owned())?
+        .map_err(|_| "fetch preflight worker panicked".to_owned())??;
+    let max_age = Duration::from_secs(
+        cors_headers
+            .max_age
+            .unwrap_or(DEFAULT_PREFLIGHT_CACHE_AGE.as_secs()),
+    )
+    .min(MAX_PREFLIGHT_CACHE_AGE);
+    if !max_age.is_zero() {
+        cache
+            .lock()
+            .map_err(|_| "CORS preflight cache poisoned".to_owned())?
+            .insert(PreflightCacheEntry {
+                key,
+                allow_methods: cors_headers.allow_methods,
+                allow_headers: cors_headers.allow_headers,
+                expires_at: Instant::now() + max_age,
+            });
+    }
+    Ok(())
 }
 
 fn validate_cors_preflight_response(
@@ -903,7 +1157,8 @@ fn validate_cors_preflight_response(
     request_origin: &str,
     method: Method,
     unsafe_header_names: &[String],
-) -> Result<(), String> {
+    credentials_mode: CorsCredentialsMode,
+) -> Result<CorsResponseHeaders, String> {
     if !(200..=299).contains(&response.status) {
         return Err(format!(
             "fetch blocked by CORS preflight: HTTP {}",
@@ -916,50 +1171,66 @@ fn validate_cors_preflight_response(
             .iter()
             .map(|(name, value)| (name.as_str(), value.as_str())),
     );
-    match cors_check(&cors_headers, request_origin, CorsCredentialsMode::Omit) {
+    match cors_check(&cors_headers, request_origin, credentials_mode) {
         CorsCheckOutcome::Pass => {}
         CorsCheckOutcome::Fail(err) => {
             return Err(format!("fetch blocked by CORS preflight: {err}"));
         }
     }
-    let allowed_methods = &cors_headers.allow_methods;
-    let method_allowed = allowed_methods.iter().any(|value| value == "*")
-        || allowed_methods
-            .iter()
-            .any(|value| value.eq_ignore_ascii_case(method.as_str()));
-    if !method_allowed {
+    if !preflight_method_allowed(&cors_headers.allow_methods, method, credentials_mode) {
         return Err(format!(
             "fetch blocked by CORS preflight: method {} not allowed",
             method.as_str()
         ));
     }
-    let wildcard_headers = cors_headers.allow_headers.iter().any(|value| value == "*");
-    for name in unsafe_header_names {
-        if !wildcard_headers && !cors_headers.allow_headers.iter().any(|value| value == name) {
-            return Err(format!(
-                "fetch blocked by CORS preflight: header {name} not allowed"
-            ));
-        }
+    if !preflight_headers_allowed(
+        &cors_headers.allow_headers,
+        unsafe_header_names,
+        credentials_mode,
+    ) {
+        return Err("fetch blocked by CORS preflight: request header not allowed".to_owned());
     }
-    Ok(())
+    Ok(cors_headers)
+}
+
+fn preflight_method_allowed(
+    allowed_methods: &[String],
+    method: Method,
+    credentials_mode: CorsCredentialsMode,
+) -> bool {
+    (credentials_mode != CorsCredentialsMode::Include
+        && allowed_methods.iter().any(|value| value == "*"))
+        || allowed_methods
+            .iter()
+            .any(|value| value.eq_ignore_ascii_case(method.as_str()))
+}
+
+fn preflight_headers_allowed(
+    allowed_headers: &[String],
+    unsafe_header_names: &[String],
+    credentials_mode: CorsCredentialsMode,
+) -> bool {
+    let wildcard = credentials_mode != CorsCredentialsMode::Include
+        && allowed_headers.iter().any(|value| value == "*");
+    unsafe_header_names.iter().all(|name| {
+        wildcard
+            || allowed_headers
+                .iter()
+                .any(|value| value.eq_ignore_ascii_case(name))
+    })
 }
 
 fn fetch_http_text_blocking(
     network: Network,
-    url: Url,
-    method: Method,
-    cache_mode: FetchCacheMode,
+    request: TextRequest,
     send_credentials: bool,
-    cross_origin: bool,
-    redirect_mode: RedirectMode,
-    headers: Vec<(String, String)>,
-    body: Option<Vec<u8>>,
     cookies: Arc<Mutex<CookieJar>>,
     cookie_store: Option<Arc<Store>>,
 ) -> Result<TextResponse, String> {
     let handle = std::thread::Builder::new()
         .name("vixen-fetch".to_owned())
         .spawn(move || {
+            let url = request.url.clone();
             let origin_key = cookie_origin_key(&url);
             let origin_host = url.host_str().unwrap_or_default().to_ascii_lowercase();
             let mut jar = if send_credentials {
@@ -973,17 +1244,7 @@ fn fetch_http_text_blocking(
                 .map_err(|err| format!("network runtime unavailable: {err}"))?;
             let mut network = network;
             let response = rt
-                .block_on(
-                    network.get_text_with_cookies_redirect_mode_headers_and_body(
-                        &mut jar,
-                        &url,
-                        cross_origin,
-                        method,
-                        redirect_mode,
-                        headers,
-                        body,
-                    ),
-                )
+                .block_on(network.get_text_with_cookies_request(&mut jar, request))
                 .map_err(|err| err.to_string())?;
             if send_credentials {
                 persist_cookie_jar(
@@ -993,12 +1254,6 @@ fn fetch_http_text_blocking(
                     &origin_host,
                     jar,
                 )?;
-            }
-            if method == Method::Get
-                && cache_mode != FetchCacheMode::NoStore
-                && response.status != 304
-            {
-                persist_fetch_cache(cookie_store.as_deref(), &origin_key, &response)?;
             }
             Ok(response)
         })
@@ -1327,6 +1582,16 @@ fn canonical_permission_name(name: &str) -> Option<&'static str> {
 }
 
 fn permission_state(host: &WebApiHost, kind: &'static str) -> Result<&'static str, String> {
+    let origin = host
+        .fetch_policy
+        .as_ref()
+        .map(|policy| policy.cors_origin());
+    if let Some(granted) = host
+        .permission_overrides
+        .decision(origin.as_deref(), kind)?
+    {
+        return Ok(if granted { "granted" } else { "denied" });
+    }
     let Some(policy) = host.fetch_policy.as_ref() else {
         return Ok("prompt");
     };
@@ -1383,6 +1648,26 @@ fn storage_value(value: Option<String>) -> deno_core::serde_json::Value {
         "ok": true,
         "value": value,
     })
+}
+
+fn apply_fetch_integrity(response: TextResponse, metadata: &str) -> Result<TextResponse, String> {
+    if metadata.is_empty() {
+        return Ok(response);
+    }
+    let items = parse_integrity(metadata);
+    match verify_integrity(&items, response.body.as_bytes()) {
+        IntegrityOutcome::Mismatch(algorithms) => Err(format!(
+            "fetch blocked by integrity mismatch ({})",
+            algorithms
+                .iter()
+                .map(|algorithm| algorithm.token())
+                .collect::<Vec<_>>()
+                .join(",")
+        )),
+        IntegrityOutcome::NoMetadata
+        | IntegrityOutcome::NoKnownAlgorithms
+        | IntegrityOutcome::Verified(_) => Ok(response),
+    }
 }
 
 fn apply_fetch_visibility(
@@ -1501,7 +1786,9 @@ fn fetch_failure(
 }
 
 fn fetch_blocked_reason(message: &str) -> &'static str {
-    if message.contains("CORS") || message.contains("cors") {
+    if message.contains("integrity") {
+        "integrity"
+    } else if message.contains("CORS") || message.contains("cors") {
         "cors"
     } else if message.contains("same-origin") {
         "origin"
@@ -1548,6 +1835,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
     op_vixen_storage_estimate,
     op_vixen_storage_persisted,
     op_vixen_permission_query,
+    op_vixen_crypto_random_bytes,
     op_vixen_fetch,
   } = Deno.core.ops;
   const webidl = globalThis.__vixenWebidl;
@@ -1965,6 +2253,22 @@ const WEB_API_BOOTSTRAP: &str = r#"
     }
   }
 
+  class VixenFocusEvent extends VixenUIEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      const opts = init || {};
+      defineReadonly(this, 'relatedTarget', opts.relatedTarget || null, false);
+    }
+  }
+
+  class VixenSubmitEvent extends VixenEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      const opts = init || {};
+      defineReadonly(this, 'submitter', opts.submitter || null, false);
+    }
+  }
+
   class VixenWheelEvent extends VixenMouseEvent {
     constructor(type, init = {}) {
       super(type, init);
@@ -2023,6 +2327,8 @@ const WEB_API_BOOTSTRAP: &str = r#"
   webidl.adoptInterface('CustomEvent', VixenCustomEvent);
   webidl.adoptInterface('UIEvent', VixenUIEvent);
   webidl.adoptInterface('MouseEvent', VixenMouseEvent);
+  webidl.adoptInterface('FocusEvent', VixenFocusEvent);
+  webidl.adoptInterface('SubmitEvent', VixenSubmitEvent);
   webidl.adoptInterface('WheelEvent', VixenWheelEvent);
   webidl.adoptInterface('KeyboardEvent', VixenKeyboardEvent);
   webidl.adoptInterface('InputEvent', VixenInputEvent);
@@ -2747,7 +3053,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
       defineReadonly(this, 'credentials', init && Object.prototype.hasOwnProperty.call(init, 'credentials') ? init.credentials : (source && source.credentials) || 'same-origin', true);
       defineReadonly(this, 'cache', init && Object.prototype.hasOwnProperty.call(init, 'cache') ? init.cache : (source && source.cache) || 'default', true);
       defineReadonly(this, 'redirect', init && Object.prototype.hasOwnProperty.call(init, 'redirect') ? init.redirect : (source && source.redirect) || 'follow', true);
-      defineReadonly(this, 'integrity', (init && init.integrity) || '', true);
+      defineReadonly(this, 'integrity', (init && init.integrity) || (source && source.integrity) || '', true);
       defineReadonly(this, 'keepalive', Boolean(init && init.keepalive), true);
       defineReadonly(this, 'signal', (init && init.signal) || new VixenAbortController().signal, true);
       defineReadonly(this, '__vixenBodyText', body.text, false);
@@ -2821,7 +3127,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
     } catch (err) {
       return Promise.reject(err);
     }
-    const result = op_vixen_fetch({ url: request.url, method: request.method, mode: request.mode, cache: request.cache, credentials: request.credentials, redirect: request.redirect, referrerPolicy: request.referrerPolicy, headers: Array.from(request.headers.entries()), body: request.body === null ? null : request.__vixenBodyText });
+    const result = op_vixen_fetch({ url: request.url, method: request.method, mode: request.mode, cache: request.cache, credentials: request.credentials, redirect: request.redirect, referrerPolicy: request.referrerPolicy, integrity: request.integrity, headers: Array.from(request.headers.entries()), body: request.body === null ? null : request.__vixenBodyText });
     recordNetworkEvents(result && result.events);
     if (!result || !result.ok) {
       return Promise.reject(new TypeError(result && result.message ? result.message : 'fetch failed'));
@@ -3138,6 +3444,329 @@ const WEB_API_BOOTSTRAP: &str = r#"
     return out;
   }
 
+  class VixenMessageEvent extends VixenEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      const opts = init || {};
+      defineReadonly(this, 'data', Object.prototype.hasOwnProperty.call(opts, 'data') ? opts.data : null, true);
+      defineReadonly(this, 'origin', opts.origin === undefined ? '' : String(opts.origin), true);
+      defineReadonly(this, 'lastEventId', opts.lastEventId === undefined ? '' : String(opts.lastEventId), true);
+      defineReadonly(this, 'source', opts.source || null, true);
+      defineReadonly(this, 'ports', Array.from(opts.ports || []), true);
+    }
+  }
+
+  class VixenProgressEvent extends VixenEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      const opts = init || {};
+      defineReadonly(this, 'lengthComputable', Boolean(opts.lengthComputable), true);
+      defineReadonly(this, 'loaded', Number(opts.loaded) || 0, true);
+      defineReadonly(this, 'total', Number(opts.total) || 0, true);
+    }
+  }
+
+  class VixenErrorEvent extends VixenEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      const opts = init || {};
+      defineReadonly(this, 'message', opts.message === undefined ? '' : String(opts.message), true);
+      defineReadonly(this, 'filename', opts.filename === undefined ? '' : String(opts.filename), true);
+      defineReadonly(this, 'lineno', Number(opts.lineno) || 0, true);
+      defineReadonly(this, 'colno', Number(opts.colno) || 0, true);
+      defineReadonly(this, 'error', Object.prototype.hasOwnProperty.call(opts, 'error') ? opts.error : null, true);
+    }
+  }
+
+  class VixenCloseEvent extends VixenEvent {
+    constructor(type, init = {}) {
+      super(type, init);
+      const opts = init || {};
+      defineReadonly(this, 'wasClean', Boolean(opts.wasClean), true);
+      defineReadonly(this, 'code', Number(opts.code) || 0, true);
+      defineReadonly(this, 'reason', opts.reason === undefined ? '' : String(opts.reason), true);
+    }
+  }
+
+  class VixenMessagePort extends VixenEventTarget {
+    constructor() {
+      super();
+      defineData(this, '__vixenEntangledPort', null, false);
+      defineData(this, '__vixenClosed', false, false);
+      defineData(this, 'onmessage', null, true);
+      defineData(this, 'onmessageerror', null, true);
+    }
+    postMessage(message, transfer = []) {
+      if (this.__vixenClosed || !this.__vixenEntangledPort || this.__vixenEntangledPort.__vixenClosed) return;
+      const target = this.__vixenEntangledPort;
+      const payload = cloneValue(message);
+      const ports = Array.from(transfer || []);
+      queueMicrotaskCompat(() => {
+        if (target.__vixenClosed) return;
+        target.dispatchEvent(new VixenMessageEvent('message', { data: payload, ports }));
+      });
+    }
+    start() {}
+    close() {
+      this.__vixenClosed = true;
+      this.__vixenEntangledPort = null;
+    }
+  }
+
+  class VixenMessageChannel {
+    constructor() {
+      const port1 = new VixenMessagePort();
+      const port2 = new VixenMessagePort();
+      port1.__vixenEntangledPort = port2;
+      port2.__vixenEntangledPort = port1;
+      defineReadonly(this, 'port1', port1, true);
+      defineReadonly(this, 'port2', port2, true);
+    }
+  }
+
+  const broadcastChannels = new Map();
+
+  class VixenBroadcastChannel extends VixenEventTarget {
+    constructor(name) {
+      super();
+      const channelName = String(name);
+      defineReadonly(this, 'name', channelName, true);
+      defineData(this, '__vixenClosed', false, false);
+      defineData(this, 'onmessage', null, true);
+      defineData(this, 'onmessageerror', null, true);
+      if (!broadcastChannels.has(channelName)) broadcastChannels.set(channelName, new Set());
+      broadcastChannels.get(channelName).add(this);
+    }
+    postMessage(message) {
+      if (this.__vixenClosed) throw new TypeError('BroadcastChannel is closed');
+      const peers = broadcastChannels.get(this.name) || new Set();
+      const payload = cloneValue(message);
+      for (const peer of peers) {
+        if (peer === this || peer.__vixenClosed) continue;
+        queueMicrotaskCompat(() => {
+          if (!peer.__vixenClosed) peer.dispatchEvent(new VixenMessageEvent('message', { data: cloneValue(payload) }));
+        });
+      }
+    }
+    close() {
+      this.__vixenClosed = true;
+      const peers = broadcastChannels.get(this.name);
+      if (peers) peers.delete(this);
+    }
+  }
+
+  function targetRect(target) {
+    if (target && typeof target.getBoundingClientRect === 'function') {
+      try {
+        const rect = target.getBoundingClientRect();
+        return new VixenDOMRectReadOnly(rect.x, rect.y, rect.width, rect.height);
+      } catch (_) {}
+    }
+    return new VixenDOMRectReadOnly(0, 0, 0, 0);
+  }
+
+  function viewportRect() {
+    return new VixenDOMRectReadOnly(0, 0, Number(globalThis.innerWidth) || 800, Number(globalThis.innerHeight) || 600);
+  }
+
+  function observerThresholds(options) {
+    const raw = options && Object.prototype.hasOwnProperty.call(options, 'threshold') ? options.threshold : 0;
+    const values = Array.isArray(raw) ? raw : [raw];
+    const thresholds = values.map((value) => finiteNumber(value, 0)).filter((value) => value >= 0 && value <= 1);
+    return thresholds.length === 0 ? [0] : Array.from(new Set(thresholds)).sort((a, b) => a - b);
+  }
+
+  class VixenIntersectionObserverEntry {
+    constructor(init = {}) {
+      defineReadonly(this, 'time', finiteNumber(init.time, performance.now()), true);
+      defineReadonly(this, 'rootBounds', init.rootBounds || null, true);
+      defineReadonly(this, 'boundingClientRect', init.boundingClientRect || new VixenDOMRectReadOnly(), true);
+      defineReadonly(this, 'intersectionRect', init.intersectionRect || new VixenDOMRectReadOnly(), true);
+      defineReadonly(this, 'isIntersecting', Boolean(init.isIntersecting), true);
+      defineReadonly(this, 'intersectionRatio', finiteNumber(init.intersectionRatio, 0), true);
+      defineReadonly(this, 'target', init.target || null, true);
+    }
+  }
+
+  class VixenIntersectionObserver {
+    constructor(callback, options = {}) {
+      if (typeof callback !== 'function') throw new TypeError('IntersectionObserver callback must be a function');
+      defineReadonly(this, '__vixenCallback', callback, false);
+      defineReadonly(this, '__vixenRecords', [], false);
+      defineReadonly(this, '__vixenTargets', new Set(), false);
+      defineReadonly(this, 'root', options && options.root ? options.root : null, true);
+      defineReadonly(this, 'rootMargin', options && options.rootMargin !== undefined ? String(options.rootMargin) : '0px', true);
+      defineReadonly(this, 'thresholds', observerThresholds(options || {}), true);
+      defineReadonly(this, 'scrollMargin', '0px', true);
+      defineReadonly(this, 'delay', 0, true);
+      defineReadonly(this, 'trackVisibility', false, true);
+    }
+    observe(target) {
+      if (target === null || (typeof target !== 'object' && typeof target !== 'function')) throw new TypeError('IntersectionObserver.observe target must be an Element');
+      this.__vixenTargets.add(target);
+      const rect = targetRect(target);
+      const intersects = rect.width > 0 && rect.height > 0;
+      this.__vixenRecords.push(new VixenIntersectionObserverEntry({
+        time: performance.now(),
+        rootBounds: viewportRect(),
+        boundingClientRect: rect,
+        intersectionRect: intersects ? rect : new VixenDOMRectReadOnly(0, 0, 0, 0),
+        isIntersecting: intersects,
+        intersectionRatio: intersects ? 1 : 0,
+        target,
+      }));
+      queueMicrotaskCompat(() => this.__vixenDeliver());
+    }
+    unobserve(target) { this.__vixenTargets.delete(target); }
+    disconnect() { this.__vixenTargets.clear(); this.__vixenRecords.splice(0, this.__vixenRecords.length); }
+    takeRecords() { return this.__vixenRecords.splice(0, this.__vixenRecords.length); }
+    __vixenDeliver() {
+      const records = this.takeRecords();
+      if (records.length > 0) this.__vixenCallback.call(this, records, this);
+    }
+  }
+
+  class VixenResizeObserverSize {
+    constructor(inlineSize = 0, blockSize = 0) {
+      defineReadonly(this, 'inlineSize', finiteNumber(inlineSize, 0), true);
+      defineReadonly(this, 'blockSize', finiteNumber(blockSize, 0), true);
+    }
+  }
+
+  class VixenResizeObserverEntry {
+    constructor(target) {
+      const rect = targetRect(target);
+      const size = new VixenResizeObserverSize(rect.width, rect.height);
+      defineReadonly(this, 'target', target, true);
+      defineReadonly(this, 'contentRect', rect, true);
+      defineReadonly(this, 'borderBoxSize', [size], true);
+      defineReadonly(this, 'contentBoxSize', [size], true);
+      defineReadonly(this, 'devicePixelContentBoxSize', [size], true);
+    }
+  }
+
+  class VixenResizeObserver {
+    constructor(callback) {
+      if (typeof callback !== 'function') throw new TypeError('ResizeObserver callback must be a function');
+      defineReadonly(this, '__vixenCallback', callback, false);
+      defineReadonly(this, '__vixenTargets', new Set(), false);
+      defineReadonly(this, '__vixenRecords', [], false);
+    }
+    observe(target) {
+      if (target === null || (typeof target !== 'object' && typeof target !== 'function')) throw new TypeError('ResizeObserver.observe target must be an Element');
+      this.__vixenTargets.add(target);
+      this.__vixenRecords.push(new VixenResizeObserverEntry(target));
+      queueMicrotaskCompat(() => this.__vixenDeliver());
+    }
+    unobserve(target) { this.__vixenTargets.delete(target); }
+    disconnect() { this.__vixenTargets.clear(); this.__vixenRecords.splice(0, this.__vixenRecords.length); }
+    __vixenDeliver() {
+      const records = this.__vixenRecords.splice(0, this.__vixenRecords.length);
+      if (records.length > 0) this.__vixenCallback.call(this, records, this);
+    }
+  }
+
+  class VixenClipboardItem {
+    constructor(items = {}, options = {}) {
+      defineReadonly(this, '__vixenItems', new Map(), false);
+      for (const [type, value] of Object.entries(items || {})) {
+        const key = String(type).toLowerCase();
+        this.__vixenItems.set(key, Promise.resolve(value).then((resolved) => resolved instanceof VixenBlob ? resolved : new VixenBlob([resolved], { type: key })));
+      }
+      defineReadonly(this, 'presentationStyle', options && options.presentationStyle !== undefined ? String(options.presentationStyle) : 'unspecified', true);
+    }
+    get types() { return Array.from(this.__vixenItems.keys()); }
+    getType(type) {
+      const key = String(type).toLowerCase();
+      if (!this.__vixenItems.has(key)) return Promise.reject(new TypeError('ClipboardItem type not found'));
+      return this.__vixenItems.get(key);
+    }
+    static supports(type) { return String(type).toLowerCase() === 'text/plain'; }
+  }
+
+  let clipboardText = '';
+
+  class VixenClipboard extends VixenEventTarget {
+    readText() { return Promise.resolve(clipboardText); }
+    writeText(text) { clipboardText = String(text); return Promise.resolve(); }
+    read() { return Promise.resolve([new VixenClipboardItem({ 'text/plain': new VixenBlob([clipboardText], { type: 'text/plain' }) })]); }
+    write(items) {
+      const first = Array.from(items || [])[0];
+      if (!(first instanceof VixenClipboardItem)) return Promise.reject(new TypeError('Clipboard.write expects ClipboardItem values'));
+      return first.getType('text/plain').then((blob) => blob.text()).then((text) => { clipboardText = text; });
+    }
+  }
+
+  function integerTypedArray(value) {
+    const constructors = [Int8Array, Uint8Array, Uint8ClampedArray, Int16Array, Uint16Array, Int32Array, Uint32Array];
+    if (typeof BigInt64Array === 'function') constructors.push(BigInt64Array);
+    if (typeof BigUint64Array === 'function') constructors.push(BigUint64Array);
+    return constructors.some((ctor) => value instanceof ctor);
+  }
+
+  function randomHex(bytes) {
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+
+  class VixenSubtleCrypto {}
+
+  class VixenCrypto {
+    constructor() { defineReadonly(this, 'subtle', new VixenSubtleCrypto(), true); }
+    getRandomValues(array) {
+      if (!integerTypedArray(array)) throw new TypeError('Crypto.getRandomValues requires an integer typed array');
+      if (array.byteLength > 65_536) throw new TypeError('Crypto.getRandomValues quota exceeded');
+      const result = op_vixen_crypto_random_bytes(array.byteLength);
+      if (!result || !result.ok) throw new TypeError(result && result.message ? result.message : 'secure random source unavailable');
+      new Uint8Array(array.buffer, array.byteOffset, array.byteLength).set(result.bytes);
+      return array;
+    }
+    randomUUID() {
+      const bytes = new Uint8Array(16);
+      this.getRandomValues(bytes);
+      bytes[6] = (bytes[6] & 0x0f) | 0x40;
+      bytes[8] = (bytes[8] & 0x3f) | 0x80;
+      const hex = randomHex(bytes);
+      return hex.slice(0, 8) + '-' + hex.slice(8, 12) + '-' + hex.slice(12, 16) + '-' + hex.slice(16, 20) + '-' + hex.slice(20);
+    }
+  }
+
+  class VixenWebSocket extends VixenEventTarget {
+    constructor(url, protocols = []) {
+      super();
+      const parsed = new VixenURL(String(url), typeof location !== 'undefined' ? location.href : undefined);
+      if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') throw new TypeError('WebSocket URL must use ws: or wss:');
+      defineReadonly(this, 'url', parsed.href, true);
+      defineData(this, 'readyState', VixenWebSocket.CONNECTING, true);
+      defineReadonly(this, 'bufferedAmount', 0, true);
+      defineData(this, 'extensions', '', true);
+      defineData(this, 'protocol', Array.isArray(protocols) ? String(protocols[0] || '') : String(protocols || ''), true);
+      defineData(this, 'binaryType', 'blob', true);
+      defineData(this, 'onopen', null, true);
+      defineData(this, 'onmessage', null, true);
+      defineData(this, 'onerror', null, true);
+      defineData(this, 'onclose', null, true);
+      queueMicrotaskCompat(() => {
+        if (this.readyState !== VixenWebSocket.CONNECTING) return;
+        this.readyState = VixenWebSocket.CLOSED;
+        this.dispatchEvent(new VixenErrorEvent('error', { message: 'WebSocket network connections are not implemented by Vixen yet' }));
+        this.dispatchEvent(new VixenCloseEvent('close', { wasClean: false, code: 1006, reason: 'unsupported' }));
+      });
+    }
+    send(_data) {
+      if (this.readyState !== VixenWebSocket.OPEN) throw new TypeError('WebSocket is not open');
+    }
+    close(code = 1000, reason = '') {
+      if (this.readyState === VixenWebSocket.CLOSED) return;
+      this.readyState = VixenWebSocket.CLOSED;
+      this.dispatchEvent(new VixenCloseEvent('close', { wasClean: true, code: Number(code) || 1000, reason: String(reason) }));
+    }
+  }
+
+  for (const [name, value] of [['CONNECTING', 0], ['OPEN', 1], ['CLOSING', 2], ['CLOSED', 3]]) {
+    defineReadonly(VixenWebSocket, name, value, true);
+    defineReadonly(VixenWebSocket.prototype, name, value, true);
+  }
+
   class VixenDOMParser {
     parseFromString(source, _type) { return new VixenParsedDocument(String(source)); }
   }
@@ -3177,6 +3806,23 @@ const WEB_API_BOOTSTRAP: &str = r#"
   webidl.adoptInterface('AbortController', VixenAbortController);
   webidl.adoptInterface('MutationRecord', VixenMutationRecord);
   webidl.adoptInterface('MutationObserver', VixenMutationObserver);
+  webidl.adoptInterface('MessageEvent', VixenMessageEvent);
+  webidl.adoptInterface('ProgressEvent', VixenProgressEvent);
+  webidl.adoptInterface('ErrorEvent', VixenErrorEvent);
+  webidl.adoptInterface('CloseEvent', VixenCloseEvent);
+  webidl.adoptInterface('MessagePort', VixenMessagePort);
+  webidl.adoptInterface('MessageChannel', VixenMessageChannel);
+  webidl.adoptInterface('BroadcastChannel', VixenBroadcastChannel);
+  webidl.adoptInterface('IntersectionObserverEntry', VixenIntersectionObserverEntry);
+  webidl.adoptInterface('IntersectionObserver', VixenIntersectionObserver);
+  webidl.adoptInterface('ResizeObserverSize', VixenResizeObserverSize);
+  webidl.adoptInterface('ResizeObserverEntry', VixenResizeObserverEntry);
+  webidl.adoptInterface('ResizeObserver', VixenResizeObserver);
+  webidl.adoptInterface('ClipboardItem', VixenClipboardItem);
+  webidl.adoptInterface('Clipboard', VixenClipboard);
+  webidl.adoptInterface('SubtleCrypto', VixenSubtleCrypto);
+  webidl.adoptInterface('Crypto', VixenCrypto);
+  webidl.adoptInterface('WebSocket', VixenWebSocket);
   webidl.adoptInterface('DOMParser', VixenDOMParser);
 
   defineGlobal('__vixenQueueMutationRecord', queueMutationRecord);
@@ -3321,6 +3967,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
     constructor() {
       this.__vixenPermissions = new VixenPermissions();
       this.__vixenStorageManager = new VixenStorageManager();
+      this.__vixenClipboard = new VixenClipboard();
     }
     get userAgent() { return 'Vixen/0.1'; }
     get language() { return 'en-US'; }
@@ -3331,6 +3978,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
     get maxTouchPoints() { return 0; }
     get permissions() { return this.__vixenPermissions; }
     get storage() { return this.__vixenStorageManager; }
+    get clipboard() { return this.__vixenClipboard; }
     sendBeacon() { return false; }
     vibrate() { return false; }
   }
@@ -3390,6 +4038,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
   if (typeof globalThis.self === 'undefined') defineGlobal('self', globalThis);
   defineGlobal('performance', new VixenPerformance());
   defineGlobal('navigator', new VixenNavigator());
+  defineGlobal('crypto', new VixenCrypto());
   defineGlobal('localStorage', new VixenStorage('local'));
   defineGlobal('sessionStorage', new VixenStorage('session'));
   defineGlobal('history', { length: 1, state: null, scrollRestoration: 'auto', go() {}, back() {}, forward() {}, pushState() {}, replaceState() {} });
@@ -3413,6 +4062,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn webapi_bootstrap_is_ascii_and_adopts_runtime_interfaces() {
@@ -3422,5 +4072,73 @@ mod tests {
         assert!(WEB_API_BOOTSTRAP.contains("adoptInterface('Headers'"));
         assert!(WEB_API_BOOTSTRAP.contains("op_vixen_storage_set"));
         assert!(WEB_API_BOOTSTRAP.contains("structuredClone"));
+    }
+
+    #[test]
+    fn preflight_cache_is_bounded_partitioned_and_expires() {
+        let now = Instant::now();
+        let key = PreflightCacheKey {
+            request_origin: "https://app.example".to_owned(),
+            target_origin: "https://api.example".to_owned(),
+            credentials_mode: CorsCredentialsMode::Omit,
+        };
+        let mut cache = PreflightCache::default();
+        cache.insert(PreflightCacheEntry {
+            key: key.clone(),
+            allow_methods: vec!["post".to_owned()],
+            allow_headers: vec!["x-vixen".to_owned()],
+            expires_at: now + Duration::from_secs(30),
+        });
+
+        assert!(cache.allows(&key, Method::Post, &["x-vixen".to_owned()], now));
+        assert!(!cache.allows(&key, Method::Put, &["x-vixen".to_owned()], now));
+        assert!(!cache.allows(
+            &PreflightCacheKey {
+                request_origin: "https://other.example".to_owned(),
+                ..key.clone()
+            },
+            Method::Post,
+            &["x-vixen".to_owned()],
+            now,
+        ));
+        assert!(!cache.allows(
+            &key,
+            Method::Post,
+            &["x-vixen".to_owned()],
+            now + Duration::from_secs(31),
+        ));
+
+        for index in 0..=MAX_PREFLIGHT_CACHE_ENTRIES {
+            cache.insert(PreflightCacheEntry {
+                key: PreflightCacheKey {
+                    request_origin: format!("https://{index}.example"),
+                    ..key.clone()
+                },
+                allow_methods: vec!["post".to_owned()],
+                allow_headers: Vec::new(),
+                expires_at: now + Duration::from_secs(30),
+            });
+        }
+        assert_eq!(cache.entries.len(), MAX_PREFLIGHT_CACHE_ENTRIES);
+    }
+
+    #[test]
+    fn fetch_integrity_accepts_match_and_rejects_mismatch() {
+        let response = TextResponse {
+            body: "abc".to_owned(),
+            headers: BTreeMap::new(),
+            status: 200,
+            final_url: "https://cdn.example/app.js".to_owned(),
+            set_cookie: Vec::new(),
+            redirects: 0,
+            events: Vec::new(),
+        };
+        let matching = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
+
+        assert!(apply_fetch_integrity(response.clone(), matching).is_ok());
+        assert_eq!(
+            apply_fetch_integrity(response, "sha256-AAAA").unwrap_err(),
+            "fetch blocked by integrity mismatch (sha256)"
+        );
     }
 }

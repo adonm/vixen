@@ -15,7 +15,7 @@ vixen-net = { path = "../vixen-net" }
 vixen-store = { path = "../vixen-store" }
 deno_core = "0.406.0"
 thiserror = "2"
-tokio = { version = "1", features = ["rt", "net", "time"] }
+tokio = { version = "1", features = ["fs", "net", "rt-multi-thread", "sync", "time"] }
 html5ever = "0.39"
 markup5ever = "0.39"
 markup5ever_rcdom = "0.39"
@@ -24,6 +24,9 @@ url = "2"
 # Base64 (RFC 4648 § 4) decoding of `data:` URL base64 payloads in `data_url`.
 # Pure-Rust, `unsafe`-free, compatible with `#![forbid(unsafe_code)]`.
 base64 = "0.22"
+# Secure host randomness for the browser-shaped `crypto.getRandomValues()` /
+# `crypto.randomUUID()` runtime seam.
+getrandom = "0.3"
 
 # Phase 5: the single GPU paint path. `gleam` is used only at the GL FFI
 # loading boundary; all draw-command translation goes through WebRender.

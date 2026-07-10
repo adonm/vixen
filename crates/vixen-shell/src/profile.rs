@@ -7,8 +7,6 @@ use std::error::Error;
 use std::fmt;
 use std::path::{Component, Path, PathBuf};
 
-use vixen_store::{ClearDataSelection, MAX_SESSION_TABS, SessionRecord, Store};
-
 const PROFILE_DB_FILENAME: &str = "profile.redb";
 const PROFILE_DOWNLOADS_DIRNAME: &str = "downloads";
 const REPORTS_DIRNAME: &str = "reports";
@@ -27,13 +25,6 @@ pub struct ProfilePaths {
     pub user_downloads_dir: Option<PathBuf>,
     /// Optional diagnostics/smoke artifacts directory.
     pub reports_dir: PathBuf,
-}
-
-/// Deterministic shell tab restore state derived from the profile database.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ShellSession {
-    pub tabs: Vec<String>,
-    pub active_index: usize,
 }
 
 impl ProfilePaths {
@@ -114,36 +105,6 @@ impl fmt::Display for DownloadPathError {
 
 impl Error for DownloadPathError {}
 
-/// Session persistence failures at the shell/profile trust boundary.
-#[derive(Debug)]
-pub enum ProfileSessionError {
-    Io(std::io::Error),
-    Store(vixen_store::StoreError),
-}
-
-impl fmt::Display for ProfileSessionError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Io(err) => write!(f, "profile directory error: {err}"),
-            Self::Store(err) => write!(f, "profile store error: {err}"),
-        }
-    }
-}
-
-impl Error for ProfileSessionError {}
-
-impl From<std::io::Error> for ProfileSessionError {
-    fn from(err: std::io::Error) -> Self {
-        Self::Io(err)
-    }
-}
-
-impl From<vixen_store::StoreError> for ProfileSessionError {
-    fn from(err: vixen_store::StoreError) -> Self {
-        Self::Store(err)
-    }
-}
-
 /// Resolve profile paths for `app_id` using XDG base directories.
 pub fn paths_for_app_id(app_id: &str) -> Result<ProfilePaths, ProfilePathError> {
     validate_app_id(app_id)?;
@@ -163,64 +124,13 @@ pub fn devel_paths() -> Result<ProfilePaths, ProfilePathError> {
     paths_for_app_id(crate::config::APP_ID_DEVEL)
 }
 
-/// Load the persisted shell session, creating the profile directory/database on
-/// first run. Empty sessions are left empty so callers can choose their own
-/// start-page fallback.
-pub fn load_shell_session(paths: &ProfilePaths) -> Result<SessionRecord, ProfileSessionError> {
-    let store = open_profile_store(paths)?;
-    Ok(store.load_session_record()?)
-}
-
-/// Persist the shell's current tabs and active index in the profile database.
-pub fn save_shell_session(
-    paths: &ProfilePaths,
-    record: &SessionRecord,
-) -> Result<(), ProfileSessionError> {
-    let store = open_profile_store(paths)?;
-    Ok(store.save_session_record(record)?)
-}
-
-/// Clear selected profile data groups through the same app-ID scoped store the
-/// shell uses for session restore. Callers choose whether session restore itself
-/// is included via [`ClearDataSelection::session`].
-pub fn clear_profile_data(
-    paths: &ProfilePaths,
-    selection: ClearDataSelection,
-) -> Result<(), ProfileSessionError> {
-    let store = open_profile_store(paths)?;
-    Ok(store.clear_profile_data(selection)?)
-}
-
-/// Convert a store record into the actual tab set the shell should open.
-///
-/// The profile record has already been validated by `vixen-store`; this policy
-/// only supplies the configured fallback start page for an empty session and
-/// clamps defensively in case a caller constructed a record without validating.
-pub fn shell_session_from_record(record: &SessionRecord, fallback_start_url: &str) -> ShellSession {
-    if record.tabs.is_empty() {
-        return ShellSession {
-            tabs: vec![fallback_start_url.to_owned()],
-            active_index: 0,
-        };
-    }
-    ShellSession {
-        tabs: record.tabs.clone(),
-        active_index: record.active_index.min(record.tabs.len().saturating_sub(1)),
-    }
-}
-
-pub fn shell_session_record(tabs: Vec<String>, active_index: usize) -> SessionRecord {
-    let tabs = tabs.into_iter().take(MAX_SESSION_TABS).collect::<Vec<_>>();
-    let active_index = if tabs.is_empty() {
-        0
-    } else {
-        active_index.min(tabs.len().saturating_sub(1))
-    };
-    SessionRecord {
-        tabs,
-        active_index,
-        tab_states: Vec::new(),
-    }
+/// Create the host-owned directories used by the profile and download UI.
+/// BrowserCore opens and owns the database itself.
+pub fn prepare_directories(paths: &ProfilePaths) -> Result<(), std::io::Error> {
+    std::fs::create_dir_all(&paths.data_dir)?;
+    std::fs::create_dir_all(&paths.profile_downloads_dir)?;
+    std::fs::create_dir_all(&paths.reports_dir)?;
+    Ok(())
 }
 
 /// Resolve the host user's XDG Downloads directory.
@@ -257,13 +167,6 @@ fn paths_for_roots(
         data_dir,
         user_downloads_dir,
     }
-}
-
-fn open_profile_store(paths: &ProfilePaths) -> Result<Store, ProfileSessionError> {
-    std::fs::create_dir_all(&paths.data_dir)?;
-    std::fs::create_dir_all(&paths.profile_downloads_dir)?;
-    std::fs::create_dir_all(&paths.reports_dir)?;
-    Ok(Store::open(&paths.database)?)
 }
 
 fn xdg_data_home() -> Option<PathBuf> {
@@ -536,91 +439,15 @@ mod tests {
     }
 
     #[test]
-    fn shell_session_from_record_uses_fallback_for_empty_profiles() {
-        assert_eq!(
-            shell_session_from_record(&SessionRecord::default(), "about:vixen"),
-            ShellSession {
-                tabs: vec!["about:vixen".to_owned()],
-                active_index: 0,
-            }
-        );
-    }
-
-    #[test]
-    fn shell_session_record_clamps_active_index() {
-        assert_eq!(
-            shell_session_record(
-                vec![
-                    "https://one.test/".to_owned(),
-                    "https://two.test/".to_owned()
-                ],
-                5,
-            ),
-            SessionRecord {
-                tabs: vec![
-                    "https://one.test/".to_owned(),
-                    "https://two.test/".to_owned()
-                ],
-                active_index: 1,
-                tab_states: Vec::new(),
-            }
-        );
-    }
-
-    #[test]
-    fn shell_session_record_truncates_to_store_tab_limit() {
-        let record = shell_session_record(
-            (0..=MAX_SESSION_TABS)
-                .map(|index| format!("https://{index}.test/"))
-                .collect(),
-            MAX_SESSION_TABS,
-        );
-
-        assert_eq!(record.tabs.len(), MAX_SESSION_TABS);
-        assert_eq!(record.active_index, MAX_SESSION_TABS - 1);
-    }
-
-    #[test]
-    fn shell_session_round_trips_through_profile_store() {
+    fn prepare_directories_creates_host_service_roots() {
         let dir = tempfile::tempdir().unwrap();
         let paths = paths_for_roots(crate::config::APP_ID_DEVEL, dir.path().to_path_buf(), None);
-        let record = shell_session_record(
-            vec!["about:vixen".to_owned(), "https://example.test/".to_owned()],
-            1,
-        );
 
-        save_shell_session(&paths, &record).unwrap();
+        prepare_directories(&paths).unwrap();
 
-        assert_eq!(load_shell_session(&paths).unwrap(), record);
-        assert!(paths.database.exists());
+        assert!(paths.data_dir.is_dir());
+        assert!(!paths.database.exists());
         assert!(paths.profile_downloads_dir.is_dir());
         assert!(paths.reports_dir.is_dir());
-    }
-
-    #[test]
-    fn clear_profile_data_can_preserve_or_clear_shell_session() {
-        let dir = tempfile::tempdir().unwrap();
-        let paths = paths_for_roots(crate::config::APP_ID_DEVEL, dir.path().to_path_buf(), None);
-        let record = shell_session_record(
-            vec!["about:vixen".to_owned(), "https://example.test/".to_owned()],
-            1,
-        );
-        save_shell_session(&paths, &record).unwrap();
-
-        clear_profile_data(&paths, ClearDataSelection::browsing_data()).unwrap();
-        assert_eq!(load_shell_session(&paths).unwrap(), record);
-
-        clear_profile_data(
-            &paths,
-            ClearDataSelection {
-                session: true,
-                ..ClearDataSelection::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(
-            load_shell_session(&paths).unwrap(),
-            SessionRecord::default()
-        );
     }
 }

@@ -13,7 +13,6 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use vixen_api::GlContext;
 use vixen_engine::display_list::PaintCommand;
-use vixen_engine::page::Page;
 use vixen_engine::paint::{PaintError, Renderer};
 
 type EpoxyGetProcAddress = unsafe extern "C" fn(*const c_char) -> *mut c_void;
@@ -62,15 +61,8 @@ impl GlAreaRenderer {
         &self.surface
     }
 
-    /// Render a page through the shared WebRender path into the GLArea's
-    /// current framebuffer. Call this from `GLArea::connect_render`.
-    pub fn render_page(&mut self, page: &Page) -> Result<(), PaintError> {
-        let viewport = self.surface.drawable_size();
-        let commands = page.display_list(viewport);
-        self.render_commands(&commands, viewport)
-    }
-
-    /// Render prebuilt paint commands into the GLArea's current framebuffer.
+    /// Render an immutable BrowserCore paint snapshot into the GLArea's current
+    /// framebuffer. Snapshot capture happens outside the GL render callback.
     pub fn render_commands(
         &mut self,
         commands: &[PaintCommand],

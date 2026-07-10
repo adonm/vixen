@@ -24,7 +24,8 @@
 //!   Method` / `-Headers`). That's a fetch-time concern handled by the
 //!   network layer; this module parses the response side.
 //! - Caching of preflight results (`Access-Control-Max-Age` is parsed here;
-//!   the per-origin cache that consults it lives in `vixen-store`).
+//!   the bounded per-runtime cache that consults it lives at the engine fetch
+//!   boundary).
 //! - The actual `fetch()` request state machine (Fetch § 4.1) — that's
 //!   upstream reqwest's job; we filter the resulting response.
 //!
@@ -202,6 +203,10 @@ pub enum CorsError {
     /// the request sends credentials (which require a specific origin).
     #[error("wildcard origin with credentials")]
     WildcardWithCredentials,
+    /// § 4.1.5 step 7: a credentialed cross-origin request requires the
+    /// literal `Access-Control-Allow-Credentials: true` response header.
+    #[error("credentials included without Access-Control-Allow-Credentials: true")]
+    MissingAllowCredentials,
     /// § 4.1.5 step 4: the response's `Access-Control-Allow-Origin` does not
     /// match the request's origin (and isn't the wildcard).
     #[error("origin mismatch: response={response_origin:?}, request={request_origin:?}")]
@@ -237,13 +242,16 @@ pub fn cors_check(
     // Step 4: origin string equality. The wildcard already passed above;
     // otherwise the response origin must equal the request origin (case-
     // sensitive — origins are canonicalised before comparison).
-    if allow_origin == "*" || allow_origin == request_origin {
-        CorsCheckOutcome::Pass
-    } else {
-        CorsCheckOutcome::Fail(CorsError::OriginMismatch {
+    if allow_origin != "*" && allow_origin != request_origin {
+        return CorsCheckOutcome::Fail(CorsError::OriginMismatch {
             response_origin: response.allow_origin.clone(),
             request_origin: request_origin.to_owned(),
-        })
+        });
+    }
+    if credentials_mode.sends_cross_origin_credentials() && !response.allow_credentials {
+        CorsCheckOutcome::Fail(CorsError::MissingAllowCredentials)
+    } else {
+        CorsCheckOutcome::Pass
     }
 }
 
@@ -470,12 +478,24 @@ mod tests {
 
     #[test]
     fn check_passes_for_matching_specific_origin() {
+        let r = CorsResponseHeaders::from_headers([
+            h("Access-Control-Allow-Origin", "https://app.example"),
+            h("Access-Control-Allow-Credentials", "true"),
+        ]);
+        let outcome = cors_check(&r, "https://app.example", CorsCredentialsMode::Include);
+        assert_eq!(outcome, CorsCheckOutcome::Pass);
+    }
+
+    #[test]
+    fn check_fails_when_credentials_are_not_authorized() {
         let r = CorsResponseHeaders::from_headers([h(
             "Access-Control-Allow-Origin",
             "https://app.example",
         )]);
-        let outcome = cors_check(&r, "https://app.example", CorsCredentialsMode::Include);
-        assert_eq!(outcome, CorsCheckOutcome::Pass);
+        assert_eq!(
+            cors_check(&r, "https://app.example", CorsCredentialsMode::Include),
+            CorsCheckOutcome::Fail(CorsError::MissingAllowCredentials)
+        );
     }
 
     #[test]
@@ -503,7 +523,10 @@ mod tests {
     #[test]
     fn check_with_null_origin_passes_when_request_is_null() {
         // file: or sandboxed origins send "null"; the response can echo that.
-        let r = CorsResponseHeaders::from_headers([h("Access-Control-Allow-Origin", "null")]);
+        let r = CorsResponseHeaders::from_headers([
+            h("Access-Control-Allow-Origin", "null"),
+            h("Access-Control-Allow-Credentials", "true"),
+        ]);
         let outcome = cors_check(&r, "null", CorsCredentialsMode::Include);
         assert_eq!(outcome, CorsCheckOutcome::Pass);
     }

@@ -13,7 +13,6 @@ publish = false
 [dependencies]
 vixen-api = { path = "../vixen-api" }
 vixen-engine = { path = "../vixen-engine" }
-vixen-net = { path = "../vixen-net" }
 clap = { version = "4", features = ["derive"] }
 url = "2"
 serde = { version = "1", features = ["derive"] }
@@ -24,10 +23,11 @@ futures-util = { version = "0.3", default-features = false, features = ["std", "
 khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 png = "0.18.1"
 base64 = "0.22"
+tempfile = "3"
 
 [dev-dependencies]
-tempfile = "3"
 vixen-wpt = { path = "../vixen-wpt" }
+vixen-net = { path = "../vixen-net" }
 
 [lib]
 path = "src/lib.rs"

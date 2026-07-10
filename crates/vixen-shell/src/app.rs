@@ -1,24 +1,27 @@
 //! Relm4/libadwaita browser window.
 //!
-//! The shell is intentionally small but now follows the planned shape: the
-//! window owns a `FactoryVecDeque<TabModel>`, each tab owns a background
-//! `EngineWorker` for navigation/fetch work, and GTK keeps the non-`Send` page
-//! plus `GLArea` paint state on the main thread.
+//! The app owns one BrowserCore worker shared by every tab. Factory tabs own
+//! only GTK presentation state and immutable paint snapshots.
 
 #![forbid(unsafe_code)]
 
 use std::cell::Cell;
+use std::path::PathBuf;
 use std::rc::Rc;
 
 use gtk4::glib;
 use gtk4::prelude::*;
 use libadwaita::prelude::*;
-use relm4::factory::{DynamicIndex, FactoryVecDeque};
-use relm4::{ComponentParts, ComponentSender, RelmApp, SimpleComponent};
+use relm4::factory::FactoryVecDeque;
+use relm4::{
+    Component, ComponentParts, ComponentSender, RelmApp, SimpleComponent, WorkerController,
+};
+use vixen_api::ProfileSessionState;
 
+use crate::address::{START_URI, normalize_address};
 use crate::config;
-use crate::engine_worker::START_URI;
-use crate::profile::{self, ProfilePaths, ShellSession};
+use crate::engine_worker::{EngineCommand, EngineEvent, EngineInit, EngineWorker, ShellTabId};
+use crate::profile;
 use crate::tab::{TabChromeState, TabInit, TabModel, TabMsg, TabOutput};
 
 pub fn run() {
@@ -27,43 +30,29 @@ pub fn run() {
 
 #[derive(Debug, Clone)]
 struct BrowserInit {
-    profile_paths: Option<ProfilePaths>,
-    session: ShellSession,
+    profile_database: Result<PathBuf, String>,
 }
 
 impl BrowserInit {
     fn load() -> Self {
-        let profile_paths = match profile::production_paths() {
-            Ok(paths) => Some(paths),
-            Err(err) => {
-                eprintln!("vixen: profile paths unavailable: {err}");
-                None
-            }
-        };
-        let session = profile_paths
-            .as_ref()
-            .and_then(|paths| match profile::load_shell_session(paths) {
-                Ok(record) => Some(profile::shell_session_from_record(&record, START_URI)),
-                Err(err) => {
-                    eprintln!("vixen: session restore unavailable: {err}");
-                    None
-                }
-            })
-            .unwrap_or_else(|| profile::shell_session_from_record(&Default::default(), START_URI));
-        Self {
-            profile_paths,
-            session,
-        }
+        let profile_database = profile::production_paths()
+            .map_err(|error| error.to_string())
+            .and_then(|paths| {
+                profile::prepare_directories(&paths)
+                    .map_err(|error| error.to_string())
+                    .map(|()| paths.database)
+            });
+        Self { profile_database }
     }
 }
 
 struct BrowserApp {
+    engine: WorkerController<EngineWorker>,
     tabs: FactoryVecDeque<TabModel>,
     selected_index: usize,
     selected_state: TabChromeState,
     next_tab_id: u64,
     closing_from_model: Rc<Cell<bool>>,
-    profile_paths: Option<ProfilePaths>,
 }
 
 #[derive(Debug)]
@@ -77,7 +66,9 @@ enum AppMsg {
     StopSelected,
     BackSelected,
     ForwardSelected,
-    TabStateChanged(DynamicIndex, TabChromeState),
+    TabStateChanged(ShellTabId, TabChromeState),
+    PaintRequested(ShellTabId, vixen_api::DocumentId, (u32, u32)),
+    Engine(EngineEvent),
 }
 
 struct BrowserWidgets {
@@ -111,20 +102,28 @@ impl SimpleComponent for BrowserApp {
         window: Self::Root,
         sender: ComponentSender<Self>,
     ) -> ComponentParts<Self> {
+        let engine = EngineWorker::builder()
+            .detach_worker(EngineInit {
+                profile_database: init.profile_database,
+            })
+            .forward(sender.input_sender(), AppMsg::Engine);
         let tabs = FactoryVecDeque::builder()
             .launch(libadwaita::TabView::default())
             .forward(sender.input_sender(), |output| match output {
-                TabOutput::StateChanged(index, state) => AppMsg::TabStateChanged(index, state),
+                TabOutput::StateChanged(tab_id, state) => AppMsg::TabStateChanged(tab_id, state),
+                TabOutput::PaintRequested(tab_id, document_id, viewport) => {
+                    AppMsg::PaintRequested(tab_id, document_id, viewport)
+                }
             });
 
         let closing_from_model = Rc::new(Cell::new(false));
-        let mut model = BrowserApp {
+        let model = BrowserApp {
+            engine,
             tabs,
             selected_index: 0,
             selected_state: TabChromeState::default(),
             next_tab_id: 0,
             closing_from_model: closing_from_model.clone(),
-            profile_paths: init.profile_paths,
         };
 
         let tab_view = model.tabs.widget().clone();
@@ -188,17 +187,6 @@ impl SimpleComponent for BrowserApp {
         );
         connect_tab_view(&sender, &tab_view, closing_from_model);
 
-        for uri in init.session.tabs {
-            model.push_tab(uri);
-        }
-        model.selected_index = init
-            .session
-            .active_index
-            .min(model.tabs.len().saturating_sub(1));
-        model.select_index(model.selected_index);
-        model.refresh_selected_state();
-        model.persist_session();
-
         let widgets = BrowserWidgets {
             back_button,
             forward_button,
@@ -221,24 +209,37 @@ impl SimpleComponent for BrowserApp {
             AppMsg::SelectionChanged(index) => {
                 self.selected_index = index.min(self.tabs.len().saturating_sub(1));
                 self.refresh_selected_state();
+                if let Some(tab_id) = self.selected_tab_id() {
+                    self.engine.emit(EngineCommand::Activate(tab_id));
+                }
                 self.persist_session();
             }
-            AppMsg::NavigateSelected(input) => {
-                self.send_to_selected(TabMsg::Navigate(input));
+            AppMsg::NavigateSelected(input) => self.navigate_selected(input),
+            AppMsg::ReloadSelected => self.route_selected_navigation(EngineCommand::Reload),
+            AppMsg::StopSelected => {
+                if let Some(tab_id) = self.selected_tab_id() {
+                    self.engine.emit(EngineCommand::Stop(tab_id));
+                }
             }
-            AppMsg::ReloadSelected => self.send_to_selected(TabMsg::Reload),
-            AppMsg::StopSelected => self.send_to_selected(TabMsg::Stop),
-            AppMsg::BackSelected => self.send_to_selected(TabMsg::Back),
-            AppMsg::ForwardSelected => self.send_to_selected(TabMsg::Forward),
-            AppMsg::TabStateChanged(index, state) => {
+            AppMsg::BackSelected => self.route_selected_navigation(EngineCommand::Back),
+            AppMsg::ForwardSelected => self.route_selected_navigation(EngineCommand::Forward),
+            AppMsg::TabStateChanged(tab_id, state) => {
                 let loaded = !state.is_loading;
-                if index.current_index() == self.selected_index {
+                if self.selected_tab_id() == Some(tab_id) {
                     self.selected_state = state;
                 }
                 if loaded {
                     self.persist_session();
                 }
             }
+            AppMsg::PaintRequested(tab_id, document_id, viewport) => {
+                self.engine.emit(EngineCommand::Paint {
+                    tab_id,
+                    document_id,
+                    viewport,
+                });
+            }
+            AppMsg::Engine(event) => self.apply_engine_event(event),
         }
     }
 
@@ -270,6 +271,53 @@ impl SimpleComponent for BrowserApp {
 }
 
 impl BrowserApp {
+    fn restore_session(&mut self, session: ProfileSessionState) {
+        if self.tabs.len() != 0 {
+            return;
+        }
+        let tabs = if session.tabs.is_empty() {
+            vec![START_URI.to_owned()]
+        } else {
+            session.tabs
+        };
+        for uri in tabs {
+            self.push_tab(uri);
+        }
+        self.selected_index = session.active_index.min(self.tabs.len().saturating_sub(1));
+        self.select_index(self.selected_index);
+        self.refresh_selected_state();
+        if let Some(tab_id) = self.selected_tab_id() {
+            self.engine.emit(EngineCommand::Activate(tab_id));
+        }
+        self.persist_session();
+    }
+
+    fn apply_engine_event(&mut self, event: EngineEvent) {
+        match event {
+            EngineEvent::SessionLoaded(session) => self.restore_session(session),
+            EngineEvent::StateChanged { tab_id, state } => {
+                self.send_to_tab(tab_id, TabMsg::State(state));
+            }
+            EngineEvent::PaintReady { tab_id, snapshot } => {
+                self.send_to_tab(tab_id, TabMsg::Paint(snapshot));
+            }
+            EngineEvent::Failed {
+                tab_id,
+                action,
+                message,
+            } => {
+                let detail = format!("{action}: {message}");
+                if let Some(tab_id) = tab_id
+                    && self.tab_index(tab_id).is_some()
+                {
+                    self.send_to_tab(tab_id, TabMsg::Failed(detail));
+                } else {
+                    eprintln!("vixen: {detail}");
+                }
+            }
+        }
+    }
+
     fn add_tab(&mut self, uri: String) {
         let index = self.push_tab(uri);
         self.selected_index = index;
@@ -279,12 +327,19 @@ impl BrowserApp {
     }
 
     fn push_tab(&mut self, uri: String) -> usize {
+        let uri = normalize_address(&uri);
         let index = self.tabs.len();
-        let tab_id = self.next_tab_id;
+        let tab_id = ShellTabId::new(self.next_tab_id);
         self.next_tab_id = self.next_tab_id.saturating_add(1);
-        let mut tabs = self.tabs.guard();
-        tabs.push_back(TabInit {
-            id: tab_id,
+        {
+            let mut tabs = self.tabs.guard();
+            tabs.push_back(TabInit {
+                id: tab_id,
+                start_uri: uri.clone(),
+            });
+        }
+        self.engine.emit(EngineCommand::Create {
+            tab_id,
             start_uri: uri,
         });
         index
@@ -292,35 +347,65 @@ impl BrowserApp {
 
     fn close_tab(&mut self, index: usize) {
         if self.tabs.len() <= 1 {
-            self.send_to_selected(TabMsg::Navigate(START_URI.to_owned()));
+            self.navigate_selected(START_URI.to_owned());
             return;
         }
-        if index >= self.tabs.len() {
+        let Some(tab_id) = self.tabs.get(index).map(|tab| tab.id()) else {
             return;
-        }
+        };
         self.closing_from_model.set(true);
         {
             let mut tabs = self.tabs.guard();
             tabs.remove(index);
         }
         self.closing_from_model.set(false);
+        self.engine.emit(EngineCommand::Close(tab_id));
         self.selected_index = self.selected_index.min(self.tabs.len().saturating_sub(1));
         self.select_index(self.selected_index);
         self.refresh_selected_state();
+        if let Some(tab_id) = self.selected_tab_id() {
+            self.engine.emit(EngineCommand::Activate(tab_id));
+        }
         self.persist_session();
     }
 
-    fn send_to_selected(&self, message: TabMsg) {
-        if self.selected_index < self.tabs.len() {
-            self.tabs.send(self.selected_index, message);
+    fn navigate_selected(&self, input: String) {
+        let Some(tab_id) = self.selected_tab_id() else {
+            return;
+        };
+        let uri = normalize_address(&input);
+        self.send_to_tab(tab_id, TabMsg::Loading(Some(uri.clone())));
+        self.engine.emit(EngineCommand::Navigate { tab_id, uri });
+    }
+
+    fn route_selected_navigation(&self, command: fn(ShellTabId) -> EngineCommand) {
+        let Some(tab_id) = self.selected_tab_id() else {
+            return;
+        };
+        self.send_to_tab(tab_id, TabMsg::Loading(None));
+        self.engine.emit(command(tab_id));
+    }
+
+    fn send_to_tab(&self, tab_id: ShellTabId, message: TabMsg) {
+        if let Some(index) = self.tab_index(tab_id) {
+            self.tabs.send(index, message);
         }
+    }
+
+    fn tab_index(&self, tab_id: ShellTabId) -> Option<usize> {
+        (0..self.tabs.len())
+            .find(|&index| self.tabs.get(index).is_some_and(|tab| tab.id() == tab_id))
+    }
+
+    fn selected_tab_id(&self) -> Option<ShellTabId> {
+        self.tabs.get(self.selected_index).map(|tab| tab.id())
     }
 
     fn refresh_selected_state(&mut self) {
         self.selected_state = self
             .tabs
             .get(self.selected_index)
-            .map(TabModel::chrome_state)
+            .map(|tab| tab.chrome_state())
             .unwrap_or_default();
     }
 
@@ -344,21 +429,19 @@ impl BrowserApp {
     }
 
     fn persist_session(&self) {
-        let Some(paths) = self.profile_paths.as_ref() else {
-            return;
-        };
         let tabs = (0..self.tabs.len())
             .filter_map(|index| self.tabs.get(index))
-            .map(|tab| tab.chrome_state().uri)
+            .map(|tab| tab.session_uri())
             .filter(|uri| !uri.trim().is_empty())
             .collect::<Vec<_>>();
         if tabs.is_empty() {
             return;
         }
-        let record = profile::shell_session_record(tabs, self.selected_index);
-        if let Err(err) = profile::save_shell_session(paths, &record) {
-            eprintln!("vixen: session save failed: {err}");
-        }
+        self.engine
+            .emit(EngineCommand::SaveSession(ProfileSessionState {
+                tabs,
+                active_index: self.selected_index,
+            }));
     }
 }
 

@@ -168,7 +168,9 @@ and reference material, plus:
   request bodies, status/headers/body, URL-policy/private-host rejection, page CSP `connect-src`,
   referrer-policy header generation, active mixed-content blocking,
   `same-origin`/`cors`/`no-cors` mode enforcement, CORS preflights for non-simple
-  methods/headers, CORS response filtering,
+  methods/headers, credential authorization, bounded `Access-Control-Max-Age`
+  caching partitioned by source/target/credentials, CORS response filtering,
+  strongest-algorithm Request SRI verification before exposure/cache insertion,
   bounded profile cache reads/writes, and `cache: 'no-cache'` ETag /
   Last-Modified revalidation, with stable request/redirect/response/failure event
   traces drained by `JsRuntime` and surfaced as CDP `Network.*` notifications
@@ -203,7 +205,20 @@ and reference material, plus:
   `HTMLScriptElement.supports()` smoke, and details/dialog open-state reflection
   covers dialog show/close automation probes. Miscellaneous HTML reflected
   attributes now cover lists, quotes/time edits, image maps, embedded content,
-  table-cell spans/headers, and progress/meter numeric state. The CSS
+  table-cell spans/headers, progress/meter numeric state, and an inert Canvas 2D
+  context for automation smoke. Form-associated reflection now covers submitter
+  override attributes, text-control editing helpers, numeric stepping, and
+  custom validity messages, and table collection/index properties now expose
+  read-only row/body/cell structure. HTMLElement interaction/global attributes
+  (`tabIndex`, access keys, editing hints, drag/spellcheck/translate, popover)
+  are reflected for automation probes, and text-track state now exposes
+  `HTMLTrackElement.track` plus media `textTracks` lists. Inert canvas adjuncts
+  now cover `ImageData`, `OffscreenCanvas`, `ImageBitmap`, and `Path2D` smoke.
+  Minimal `ShadowRoot` / `DocumentFragment` host objects cover attach-shadow
+  automation shape before composed-tree layout lands, with template `content` and
+  slot assignment methods shaped for web-component probes. DOM construction and
+  serialization helpers now cover `createElementNS()` and `XMLSerializer` smoke.
+  The CSS
   Values 4 dimension family (`length`,
   `color`, `angle`, `time`, `resolution`) — the value primitives the
   cascade/layout/paint resolves against — is now complete for v1.0; `<length>`
@@ -231,13 +246,23 @@ and reference material, plus:
   worker messaging reduce to, with the transfer-list validation
   (duplicate/ unreachable/detached rejection) and the `SharedArrayBuffer`
   cross-origin-isolation gate, now exposed through `structuredClone()` eval
-  smoke checks for primitives, arrays/objects, Date, Map, Set, and Error shape.
+  smoke checks for primitives, arrays/objects, Date, Map, Set, and Error shape;
+  runtime `MessageChannel` and `BroadcastChannel` smoke now dispatch through the
+  same generated WebIDL/EventTarget host layer. Browser-platform probes now also
+  cover secure `crypto.getRandomValues()` / `randomUUID()`, async Clipboard text
+  and `ClipboardItem` shape, first-callback `IntersectionObserver` /
+  `ResizeObserver` geometry, and fail-closed `WebSocket` close diagnostics.
   The Range/Selection family (`range`)
   models the DOM § 5.2 boundary-point pair + § 5.4 direction-aware
   selection (`add_range`/`collapse_to`/`extend_to`, the forward/backward
   direction) the editing commands and user-selection reflection reduce to,
-  now projected through `document.createRange()` eval smoke checks, including
-  Range rectangles, plus `getSelection()` accessors.
+  now projected through `document.createRange()` eval checks, including Range
+  rectangles, point queries, same-container clone/extract/delete/insert/
+  surround operations, and a live single-range `getSelection()` with
+  Page-owned element-boundary restore and `selectionchange`. Focus transitions
+  now use the pinned `focusout` → `focusin` → `blur` → `focus` order with
+  `relatedTarget`, and interactive form validation emits document-order
+  `invalid` events before `SubmitEvent`.
   The session-history family (`history`) models the HTML § 7.1 entry-stack
   + the `history.pushState`/`replaceState`/`back`/`forward`/`go` surface +
   the `scrollRestoration` mode the `History` host hook + the navigation
@@ -301,11 +326,15 @@ and reference material, plus:
   accepting a string.
 - **Phase 8 (partial)** — the CDP WebSocket server (`vixen-headless::cdp`)
   covers the growing Playwright-facing surface: browser/target attach, page
-  navigation/load/lifecycle events, runtime evaluation/object properties and
-  `Runtime.awaitPromise`,
-  console/dialog/binding notifications, DOM query/resolve, network events,
-  screenshots, viewport/media emulation, and basic mouse/keyboard input with
-  stable error codes.
+  navigation/load/history/lifecycle events, resource tree/content snapshots,
+  runtime evaluation/object properties and `Runtime.awaitPromise`,
+  console/dialog/binding notifications, DOM query/resolve/geometry plus
+  attribute and `outerHTML` edit/read methods, network events and Playwright
+  network toggles including CDP cache-disable and extra headers for runtime `fetch()`,
+  browser-shaped performance/security probes, screenshots,
+  viewport/media emulation, basic mouse/keyboard input, browser-context
+  permission overrides, bounded Chromium JSON tracing through `IO` streams,
+  and stable machine-readable protocol errors.
 - **Browser shell/profile slice** — the GTK shell now resolves production
   app-ID profile paths on startup, restores tab URLs plus the active tab from
   `vixen-store::SessionRecord`, and persists bounded restore state as tabs are
@@ -313,7 +342,8 @@ and reference material, plus:
   explicit clear-data selections through the same app-ID scoped store while
   preserving or clearing session restore per `ClearDataSelection`.
 
-Source for later phases lands per [`docs/PLAN.md`](docs/PLAN.md).
+Future delivery order lives in [`docs/ROADMAP.md`](docs/ROADMAP.md); `PLAN.md`
+retains the historical phase runbook.
 
 ---
 
@@ -391,7 +421,7 @@ MSRV is 1.88 (let-chains); the developer toolchain is pinned in
 |---------------------------------------------|---------------------------------------------------------------|
 | [`docs/SPEC.md`](docs/SPEC.md)              | **What Vixen must do.** Capabilities, CLI, behaviour contracts. |
 | [`docs/PROJECT_DIRECTION.md`](docs/PROJECT_DIRECTION.md) | **What Vixen is optimizing for.** North star, users, priorities, alpha definition. |
-| [`docs/ROADMAP.md`](docs/ROADMAP.md)        | **What comes next.** Focused MVP-to-alpha delivery order. |
+| [`docs/ROADMAP.md`](docs/ROADMAP.md)        | **What comes next.** Alpha convergence through the full replacement horizon. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | **How Vixen is structured.** Crates, data flow, trust boundaries, trait APIs. |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md)    | **Why these choices.** ADR-style records for the major decisions. |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | **How to move fast safely.** Alpha/dev workflow, gate tiers, maintainability budget. |

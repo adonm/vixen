@@ -14,9 +14,10 @@ Tick-tock discipline applies throughout: each phase is a *tick*
 removal, module ≤ 1 kLOC, references cited). See `docs/ACCEPTANCE.md`
 for the per-phase gates.
 
-For the executable vertical slice order, use [`docs/MILESTONES.md`](MILESTONES.md):
-large browser features should extend `vixen_engine::page::Page` and prove the
-slice with a `just gate-*` command, not land only as isolated prep modules.
+For current delivery order use [`docs/ROADMAP.md`](ROADMAP.md); use
+[`docs/MILESTONES.md`](MILESTONES.md) only to map executable evidence to
+`just gate-*` commands. New browser features should extend the shared browser
+core/document path, not land only as isolated prep modules.
 For larger alpha/dev batches, follow [`docs/DEVELOPMENT.md`](DEVELOPMENT.md):
 partial capability is acceptable only when it is visible, tested, fail-closed,
 and bounded by a named maintainability follow-up.
@@ -1122,6 +1123,42 @@ family is now complete end-to-end.
 - `fixtures/dom/progress-meter.html` covers progress/meter numeric host state
   (`value` / `min` / `max` / `low` / `high` / `optimum` / `position`) plus label
   associations for status-control automation probes.
+- `fixtures/dom/canvas.html` adds an inert Canvas 2D context seam: default canvas
+  dimensions, cached `getContext('2d')`, no-op drawing calls, `measureText()`,
+  `createImageData()`, and deterministic `toDataURL()` smoke until the real
+  raster surface lands.
+- `fixtures/forms/reflected-attrs.html` widens form-associated host reflection:
+  form metadata, submitter override attributes, input `valueAsNumber` plus
+  `stepUp()` / `stepDown()`, textarea `setRangeText()` / `textLength`, and
+  custom validity message smoke.
+- `fixtures/dom/table-collections.html` adds read-only table structure smoke for
+  `caption`, `tHead`, `tFoot`, `tBodies`, `rows`, `cells`, and row/cell indexes,
+  giving automation a table traversal seam before mutation APIs land.
+- `fixtures/dom/html-element-attrs.html` covers HTMLElement interaction/global
+  reflection (`tabIndex`, access keys, drag/spellcheck/translate, virtual-keyboard
+  hints, and popover state) used by higher-level locator/keyboard automation.
+- `fixtures/dom/text-tracks.html` covers inert media text-track state:
+  `HTMLTrackElement` reflected attributes, stable `track` objects, `TextTrack`,
+  and `TextTrackList` lookup from media elements.
+- `fixtures/dom/offscreen-canvas.html` covers adjacent inert canvas adjunct APIs:
+  `ImageData`, `OffscreenCanvas` 2D context identity, blob/bitmap promises, and
+  no-op `Path2D` construction until real raster/bitmap transfer lands.
+- `fixtures/dom/shadow-root.html` covers the first Shadow DOM host-object shape:
+  `attachShadow()`, `ShadowRoot` / `DocumentFragment` identity, host/mode fields,
+  empty fragment queries, and `document.createDocumentFragment()` before
+  composed-tree distribution/layout lands.
+- `fixtures/dom/template-slot.html` covers the adjacent web-component host shape:
+  `HTMLTemplateElement.content` as a `DocumentFragment` plus slot `name`,
+  `assignedNodes()`, and `assignedElements()` methods before slot distribution
+  is wired into the composed tree.
+- `fixtures/dom/construction-serialization.html` covers DOM construction and
+  serialization helpers (`createElementNS()`, text nodes, fragments, and
+  `XMLSerializer.serializeToString()`) for framework feature-detection probes.
+- `fixtures/dom/platform-apis.html` covers browser-platform host probes that now
+  run in the `deno_core` page realm: secure `crypto.getRandomValues()` /
+  `randomUUID()`, async Clipboard text / `ClipboardItem`, first-callback
+  `IntersectionObserver` / `ResizeObserver` geometry, and fail-closed
+  `WebSocket` close diagnostics until real socket transport is wired.
 
 **Pure-logic foundation landed for CSS value-resolution + easing (Phase 3/6 prep).**
 The calculation + timing-function primitives the cascade (`calc()` reduction,
@@ -1224,7 +1261,10 @@ exposure.
 - `Page::evaluate_dom_expression` now projects a small `structuredClone()`
   smoke seam for primitive strings, arrays, shallow objects, Date, Map, Set, and
   Error name/message shape through the same clone function that `postMessage()` /
-  history state will call.
+  history state will call. Runtime `MessageChannel` and `BroadcastChannel` smoke
+  now dispatch `MessageEvent` through the same EventTarget/WebIDL host layer while
+  the pure Rust `message_port` model remains the cross-compartment transfer
+  primitive.
 
 [`StructuredCloneValue`]: ../../crates/vixen-engine/src/structured_clone.rs
 [`ErrorKind`]: ../../crates/vixen-engine/src/structured_clone.rs

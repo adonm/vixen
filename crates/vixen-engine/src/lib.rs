@@ -17,6 +17,7 @@ pub mod border_image;
 pub mod border_radius;
 pub mod box_model;
 pub mod box_shadow;
+pub mod browser;
 pub mod calc;
 pub mod class_list;
 pub mod clip_path;

@@ -8,7 +8,7 @@
 //! the caller switches between the page and non-page realms or navigates to a new
 //! page snapshot.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,6 +33,11 @@ pub struct JsRuntime {
     storage_temp_path: Option<PathBuf>,
     storage_session_id: String,
     storage_opaque_serial: u64,
+    record_visits_on_realm: bool,
+    extra_http_headers: webapi::ExtraHttpHeaders,
+    cache_disabled: webapi::CacheDisabledFlag,
+    permission_overrides: webapi::PermissionOverrides,
+    runtime_network_state: webapi::RuntimeNetworkState,
     runtime: Option<deno_core::JsRuntime>,
     dom_mutations: Option<dom::DomMutationSink>,
     realm_key: RealmKey,
@@ -195,7 +200,21 @@ impl JsRuntime {
         network_config: vixen_net::NetworkConfig,
     ) -> Result<Self, EngineError> {
         let (storage_backend, storage_temp_path) = temporary_storage_backend()?;
-        Self::with_storage_backend(network_config, storage_backend, storage_temp_path)
+        Self::with_storage_backend(
+            network_config,
+            storage_backend,
+            storage_temp_path,
+            None,
+            true,
+            None,
+        )
+    }
+
+    /// Clone the transport policy used to construct this runtime. Transitional
+    /// automation tests use this to seed BrowserCore without transferring V8
+    /// ownership into the protocol adapter.
+    pub fn network_config(&self) -> vixen_net::NetworkConfig {
+        self.network_config.clone()
     }
 
     /// Initialise the runtime with persistent Web Storage at `path`.
@@ -216,36 +235,109 @@ impl JsRuntime {
                     message: format!("Web Storage store initialisation failed: {message}"),
                 }
             })?;
-        Self::with_storage_backend(network_config, storage_backend, None)
+        Self::with_storage_backend(network_config, storage_backend, None, None, true, None)
+    }
+
+    /// Construct a context runtime over the Store opened once by BrowserCore.
+    /// The explicit session id partitions `sessionStorage` by browsing context
+    /// while same-origin `localStorage` remains profile shared.
+    pub(crate) fn with_browser_storage(
+        network_config: vixen_net::NetworkConfig,
+        store: std::sync::Arc<vixen_store::Store>,
+        storage_session_id: String,
+        page: &Page,
+    ) -> Result<Self, EngineError> {
+        Self::with_storage_backend(
+            network_config,
+            webapi::WebStorageBackend::from_store(store),
+            None,
+            Some(storage_session_id),
+            false,
+            Some(page),
+        )
     }
 
     fn with_storage_backend(
         network_config: vixen_net::NetworkConfig,
         storage_backend: webapi::WebStorageBackend,
         storage_temp_path: Option<PathBuf>,
+        storage_session_id: Option<String>,
+        record_visits_on_realm: bool,
+        initial_page: Option<&Page>,
     ) -> Result<Self, EngineError> {
-        let storage_session_id = next_storage_session_id();
+        let storage_session_id = storage_session_id.unwrap_or_else(next_storage_session_id);
         let storage_opaque_serial = 1;
+        let extra_http_headers = webapi::ExtraHttpHeaders::default();
+        let cache_disabled = webapi::CacheDisabledFlag::default();
+        let permission_overrides = webapi::PermissionOverrides::default();
+        let runtime_network_state = webapi::RuntimeNetworkState::default();
         let init = runtime::new_deno_runtime(
-            None,
+            initial_page,
             network_config.clone(),
             web_storage_host(
-                None,
+                initial_page,
                 &storage_backend,
                 &storage_session_id,
                 storage_opaque_serial,
             ),
+            runtime_network_state.clone(),
+            extra_http_headers.clone(),
+            cache_disabled.clone(),
+            permission_overrides.clone(),
         )?;
+        let realm_key = initial_page
+            .map(page_realm_key)
+            .map(RealmKey::Page)
+            .unwrap_or(RealmKey::NoPage);
         Ok(Self {
             network_config,
             storage_backend,
             storage_temp_path,
             storage_session_id,
             storage_opaque_serial,
+            record_visits_on_realm,
+            extra_http_headers,
+            cache_disabled,
+            permission_overrides,
+            runtime_network_state,
             runtime: Some(init.runtime),
             dom_mutations: init.dom_mutations,
-            realm_key: RealmKey::NoPage,
+            realm_key,
         })
+    }
+
+    /// Run one operation with this runtime's V8 isolate entered on the current
+    /// browser-core thread. rusty_v8 keeps the most recently constructed isolate
+    /// entered for its lifetime, so a browser with multiple context isolates must
+    /// temporarily enter older isolates before using them.
+    ///
+    /// The closure must not replace or drop this runtime. BrowserCore creates a
+    /// fresh runtime slot for each cross-document generation and retires old slots
+    /// in LIFO-safe order instead of calling `reset_realm` through this method.
+    #[allow(unsafe_code)]
+    pub(crate) fn with_entered_isolate<T>(&mut self, operation: impl FnOnce(&mut Self) -> T) -> T {
+        struct ExitGuard(*mut deno_core::v8::OwnedIsolate);
+
+        impl Drop for ExitGuard {
+            #[allow(unsafe_code)]
+            fn drop(&mut self) {
+                // SAFETY: `with_entered_isolate` keeps the owning JsRuntime
+                // alive for the guard's lifetime and balances exactly one enter.
+                unsafe { (*self.0).exit() };
+            }
+        }
+
+        let isolate = self
+            .runtime
+            .as_mut()
+            .expect("browser runtime slot must be initialised")
+            .v8_isolate() as *mut deno_core::v8::OwnedIsolate;
+        // SAFETY: runtime slots never cross threads, the isolate remains alive
+        // through `operation`, and ExitGuard restores the previously entered
+        // isolate even if the operation unwinds.
+        unsafe { (*isolate).enter() };
+        let _exit = ExitGuard(isolate);
+        operation(self)
     }
 
     /// Evaluate `src` in the persistent non-page JS global and return the
@@ -273,6 +365,38 @@ impl JsRuntime {
         Ok(value)
     }
 
+    /// Set browser-controlled extra HTTP headers for subsequent runtime fetches.
+    ///
+    /// CDP owns validation before calling this; the lower `vixen-net` boundary
+    /// validates again before bytes leave the process.
+    pub fn set_extra_http_headers(&mut self, headers: Vec<(String, String)>) {
+        self.extra_http_headers.set(headers);
+    }
+
+    /// Toggle browser HTTP cache use for subsequent runtime fetches.
+    pub fn set_cache_disabled(&mut self, disabled: bool) {
+        self.cache_disabled.set(disabled);
+    }
+
+    /// Replace the inspector permission grant set for one origin, or for the
+    /// wildcard scope when `origin` is `None`. Permissions omitted from the set
+    /// are denied for that scope, matching CDP `Browser.grantPermissions`.
+    pub fn replace_permission_grants(&mut self, origin: Option<String>, grants: Vec<String>) {
+        self.permission_overrides.replace(origin, grants);
+    }
+
+    /// Clear all inspector permission overrides without changing persisted
+    /// profile decisions.
+    pub fn reset_permission_overrides(&mut self) {
+        self.permission_overrides.reset();
+    }
+
+    /// Drop runtime-local network state after profile data is cleared so an
+    /// active realm cannot repopulate deleted cookies or preflight decisions.
+    pub(crate) fn clear_profile_network_state(&self, cookies: bool, fetch_cache: bool) {
+        self.runtime_network_state.clear(cookies, fetch_cache);
+    }
+
     /// Execute classic page scripts in document order, using the persistent
     /// page realm for `page`.
     ///
@@ -283,6 +407,20 @@ impl JsRuntime {
     /// before execution. Blocked/failed subresources are skipped; JavaScript
     /// exceptions still surface as [`codes::SCRIPT_EVAL`] errors.
     pub fn execute_page_scripts(&mut self, page: &mut Page) -> Result<usize, EngineError> {
+        self.execute_page_scripts_with_csp_bypass(page, false)
+    }
+
+    /// Execute classic page scripts with an explicit inspector/CDP CSP override.
+    ///
+    /// The default product path must call [`Self::execute_page_scripts`] so CSP
+    /// remains fail-closed. CDP `Page.setBypassCSP` uses this method for the
+    /// DevTools/automation trust boundary where the inspector has explicitly
+    /// opted into disabling script-src checks for subsequent navigations.
+    pub fn execute_page_scripts_with_csp_bypass(
+        &mut self,
+        page: &mut Page,
+        bypass_csp: bool,
+    ) -> Result<usize, EngineError> {
         let items = page.document().script_execution_items();
         if !items.iter().any(|item| {
             matches!(
@@ -299,11 +437,15 @@ impl JsRuntime {
         let mut executed = 0;
         for item in items {
             match item {
-                DocumentScriptItem::CspMeta(policy) => csp.add_header(&policy),
+                DocumentScriptItem::CspMeta(policy) => {
+                    if !bypass_csp {
+                        csp.add_header(&policy);
+                    }
+                }
                 DocumentScriptItem::InlineClassicScript(script) => {
                     match evaluate_inline_page_script(
                         self,
-                        Some(&csp),
+                        if bypass_csp { None } else { Some(&csp) },
                         &origin,
                         page,
                         &script.source,
@@ -317,7 +459,7 @@ impl JsRuntime {
                 DocumentScriptItem::ExternalClassicScript(script) => {
                     if let Some(source) = load_external_page_script(
                         &self.network_config,
-                        &csp,
+                        if bypass_csp { None } else { Some(&csp) },
                         &origin,
                         page,
                         &script,
@@ -465,8 +607,11 @@ impl JsRuntime {
         let runtime = self.runtime.as_mut().expect("realm initialised");
         let result = runtime
             .execute_script("inline.js", src.to_owned())
-            .map_err(|_| {
-                EngineError::script(codes::SCRIPT_EVAL, "script evaluation raised an exception")
+            .map_err(|error| {
+                EngineError::script(
+                    codes::SCRIPT_EVAL,
+                    format!("script evaluation raised an exception: {error}"),
+                )
             })?;
         let result = runtime::resolve_value(runtime, result)?;
         runtime::js_value_from_global(runtime, result)
@@ -486,11 +631,21 @@ impl JsRuntime {
                 &self.storage_session_id,
                 self.storage_opaque_serial,
             );
-            let init = runtime::new_deno_runtime(page, self.network_config.clone(), storage)?;
+            let init = runtime::new_deno_runtime(
+                page,
+                self.network_config.clone(),
+                storage,
+                self.runtime_network_state.clone(),
+                self.extra_http_headers.clone(),
+                self.cache_disabled.clone(),
+                self.permission_overrides.clone(),
+            )?;
             self.runtime = Some(init.runtime);
             self.dom_mutations = init.dom_mutations;
             self.realm_key = target;
-            if let Some(page) = page {
+            if self.record_visits_on_realm
+                && let Some(page) = page
+            {
                 self.record_page_visit(page)?;
             }
         }
@@ -555,6 +710,12 @@ impl JsRuntime {
                         &value,
                     )
                     .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+                dom::DomMutation::SetFocusedElement { node_id } => {
+                    page.set_focused_element_node_id(node_id);
+                }
+                dom::DomMutation::SetSelection { selection } => {
+                    page.set_selection(selection);
+                }
             }
         }
         self.realm_key = RealmKey::Page(page_realm_key(page));
@@ -941,7 +1102,13 @@ fn web_storage_partition_key(
         .map(page_origin)
         .unwrap_or_else(vixen_net::Origin::opaque);
     if !origin.is_opaque() {
-        return StoragePartition::new(origin, kind).partition_key();
+        let partition = StoragePartition::new(origin, kind).partition_key();
+        return match kind {
+            StorageKind::Local => partition,
+            StorageKind::Session => {
+                format!("{partition}:context:{}", stable_storage_hash(session_id))
+            }
+        };
     }
 
     let document_key = page
@@ -989,7 +1156,7 @@ fn temporary_storage_backend() -> Result<(webapi::WebStorageBackend, Option<Path
 
 fn load_external_page_script(
     network_config: &vixen_net::NetworkConfig,
-    csp: &vixen_net::csp::ContentSecurityPolicy,
+    csp: Option<&vixen_net::csp::ContentSecurityPolicy>,
     origin: &vixen_net::Origin,
     page: &Page,
     script: &ExternalScript,
@@ -997,7 +1164,9 @@ fn load_external_page_script(
     let Some(script_url) = resolve_external_script_url(page, &script.src) else {
         return Ok(None);
     };
-    if !csp.allows_external_script(origin, &script_url, script.nonce.as_deref()) {
+    if let Some(csp) = csp
+        && !csp.allows_external_script(origin, &script_url, script.nonce.as_deref())
+    {
         return Ok(None);
     }
 
@@ -1371,6 +1540,56 @@ mod tests {
         (
             format!("http://{host}:{}/payload", addr.port()),
             config,
+            handle,
+        )
+    }
+
+    fn spawn_cached_preflight_server(
+        host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let preflights = std::sync::Arc::new(AtomicUsize::new(0));
+        let server_preflights = preflights.clone();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = [0_u8; 4096];
+                let read = stream.read(&mut request).unwrap_or(0);
+                let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+                if request.starts_with("options ") {
+                    server_preflights.fetch_add(1, Ordering::SeqCst);
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 204 No Content\r\nAccess-Control-Allow-Origin: http://source.test\r\nAccess-Control-Allow-Methods: POST\r\nAccess-Control-Allow-Headers: X-Vixen-Custom\r\nAccess-Control-Max-Age: 600\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                } else {
+                    let body = "cached-preflight-ok";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nAccess-Control-Allow-Origin: http://source.test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                }
+            }
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            preflights,
             handle,
         )
     }
@@ -3192,7 +3411,7 @@ mod tests {
     }
 
     #[test]
-    fn local_storage_round_trips_through_store_partitions() {
+    fn web_storage_partitions_profile_local_and_context_session_state() {
         let path = std::env::temp_dir().join(format!(
             "vixen-engine-storage-test-{}-{}.redb",
             std::process::id(),
@@ -3211,6 +3430,15 @@ mod tests {
                 .unwrap(),
                 JsValue::String("stored".to_owned())
             );
+            let same_context = Page::from_html("https://store.test/two", "<p>two</p>").unwrap();
+            assert_eq!(
+                rt.evaluate_with_page(
+                    "localStorage.getItem('persist') + ':' + sessionStorage.getItem('tab')",
+                    &same_context,
+                )
+                .unwrap(),
+                JsValue::String("yes:one".to_owned())
+            );
         }
 
         {
@@ -3222,7 +3450,7 @@ mod tests {
                     &same_origin,
                 )
                 .unwrap(),
-                JsValue::String("yes:one".to_owned())
+                JsValue::String("yes:null".to_owned())
             );
 
             let other_origin = Page::from_html("https://other.test/", "<p>other</p>").unwrap();
@@ -3320,6 +3548,53 @@ mod tests {
         );
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn permission_overrides_replace_scope_and_reset_without_profile_writes() {
+        let page = Page::from_html("https://permissions.test/app", "<p>permissions</p>").unwrap();
+        let other = Page::from_html("https://other.test/app", "<p>other</p>").unwrap();
+        let mut rt = JsRuntime::new().expect("engine init");
+
+        rt.replace_permission_grants(
+            Some("https://permissions.test".to_owned()),
+            vec!["notifications".to_owned()],
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "Promise.all(['notifications','geolocation'].map((name) => navigator.permissions.query({ name }).then((status) => status.state))).then((states) => states.join(':'))",
+                &page,
+            )
+            .unwrap(),
+            JsValue::String("granted:denied".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page(
+                "navigator.permissions.query({ name: 'notifications' }).then((status) => status.state)",
+                &other,
+            )
+            .unwrap(),
+            JsValue::String("prompt".to_owned())
+        );
+
+        rt.replace_permission_grants(None, vec!["geolocation".to_owned()]);
+        assert_eq!(
+            rt.evaluate_with_page(
+                "navigator.permissions.query({ name: 'geolocation' }).then((status) => status.state)",
+                &other,
+            )
+            .unwrap(),
+            JsValue::String("granted".to_owned())
+        );
+        rt.reset_permission_overrides();
+        assert_eq!(
+            rt.evaluate_with_page(
+                "navigator.permissions.query({ name: 'geolocation' }).then((status) => status.state)",
+                &other,
+            )
+            .unwrap(),
+            JsValue::String("prompt".to_owned())
+        );
     }
 
     #[test]
@@ -3712,6 +3987,149 @@ mod tests {
         assert_eq!(
             String::from_utf8(submission.body).unwrap(),
             "name=Z&body=Typed+body"
+        );
+    }
+
+    #[test]
+    fn page_focus_transition_uses_shared_order_and_persists_active_element() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///focus-order.html",
+            "<html><body><input id='first'><input id='second'></body></html>",
+        )
+        .unwrap();
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "(() => {\
+                   const first = document.querySelector('#first');\
+                   const second = document.querySelector('#second');\
+                   first.focus();\
+                   const events = [];\
+                   for (const element of [first, second]) {\
+                     for (const type of ['focusout', 'focusin', 'blur', 'focus']) {\
+                       element.addEventListener(type, (event) => events.push(\
+                         type + ':' + event.currentTarget.id + ':' + event.bubbles + ':' +\
+                         (event.relatedTarget ? event.relatedTarget.id : '')\
+                       ));\
+                     }\
+                   }\
+                   second.focus();\
+                   return events.join('>');\
+                 })()",
+                &mut page,
+            )
+            .unwrap();
+
+        assert_eq!(
+            value,
+            JsValue::String(
+                "focusout:first:true:second>focusin:second:true:first>blur:first:false:second>focus:second:false:first"
+                    .to_owned()
+            )
+        );
+        let second = page.query_selector_all("#second").unwrap()[0].node_id;
+        assert_eq!(page.focused_element_node_id(), Some(second));
+
+        let mut restored = JsRuntime::new().expect("restored runtime init");
+        assert_eq!(
+            restored
+                .evaluate_with_page("document.activeElement.id", &page)
+                .unwrap(),
+            JsValue::String("second".to_owned())
+        );
+    }
+
+    #[test]
+    fn page_form_validation_dispatches_invalid_before_submit() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///validation.html",
+            "<html><body><form id='form' action='done.html'><input id='first' name='first' required><input id='second' name='second' required><button id='go'>Go</button></form></body></html>",
+        )
+        .unwrap();
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "(() => {\
+                   const form = document.querySelector('#form');\
+                   const first = document.querySelector('#first');\
+                   const second = document.querySelector('#second');\
+                   const go = document.querySelector('#go');\
+                   const events = [];\
+                   first.addEventListener('invalid', (event) => events.push('invalid:first:' + event.bubbles + ':' + event.cancelable));\
+                   second.addEventListener('invalid', (event) => events.push('invalid:second:' + event.bubbles + ':' + event.cancelable));\
+                   form.addEventListener('submit', () => events.push('submit'));\
+                   form.requestSubmit(go);\
+                   first.value = 'one';\
+                   second.value = 'two';\
+                   form.addEventListener('submit', (event) => event.preventDefault(), { once: true });\
+                   form.requestSubmit(go);\
+                   return events.join('>');\
+                 })()",
+                &mut page,
+            )
+            .unwrap();
+
+        assert_eq!(
+            value,
+            JsValue::String("invalid:first:false:true>invalid:second:false:true>submit".to_owned())
+        );
+        assert!(rt.drain_navigation_actions().unwrap().is_empty());
+    }
+
+    #[test]
+    fn page_range_selection_mutation_commits_and_restores() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///range.html",
+            "<html><body><div id='root'><span id='a'>A</span><span id='b'>B</span><span id='c'>C</span></div></body></html>",
+        )
+        .unwrap();
+
+        let value = rt
+            .evaluate_with_page_mut(
+                "(() => {\
+                   const root = document.querySelector('#root');\
+                   const range = document.createRange();\
+                   range.setStart(root, 1);\
+                   range.setEnd(root, 2);\
+                   const cloned = range.cloneContents().innerHTML;\
+                   const selection = getSelection();\
+                   selection.addRange(range);\
+                   const before = [selection.type, selection.direction, selection.rangeCount, selection.toString()].join(':');\
+                   selection.deleteFromDocument();\
+                   return before + '|' + cloned + '|' + selection.type + ':' + selection.anchorOffset + ':' + root.children.length;\
+                 })()",
+                &mut page,
+            )
+            .unwrap();
+
+        assert_eq!(
+            value,
+            JsValue::String("Range:forward:1:B|<span id=\"b\">B</span>|Caret:1:2".to_owned())
+        );
+        assert!(page.query_selector_all("#b").unwrap().is_empty());
+        let root = page.query_selector_all("#root").unwrap()[0].node_id;
+        assert_eq!(
+            page.selection(),
+            Some(crate::page::PageSelection {
+                anchor_node_id: root,
+                anchor_offset: 1,
+                focus_node_id: root,
+                focus_offset: 1,
+            })
+        );
+
+        let mut restored = JsRuntime::new().expect("restored runtime init");
+        assert_eq!(
+            restored
+                .evaluate_with_page(
+                    "getSelection().type + ':' + getSelection().anchorNode.id + ':' + getSelection().anchorOffset",
+                    &page,
+                )
+                .unwrap(),
+            JsValue::String("Caret:root:1".to_owned())
         );
     }
 
@@ -4118,6 +4536,99 @@ mod tests {
             JsValue::String("preflight-ok".to_owned())
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_preflight_cache_reuses_success() {
+        use std::sync::atomic::Ordering;
+
+        let (url, network_config, preflights, server) =
+            spawn_cached_preflight_server("vixen-fetch-preflight-cache.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let mut page = Page::from_html("http://source.test/page", "<main></main>").unwrap();
+        let expr = format!(
+            "fetch({url:?}, {{ method: 'POST', headers: {{ 'X-Vixen-Custom': 'yes' }} }}).then(() => fetch({url:?}, {{ method: 'POST', headers: {{ 'X-Vixen-Custom': 'again' }} }})).then((response) => response.text())"
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(&expr, &mut page).unwrap(),
+            JsValue::String("cached-preflight-ok".to_owned())
+        );
+        server.join().unwrap();
+        assert_eq!(preflights.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn fetch_extra_header_participates_in_preflight() {
+        let (url, network_config, server) =
+            spawn_preflight_server("vixen-fetch-extra-header-preflight.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        rt.set_extra_http_headers(vec![("X-Vixen-Custom".to_owned(), "yes".to_owned())]);
+        let mut page = Page::from_html("http://source.test/page", "<main></main>").unwrap();
+        let expr = format!(
+            "fetch({url:?}, {{ method: 'POST', body: 'preflight body' }}).then((response) => response.text())"
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(&expr, &mut page).unwrap(),
+            JsValue::String("preflight-ok".to_owned())
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_credentials_require_allow_credentials() {
+        let (url, network_config, server) =
+            spawn_cors_server("vixen-fetch-cors-credentials.com", "http://source.test");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let mut page = Page::from_html("http://source.test/page", "<main></main>").unwrap();
+        let expr = format!(
+            "fetch({url:?}, {{ credentials: 'include' }}).then(() => false, (error) => /Allow-Credentials/.test(error.message))"
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(&expr, &mut page).unwrap(),
+            JsValue::Bool(true)
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_integrity_accepts_match_and_reports_mismatch() {
+        let digest = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
+        let (ok_url, ok_config, ok_server) = spawn_fetch_server("vixen-fetch-sri-ok.com", "abc");
+        let mut ok_runtime = JsRuntime::with_network_config(ok_config).expect("engine init");
+        let ok_expr = format!(
+            "fetch({ok_url:?}, {{ integrity: {digest:?} }}).then((response) => response.text())"
+        );
+        assert_eq!(
+            ok_runtime.evaluate(&ok_expr).unwrap(),
+            JsValue::String("abc".to_owned())
+        );
+        ok_server.join().unwrap();
+
+        let (bad_url, bad_config, bad_server) =
+            spawn_fetch_server("vixen-fetch-sri-bad.com", "tampered");
+        let mut bad_runtime = JsRuntime::with_network_config(bad_config).expect("engine init");
+        let bad_expr = format!(
+            "fetch({bad_url:?}, {{ integrity: {digest:?} }}).then(() => false, (error) => /integrity mismatch/.test(error.message))"
+        );
+        assert_eq!(
+            bad_runtime.evaluate(&bad_expr).unwrap(),
+            JsValue::Bool(true)
+        );
+        let events = bad_runtime.drain_network_events().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                JsNetworkEvent::Request { .. },
+                JsNetworkEvent::Failure {
+                    blocked_reason: Some(reason),
+                    ..
+                }
+            ] if reason == "integrity"
+        ));
+        bad_server.join().unwrap();
     }
 
     #[test]

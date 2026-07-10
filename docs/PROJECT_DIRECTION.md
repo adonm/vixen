@@ -13,13 +13,13 @@ The product should feel closer to Ghostty than to a kitchen-sink browser:
 small, fast to build, efficient to run, easy to iterate on, and boringly
 reliable.
 
-The ambition is a real browser, not a demo shell. Vixen should eventually load a
-measured corridor of everyday sites, preserve profile state, handle
-forms/navigation/storage securely, draw pages with a real layout/paint pipeline,
-expose a useful Playwright/CDP surface, package cleanly for modern Linux, and
-publish honest compatibility/performance numbers. The constraint is not lower
-ambition; it is refusing duplicate engines, duplicate renderers, broad unbacked
-API shape, and UI features that do not move the browser toward daily usefulness.
+The ambition is a real browser, not a demo shell. Vixen should first make a
+measured corridor of everyday sites reliable, then keep widening toward ordinary
+Firefox-replacement use: accessible documents and applications, media, offline
+storage/workers, richer graphics and communications, automation, and a credible
+security/release lifecycle. The constraint is not lower ambition; it is refusing
+duplicate engines, duplicate renderers, broad unbacked API shape, and UI features
+that do not move the browser toward daily usefulness.
 
 The product bet is: a small, integrated Linux-first browser can be useful before
 it is universal if it is honest, inspectable, scriptable, and improving against a
@@ -73,24 +73,38 @@ The user-facing rank is:
 
 ## Design lessons now baked in
 
-Recent implementation work moved storage, fetch, CORS, cache revalidation,
-network events, XHR, and CDP lifecycle events onto shared paths. Keep following
-that pattern:
+Recent work proved that shared fetch/storage/runtime pieces are valuable, but it
+also exposed a larger risk: shell and headless/CDP still assemble those pieces
+with separate lifecycle state. The following lessons are now requirements:
 
-1. **Authoritative state first.** Build or choose the state owner, then expose it
-   to JS, CDP, WPT, GUI, and headless. Do not grow parallel “good enough” models.
-2. **Trust boundaries are product features.** Validate URL/header/body/storage
-   inputs at the JS → Rust or network/profile boundary, fail closed, and return
-   diagnostics that separate policy from transport from unsupported behavior.
-3. **Automation must share the browser.** CDP events, waits, DOM queries, and
-   screenshots should observe the same page lifecycle and network/rendering paths
-   as the GUI, even when the surface is initially narrow.
-4. **Profiles are durable browser state.** Cache, cookies, storage, history,
-   sessions, permissions, downloads, and security state need bounded persistence
-   and clear-data integration as soon as the behavior exists.
-5. **Compatibility needs reductions.** Every broad feature should land with
-   focused fixtures and a path to WPT/imported coverage; every real-site bug
-   should become a reduction or an explicitly tracked unreduced failure.
+1. **One browser state graph.** Profile → browser → browsing context → document
+   is the ownership hierarchy. Build or choose that owner, then expose it to JS,
+   CDP, WPT, GUI, and headless. Parallel navigation, history, runtime, permission,
+   or profile coordinators are temporary migration debt.
+2. **A component seam is not lifecycle integration.** Sharing `Page`, `Network`,
+   or `JsRuntime` types is insufficient if frontends decide independently when to
+   create, commit, cancel, persist, or destroy them. Alpha requires a production
+   engine-owned lifecycle.
+3. **Asynchrony needs identity.** Context, navigation, document, request, runtime,
+   and download work carries stable ids/generations. Cancellation invalidates the
+   generation, and late work cannot mutate current state or emit success.
+4. **Trust boundaries are product features.** Validate URL/header/body/storage
+   inputs near entry, fail closed, and apply response policy before exposure,
+   execution, decode, cache insertion, persistence, download, or UI handoff.
+5. **Automation must share the browser.** CDP events, waits, DOM queries, input,
+   and screenshots observe the same lifecycle and network/rendering paths as the
+   GUI. Protocol shape without independent live targets is not multi-page
+   support.
+6. **Profiles are durable, bounded browser state.** Cache, cookies, storage,
+   history, sessions, permissions, downloads, and security state need one owner,
+   partitioning, limits, recovery, and clear-data integration.
+7. **Observability is an API.** Stable errors and bounded privacy-minimal traces
+   are product contracts. They distinguish policy, transport, unsupported,
+   cancellation, stale state, and resource exhaustion without leaking content.
+8. **Measure before budgeting; reduce before claiming.** Size/performance limits
+   need reproducible baselines. Every broad feature needs focused fixtures and a
+   WPT path; every real-site bug becomes a reduction or an explicitly tracked
+   unreduced failure.
 
 ## Non-goals before alpha
 
@@ -118,17 +132,23 @@ validated for full delivery:
 - hk-enforced git lifecycle gates,
 - honest compatibility docs with measured local/imported fixture results.
 
-Alpha also requires that navigation, storage/profile, fetch/XHR, CDP, DOM/form
-state, layout/paint, and shell chrome all use shared engine paths. Narrow
+Alpha also requires a production browser core: one profile service, one context
+registry, one generational navigation/document lifecycle, and one command/event
+path used by shell, headless, CDP, WPT, and page runtime. Two contexts must run
+independently while sharing only intended profile state, active navigation must
+be cancellable, and live DOM mutation must reach the visible render path. Narrow
 surfaces are acceptable; duplicate models are not.
 
-## Beta and v1 in one sentence
+## Delivery horizon in one sentence
 
 - **Beta**: a controlled real-site corridor is usable in GUI and headless, with
   measured compatibility/performance and known gaps.
 - **v1.0**: Vixen is an honest daily-driver minimum for focused Linux users and a
   useful Playwright/CDP automation target, with security/reliability limits
   documented instead of hidden.
+- **Replacement horizon**: continue through accessibility, media, offline apps,
+  richer graphics/communications, ecosystem support, and stronger isolation
+  until ordinary modern-Linux browsing—not only a curated corridor—is credible.
 
 After alpha, API surface can still change, but architecture changes need a new
 ADR and human approval.

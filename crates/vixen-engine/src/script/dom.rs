@@ -21,7 +21,7 @@ use crate::dataset::collect_dataset;
 use crate::engine_error::{EngineError, codes};
 use crate::form_submission::{FormEntry, FormEntryValue};
 use crate::media_query::Viewport;
-use crate::page::Page;
+use crate::page::{Page, PageSelection};
 use crate::responsive_select::select_from as select_responsive_image_source;
 use crate::style_dom::ElementRelation;
 
@@ -62,6 +62,12 @@ pub(super) enum DomMutation {
         name: Option<String>,
         tag: String,
         value: String,
+    },
+    SetFocusedElement {
+        node_id: Option<usize>,
+    },
+    SetSelection {
+        selection: Option<PageSelection>,
     },
 }
 
@@ -144,6 +150,8 @@ deno_core::extension!(
         op_vixen_dom_remove_element_attr,
         op_vixen_dom_set_element_inner_html,
         op_vixen_dom_set_control_value,
+        op_vixen_dom_set_focused_element,
+        op_vixen_dom_set_selection,
     ],
     options = {
         host: Arc<DomHostState>,
@@ -363,6 +371,71 @@ fn op_vixen_dom_set_control_value(
 
 #[deno_core::op2]
 #[serde]
+fn op_vixen_dom_set_focused_element(
+    state: &mut OpState,
+    node_id: u32,
+) -> deno_core::serde_json::Value {
+    let host = state.borrow::<DomHost>().0.clone();
+    let node_id = (node_id != 0).then_some(node_id as usize);
+    if node_id.is_some_and(|node_id| element_record_by_node_id(&host, node_id).is_none()) {
+        return json!({ "ok": false, "message": "focused element is not page-backed" });
+    }
+    host.mutations
+        .push(DomMutation::SetFocusedElement { node_id });
+    json!({ "ok": true })
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_dom_set_selection(
+    state: &mut OpState,
+    #[serde] value: deno_core::serde_json::Value,
+) -> deno_core::serde_json::Value {
+    let host = state.borrow::<DomHost>().0.clone();
+    let node_id = |name: &str| {
+        value
+            .get(name)
+            .and_then(deno_core::serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+    };
+    let offset = |name: &str| {
+        value
+            .get(name)
+            .and_then(deno_core::serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+    };
+    let selection = match (
+        node_id("anchorNodeId"),
+        offset("anchorOffset"),
+        node_id("focusNodeId"),
+        offset("focusOffset"),
+    ) {
+        (Some(anchor_node_id), Some(anchor_offset), Some(focus_node_id), Some(focus_offset))
+            if [anchor_node_id, focus_node_id].into_iter().all(|node_id| {
+                node_id == 0 || element_record_by_node_id(&host, node_id).is_some()
+            }) =>
+        {
+            Some(PageSelection {
+                anchor_node_id,
+                anchor_offset,
+                focus_node_id,
+                focus_offset,
+            })
+        }
+        _ if value.is_null() => None,
+        _ => {
+            return json!({
+                "ok": false,
+                "message": "selection contains a non-page-backed boundary",
+            });
+        }
+    };
+    host.mutations.push(DomMutation::SetSelection { selection });
+    json!({ "ok": true })
+}
+
+#[deno_core::op2]
+#[serde]
 fn op_vixen_dom_element_attribute(
     state: &mut OpState,
     node_id: u32,
@@ -474,7 +547,13 @@ fn dom_host_state(page: &Page, mutations: DomMutationSink) -> Result<DomHostStat
             "documentElementNodeId": document_element_node_id,
             "headNodeId": head_node_id,
             "bodyNodeId": body_node_id,
-            "activeElementNodeId": body_node_id,
+            "activeElementNodeId": page.focused_element_node_id().or(body_node_id),
+            "selection": page.selection().map(|selection| json!({
+                "anchorNodeId": selection.anchor_node_id,
+                "anchorOffset": selection.anchor_offset,
+                "focusNodeId": selection.focus_node_id,
+                "focusOffset": selection.focus_offset,
+            })),
             "scrollingElementNodeId": document_element_node_id,
             "historyLength": page.session_history().length(),
             "historyIndex": page.session_history().index(),
@@ -914,6 +993,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
     op_vixen_dom_remove_element_attr,
     op_vixen_dom_set_element_inner_html,
     op_vixen_dom_set_control_value,
+    op_vixen_dom_set_focused_element,
+    op_vixen_dom_set_selection,
     op_vixen_document_cookie_get,
     op_vixen_document_cookie_set,
   } = Deno.core.ops;
@@ -2275,6 +2356,43 @@ const DOM_API_BOOTSTRAP: &str = r#"
   webidl.adoptInterface('DOMRectList', VixenDOMRectList);
   webidl.adoptInterface('Text', VixenText);
 
+  class VixenDocumentFragment {
+    constructor() {
+      defineWritableValue(this, 'textContent', '');
+      defineWritableValue(this, 'innerHTML', '');
+    }
+    get nodeType() { return 11; }
+    get nodeName() { return '#document-fragment'; }
+    get ownerDocument() { return vixenDocument; }
+    get isConnected() { return false; }
+    get parentNode() { return null; }
+    get childNodes() { return new VixenNodeList([]); }
+    get children() { return new VixenHTMLCollection([]); }
+    get firstChild() { return null; }
+    get lastChild() { return null; }
+    get firstElementChild() { return null; }
+    get lastElementChild() { return null; }
+    get childElementCount() { return 0; }
+    get previousSibling() { return null; }
+    get nextSibling() { return null; }
+    contains(target) { return target === this; }
+    getRootNode() { return this; }
+    querySelector(_selector) { return null; }
+    querySelectorAll(_selector) { return new VixenNodeList([]); }
+    getElementById(_id) { return null; }
+  }
+
+  class VixenShadowRoot extends VixenDocumentFragment {
+    constructor(host, mode) {
+      super();
+      defineWritableValue(this, 'host', host, false);
+      defineWritableValue(this, 'mode', mode);
+    }
+  }
+
+  webidl.adoptInterface('DocumentFragment', VixenDocumentFragment);
+  webidl.adoptInterface('ShadowRoot', VixenShadowRoot);
+
   const nodeTypeConstants = Object.freeze({
     ELEMENT_NODE: 1,
     ATTRIBUTE_NODE: 2,
@@ -2608,13 +2726,33 @@ const DOM_API_BOOTSTRAP: &str = r#"
     return missingDefault;
   }
 
+  function reflectedBooleanKeyword(element, name, trueKeywords, falseKeywords, missingDefault) {
+    const attr = elementAttribute(element.__vixenNodeId, name);
+    if (attr === null) return missingDefault;
+    const value = String(attr).trim().toLowerCase();
+    if (trueKeywords.includes(value)) return true;
+    if (falseKeywords.includes(value)) return false;
+    return missingDefault;
+  }
+
   function reflectedFormMethod(element) {
     const value = reflectedAttribute(element, 'method').trim().toLowerCase();
     return value === 'post' || value === 'dialog' ? value : 'get';
   }
 
+  function reflectedSubmitMethod(element) {
+    const value = reflectedAttribute(element, 'formmethod').trim().toLowerCase();
+    return value === 'post' || value === 'dialog' ? value : 'get';
+  }
+
   function reflectedFormEnctype(element) {
     const value = reflectedAttribute(element, 'enctype').trim().toLowerCase();
+    if (value === 'multipart/form-data' || value === 'text/plain') return value;
+    return 'application/x-www-form-urlencoded';
+  }
+
+  function reflectedSubmitEnctype(element) {
+    const value = reflectedAttribute(element, 'formenctype').trim().toLowerCase();
     if (value === 'multipart/form-data' || value === 'text/plain') return value;
     return 'application/x-www-form-urlencoded';
   }
@@ -2675,6 +2813,145 @@ const DOM_API_BOOTSTRAP: &str = r#"
     }
   }
 
+  function reflectedNonNegativeInteger(element, name, missingDefault = -1) {
+    const number = Number.parseInt(reflectedAttribute(element, name), 10);
+    return Number.isFinite(number) && number >= 0 ? number : missingDefault;
+  }
+
+  function textLength(element) {
+    return Array.from(controlValue(element)).length;
+  }
+
+  function validationMessageForElement(element) {
+    return String(elementRecord(element).__vixenCustomValidityMessage || '');
+  }
+
+  function inputValueAsNumber(element) {
+    const value = controlValue(element);
+    if (value === '') return NaN;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : NaN;
+  }
+
+  function setInputValueAsNumber(element, value) {
+    const number = Number(value);
+    setControlValue(element, Number.isFinite(number) ? String(number) : '');
+  }
+
+  function stepControl(element, direction, count = 1) {
+    if (elementTag(element) !== 'input') return;
+    const type = elementType(element);
+    if (type !== 'number' && type !== 'range') return;
+    const stepAttr = reflectedAttribute(element, 'step');
+    const step = stepAttr && stepAttr.toLowerCase() !== 'any' ? Number(stepAttr) : 1;
+    const delta = (Number.isFinite(step) && step > 0 ? step : 1) * (Number(count) || 1) * direction;
+    const base = Number.isFinite(inputValueAsNumber(element)) ? inputValueAsNumber(element) : (parseNumberAttr(element, 'min') ?? 0);
+    setInputValueAsNumber(element, base + delta);
+  }
+
+  function setRangeText(element, replacement, start = undefined, end = undefined, selectionMode = 'preserve') {
+    if (!isTextEditableControl(element)) return;
+    const value = controlValue(element);
+    const [selectionStart, selectionEnd] = controlSelection(element);
+    const from = start === undefined ? selectionStart : clampControlOffset(element, start);
+    const to = end === undefined ? selectionEnd : clampControlOffset(element, end);
+    const left = Math.min(from, to);
+    const right = Math.max(from, to);
+    const text = String(replacement);
+    setControlValue(element, value.slice(0, left) + text + value.slice(right));
+    const newEnd = left + text.length;
+    if (selectionMode === 'select') setControlSelection(element, left, newEnd);
+    else if (selectionMode === 'start') setControlSelection(element, left, left);
+    else if (selectionMode === 'end') setControlSelection(element, newEnd, newEnd);
+    else setControlSelection(element, selectionStart, selectionStart + text.length - (right - left));
+  }
+
+  function descendantElementsBySelector(element, selector) {
+    return findAllNodeIds(selector).filter((nodeId) => isDescendantOf(nodeId, element.__vixenNodeId));
+  }
+
+  function firstDescendantElementBySelector(element, selector) {
+    const ids = descendantElementsBySelector(element, selector);
+    return ids.length > 0 ? wrapElementByNodeId(ids[0]) : null;
+  }
+
+  function tableRowsCollection(element) {
+    const tag = elementTag(element);
+    if (tag === 'table' || tag === 'thead' || tag === 'tbody' || tag === 'tfoot') return new VixenHTMLCollection(descendantElementsBySelector(element, 'tr'));
+    return reflectedUnsigned(element, 'rows') || 2;
+  }
+
+  function tableCellsCollection(row) {
+    if (elementTag(row) !== 'tr') return new VixenHTMLCollection([]);
+    const cellIds = elementRecord(row).childElementNodeIds.filter((nodeId) => {
+      const cell = wrapElementByNodeId(nodeId);
+      return cell && (elementTag(cell) === 'td' || elementTag(cell) === 'th');
+    });
+    return new VixenHTMLCollection(cellIds);
+  }
+
+  function tableRowIndex(row) {
+    if (elementTag(row) !== 'tr') return -1;
+    return descendantElementsBySelector(vixenDocument.documentElement, 'tr').indexOf(row.__vixenNodeId);
+  }
+
+  function sectionRowIndex(row) {
+    if (elementTag(row) !== 'tr') return -1;
+    const parent = row.parentElement;
+    if (!parent) return -1;
+    return descendantElementsBySelector(parent, 'tr').indexOf(row.__vixenNodeId);
+  }
+
+  function tableCellIndex(cell) {
+    const tag = elementTag(cell);
+    if (tag !== 'td' && tag !== 'th') return -1;
+    const row = cell.parentElement;
+    if (!row || elementTag(row) !== 'tr') return -1;
+    return Array.from(tableCellsCollection(row)).indexOf(cell);
+  }
+
+  function textTrackForTrackElement(trackElement) {
+    return cachedElementObject(trackElement, '__vixenTextTrack', () => new VixenTextTrack(
+      reflectedAttribute(trackElement, 'kind') || 'subtitles',
+      reflectedAttribute(trackElement, 'label'),
+      reflectedAttribute(trackElement, 'srclang'),
+      trackElement.id || '',
+    ));
+  }
+
+  function mediaTextTracks(element) {
+    if (elementTag(element) !== 'audio' && elementTag(element) !== 'video') return new VixenTextTrackList([]);
+    const tracks = descendantElementsBySelector(element, 'track')
+      .map((nodeId) => wrapElementByNodeId(nodeId))
+      .filter((track) => track !== null)
+      .map(textTrackForTrackElement);
+    return new VixenTextTrackList(tracks);
+  }
+
+  function attachShadowRoot(element, init = {}) {
+    const record = elementRecord(element);
+    if (record.__vixenShadowRoot) throw new TypeError('Shadow root already attached');
+    const mode = init && init.mode === 'closed' ? 'closed' : 'open';
+    const root = new VixenShadowRoot(element, mode);
+    record.__vixenShadowRoot = root;
+    return root;
+  }
+
+  function templateContentFragment(element) {
+    if (elementTag(element) !== 'template') return reflectedAttribute(element, 'content');
+    return cachedElementObject(element, '__vixenTemplateContent', () => {
+      const fragment = new VixenDocumentFragment();
+      fragment.innerHTML = elementRecord(element).innerHTML || '';
+      fragment.textContent = elementText(element.__vixenNodeId);
+      return fragment;
+    });
+  }
+
+  function setTemplateContent(element, value) {
+    if (elementTag(element) === 'template') setElementInnerHTML(element, String(value));
+    else setReflectedAttribute(element, 'content', value);
+  }
+
   function numericMax(element) {
     const tag = elementTag(element);
     if (tag === 'progress' || tag === 'meter') return reflectedNumber(element, 'max', 1);
@@ -2720,6 +2997,15 @@ const DOM_API_BOOTSTRAP: &str = r#"
     setBooleanAttribute(element, 'open', false);
     record.__vixenModal = false;
     element.dispatchEvent(new Event('close'));
+  }
+
+  function canvasContext2d(element) {
+    return cachedElementObject(element, '__vixenCanvas2d', () => new VixenCanvasRenderingContext2D(element));
+  }
+
+  function canvasDataUrl(type = 'image/png') {
+    const normalized = String(type || 'image/png').toLowerCase() === 'image/jpeg' ? 'image/jpeg' : 'image/png';
+    return 'data:' + normalized + ';base64,';
   }
 
   function elementType(element) {
@@ -3182,8 +3468,14 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   function submitFormDefault(form, submitter) {
     if (!form) return;
-    const submitEvent = new Event('submit', { bubbles: true, cancelable: true, composed: true });
-    Object.defineProperty(submitEvent, 'submitter', { value: submitter || null, configurable: true });
+    const bypassValidation = form.noValidate || Boolean(submitter && submitter.formNoValidate);
+    if (!bypassValidation && !checkValidityElement(form)) return;
+    const submitEvent = new SubmitEvent('submit', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      submitter: submitter || null,
+    });
     if (form.dispatchEvent(submitEvent)) queueFormSubmission(form, submitter);
   }
 
@@ -3373,7 +3665,18 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   function checkValidityElement(element) {
-    return validityStateForElementOrForm(element).valid;
+    if (elementTag(element) === 'form') {
+      let valid = true;
+      for (const control of formControlElements(element)) {
+        if (!checkValidityElement(control)) valid = false;
+      }
+      return valid;
+    }
+    const valid = validityStateForElementOrForm(element).valid;
+    if (!valid && willValidateElement(element)) {
+      element.dispatchEvent(new Event('invalid', { cancelable: true }));
+    }
+    return valid;
   }
 
   function runDomDefaultAction(target, event) {
@@ -3512,6 +3815,23 @@ const DOM_API_BOOTSTRAP: &str = r#"
     }
     get hidden() { return booleanAttribute(this, 'hidden'); }
     set hidden(value) { setBooleanAttribute(this, 'hidden', value); }
+    get tabIndex() { return reflectedInteger(this, 'tabindex', -1); }
+    set tabIndex(value) { setReflectedInteger(this, 'tabindex', value); }
+    get accessKey() { return reflectedAttribute(this, 'accesskey'); }
+    set accessKey(value) { setReflectedAttribute(this, 'accesskey', value); }
+    get accessKeyLabel() { return this.accessKey; }
+    get draggable() { return reflectedBooleanKeyword(this, 'draggable', ['true'], ['false'], false); }
+    set draggable(value) { setReflectedAttribute(this, 'draggable', Boolean(value) ? 'true' : 'false'); }
+    get spellcheck() { return reflectedBooleanKeyword(this, 'spellcheck', ['', 'true'], ['false'], true); }
+    set spellcheck(value) { setReflectedAttribute(this, 'spellcheck', Boolean(value) ? 'true' : 'false'); }
+    get translate() { return reflectedBooleanKeyword(this, 'translate', ['', 'yes', 'true'], ['no', 'false'], true); }
+    set translate(value) { setReflectedAttribute(this, 'translate', Boolean(value) ? 'yes' : 'no'); }
+    get inputMode() { return reflectedAttribute(this, 'inputmode'); }
+    set inputMode(value) { setReflectedAttribute(this, 'inputmode', value); }
+    get enterKeyHint() { return reflectedAttribute(this, 'enterkeyhint'); }
+    set enterKeyHint(value) { setReflectedAttribute(this, 'enterkeyhint', value); }
+    get popover() { return reflectedAttribute(this, 'popover'); }
+    set popover(value) { setReflectedAttribute(this, 'popover', value); }
     get title() { return reflectedAttribute(this, 'title'); }
     set title(value) { setReflectedAttribute(this, 'title', value); }
     get lang() { return reflectedAttribute(this, 'lang'); }
@@ -3522,8 +3842,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
     set type(value) { setReflectedAttribute(this, 'type', String(value).toLowerCase()); }
     get name() { return elementName(this); }
     set name(value) { setReflectedAttribute(this, 'name', value); }
-    get content() { return reflectedAttribute(this, 'content'); }
-    set content(value) { setReflectedAttribute(this, 'content', value); }
+    get content() { return templateContentFragment(this); }
+    set content(value) { setTemplateContent(this, value); }
     get httpEquiv() { return reflectedAttribute(this, 'http-equiv'); }
     set httpEquiv(value) { setReflectedAttribute(this, 'http-equiv', value); }
     get charset() { return reflectedAttribute(this, 'charset'); }
@@ -3536,6 +3856,22 @@ const DOM_API_BOOTSTRAP: &str = r#"
     set encoding(value) { this.enctype = value; }
     get action() { return reflectedAttribute(this, 'action'); }
     set action(value) { setReflectedAttribute(this, 'action', value); }
+    get accept() { return reflectedAttribute(this, 'accept'); }
+    set accept(value) { setReflectedAttribute(this, 'accept', value); }
+    get acceptCharset() { return reflectedAttribute(this, 'accept-charset'); }
+    set acceptCharset(value) { setReflectedAttribute(this, 'accept-charset', value); }
+    get noValidate() { return booleanAttribute(this, 'novalidate'); }
+    set noValidate(value) { setBooleanAttribute(this, 'novalidate', value); }
+    get formAction() { return reflectedAttribute(this, 'formaction'); }
+    set formAction(value) { setReflectedAttribute(this, 'formaction', value); }
+    get formEnctype() { return reflectedSubmitEnctype(this); }
+    set formEnctype(value) { setReflectedAttribute(this, 'formenctype', value); }
+    get formMethod() { return reflectedSubmitMethod(this); }
+    set formMethod(value) { setReflectedAttribute(this, 'formmethod', value); }
+    get formNoValidate() { return booleanAttribute(this, 'formnovalidate'); }
+    set formNoValidate(value) { setBooleanAttribute(this, 'formnovalidate', value); }
+    get formTarget() { return reflectedAttribute(this, 'formtarget'); }
+    set formTarget(value) { setReflectedAttribute(this, 'formtarget', value); }
     get cite() { return reflectedAttribute(this, 'cite'); }
     set cite(value) { setReflectedAttribute(this, 'cite', value); }
     get dateTime() { return reflectedAttribute(this, 'datetime'); }
@@ -3582,6 +3918,14 @@ const DOM_API_BOOTSTRAP: &str = r#"
     set defer(value) { setBooleanAttribute(this, 'defer', value); }
     get noModule() { return booleanAttribute(this, 'nomodule'); }
     set noModule(value) { setBooleanAttribute(this, 'nomodule', value); }
+    get kind() { return reflectedAttribute(this, 'kind') || 'subtitles'; }
+    set kind(value) { setReflectedAttribute(this, 'kind', value); }
+    get srclang() { return reflectedAttribute(this, 'srclang'); }
+    set srclang(value) { setReflectedAttribute(this, 'srclang', value); }
+    get default() { return booleanAttribute(this, 'default'); }
+    set default(value) { setBooleanAttribute(this, 'default', value); }
+    get track() { return elementTag(this) === 'track' ? textTrackForTrackElement(this) : undefined; }
+    get textTracks() { return mediaTextTracks(this); }
     get srcdoc() { return reflectedAttribute(this, 'srcdoc'); }
     set srcdoc(value) { setReflectedAttribute(this, 'srcdoc', value); }
     get allow() { return reflectedAttribute(this, 'allow'); }
@@ -3611,9 +3955,9 @@ const DOM_API_BOOTSTRAP: &str = r#"
     set useMap(value) { setReflectedAttribute(this, 'usemap', value); }
     get isMap() { return booleanAttribute(this, 'ismap'); }
     set isMap(value) { setBooleanAttribute(this, 'ismap', value); }
-    get width() { return reflectedUnsigned(this, 'width'); }
+    get width() { return elementTag(this) === 'canvas' ? (reflectedUnsigned(this, 'width') || 300) : reflectedUnsigned(this, 'width'); }
     set width(value) { setReflectedUnsigned(this, 'width', value); }
-    get height() { return reflectedUnsigned(this, 'height'); }
+    get height() { return elementTag(this) === 'canvas' ? (reflectedUnsigned(this, 'height') || 150) : reflectedUnsigned(this, 'height'); }
     set height(value) { setReflectedUnsigned(this, 'height', value); }
     get naturalWidth() { return 0; }
     get naturalHeight() { return 0; }
@@ -3654,6 +3998,17 @@ const DOM_API_BOOTSTRAP: &str = r#"
     play() { return Promise.resolve(); }
     pause() {}
     canPlayType(_type = '') { return ''; }
+    getContext(contextId = '') {
+      if (elementTag(this) !== 'canvas') return null;
+      const id = String(contextId).toLowerCase();
+      return id === '2d' ? canvasContext2d(this) : null;
+    }
+    toDataURL(type = 'image/png') { return elementTag(this) === 'canvas' ? canvasDataUrl(type) : ''; }
+    toBlob(callback, type = 'image/png') {
+      if (typeof callback !== 'function') return;
+      callback(new Blob([], { type: canvasDataUrl(type).slice(5).split(';', 1)[0] }));
+    }
+    transferControlToOffscreen() { throw new TypeError('OffscreenCanvas is not implemented'); }
     get open() { return booleanAttribute(this, 'open'); }
     set open(value) { setDialogOpen(this, value); }
     get returnValue() { return dialogState(this).__vixenReturnValue; }
@@ -3678,6 +4033,20 @@ const DOM_API_BOOTSTRAP: &str = r#"
     set min(value) { setReflectedAttribute(this, 'min', value); }
     get max() { return numericMax(this); }
     set max(value) { setReflectedAttribute(this, 'max', value); }
+    get maxLength() { return reflectedNonNegativeInteger(this, 'maxlength', -1); }
+    set maxLength(value) { setReflectedInteger(this, 'maxlength', value); }
+    get minLength() { return reflectedNonNegativeInteger(this, 'minlength', -1); }
+    set minLength(value) { setReflectedInteger(this, 'minlength', value); }
+    get pattern() { return reflectedAttribute(this, 'pattern'); }
+    set pattern(value) { setReflectedAttribute(this, 'pattern', value); }
+    get step() { return reflectedAttribute(this, 'step'); }
+    set step(value) { setReflectedAttribute(this, 'step', value); }
+    get cols() { return reflectedUnsigned(this, 'cols') || 20; }
+    set cols(value) { setReflectedUnsigned(this, 'cols', value); }
+    get rows() { return tableRowsCollection(this); }
+    set rows(value) { if (elementTag(this) === 'textarea') setReflectedUnsigned(this, 'rows', value); }
+    get wrap() { return reflectedAttribute(this, 'wrap') || 'soft'; }
+    set wrap(value) { setReflectedAttribute(this, 'wrap', value); }
     get low() { return elementTag(this) === 'meter' ? reflectedNumber(this, 'low', numericMin(this)) : 0; }
     set low(value) { setReflectedNumber(this, 'low', value); }
     get high() { return elementTag(this) === 'meter' ? reflectedNumber(this, 'high', numericMax(this)) : 0; }
@@ -3685,6 +4054,14 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get optimum() { return elementTag(this) === 'meter' ? reflectedNumber(this, 'optimum', (numericMin(this) + numericMax(this)) / 2) : 0; }
     set optimum(value) { setReflectedNumber(this, 'optimum', value); }
     get position() { return progressPosition(this); }
+    get caption() { return elementTag(this) === 'table' ? firstDescendantElementBySelector(this, 'caption') : null; }
+    get tHead() { return elementTag(this) === 'table' ? firstDescendantElementBySelector(this, 'thead') : null; }
+    get tFoot() { return elementTag(this) === 'table' ? firstDescendantElementBySelector(this, 'tfoot') : null; }
+    get tBodies() { return elementTag(this) === 'table' ? new VixenHTMLCollection(descendantElementsBySelector(this, 'tbody')) : new VixenHTMLCollection([]); }
+    get cells() { return tableCellsCollection(this); }
+    get rowIndex() { return tableRowIndex(this); }
+    get sectionRowIndex() { return sectionRowIndex(this); }
+    get cellIndex() { return tableCellIndex(this); }
     get htmlFor() { return reflectedAttribute(this, 'for'); }
     set htmlFor(value) { setReflectedAttribute(this, 'for', value); }
     get control() { return labelControlElement(this); }
@@ -3730,8 +4107,16 @@ const DOM_API_BOOTSTRAP: &str = r#"
     set files(value) { setInputFiles(this, value); }
     get value() { return reflectedElementValue(this); }
     set value(value) { setReflectedElementValue(this, value); }
+    get valueAsNumber() { return elementTag(this) === 'input' ? inputValueAsNumber(this) : NaN; }
+    set valueAsNumber(value) { if (elementTag(this) === 'input') setInputValueAsNumber(this, value); }
+    get valueAsDate() { return null; }
+    set valueAsDate(_value) { if (elementTag(this) === 'input') setControlValue(this, ''); }
+    get textLength() { return textLength(this); }
+    get indeterminate() { return Boolean(ensureControlState(this).__vixenIndeterminate); }
+    set indeterminate(value) { ensureControlState(this).__vixenIndeterminate = Boolean(value); }
     get willValidate() { return willValidateElement(this); }
     get validity() { return validityStateForElementOrForm(this); }
+    get validationMessage() { return validationMessageForElement(this); }
     checkValidity() { return checkValidityElement(this); }
     reportValidity() { return checkValidityElement(this); }
     setCustomValidity(message) { elementRecord(this).__vixenCustomValidityMessage = String(message || ''); }
@@ -3758,7 +4143,11 @@ const DOM_API_BOOTSTRAP: &str = r#"
       setControlSelection(this, Math.min(start, end), end);
     }
     setSelectionRange(start, end = start) { if (isTextEditableControl(this)) setControlSelection(this, start, end); }
+    setRangeText(replacement, start = undefined, end = undefined, selectionMode = 'preserve') { setRangeText(this, replacement, start, end, selectionMode); }
     select() { if (isTextEditableControl(this)) setControlSelection(this, 0, controlValue(this).length); }
+    stepUp(count = 1) { stepControl(this, 1, count); }
+    stepDown(count = 1) { stepControl(this, -1, count); }
+    showPicker() {}
     get checked() { return this.hasAttribute('checked'); }
     set checked(value) { if (elementTag(this) === 'input') setInputChecked(this, Boolean(value)); else setBooleanAttribute(this, 'checked', value); }
     getAttribute(name) {
@@ -3808,20 +4197,23 @@ const DOM_API_BOOTSTRAP: &str = r#"
       if (activeElementNodeId === this.__vixenNodeId) return;
       const old = wrapElementByNodeId(activeElementNodeId);
       activeElementNodeId = this.__vixenNodeId;
-      if (old) {
-        old.dispatchEvent(new Event('focusout', { bubbles: true, composed: true }));
-        old.dispatchEvent(new Event('blur', { composed: true }));
-      }
-      this.dispatchEvent(new Event('focusin', { bubbles: true, composed: true }));
-      this.dispatchEvent(new Event('focus', { composed: true }));
+      if (this.__vixenNodeId > 0) unwrapDomOp(op_vixen_dom_set_focused_element(this.__vixenNodeId));
+      if (old) old.dispatchEvent(new FocusEvent('focusout', { bubbles: true, composed: true, relatedTarget: this }));
+      this.dispatchEvent(new FocusEvent('focusin', { bubbles: true, composed: true, relatedTarget: old }));
+      if (old) old.dispatchEvent(new FocusEvent('blur', { composed: true, relatedTarget: this }));
+      this.dispatchEvent(new FocusEvent('focus', { composed: true, relatedTarget: old }));
     }
     blur() {
       if (activeElementNodeId !== this.__vixenNodeId) return;
       activeElementNodeId = null;
-      this.dispatchEvent(new Event('focusout', { bubbles: true, composed: true }));
-      this.dispatchEvent(new Event('blur', { composed: true }));
+      unwrapDomOp(op_vixen_dom_set_focused_element(0));
+      this.dispatchEvent(new FocusEvent('focusout', { bubbles: true, composed: true, relatedTarget: null }));
+      this.dispatchEvent(new FocusEvent('blur', { composed: true, relatedTarget: null }));
     }
     scrollIntoView() {}
+    attachShadow(init = {}) { return attachShadowRoot(this, init); }
+    assignedNodes(_options = {}) { return new VixenNodeList([]); }
+    assignedElements(_options = {}) { return new VixenHTMLCollection([]); }
     submit() { if (elementTag(this) === 'form') queueFormSubmission(this, null); }
     requestSubmit(submitter = undefined) { if (elementTag(this) === 'form') submitFormDefault(this, submitter && typeof submitter.__vixenNodeId === 'number' ? submitter : null); }
     reset() { if (elementTag(this) === 'form') resetFormDefault(this); }
@@ -3841,25 +4233,30 @@ const DOM_API_BOOTSTRAP: &str = r#"
     'scrollWidth', 'scrollHeight', 'scrollTop', 'scrollLeft', 'offsetWidth', 'offsetHeight', 'offsetTop', 'offsetLeft', 'offsetParent',
     'textContent', 'innerText', 'text',
     'innerHTML', 'outerHTML', 'attributes', 'classList', 'relList', 'sandbox', 'dataset', 'style', 'sheet',
-    'hidden', 'title', 'lang', 'dir', 'type', 'name', 'content', 'httpEquiv', 'charset', 'method', 'enctype', 'encoding', 'action',
+    'hidden', 'tabIndex', 'accessKey', 'accessKeyLabel', 'draggable', 'spellcheck', 'translate', 'inputMode', 'enterKeyHint', 'popover',
+    'title', 'lang', 'dir', 'type', 'name', 'content', 'httpEquiv', 'charset', 'method', 'enctype', 'encoding', 'action',
+    'accept', 'acceptCharset', 'noValidate', 'formAction', 'formEnctype', 'formMethod', 'formNoValidate', 'formTarget',
     'cite', 'dateTime', 'reversed', 'start',
     'href', 'origin', 'protocol', 'host', 'hostname', 'port', 'pathname', 'search', 'hash', 'target', 'download', 'rel', 'hreflang', 'coords', 'shape',
-    'src', 'srcset', 'sizes', 'media', 'as', 'async', 'defer', 'noModule', 'srcdoc', 'allow', 'data', 'span', 'colSpan', 'rowSpan', 'headers', 'scope', 'abbr',
+    'src', 'srcset', 'sizes', 'media', 'as', 'async', 'defer', 'noModule', 'kind', 'srclang', 'default', 'track', 'textTracks', 'srcdoc', 'allow', 'data', 'span', 'colSpan', 'rowSpan', 'headers', 'scope', 'abbr',
     'contentDocument', 'contentWindow',
     'currentSrc', 'alt', 'crossOrigin', 'useMap', 'isMap', 'width', 'height', 'naturalWidth', 'naturalHeight', 'complete', 'loading', 'decoding', 'decode',
     'autoplay', 'loop', 'controls', 'muted', 'defaultMuted', 'preload', 'networkState', 'readyState', 'currentTime', 'duration', 'paused', 'ended', 'volume',
     'videoWidth', 'videoHeight', 'poster', 'playsInline', 'load', 'play', 'pause', 'canPlayType',
+    'getContext', 'toDataURL', 'toBlob', 'transferControlToOffscreen',
     'open', 'returnValue', 'show', 'showModal', 'close', 'requestClose',
     'disabled', 'readOnly', 'required', 'multiple',
-    'placeholder', 'autocomplete', 'min', 'max', 'low', 'high', 'optimum', 'position', 'htmlFor', 'control', 'labels', 'contentEditable', 'isContentEditable',
+    'placeholder', 'autocomplete', 'min', 'max', 'maxLength', 'minLength', 'pattern', 'step', 'cols', 'rows', 'wrap', 'low', 'high', 'optimum', 'position',
+    'caption', 'tHead', 'tFoot', 'tBodies', 'cells', 'rowIndex', 'sectionRowIndex', 'cellIndex',
+    'htmlFor', 'control', 'labels', 'contentEditable', 'isContentEditable',
     'options', 'selectedOptions', 'selectedIndex', 'length', 'size', 'label', 'defaultSelected', 'selected', 'index',
-    'files', 'value', 'willValidate', 'validity', 'checkValidity', 'reportValidity', 'setCustomValidity',
-    'defaultValue', 'defaultChecked', 'selectionStart', 'selectionEnd', 'setSelectionRange', 'select', 'checked',
+    'files', 'value', 'valueAsNumber', 'valueAsDate', 'textLength', 'indeterminate', 'willValidate', 'validity', 'validationMessage', 'checkValidity', 'reportValidity', 'setCustomValidity',
+    'defaultValue', 'defaultChecked', 'selectionStart', 'selectionEnd', 'setSelectionRange', 'setRangeText', 'select', 'stepUp', 'stepDown', 'showPicker', 'checked',
     'getAttribute', 'hasAttribute', 'setAttribute', 'removeAttribute', 'toggleAttribute',
     'getAttributeNames', 'hasAttributes', 'matches', 'closest', 'appendChild', 'removeChild',
     'insertBefore', 'replaceChildren', 'append', 'prepend', 'click', 'focus', 'blur',
     'submit', 'requestSubmit', 'reset',
-    'scrollIntoView',
+    'scrollIntoView', 'attachShadow', 'assignedNodes', 'assignedElements',
     'querySelector', 'querySelectorAll', 'getElementsByTagName', 'getElementsByClassName',
     'getBoundingClientRect', 'getClientRects', 'getBoxQuads',
   ];
@@ -3904,6 +4301,187 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   installScriptElementSupports();
+
+  class VixenTextMetrics {
+    constructor(width = 0) {
+      defineWritableValue(this, 'width', Number(width) || 0);
+      defineWritableValue(this, 'actualBoundingBoxLeft', 0);
+      defineWritableValue(this, 'actualBoundingBoxRight', Number(width) || 0);
+      defineWritableValue(this, 'fontBoundingBoxAscent', 10);
+      defineWritableValue(this, 'fontBoundingBoxDescent', 2);
+      defineWritableValue(this, 'actualBoundingBoxAscent', 10);
+      defineWritableValue(this, 'actualBoundingBoxDescent', 2);
+    }
+  }
+
+  class VixenCanvasGradient {
+    addColorStop(_offset, _color) {}
+  }
+
+  class VixenCanvasPattern {
+    setTransform(_transform = undefined) {}
+  }
+
+  class VixenImageData {
+    constructor(width, height = undefined) {
+      const dataLike = ArrayBuffer.isView(width) ? width : null;
+      const w = dataLike ? Math.max(0, Math.trunc(Number(height) || 0)) : Math.max(0, Math.trunc(Number(width) || 0));
+      const h = dataLike ? Math.max(0, Math.trunc(arguments.length > 2 ? Number(arguments[2]) || 0 : 0)) : Math.max(0, Math.trunc(Number(height) || 0));
+      defineWritableValue(this, 'width', w);
+      defineWritableValue(this, 'height', h);
+      defineWritableValue(this, 'data', dataLike ? new Uint8ClampedArray(dataLike) : new Uint8ClampedArray(w * h * 4));
+      defineWritableValue(this, 'colorSpace', 'srgb');
+    }
+  }
+
+  class VixenImageBitmap {
+    constructor(width = 0, height = 0) {
+      defineWritableValue(this, 'width', Math.max(0, Math.trunc(Number(width) || 0)));
+      defineWritableValue(this, 'height', Math.max(0, Math.trunc(Number(height) || 0)));
+    }
+    close() { this.width = 0; this.height = 0; }
+  }
+
+  class VixenPath2D {
+    constructor(_path = undefined) {}
+    addPath(_path, _transform = undefined) {}
+    closePath() {}
+    moveTo(_x, _y) {}
+    lineTo(_x, _y) {}
+    bezierCurveTo(_cp1x, _cp1y, _cp2x, _cp2y, _x, _y) {}
+    quadraticCurveTo(_cpx, _cpy, _x, _y) {}
+    arc(_x, _y, _radius, _startAngle, _endAngle, _counterclockwise = false) {}
+    rect(_x, _y, _w, _h) {}
+  }
+
+  class VixenCanvasRenderingContext2D {
+    constructor(canvas) {
+      defineWritableValue(this, 'canvas', canvas, false);
+      defineWritableValue(this, 'globalAlpha', 1);
+      defineWritableValue(this, 'globalCompositeOperation', 'source-over');
+      defineWritableValue(this, 'fillStyle', '#000000');
+      defineWritableValue(this, 'strokeStyle', '#000000');
+      defineWritableValue(this, 'lineWidth', 1);
+      defineWritableValue(this, 'font', '10px sans-serif');
+      defineWritableValue(this, 'textAlign', 'start');
+      defineWritableValue(this, 'textBaseline', 'alphabetic');
+    }
+    save() {}
+    restore() {}
+    scale(_x, _y) {}
+    rotate(_angle) {}
+    translate(_x, _y) {}
+    transform(_a, _b, _c, _d, _e, _f) {}
+    setTransform(_a = 1, _b = 0, _c = 0, _d = 1, _e = 0, _f = 0) {}
+    resetTransform() {}
+    clearRect(_x, _y, _w, _h) {}
+    fillRect(_x, _y, _w, _h) {}
+    strokeRect(_x, _y, _w, _h) {}
+    beginPath() {}
+    closePath() {}
+    moveTo(_x, _y) {}
+    lineTo(_x, _y) {}
+    bezierCurveTo(_cp1x, _cp1y, _cp2x, _cp2y, _x, _y) {}
+    quadraticCurveTo(_cpx, _cpy, _x, _y) {}
+    arc(_x, _y, _radius, _startAngle, _endAngle, _counterclockwise = false) {}
+    rect(_x, _y, _w, _h) {}
+    fill() {}
+    stroke() {}
+    clip() {}
+    drawImage(_image, _dx, _dy) {}
+    fillText(_text, _x, _y) {}
+    strokeText(_text, _x, _y) {}
+    measureText(text = '') { return new VixenTextMetrics(String(text).length * 10); }
+    getImageData(_sx, _sy, sw, sh) { return this.createImageData(sw, sh); }
+    putImageData(_imageData, _dx, _dy) {}
+    createImageData(width, height) {
+      return new VixenImageData(width, height);
+    }
+    createLinearGradient(_x0, _y0, _x1, _y1) { return new VixenCanvasGradient(); }
+    createRadialGradient(_x0, _y0, _r0, _x1, _y1, _r1) { return new VixenCanvasGradient(); }
+    createPattern(_image, _repetition = '') { return new VixenCanvasPattern(); }
+  }
+
+  class VixenOffscreenCanvasRenderingContext2D {
+    constructor(canvas) { defineWritableValue(this, 'canvas', canvas, false); }
+    commit() {}
+  }
+
+  class VixenOffscreenCanvas {
+    constructor(width, height) {
+      defineWritableValue(this, 'width', Math.max(0, Math.trunc(Number(width) || 0)));
+      defineWritableValue(this, 'height', Math.max(0, Math.trunc(Number(height) || 0)));
+    }
+    getContext(contextId = '') {
+      return String(contextId).toLowerCase() === '2d'
+        ? cachedElementObject(this, '__vixenOffscreen2d', () => new VixenOffscreenCanvasRenderingContext2D(this))
+        : null;
+    }
+    convertToBlob(options = {}) {
+      const type = options && options.type ? String(options.type) : 'image/png';
+      return Promise.resolve(new Blob([], { type }));
+    }
+    transferToImageBitmap() { return new VixenImageBitmap(this.width, this.height); }
+  }
+
+  class VixenImageBitmapRenderingContext {
+    constructor(canvas = null) { defineWritableValue(this, 'canvas', canvas, false); }
+    transferFromImageBitmap(_bitmap) {}
+  }
+
+  webidl.adoptInterface('CanvasRenderingContext2D', VixenCanvasRenderingContext2D);
+  webidl.adoptInterface('TextMetrics', VixenTextMetrics);
+  webidl.adoptInterface('CanvasGradient', VixenCanvasGradient);
+  webidl.adoptInterface('CanvasPattern', VixenCanvasPattern);
+  webidl.adoptInterface('ImageData', VixenImageData);
+  webidl.adoptInterface('ImageBitmap', VixenImageBitmap);
+  webidl.adoptInterface('Path2D', VixenPath2D);
+  webidl.adoptInterface('OffscreenCanvas', VixenOffscreenCanvas);
+  webidl.adoptInterface('OffscreenCanvasRenderingContext2D', VixenOffscreenCanvasRenderingContext2D);
+  webidl.adoptInterface('ImageBitmapRenderingContext', VixenImageBitmapRenderingContext);
+
+  class VixenTextTrack {
+    constructor(kind = 'subtitles', label = '', language = '', id = '') {
+      defineWritableValue(this, 'kind', String(kind || 'subtitles'));
+      defineWritableValue(this, 'label', String(label || ''));
+      defineWritableValue(this, 'language', String(language || ''));
+      defineWritableValue(this, 'id', String(id || ''));
+      defineWritableValue(this, 'mode', 'disabled');
+      defineWritableValue(this, 'cues', null);
+      defineWritableValue(this, 'activeCues', null);
+    }
+    addCue(_cue) {}
+    removeCue(_cue) {}
+  }
+
+  class VixenTextTrackList {
+    constructor(tracks) {
+      Object.defineProperty(this, '__vixenTracks', { value: Object.freeze(tracks.slice()), enumerable: false });
+      defineIndexedValues(this, this.__vixenTracks);
+    }
+    get length() { return this.__vixenTracks.length; }
+    item(index) {
+      const n = Number(index);
+      return Number.isInteger(n) && n >= 0 && n < this.__vixenTracks.length ? this.__vixenTracks[n] : null;
+    }
+    getTrackById(id) {
+      const value = String(id);
+      return this.__vixenTracks.find((track) => track.id === value) || null;
+    }
+    [Symbol.iterator]() { return this.__vixenTracks[Symbol.iterator](); }
+  }
+
+  class VixenTextTrackCue {}
+  class VixenTimeRanges {
+    get length() { return 0; }
+    start(_index) { throw new TypeError('TimeRanges is empty'); }
+    end(_index) { throw new TypeError('TimeRanges is empty'); }
+  }
+
+  webidl.adoptInterface('TextTrack', VixenTextTrack);
+  webidl.adoptInterface('TextTrackList', VixenTextTrackList);
+  webidl.adoptInterface('TextTrackCue', VixenTextTrackCue);
+  webidl.adoptInterface('TimeRanges', VixenTimeRanges);
 
   class VixenFormData {
     constructor(form = undefined) {
@@ -3964,90 +4542,379 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   webidl.adoptInterface('FormData', VixenFormData);
 
-  class VixenRange {
-    constructor() {
-      defineWritableValue(this, 'startContainer', vixenDocument);
-      defineWritableValue(this, 'endContainer', vixenDocument);
-      defineWritableValue(this, 'startOffset', 0);
-      defineWritableValue(this, 'endOffset', 0);
-      defineWritableValue(this, 'commonAncestorContainer', vixenDocument);
-      defineWritableValue(this, '__vixenGeometryNode', null, false);
+  class VixenXMLSerializer {
+    serializeToString(node) {
+      if (!node) return '';
+      if (node.nodeType === 3) return escapeTextForHtml(node.textContent || '');
+      if (node.nodeType === 11) return String(node.innerHTML || '');
+      if (node === vixenDocument) return vixenDocument.documentElement ? vixenDocument.documentElement.outerHTML : '';
+      if (typeof node.outerHTML === 'string') return node.outerHTML;
+      return String(node.textContent || '');
     }
-    get collapsed() { return this.startContainer === this.endContainer && this.startOffset === this.endOffset; }
-    setStart(node, offset) { this.startContainer = node; this.startOffset = Number(offset) || 0; this.__vixenGeometryNode = null; }
-    setEnd(node, offset) { this.endContainer = node; this.endOffset = Number(offset) || 0; this.__vixenGeometryNode = null; }
-    collapse(toStart = false) {
-      if (toStart) {
-        this.endContainer = this.startContainer;
-        this.endOffset = this.startOffset;
-      } else {
-        this.startContainer = this.endContainer;
-        this.startOffset = this.endOffset;
+  }
+
+  webidl.adoptInterface('XMLSerializer', VixenXMLSerializer);
+
+  function rangeNodeLength(node) {
+    if (node === vixenDocument) return node.childNodes.length;
+    if (node && node.nodeType === 3) return node.length;
+    if (node && node.childNodes) return node.childNodes.length;
+    throw new TypeError('Range boundary must be a document, element, or text node');
+  }
+
+  function checkedRangeOffset(node, offset) {
+    const number = Number(offset);
+    if (!Number.isInteger(number) || number < 0 || number > rangeNodeLength(node)) {
+      throw new TypeError('Range boundary offset is outside the node');
+    }
+    return number;
+  }
+
+  function rangeDocumentOrder() {
+    const nodes = [vixenDocument];
+    function visit(node) {
+      if (!node) return;
+      nodes.push(node);
+      if (node.nodeType !== 3 && node.childNodes) {
+        for (const child of node.childNodes) visit(child);
       }
     }
+    visit(vixenDocument.documentElement);
+    return nodes;
+  }
+
+  function compareRangeBoundaries(aNode, aOffset, bNode, bOffset) {
+    if (aNode === bNode) return aOffset < bOffset ? -1 : (aOffset > bOffset ? 1 : 0);
+    const nodes = rangeDocumentOrder();
+    const a = nodes.indexOf(aNode);
+    const b = nodes.indexOf(bNode);
+    if (a === -1 || b === -1) throw new TypeError('Range boundary is not in this document');
+    return a < b ? -1 : 1;
+  }
+
+  function commonRangeAncestor(a, b) {
+    const ancestors = new Set();
+    for (let node = a; node; node = node.parentNode) ancestors.add(node);
+    for (let node = b; node; node = node.parentNode) if (ancestors.has(node)) return node;
+    return vixenDocument;
+  }
+
+  function rangeNodeId(node) {
+    if (node === vixenDocument) return 0;
+    return node && Number.isInteger(node.__vixenNodeId) && node.__vixenNodeId > 0
+      ? node.__vixenNodeId
+      : null;
+  }
+
+  function nodeFromRangeNodeId(nodeId) {
+    return Number(nodeId) === 0 ? vixenDocument : wrapElementByNodeId(Number(nodeId));
+  }
+
+  class VixenRange {
+    constructor() {
+      this.__vixenStartContainer = vixenDocument;
+      this.__vixenEndContainer = vixenDocument;
+      this.__vixenStartOffset = 0;
+      this.__vixenEndOffset = 0;
+      this.__vixenGeometryNode = null;
+      this.__vixenSelectionOwner = null;
+    }
+    get startContainer() { return this.__vixenStartContainer; }
+    get endContainer() { return this.__vixenEndContainer; }
+    get startOffset() { return this.__vixenStartOffset; }
+    get endOffset() { return this.__vixenEndOffset; }
+    get commonAncestorContainer() { return commonRangeAncestor(this.startContainer, this.endContainer); }
+    get collapsed() { return this.startContainer === this.endContainer && this.startOffset === this.endOffset; }
+    __vixenChanged() {
+      this.__vixenGeometryNode = null;
+      if (this.__vixenSelectionOwner) this.__vixenSelectionOwner.__vixenRangeChanged(this);
+    }
+    __vixenSet(startNode, startOffset, endNode, endOffset, notify = true) {
+      this.__vixenStartContainer = startNode;
+      this.__vixenStartOffset = checkedRangeOffset(startNode, startOffset);
+      this.__vixenEndContainer = endNode;
+      this.__vixenEndOffset = checkedRangeOffset(endNode, endOffset);
+      if (notify) this.__vixenChanged();
+    }
+    setStart(node, offset) {
+      const checked = checkedRangeOffset(node, offset);
+      if (compareRangeBoundaries(node, checked, this.endContainer, this.endOffset) > 0) {
+        this.__vixenSet(node, checked, node, checked);
+      } else {
+        this.__vixenSet(node, checked, this.endContainer, this.endOffset);
+      }
+    }
+    setEnd(node, offset) {
+      const checked = checkedRangeOffset(node, offset);
+      if (compareRangeBoundaries(node, checked, this.startContainer, this.startOffset) < 0) {
+        this.__vixenSet(node, checked, node, checked);
+      } else {
+        this.__vixenSet(this.startContainer, this.startOffset, node, checked);
+      }
+    }
+    collapse(toStart = false) {
+      const node = toStart ? this.startContainer : this.endContainer;
+      const offset = toStart ? this.startOffset : this.endOffset;
+      this.__vixenSet(node, offset, node, offset);
+    }
     selectNode(node) {
-      this.startContainer = node.parentNode || vixenDocument;
-      this.endContainer = this.startContainer;
-      this.startOffset = 0;
-      this.endOffset = 1;
-      this.commonAncestorContainer = this.startContainer;
+      const parent = node && node.parentNode;
+      if (!parent || !parent.childNodes) throw new TypeError('Range node has no parent');
+      const siblings = Array.from(parent.childNodes);
+      const index = siblings.indexOf(node);
+      if (index === -1) throw new TypeError('Range node is not attached to its parent');
+      this.__vixenSet(parent, index, parent, index + 1);
       this.__vixenGeometryNode = nodeGeometryElement(node);
     }
     selectNodeContents(node) {
-      this.startContainer = node;
-      this.endContainer = node;
-      this.startOffset = 0;
-      this.endOffset = node.childNodes ? node.childNodes.length : 0;
-      this.commonAncestorContainer = node;
+      this.__vixenSet(node, 0, node, rangeNodeLength(node));
       this.__vixenGeometryNode = nodeGeometryElement(node);
     }
     cloneRange() {
       const range = new VixenRange();
-      range.startContainer = this.startContainer;
-      range.endContainer = this.endContainer;
-      range.startOffset = this.startOffset;
-      range.endOffset = this.endOffset;
-      range.commonAncestorContainer = this.commonAncestorContainer;
+      range.__vixenSet(this.startContainer, this.startOffset, this.endContainer, this.endOffset, false);
       range.__vixenGeometryNode = this.__vixenGeometryNode;
       return range;
     }
     detach() {}
-    deleteContents() {}
-    extractContents() { return null; }
-    cloneContents() { return null; }
-    insertNode() {}
-    surroundContents() {}
-    isPointInRange() { return false; }
-    comparePoint() { return 0; }
-    intersectsNode() { return false; }
+    deleteContents() {
+      if (this.collapsed) return;
+      if (this.startContainer === this.endContainer && this.startContainer.nodeType === 3) {
+        const node = this.startContainer;
+        node.data = node.data.slice(0, this.startOffset) + node.data.slice(this.endOffset);
+        this.__vixenSet(node, this.startOffset, node, this.startOffset);
+        return;
+      }
+      if (this.startContainer !== this.endContainer || this.startContainer.nodeType !== 1) {
+        throw new TypeError('Cross-container Range deletion is not supported');
+      }
+      const parent = this.startContainer;
+      const children = Array.from(parent.childNodes).slice(this.startOffset, this.endOffset);
+      for (let index = children.length - 1; index >= 0; index--) parent.removeChild(children[index]);
+      this.__vixenSet(parent, this.startOffset, parent, this.startOffset);
+    }
+    cloneContents() {
+      const fragment = vixenDocument.createDocumentFragment();
+      if (this.collapsed) return fragment;
+      if (this.startContainer === this.endContainer && this.startContainer.nodeType === 3) {
+        fragment.textContent = this.startContainer.data.slice(this.startOffset, this.endOffset);
+        fragment.innerHTML = escapeTextForHtml(fragment.textContent);
+        return fragment;
+      }
+      if (this.startContainer !== this.endContainer || this.startContainer.nodeType !== 1) {
+        throw new TypeError('Cross-container Range cloning is not supported');
+      }
+      const children = Array.from(this.startContainer.childNodes).slice(this.startOffset, this.endOffset);
+      fragment.innerHTML = children.map(serializeNodeObject).join('');
+      fragment.textContent = children.map(textContentOfNode).join('');
+      return fragment;
+    }
+    extractContents() {
+      const fragment = this.cloneContents();
+      this.deleteContents();
+      return fragment;
+    }
+    insertNode(node) {
+      if (this.startContainer.nodeType !== 1) throw new TypeError('Range insertion currently requires an element boundary');
+      const before = this.startContainer.childNodes.item(this.startOffset);
+      this.startContainer.insertBefore(node, before);
+      this.__vixenChanged();
+    }
+    surroundContents(newParent) {
+      if (!newParent || newParent.nodeType !== 1) throw new TypeError('Range surround parent must be an element');
+      const fragment = this.cloneContents();
+      this.deleteContents();
+      newParent.innerHTML = fragment.innerHTML;
+      this.insertNode(newParent);
+      this.selectNode(newParent);
+    }
+    isPointInRange(node, offset) {
+      const checked = checkedRangeOffset(node, offset);
+      return compareRangeBoundaries(node, checked, this.startContainer, this.startOffset) >= 0
+        && compareRangeBoundaries(node, checked, this.endContainer, this.endOffset) <= 0;
+    }
+    comparePoint(node, offset) {
+      const checked = checkedRangeOffset(node, offset);
+      if (compareRangeBoundaries(node, checked, this.startContainer, this.startOffset) < 0) return -1;
+      if (compareRangeBoundaries(node, checked, this.endContainer, this.endOffset) > 0) return 1;
+      return 0;
+    }
+    intersectsNode(node) {
+      const parent = node && node.parentNode;
+      if (!parent || !parent.childNodes) return false;
+      const index = Array.from(parent.childNodes).indexOf(node);
+      if (index === -1) return false;
+      return compareRangeBoundaries(parent, index + 1, this.startContainer, this.startOffset) > 0
+        && compareRangeBoundaries(parent, index, this.endContainer, this.endOffset) < 0;
+    }
     getBoundingClientRect() { return new VixenDOMRectReadOnly(rangeGeometryRect(this)); }
     getClientRects() { return makeDOMRectList(rangeGeometryRect(this)); }
-    toString() { return ''; }
+    toString() {
+      if (this.collapsed) return '';
+      if (this.startContainer === this.endContainer && this.startContainer.nodeType === 3) {
+        return this.startContainer.data.slice(this.startOffset, this.endOffset);
+      }
+      if (this.startContainer === this.endContainer && this.startContainer.childNodes) {
+        return Array.from(this.startContainer.childNodes)
+          .slice(this.startOffset, this.endOffset)
+          .map(textContentOfNode)
+          .join('');
+      }
+      return '';
+    }
   }
 
   class VixenSelection {
-    get anchorNode() { return null; }
-    get anchorOffset() { return 0; }
-    get focusNode() { return null; }
-    get focusOffset() { return 0; }
-    get isCollapsed() { return true; }
-    get rangeCount() { return 0; }
-    get type() { return 'None'; }
-    get direction() { return 'none'; }
-    getRangeAt() { throw new TypeError('Selection has no ranges'); }
-    addRange() {}
-    removeRange() {}
-    removeAllRanges() {}
-    empty() {}
-    collapse() {}
-    setPosition() {}
-    collapseToStart() {}
-    collapseToEnd() {}
-    extend() {}
-    selectAllChildren() {}
-    deleteFromDocument() {}
-    containsNode() { return false; }
-    toString() { return ''; }
+    constructor() {
+      this.__vixenRanges = [];
+      this.__vixenAnchorNode = null;
+      this.__vixenAnchorOffset = 0;
+      this.__vixenFocusNode = null;
+      this.__vixenFocusOffset = 0;
+    }
+    get anchorNode() { return this.__vixenAnchorNode; }
+    get anchorOffset() { return this.__vixenAnchorOffset; }
+    get focusNode() { return this.__vixenFocusNode; }
+    get focusOffset() { return this.__vixenFocusOffset; }
+    get isCollapsed() { return this.rangeCount === 0 || this.__vixenRanges.every((range) => range.collapsed); }
+    get rangeCount() { return this.__vixenRanges.length; }
+    get type() { return this.rangeCount === 0 ? 'None' : (this.isCollapsed ? 'Caret' : 'Range'); }
+    get direction() {
+      if (this.rangeCount === 0 || this.isCollapsed) return 'none';
+      return compareRangeBoundaries(this.anchorNode, this.anchorOffset, this.focusNode, this.focusOffset) <= 0
+        ? 'forward'
+        : 'backward';
+    }
+    __vixenRestore(snapshot) {
+      if (!snapshot) return;
+      const anchor = nodeFromRangeNodeId(snapshot.anchorNodeId);
+      const focus = nodeFromRangeNodeId(snapshot.focusNodeId);
+      if (!anchor || !focus) return;
+      const range = new VixenRange();
+      if (compareRangeBoundaries(anchor, snapshot.anchorOffset, focus, snapshot.focusOffset) <= 0) {
+        range.__vixenSet(anchor, snapshot.anchorOffset, focus, snapshot.focusOffset, false);
+      } else {
+        range.__vixenSet(focus, snapshot.focusOffset, anchor, snapshot.anchorOffset, false);
+      }
+      range.__vixenSelectionOwner = this;
+      this.__vixenRanges = [range];
+      this.__vixenAnchorNode = anchor;
+      this.__vixenAnchorOffset = snapshot.anchorOffset;
+      this.__vixenFocusNode = focus;
+      this.__vixenFocusOffset = snapshot.focusOffset;
+    }
+    __vixenCommit() {
+      if (this.rangeCount === 0) {
+        unwrapDomOp(op_vixen_dom_set_selection(null));
+      } else {
+        const anchorNodeId = rangeNodeId(this.anchorNode);
+        const focusNodeId = rangeNodeId(this.focusNode);
+        if (anchorNodeId !== null && focusNodeId !== null) {
+          unwrapDomOp(op_vixen_dom_set_selection({
+            anchorNodeId,
+            anchorOffset: this.anchorOffset,
+            focusNodeId,
+            focusOffset: this.focusOffset,
+          }));
+        }
+      }
+      if (typeof vixenDocument.dispatchEvent === 'function') vixenDocument.dispatchEvent(new Event('selectionchange'));
+    }
+    __vixenRangeChanged(range) {
+      this.__vixenAnchorNode = range.startContainer;
+      this.__vixenAnchorOffset = range.startOffset;
+      this.__vixenFocusNode = range.endContainer;
+      this.__vixenFocusOffset = range.endOffset;
+      this.__vixenCommit();
+    }
+    getRangeAt(index) {
+      const number = Number(index);
+      if (!Number.isInteger(number) || number < 0 || number >= this.rangeCount) throw new TypeError('Selection range index is out of bounds');
+      return this.__vixenRanges[number];
+    }
+    addRange(range) {
+      if (!range || typeof range.cloneRange !== 'function') throw new TypeError('Selection.addRange requires a Range');
+      for (const current of this.__vixenRanges) current.__vixenSelectionOwner = null;
+      range.__vixenSelectionOwner = this;
+      this.__vixenRanges = [range];
+      this.__vixenAnchorNode = range.startContainer;
+      this.__vixenAnchorOffset = range.startOffset;
+      this.__vixenFocusNode = range.endContainer;
+      this.__vixenFocusOffset = range.endOffset;
+      this.__vixenCommit();
+    }
+    removeRange(range) {
+      if (!this.__vixenRanges.includes(range)) throw new TypeError('Selection does not contain this Range');
+      this.removeAllRanges();
+    }
+    removeAllRanges() {
+      for (const range of this.__vixenRanges) range.__vixenSelectionOwner = null;
+      this.__vixenRanges = [];
+      this.__vixenAnchorNode = null;
+      this.__vixenAnchorOffset = 0;
+      this.__vixenFocusNode = null;
+      this.__vixenFocusOffset = 0;
+      this.__vixenCommit();
+    }
+    empty() { this.removeAllRanges(); }
+    collapse(node, offset = 0) {
+      if (node === null) { this.removeAllRanges(); return; }
+      const checked = checkedRangeOffset(node, offset);
+      const range = new VixenRange();
+      range.__vixenSet(node, checked, node, checked, false);
+      this.addRange(range);
+    }
+    setPosition(node, offset = 0) { this.collapse(node, offset); }
+    collapseToStart() {
+      if (this.rangeCount === 0) throw new TypeError('Selection has no ranges');
+      const range = this.getRangeAt(0);
+      this.collapse(range.startContainer, range.startOffset);
+    }
+    collapseToEnd() {
+      if (this.rangeCount === 0) throw new TypeError('Selection has no ranges');
+      const range = this.getRangeAt(this.rangeCount - 1);
+      this.collapse(range.endContainer, range.endOffset);
+    }
+    extend(node, offset = 0) {
+      if (this.rangeCount === 0) throw new TypeError('Selection has no ranges');
+      const checked = checkedRangeOffset(node, offset);
+      const range = new VixenRange();
+      if (compareRangeBoundaries(this.anchorNode, this.anchorOffset, node, checked) <= 0) {
+        range.__vixenSet(this.anchorNode, this.anchorOffset, node, checked, false);
+      } else {
+        range.__vixenSet(node, checked, this.anchorNode, this.anchorOffset, false);
+      }
+      range.__vixenSelectionOwner = this;
+      this.__vixenRanges = [range];
+      this.__vixenFocusNode = node;
+      this.__vixenFocusOffset = checked;
+      this.__vixenCommit();
+    }
+    selectAllChildren(node) {
+      const range = new VixenRange();
+      range.selectNodeContents(node);
+      this.addRange(range);
+    }
+    deleteFromDocument() {
+      if (this.rangeCount === 0) return;
+      const range = this.getRangeAt(0);
+      range.deleteContents();
+      this.__vixenAnchorNode = range.startContainer;
+      this.__vixenAnchorOffset = range.startOffset;
+      this.__vixenFocusNode = range.endContainer;
+      this.__vixenFocusOffset = range.endOffset;
+      this.__vixenCommit();
+    }
+    containsNode(node, allowPartialContainment = false) {
+      if (this.rangeCount === 0) return false;
+      const range = this.getRangeAt(0);
+      if (allowPartialContainment) return range.intersectsNode(node);
+      const parent = node && node.parentNode;
+      if (!parent || !parent.childNodes) return false;
+      const index = Array.from(parent.childNodes).indexOf(node);
+      return index !== -1 && range.isPointInRange(parent, index) && range.isPointInRange(parent, index + 1);
+    }
+    toString() { return this.__vixenRanges.map((range) => range.toString()).join(''); }
   }
 
   webidl.adoptInterface('Range', VixenRange);
@@ -4271,7 +5138,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get documentElement() { return wrapElementByNodeId(data.documentElementNodeId); }
     get head() { return wrapElementByNodeId(data.headNodeId); }
     get body() { return wrapElementByNodeId(data.bodyNodeId); }
-    get activeElement() { return wrapElementByNodeId(activeElementNodeId); }
+    get activeElement() { return wrapElementByNodeId(activeElementNodeId) || this.body; }
     get scrollingElement() { return wrapElementByNodeId(data.scrollingElementNodeId); }
     get forms() { return new VixenHTMLCollection(data.collections.forms); }
     get images() { return new VixenHTMLCollection(data.collections.images); }
@@ -4324,7 +5191,9 @@ const DOM_API_BOOTSTRAP: &str = r#"
       };
       return makeElementObject(record);
     }
+    createElementNS(_namespace, qualifiedName) { return this.createElement(String(qualifiedName).split(':').pop()); }
     createTextNode(data) { return new VixenText(String(data)); }
+    createDocumentFragment() { return new VixenDocumentFragment(); }
     createRange() { return new VixenRange(); }
     getSelection() { return vixenSelection; }
     open() {
@@ -4356,6 +5225,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   const vixenDocument = new VixenDocument();
   const vixenSelection = new VixenSelection();
+  vixenSelection.__vixenRestore(data.selection);
   if (typeof globalThis.window === 'undefined') {
     Object.defineProperty(globalThis, 'window', {
       value: globalThis,

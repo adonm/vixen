@@ -8,19 +8,20 @@ feature.
 
 ---
 
-## Current measured local fixture baseline
+## Current measured committed fixture baseline
 
-As of 2026-07-09, `fixtures/manifest.json` contains 59 local fixtures plus
+As of 2026-07-10, `fixtures/manifest.json` contains 70 local fixtures plus
 199 imported smoke fixtures:
 
 | Category | Fixtures |
 |----------|---------:|
 | css      | 17 |
 | css-cascade/css-values | 50 |
-| dom      | 16 |
+| dom      | 25 |
 | dom-core | 50 |
+| events | 1 |
 | flexbox | 5 |
-| forms    | 27 |
+| forms    | 28 |
 | grid | 5 |
 | layout   | 9 |
 | layout block/inline/position | 6 |
@@ -29,24 +30,24 @@ As of 2026-07-09, `fixtures/manifest.json` contains 59 local fixtures plus
 | paint/ref-equivalent | 8 |
 | security | 9 |
 | selectors | 50 |
-| **Total** | **258** |
+| **Total** | **269** |
 
-Total manifest checks: **1924**.
+Total manifest checks: **2015**.
 
 Current check mix:
 
 | Check type | Count |
 |------------|------:|
-| `selector-count` | 381 |
+| `selector-count` | 398 |
 | `selectors-exact` | 223 |
-| `title` | 257 |
-| `js-eval` | 526 |
+| `title` | 268 |
+| `js-eval` | 587 |
 | `computed-style` | 170 |
 | `element-attribute` | 132 |
 | `layout-box` | 104 |
-| `body-contains` | 67 |
+| `body-contains` | 68 |
 | `visual-hash` | 25 |
-| `no-critical-diagnostics` | 20 |
+| `no-critical-diagnostics` | 21 |
 | `ref-equivalent` | 11 |
 | `display-list-contains` | 3 |
 | `dom-nodes-range` | 1 |
@@ -59,10 +60,13 @@ flex row/column, grid, overflow coordinate/paint, and fragment-backed text paint
 fixtures with `layout-box` and `display-list-contains` assertions. The paint
 category includes three local `ref-equivalent` smoke fixtures against the stable
 display-list render projection. The harness now reports overall, per-category,
-and local/imported pass rates; Page-backed fixture `js-eval` checks now exercise
-the `deno_core` runtime host first and fall back to the legacy Page projection
-only for unsupported expressions. Imported upstream WPT layout/paint coverage is
-still tracked separately below. Imported selector smoke has reached the
+and local/imported source×category pass rates. Its adapter now creates production
+BrowserCore contexts, so fixture snapshots/selectors/styles/evaluation/reference
+rendering/pixel capture share typed document/runtime generations and persistent
+per-context V8 realms rather than constructing harness-owned Pages or runtimes.
+Imported upstream WPT
+layout/paint coverage is still tracked separately below. Imported selector smoke
+has reached the
 50-fixture target,
 including focused `:has()` child/descendant/adjacent-sibling/general-sibling and
 selector-list smoke plus attribute operators/flags, class/id matching,
@@ -89,7 +93,9 @@ Local Phase 6 fixtures now also assert runtime/Page-backed `js-eval` projections
 `getComputedStyle()`, document/navigator state (`documentURI`/`baseURI`,
 focus, and active-element shape included), op-backed in-memory Web Storage
 mutation with key/value validation and quota errors,
-`Event`/`CustomEvent`/`dispatchEvent()` smoke, CSSOM `CSS.supports()` /
+`Event`/`CustomEvent`/`dispatchEvent()` smoke, the pinned
+`focusout` → `focusin` → `blur` → `focus` transition with `relatedTarget`,
+Page-owned active-element restore, CSSOM `CSS.supports()` /
 `document.styleSheets` plus CSSStyleRule / CSSStyleDeclaration read-only shape,
 viewport/window state, DOMRect geometry via `getBoundingClientRect()` /
 `getClientRects()`, client/offset/scroll metrics, `getBoxQuads()`, Range
@@ -106,17 +112,32 @@ meta/content reflection,
 `TextEncoder`/`TextDecoder` (`encodeInto` and constructor options included),
 `<img>.currentSrc` plus image alt/dimension/loading/decode reflection, inert
 media element state (`HTMLMediaElement`/audio/video constants included),
-resource element reflection (`link`/`style`/`script`/`source`), initial `Range`/`Selection`, read-only `history` accessors,
+resource element reflection (`link`/`style`/`script`/`source`), single-range
+`Range`/`Selection` state with Page-owned element-boundary restore, direction,
+point queries, same-container clone/extract/delete/insert/surround operations,
+and `selectionchange` delivery, read-only `history` accessors,
 details/dialog open-state reflection,
 miscellaneous HTML reflected attributes for lists, quotes, embedded content, and
 table cells,
 progress/meter numeric state,
+inert Canvas 2D context smoke,
+form-associated reflected attributes and editing helpers,
+read-only table collections/indexes,
+HTMLElement interaction/global reflected attributes,
+text track / track-element state,
+inert OffscreenCanvas/ImageData/ImageBitmap/Path2D APIs,
+minimal ShadowRoot/DocumentFragment smoke,
+template content and slot assignment shape,
+DOM construction/serialization helpers,
 `structuredClone`, CDP `Runtime.awaitPromise` over stored promise handles,
 MutationObserver lifecycle, TreeWalker/NodeIterator traversal, `Headers`
 iteration, `Blob`/`File`, read-only `Request`/`Response` state with forbidden
 header filtering, `Response.error()` / `Response.redirect()` / `Response.json()`,
 op-backed `fetch()` HTTP(S) status/header/body reads plus URL-policy/private-host
-rejection with CDP `Network.loadingFailed` diagnostics, `AbortSignal`,
+rejection with CDP `Network.loadingFailed` diagnostics, credential-correct CORS,
+bounded origin/target/credentials-partitioned preflight caching (including
+effective CDP extra headers), strongest-algorithm Request SRI verification before
+exposure/cache insertion, `AbortSignal`,
 `URLPattern`, CDP lifecycle opt-in (`init`/`commit`/`DOMContentLoaded`/`load`),
 Performance timing shape, `matchMedia()`, Permissions API query state,
 Notification permission state, and StorageManager estimate/persisted state backed
@@ -124,7 +145,11 @@ by profile/storage records before the remaining host-object swap; Encoding API c
 Web Storage mutation, focused `fetch()` success/blocking checks, sequential
 global/storage persistence across `Runtime.evaluate`, focused `document`/`Element`
 snapshot host-object evals, and read-only `DOMTokenList`/`DOMStringMap` property
-reads are also exercised directly through the persistent `deno_core` runtime seam. Imported
+reads are also exercised directly through the persistent `deno_core` runtime seam.
+Runtime platform smoke now additionally covers secure `crypto.getRandomValues()` /
+`randomUUID()`, async Clipboard text and `ClipboardItem` shape, `MessageEvent`,
+`MessageChannel`, `BroadcastChannel`, first-callback `IntersectionObserver` /
+`ResizeObserver` geometry, and a fail-closed `WebSocket` close path. Imported
 smoke fixtures now also seed
 block/inline/position layout, flexbox, grid, and display-list `ref-equivalent`
 paint; imported layout smoke covers auto margins, border-box sizing, inline
@@ -134,15 +159,34 @@ flex/grid backgrounds, and nested background/text display-list equivalence.
 
 ---
 
+## Current automation smoke baseline
+
+The external Playwright smoke covers connect/target/page/runtime/DOM/input/
+network/dialog/screenshot/history/content/script/style/binding paths plus
+browser-context permission grant/reset, bounded Chromium JSON tracing through
+CDP `IO` streams, idle stop-loading behavior, and stable protocol errors. CDP
+permission overrides are exact-origin or wildcard scoped and do not mutate
+persisted user decisions. Trace records contain method/timing/session/success
+metadata only, not expressions, request headers, form values, or page text.
+
+CDP targets now map to independent BrowserCore contexts/runtimes and share only
+profile-scoped state. BrowserCore source navigation is asynchronous,
+generation-checked, and directly cancellable; deterministic stop/supersede tests
+force late completions and prove no stale document/cookie commit. CDP currently
+waits synchronously for each matching terminal event, so active `Page.stopLoading`
+cannot yet race a `Page.navigate` on the same protocol connection. There is still
+no HTTP download manager or Playwright context-tracing archive implementation.
+
+---
+
 ## Current desktop shell smoke baseline
 
 The GTK/libadwaita shell is not a WPT surface, but alpha daily-smoke builds now
-expect one production profile to restore persisted tab URLs and the active tab
-through `vixen-store::SessionRecord`. Empty or unavailable profiles fall back to
-the configured start page; shell-written records are bounded to the store tab
-limit. GTK-free profile helpers also expose explicit clear-data selections that
-can preserve or clear session restore. Native `gtk-shell` checks may be
-host-package blocked; use the supported Flatpak build path for GUI verification.
+route one app-level worker and all tab ids through BrowserCore. Profile-session
+load/save and explicit clear-data selections use browser commands; empty or
+unavailable profiles fall back to the configured start page and records remain
+bounded by the profile store. Native `gtk-shell` checks may be host-package
+blocked; use the supported Flatpak build path for GUI verification.
 
 ---
 

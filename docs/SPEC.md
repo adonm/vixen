@@ -67,9 +67,27 @@ without a GPU device fails closed with `unsupported.screenshot`.
 
 - `Browser.getVersion`
 - `Target.createTarget`, `Target.attachToTarget`, `Target.getTargets`
-- `Page.enable`, `Page.navigate`, `Page.loadEventFired`, `Page.captureScreenshot` (PNG), `Page.getFrameTree`
-- `Runtime.enable`, `Runtime.evaluate`, `Runtime.consoleAPICalled`, `Runtime.exceptionThrown`
-- `Input.dispatchMouseEvent` (mouse move/press/release over the current full viewport)
+- `Page.enable`, `Page.navigate`, `Page.reload`, `Page.stopLoading`,
+  `Page.loadEventFired`, `Page.getFrameTree`, `Page.getResourceTree`,
+  `Page.getResourceContent`, `Page.getLayoutMetrics`,
+  `Page.getNavigationHistory`, `Page.navigateToHistoryEntry`,
+  `Page.resetNavigationHistory`, `Page.setBypassCSP`, and
+  `Page.captureScreenshot` (PNG)
+- `Runtime.enable`, `Runtime.evaluate`, `Runtime.awaitPromise`,
+  `Runtime.getProperties`, `Runtime.consoleAPICalled`, and
+  `Runtime.exceptionThrown`
+- `Network.enable`, top-level `Network.*` navigation notifications, and the
+  Playwright network-toggle methods (`setCacheDisabled`,
+  `setBypassServiceWorker`, `setExtraHTTPHeaders`; extra headers apply to
+  runtime `fetch()` requests, cache-disabled bypasses runtime `fetch()` cache
+  reads/writes)
+- `DOM.getDocument`, `DOM.querySelector`, `DOM.querySelectorAll`,
+  `DOM.describeNode`, `DOM.resolveNode`, `DOM.getContentQuads`,
+  `DOM.getBoxModel`, `DOM.getAttributes`, `DOM.getOuterHTML`,
+  `DOM.setAttributeValue`, and `DOM.removeAttribute`
+- `Performance.getMetrics`, `Security.getSecurityState`
+- `Input.dispatchMouseEvent` (mouse move/press/release over the current full
+  viewport), `Input.dispatchKeyEvent`, and `Input.insertText`
 
 ---
 

@@ -4,6 +4,8 @@
 
 use std::collections::BTreeMap;
 
+use url::Url;
+
 /// HTTP methods Vixen initiates. `is_safe` follows RFC 7231 §4.2.1: safe
 /// methods (GET/HEAD/OPTIONS) do not mutate server state and gate
 /// `SameSite=Lax` cross-site cookie sending (docs/SPEC.md "Cookie
@@ -26,6 +28,21 @@ pub enum RedirectMode {
     Follow,
     Error,
     Manual,
+}
+
+/// One fully specified bounded-text network request.
+///
+/// Keeping request metadata together prevents method/body/header policy from
+/// drifting as navigation, runtime fetch, and form submission converge on the
+/// same network seam.
+#[derive(Debug, Clone)]
+pub struct TextRequest {
+    pub url: Url,
+    pub cross_site: bool,
+    pub method: Method,
+    pub redirect_mode: RedirectMode,
+    pub headers: Vec<(String, String)>,
+    pub body: Option<Vec<u8>>,
 }
 
 /// Stable network lifecycle events emitted for a completed text fetch.

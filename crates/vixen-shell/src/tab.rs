@@ -1,4 +1,4 @@
-//! Factory tab component for the GTK shell.
+//! Factory tab component for GTK presentation state and paint snapshots.
 
 #![forbid(unsafe_code)]
 
@@ -8,18 +8,18 @@ use std::rc::Rc;
 use gtk4::glib;
 use gtk4::prelude::*;
 use relm4::factory::{DynamicIndex, FactoryComponent, FactorySender};
-use relm4::{Component, WorkerController};
-use vixen_api::{EngineDiagnostic, EngineDiagnosticCategory};
-use vixen_engine::page::Page;
+use vixen_api::{BrowsingContextState, DocumentId};
+use vixen_engine::browser::PaintSnapshot;
 
-use crate::engine_worker::{EngineCommand, EngineEvent, EngineWorker, START_URI, WorkerState};
+use crate::address::START_URI;
+use crate::engine_worker::ShellTabId;
 use crate::surface::GlAreaRenderer;
 
-type SharedPage = Rc<RefCell<Option<Page>>>;
+type SharedPaintSnapshot = Rc<RefCell<Option<Rc<PaintSnapshot>>>>;
 
 #[derive(Debug, Clone)]
 pub struct TabInit {
-    pub id: u64,
+    pub id: ShellTabId,
     pub start_uri: String,
 }
 
@@ -39,7 +39,7 @@ impl Default for TabChromeState {
         Self {
             uri: START_URI.to_owned(),
             title: "Vixen".to_owned(),
-            status: "Vixen — starting".to_owned(),
+            status: "Vixen - starting".to_owned(),
             can_go_back: false,
             can_go_forward: false,
             is_loading: false,
@@ -49,35 +49,37 @@ impl Default for TabChromeState {
 }
 
 pub struct TabModel {
-    index: DynamicIndex,
-    id: u64,
-    worker: WorkerController<EngineWorker>,
-    shared_page: SharedPage,
+    id: ShellTabId,
+    paint_snapshot: SharedPaintSnapshot,
     current_uri: String,
+    pending_uri: Option<String>,
     current_title: String,
     status: String,
     can_go_back: bool,
     can_go_forward: bool,
     is_loading: bool,
     progress: f64,
-    diagnostics: Vec<EngineDiagnostic>,
+    document_id: Option<DocumentId>,
+    viewport: Option<(u32, u32)>,
+    requested_paint: Option<(DocumentId, (u32, u32))>,
+    last_error: Option<String>,
     render_generation: u64,
 }
 
 #[derive(Debug)]
 pub enum TabMsg {
-    Navigate(String),
-    Reload,
-    Stop,
-    Back,
-    Forward,
-    Worker(EngineEvent),
+    Loading(Option<String>),
+    State(BrowsingContextState),
+    Paint(PaintSnapshot),
+    ViewportChanged((u32, u32)),
+    Failed(String),
     RenderFailed(String),
 }
 
 #[derive(Debug)]
 pub enum TabOutput {
-    StateChanged(DynamicIndex, TabChromeState),
+    StateChanged(ShellTabId, TabChromeState),
+    PaintRequested(ShellTabId, DocumentId, (u32, u32)),
 }
 
 pub struct TabWidgets {
@@ -98,27 +100,25 @@ impl FactoryComponent for TabModel {
     type Widgets = TabWidgets;
     type Index = DynamicIndex;
 
-    fn init_model(init: Self::Init, index: &DynamicIndex, sender: FactorySender<Self>) -> Self {
-        let worker = EngineWorker::builder()
-            .detach_worker(())
-            .forward(sender.input_sender(), TabMsg::Worker);
+    fn init_model(init: Self::Init, _index: &DynamicIndex, _sender: FactorySender<Self>) -> Self {
         let mut model = Self {
-            index: index.clone(),
             id: init.id,
-            worker,
-            shared_page: Rc::new(RefCell::new(None)),
-            current_uri: init.start_uri.clone(),
-            current_title: "Vixen".to_owned(),
+            paint_snapshot: Rc::new(RefCell::new(None)),
+            current_uri: init.start_uri,
+            pending_uri: None,
+            current_title: "Loading...".to_owned(),
             status: String::new(),
             can_go_back: false,
             can_go_forward: false,
             is_loading: true,
-            progress: 0.0,
-            diagnostics: Vec::new(),
+            progress: 0.1,
+            document_id: None,
+            viewport: None,
+            requested_paint: None,
+            last_error: None,
             render_generation: 0,
         };
         model.refresh_status();
-        model.worker.emit(EngineCommand::Navigate(init.start_uri));
         model
     }
 
@@ -161,7 +161,7 @@ impl FactoryComponent for TabModel {
         root.append(&progress_bar);
         root.append(&gl_area);
         root.append(&status_label);
-        connect_renderer(&sender, &gl_area, self.shared_page.clone());
+        connect_renderer(&sender, &gl_area, self.paint_snapshot.clone());
 
         returned_widget.set_title(&self.tab_title());
         returned_widget.set_tooltip(&self.status);
@@ -177,43 +177,42 @@ impl FactoryComponent for TabModel {
     }
 
     fn update(&mut self, message: Self::Input, sender: FactorySender<Self>) {
-        match message {
-            TabMsg::Navigate(input) => {
-                self.start_load(input.clone());
-                self.worker.emit(EngineCommand::Navigate(input));
+        let chrome_changed = match message {
+            TabMsg::Loading(uri) => {
+                self.pending_uri = uri;
+                self.current_title = "Loading...".to_owned();
+                self.is_loading = true;
+                self.progress = 0.1;
+                self.last_error = None;
+                true
             }
-            TabMsg::Reload => {
-                self.start_load(self.current_uri.clone());
-                self.worker.emit(EngineCommand::Reload);
+            TabMsg::State(state) => {
+                self.apply_state(state);
+                self.request_paint(&sender);
+                true
             }
-            TabMsg::Stop => {
+            TabMsg::Paint(snapshot) => {
+                self.apply_paint_snapshot(snapshot);
+                false
+            }
+            TabMsg::ViewportChanged(viewport) => {
+                self.apply_viewport(viewport);
+                self.request_paint(&sender);
+                false
+            }
+            TabMsg::Failed(message) | TabMsg::RenderFailed(message) => {
+                self.pending_uri = None;
+                self.current_title = "Load failed".to_owned();
                 self.is_loading = false;
-                self.worker.emit(EngineCommand::Stop);
+                self.progress = 0.0;
+                self.last_error = Some(message);
+                true
             }
-            TabMsg::Back => {
-                self.is_loading = true;
-                self.progress = 0.1;
-                self.worker.emit(EngineCommand::Back);
-            }
-            TabMsg::Forward => {
-                self.is_loading = true;
-                self.progress = 0.1;
-                self.worker.emit(EngineCommand::Forward);
-            }
-            TabMsg::Worker(event) => self.apply_worker_event(event),
-            TabMsg::RenderFailed(message) => {
-                self.diagnostics = vec![EngineDiagnostic::new(
-                    EngineDiagnosticCategory::LayoutRender,
-                    "shell.render",
-                    message,
-                )];
-            }
-        }
+        };
         self.refresh_status();
-        let _ = sender.output(TabOutput::StateChanged(
-            self.index.clone(),
-            self.chrome_state(),
-        ));
+        if chrome_changed {
+            let _ = sender.output(TabOutput::StateChanged(self.id, self.chrome_state()));
+        }
     }
 
     fn update_view(&self, widgets: &mut Self::Widgets, _sender: FactorySender<Self>) {
@@ -232,9 +231,16 @@ impl FactoryComponent for TabModel {
 }
 
 impl TabModel {
+    pub fn id(&self) -> ShellTabId {
+        self.id
+    }
+
     pub fn chrome_state(&self) -> TabChromeState {
         TabChromeState {
-            uri: self.current_uri.clone(),
+            uri: self
+                .pending_uri
+                .clone()
+                .unwrap_or_else(|| self.current_uri.clone()),
             title: self.current_title.clone(),
             status: self.status.clone(),
             can_go_back: self.can_go_back,
@@ -244,155 +250,123 @@ impl TabModel {
         }
     }
 
-    fn start_load(&mut self, input: String) {
-        self.current_uri = input;
-        self.current_title = "Loading…".to_owned();
-        self.is_loading = true;
-        self.progress = 0.1;
-        self.diagnostics.clear();
+    pub fn session_uri(&self) -> String {
+        self.current_uri.clone()
     }
 
-    fn apply_worker_event(&mut self, event: EngineEvent) {
-        match event {
-            EngineEvent::Progress(state) => self.apply_worker_state(state),
-            EngineEvent::Loaded {
-                state,
-                final_uri,
-                html,
-            } => {
-                self.apply_worker_state(state);
-                self.load_html(final_uri, html);
-            }
-            EngineEvent::Failed {
-                state,
-                attempted_uri,
-                message,
-                diagnostics,
-            } => {
-                self.apply_worker_state(state);
-                self.current_uri = attempted_uri;
-                self.current_title = "Load failed".to_owned();
-                self.diagnostics = diagnostics;
-                self.load_error_page(&message);
-            }
-            EngineEvent::Stopped(state) => self.apply_worker_state(state),
+    fn apply_state(&mut self, state: BrowsingContextState) {
+        if self.document_id != Some(state.document_id) {
+            self.document_id = Some(state.document_id);
+            self.requested_paint = None;
+            *self.paint_snapshot.borrow_mut() = None;
+            self.render_generation = self.render_generation.saturating_add(1);
         }
-    }
-
-    fn apply_worker_state(&mut self, state: WorkerState) {
-        if let Some(uri) = state.current_uri {
-            self.current_uri = uri;
-        }
+        self.current_uri = state.url;
+        self.pending_uri = None;
+        self.current_title = state
+            .title
+            .filter(|title| !title.trim().is_empty())
+            .unwrap_or_else(|| self.current_uri.clone());
         self.can_go_back = state.can_go_back;
         self.can_go_forward = state.can_go_forward;
         self.is_loading = state.is_loading;
-        self.progress = state.progress;
+        self.progress = state.load_progress;
+        self.last_error = None;
     }
 
-    fn load_html(&mut self, uri: String, html: String) {
-        match Page::from_html(uri.clone(), &html) {
-            Ok(page) => {
-                self.current_uri = uri;
-                self.current_title = page_title(&page).unwrap_or_else(|| self.current_uri.clone());
-                self.diagnostics = page.diagnostics();
-                *self.shared_page.borrow_mut() = Some(page);
-                self.is_loading = false;
-                self.progress = 1.0;
-                self.render_generation = self.render_generation.saturating_add(1);
-            }
-            Err(error) => {
-                self.current_title = "Parse failed".to_owned();
-                self.diagnostics = vec![EngineDiagnostic::new(
-                    EngineDiagnosticCategory::ParseDom,
-                    "shell.parse",
-                    format!("parse failed: {error}"),
-                )];
-                self.is_loading = false;
-                self.progress = 0.0;
-            }
+    fn apply_viewport(&mut self, viewport: (u32, u32)) {
+        let viewport = (viewport.0 > 0 && viewport.1 > 0).then_some(viewport);
+        if self.viewport != viewport {
+            self.viewport = viewport;
+            self.requested_paint = None;
         }
     }
 
-    fn load_error_page(&mut self, message: &str) {
-        let html = format!(
-            "<!doctype html><html><head><title>Load failed</title><style>body{{font:18px sans-serif;margin:48px;color:#fee2e2;background:#450a0a}}pre{{white-space:pre-wrap}}</style></head><body><h1>Load failed</h1><pre>{}</pre></body></html>",
-            escape_html(message)
-        );
-        if let Ok(page) = Page::from_html("about:vixen-error", &html) {
-            *self.shared_page.borrow_mut() = Some(page);
-            self.render_generation = self.render_generation.saturating_add(1);
+    fn request_paint(&mut self, sender: &FactorySender<Self>) {
+        let (Some(document_id), Some(viewport)) = (self.document_id, self.viewport) else {
+            return;
+        };
+        let request = (document_id, viewport);
+        if self.requested_paint == Some(request) {
+            return;
         }
+        self.requested_paint = Some(request);
+        let _ = sender.output(TabOutput::PaintRequested(self.id, document_id, viewport));
+    }
+
+    fn apply_paint_snapshot(&mut self, snapshot: PaintSnapshot) {
+        if self.document_id != Some(snapshot.document_id)
+            || self.viewport != Some(snapshot.viewport)
+        {
+            return;
+        }
+        *self.paint_snapshot.borrow_mut() = Some(Rc::new(snapshot));
+        self.render_generation = self.render_generation.saturating_add(1);
     }
 
     fn refresh_status(&mut self) {
-        let diagnostic = self.diagnostics.first();
-        self.status = if let Some(diag) = diagnostic {
-            format!(
-                "{} — {} — {}: {}",
-                self.current_title, self.current_uri, diag.code, diag.message
-            )
+        self.status = if let Some(error) = self.last_error.as_deref() {
+            format!("{} - {} - {error}", self.current_title, self.current_uri)
         } else if self.is_loading {
-            format!("{} — loading {}", self.current_title, self.current_uri)
+            format!("{} - loading {}", self.current_title, self.current_uri)
         } else {
-            format!("{} — {}", self.current_title, self.current_uri)
+            format!("{} - {}", self.current_title, self.current_uri)
         };
     }
 
     fn tab_title(&self) -> String {
         if self.current_title.trim().is_empty() {
-            format!("Tab {}", self.id + 1)
+            format!("Tab {}", self.id.get().saturating_add(1))
         } else {
             self.current_title.clone()
         }
     }
 }
 
-fn page_title(page: &Page) -> Option<String> {
-    let title = page.document().title().unwrap_or_default();
-    (!title.trim().is_empty()).then_some(title)
-}
-
-fn escape_html(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    for ch in input.chars() {
-        match ch {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&#39;"),
-            _ => out.push(ch),
-        }
-    }
-    out
-}
-
-fn connect_renderer(sender: &FactorySender<TabModel>, gl_area: &gtk4::GLArea, page: SharedPage) {
+fn connect_renderer(
+    sender: &FactorySender<TabModel>,
+    gl_area: &gtk4::GLArea,
+    snapshot: SharedPaintSnapshot,
+) {
     let renderer = Rc::new(RefCell::new(GlAreaRenderer::new(gl_area)));
     let render_sender = sender.clone();
-    let render_page = page.clone();
+    let render_snapshot = snapshot.clone();
     let render_state = renderer.clone();
-    gl_area.connect_render(move |_, _| {
-        let page = render_page.borrow();
-        let Some(page) = page.as_ref() else {
+    gl_area.connect_render(move |area, _| {
+        let Some(snapshot) = render_snapshot.borrow().clone() else {
             return glib::Propagation::Proceed;
         };
-        match render_state.borrow_mut().render_page(page) {
+        if snapshot.viewport != drawable_size(area) {
+            return glib::Propagation::Proceed;
+        }
+        match render_state
+            .borrow_mut()
+            .render_commands(&snapshot.commands, snapshot.viewport)
+        {
             Ok(()) => glib::Propagation::Stop,
-            Err(err) => {
-                render_sender.input(TabMsg::RenderFailed(err.to_string()));
+            Err(error) => {
+                render_sender.input(TabMsg::RenderFailed(error.to_string()));
                 glib::Propagation::Stop
             }
         }
     });
 
+    let resize_sender = sender.clone();
     let resize_renderer = renderer.clone();
     gl_area.connect_resize(move |area, _, _| {
         resize_renderer.borrow_mut().reset_renderer();
+        resize_sender.input(TabMsg::ViewportChanged(drawable_size(area)));
         area.queue_render();
     });
 
     gl_area.connect_unrealize(move |_| {
         renderer.borrow_mut().reset_renderer();
     });
+}
+
+fn drawable_size(area: &gtk4::GLArea) -> (u32, u32) {
+    let scale = u32::try_from(area.scale_factor()).unwrap_or(1).max(1);
+    let width = u32::try_from(area.width()).unwrap_or(0);
+    let height = u32::try_from(area.height()).unwrap_or(0);
+    (width.saturating_mul(scale), height.saturating_mul(scale))
 }

@@ -20,12 +20,29 @@ pub(super) fn new_deno_runtime(
     page: Option<&Page>,
     network_config: NetworkConfig,
     storage: webapi::WebStorageHost,
+    runtime_network_state: webapi::RuntimeNetworkState,
+    extra_http_headers: webapi::ExtraHttpHeaders,
+    cache_disabled: webapi::CacheDisabledFlag,
+    permission_overrides: webapi::PermissionOverrides,
 ) -> Result<DenoRuntimeInit, EngineError> {
-    let fetch_policy = page.map(webapi::FetchPolicy::from_page);
+    // A standalone initial about:blank target has no creator origin to inherit.
+    // Keep its automation bootstrap fetch behavior equivalent to the no-page
+    // realm while still projecting the document host objects.
+    let fetch_policy = page
+        .filter(|page| page.url() != "about:blank")
+        .map(webapi::FetchPolicy::from_page);
     let mut extensions = vec![
         webidl::extension(),
         encoding::extension(),
-        webapi::extension(network_config, storage, fetch_policy),
+        webapi::extension(
+            network_config,
+            storage,
+            runtime_network_state,
+            fetch_policy,
+            extra_http_headers,
+            cache_disabled,
+            permission_overrides,
+        ),
     ];
     let mut dom_mutations = None;
     if let Some(page) = page {
@@ -57,8 +74,11 @@ pub(super) fn resolve_value(
     let value = deno_core::futures::executor::block_on(
         runtime.with_event_loop_promise(resolve, PollEventLoopOptions::default()),
     )
-    .map_err(|_| {
-        EngineError::script(codes::SCRIPT_EVAL, "script evaluation raised an exception")
+    .map_err(|error| {
+        EngineError::script(
+            codes::SCRIPT_EVAL,
+            format!("script evaluation raised an exception: {error}"),
+        )
     })?;
     runtime.v8_isolate().perform_microtask_checkpoint();
     Ok(value)

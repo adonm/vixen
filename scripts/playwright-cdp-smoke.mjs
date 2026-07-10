@@ -171,6 +171,38 @@ async function main() {
     if (title !== 'Vixen CDP Playwright Smoke') {
       fail(`unexpected document title: ${JSON.stringify(title)}`);
     }
+
+    await context.grantPermissions(['notifications']);
+    const grantedPermission = await page.evaluate(() => navigator.permissions.query({ name: 'notifications' }).then((status) => status.state));
+    if (grantedPermission !== 'granted') {
+      fail(`Playwright context.grantPermissions() did not reach the runtime: ${JSON.stringify(grantedPermission)}`);
+    }
+    await context.clearPermissions();
+    const resetPermission = await page.evaluate(() => navigator.permissions.query({ name: 'notifications' }).then((status) => status.state));
+    if (resetPermission !== 'prompt') {
+      fail(`Playwright context.clearPermissions() did not reset the runtime: ${JSON.stringify(resetPermission)}`);
+    }
+
+    await browser.startTracing(page, { categories: ['devtools.timeline'] });
+    await session.send('Page.stopLoading');
+    await session.send('Page.getLayoutMetrics');
+    const traceBuffer = await browser.stopTracing();
+    const trace = JSON.parse(traceBuffer.toString('utf8'));
+    const traceNames = trace.traceEvents?.map((event) => event.name) || [];
+    if (!traceNames.includes('Page.stopLoading') || !traceNames.includes('Page.getLayoutMetrics')) {
+      fail(`Playwright browser tracing missed protocol events: ${JSON.stringify(traceNames)}`);
+    }
+
+    let stableError = '';
+    try {
+      await session.send('Vixen.missing');
+    } catch (error) {
+      stableError = error?.message || '';
+    }
+    if (!stableError.includes('cdp.method-not-found')) {
+      fail(`unsupported CDP method did not return a stable error: ${JSON.stringify(stableError)}`);
+    }
+
     const domDocument = await session.send('DOM.getDocument', { depth: 1 });
     const rootNodeId = domDocument.root?.nodeId;
     if (!rootNodeId || domDocument.root?.nodeType !== 9) {

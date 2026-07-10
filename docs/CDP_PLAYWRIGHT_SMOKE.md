@@ -51,7 +51,32 @@ exercises:
     `page.close()`.
 18. Read object properties through Playwright `JSHandle.getProperty()`.
 19. Surface modal dialogs through Playwright's `dialog` event.
+20. Replace and clear browser-context permission grants through Playwright
+    `context.grantPermissions()` / `context.clearPermissions()`, with runtime
+    `PermissionStatus` reads observing the override without rewriting profile
+    decisions.
+21. Start/stop Chromium tracing through Playwright `browser.startTracing()` /
+    `browser.stopTracing()`, read the bounded JSON trace through `IO.read`, and
+    verify stable `cdp.method-not-found` errors for unsupported methods.
 
-Current limits are intentional: one active scripted page, one main frame, PNG screenshots only,
-and full-viewport mouse hit testing. Add methods only when this smoke shows a real
-automation gap.
+Rust CDP tests additionally cover browser-shaped automation methods used by
+Playwright/DevTools probes: idle `Page.stopLoading`,
+`Page.resetNavigationHistory`,
+`Page.getResourceTree`, `Page.getResourceContent`, `Page.setBypassCSP` as a
+CDP-scoped script-CSP override for later navigations,
+`Network.setCacheDisabled` bypassing runtime `fetch()` cache reads/writes,
+`Network.setBypassServiceWorker`,
+`Network.setExtraHTTPHeaders` propagation into runtime `fetch()`,
+`Performance.getMetrics`, `Security.getSecurityState`, and DOM
+attribute/`outerHTML` read-write methods, exact/wildcard permission override
+scopes, detached-session rejection, stable protocol error data, and the bounded
+4,096-event tracing buffer.
+
+Current limits are intentional: one main frame per independently scripted target,
+PNG screenshots only, Chromium JSON tracing only (not Playwright context trace
+archives), synchronous per-request lifecycle waiting (therefore idle-only
+protocol stop-loading acknowledgement), and full-viewport mouse hit testing.
+BrowserCore itself has active source cancellation and stale-completion race tests;
+CDP needs an asynchronous event pump before the same connection can race
+`Page.navigate` with `Page.stopLoading`. Add methods only when this smoke shows a
+real automation gap.

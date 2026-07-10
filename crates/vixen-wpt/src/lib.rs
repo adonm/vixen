@@ -3,7 +3,7 @@
 //! Asserts document state against fixture manifests (docs/SPEC.md "WPT
 //! harness — check types"). The harness consumes only [`HarnessEngine`] — a
 //! vixen-wpt-local trait composing `vixen_api` DTOs — never engine internals
-//! (docs/ARCHITECTURE.md "Boundary rules": `vixen-wpt → vixen-api only`).
+//! (docs/ARCHITECTURE.md "Dependency direction": `vixen-wpt → vixen-api` only).
 //!
 //! The 15 check types (14 inherited from upstream WPT + `ref-equivalent`,
 //! Vixen's addition) are all defined. `ref-equivalent` compares the stable

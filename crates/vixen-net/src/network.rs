@@ -16,7 +16,7 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use url::Url;
 
 use crate::cookie::CookieJar;
-use crate::fetch_types::{Method, NetworkEvent, RedirectMode, TextResponse};
+use crate::fetch_types::{Method, NetworkEvent, RedirectMode, TextRequest, TextResponse};
 use crate::url_policy::{UrlPolicyError, validate_http_url};
 
 /// Default upper bound on a response body (8 MiB). Navigation responses are
@@ -157,12 +157,14 @@ impl Network {
         validate_http_url(url)?;
         self.fetch(
             jar,
-            url.clone(),
-            cross_site,
-            method,
-            redirect_mode,
-            Vec::new(),
-            None,
+            TextRequest {
+                url: url.clone(),
+                cross_site,
+                method,
+                redirect_mode,
+                headers: Vec::new(),
+                body: None,
+            },
         )
         .await
     }
@@ -182,51 +184,42 @@ impl Network {
         validate_http_url(url)?;
         self.fetch(
             jar,
-            url.clone(),
-            cross_site,
-            method,
-            redirect_mode,
-            headers,
-            None,
+            TextRequest {
+                url: url.clone(),
+                cross_site,
+                method,
+                redirect_mode,
+                headers,
+                body: None,
+            },
         )
         .await
     }
 
-    /// Fetch `url` as text using explicit redirect handling, caller-provided
-    /// request headers, and an optional request body for non-GET/HEAD fetches.
-    pub async fn get_text_with_cookies_redirect_mode_headers_and_body(
+    /// Fetch a fully specified bounded-text request, threading `jar` through
+    /// redirect hops and validating every URL/header at the network boundary.
+    pub async fn get_text_with_cookies_request(
         &mut self,
         jar: &mut CookieJar,
-        url: &Url,
-        cross_site: bool,
-        method: Method,
-        redirect_mode: RedirectMode,
-        headers: Vec<(String, String)>,
-        body: Option<Vec<u8>>,
+        request: TextRequest,
     ) -> Result<TextResponse, NetworkError> {
-        validate_http_url(url)?;
-        self.fetch(
-            jar,
-            url.clone(),
-            cross_site,
-            method,
-            redirect_mode,
-            headers,
-            body,
-        )
-        .await
+        validate_http_url(&request.url)?;
+        self.fetch(jar, request).await
     }
 
     async fn fetch(
         &mut self,
         jar: &mut CookieJar,
-        start: Url,
-        cross_site: bool,
-        method: Method,
-        redirect_mode: RedirectMode,
-        headers: Vec<(String, String)>,
-        body: Option<Vec<u8>>,
+        request: TextRequest,
     ) -> Result<TextResponse, NetworkError> {
+        let TextRequest {
+            url: start,
+            cross_site,
+            method,
+            redirect_mode,
+            headers,
+            body,
+        } = request;
         let max = self.config.max_redirects;
         let limit = self.config.max_body_bytes;
         let mut current = start;

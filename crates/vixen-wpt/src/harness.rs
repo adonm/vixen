@@ -78,6 +78,7 @@ pub struct Report {
     pub skipped: usize,
     pub by_category: BTreeMap<String, ReportSummary>,
     pub by_source: BTreeMap<String, ReportSummary>,
+    pub by_source_category: BTreeMap<String, BTreeMap<String, ReportSummary>>,
     pub fixtures: Vec<FixtureReport>,
 }
 
@@ -154,6 +155,19 @@ impl Report {
                 summary.skipped,
                 summary.pass_rate() * 100.0
             ));
+        }
+        for (source, categories) in &self.by_source_category {
+            for (category, summary) in categories {
+                out.push_str(&format!(
+                    "source-category {source} {category}: fixtures={} checks={} passed={} failed={} skipped={} pass-rate={:.1}%\n",
+                    summary.fixtures,
+                    summary.total,
+                    summary.passed,
+                    summary.failed,
+                    summary.skipped,
+                    summary.pass_rate() * 100.0
+                ));
+            }
         }
         out
     }
@@ -247,6 +261,13 @@ where
         report
             .by_source
             .entry(fr.source.as_str().to_owned())
+            .or_default()
+            .add_fixture(&fr);
+        report
+            .by_source_category
+            .entry(fr.source.as_str().to_owned())
+            .or_default()
+            .entry(fr.category.clone())
             .or_default()
             .add_fixture(&fr);
         report.fixtures.push(fr);
@@ -395,10 +416,19 @@ mod tests {
         assert!(report.is_clean());
         assert_eq!(report.by_source["local"].fixtures, 2);
         assert_eq!(report.by_category["uncategorized"].fixtures, 2);
+        assert_eq!(
+            report.by_source_category["local"]["uncategorized"].fixtures,
+            2
+        );
         assert!(
             report
                 .summary_text()
                 .contains("overall fixtures=2 checks=3")
+        );
+        assert!(
+            report
+                .summary_text()
+                .contains("source-category local uncategorized: fixtures=2 checks=3")
         );
     }
 

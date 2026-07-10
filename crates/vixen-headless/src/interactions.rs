@@ -2,18 +2,17 @@
 
 use std::process::ExitCode;
 
-use vixen_api::ElementInfo;
-use vixen_engine::form_submission::{FormEntry, FormEntryValue};
+use vixen_api::{ElementInfo, FormEntryInfo, FormEntryValueInfo};
 
-use crate::{Cli, load_page, parse_viewport};
+use crate::{Cli, browser_adapter::BrowserSession, parse_viewport};
 
 /// `--click-at` / `--focus` / `--submit-form`: deterministic DOM-side action
 /// summaries over local pages. JS event listeners land with Phase 6 host
 /// bindings; this path validates targets and exposes the event/submission data
 /// the eventual hooks consume.
 pub(crate) fn run(url: &str, cli: &Cli) -> ExitCode {
-    let page = match load_page(url) {
-        Ok(p) => p,
+    let mut session = match BrowserSession::load(url) {
+        Ok(session) => session,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
@@ -40,7 +39,13 @@ pub(crate) fn run(url: &str, cli: &Cli) -> ExitCode {
                 return ExitCode::from(2);
             }
         };
-        let target = page.element_at(viewport.expect("viewport parsed"), x, y);
+        let target = match session.hit_test(viewport.expect("viewport parsed"), x, y) {
+            Ok(target) => target,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
         print_json(serde_json::json!({
             "type": "click",
             "event": "MouseEvent",
@@ -51,31 +56,34 @@ pub(crate) fn run(url: &str, cli: &Cli) -> ExitCode {
     }
 
     if let Some(id) = cli.focus.as_deref() {
-        let Some(target) = page.element_by_id(id) else {
-            eprintln!("error: no element with id '{id}'");
-            return ExitCode::FAILURE;
+        let projection = match session.focus_projection(id) {
+            Ok(projection) => projection,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::FAILURE;
+            }
         };
-        let events: Vec<_> =
-            vixen_engine::event_path::focus_event_sequence(None, Some(target.node_id))
-                .into_iter()
-                .map(|event| {
-                    serde_json::json!({
-                        "event": event.event,
-                        "target": event.target,
-                        "bubbles": event.bubbles,
-                    })
+        let events: Vec<_> = projection
+            .events
+            .into_iter()
+            .map(|event| {
+                serde_json::json!({
+                    "event": event.event,
+                    "target": event.target,
+                    "bubbles": event.bubbles,
                 })
-                .collect();
+            })
+            .collect();
         print_json(serde_json::json!({
             "type": "focus",
             "id": id,
-            "target": element_info_json(&target),
+            "target": element_info_json(&projection.target),
             "events": events,
         }));
     }
 
     if let Some(id) = cli.submit_form.as_deref() {
-        let submission = match page.form_submission(id) {
+        let submission = match session.form_submission(id) {
             Ok(submission) => submission,
             Err(e) => {
                 eprintln!("error: {e}");
@@ -141,14 +149,14 @@ fn element_info_json(element: &ElementInfo) -> serde_json::Value {
     })
 }
 
-fn form_entry_json(entry: &FormEntry) -> serde_json::Value {
+fn form_entry_json(entry: &FormEntryInfo) -> serde_json::Value {
     match &entry.value {
-        FormEntryValue::Text(value) => serde_json::json!({
+        FormEntryValueInfo::Text(value) => serde_json::json!({
             "name": entry.name,
             "kind": "text",
             "value": value,
         }),
-        FormEntryValue::File {
+        FormEntryValueInfo::File {
             filename,
             content_type,
             body,

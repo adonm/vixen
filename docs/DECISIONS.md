@@ -709,3 +709,97 @@ git diff --cached --check
 - Hook setup is part of normal mise/bootstrap workflow.
 - If pre-push becomes too slow or misses an important area, change
   `just gate-push` first; keep hk pointing at that stable recipe.
+
+---
+
+## ADR-017: One engine-owned browser, profile, and context lifecycle
+
+**Status:** accepted
+
+**Supersedes:** ADR-010's one-`EngineWorker`-per-tab engine ownership. ADR-010's
+Relm4 component/factory/worker guidance remains accepted for GUI presentation and
+message transport.
+
+**Context.** The first vertical slices made `Page`, `JsRuntime`, network policy,
+profile tables, shell loading, headless commands, and CDP behavior executable.
+They also revealed that sharing component types is not the same as sharing a
+browser. There is no production `impl vixen_api::Engine`: the GTK shell owns a
+separate navigation/history/network/cookie state machine and constructs `Page`
+on the UI thread, while headless/CDP separately owns `Page`, one scripted
+`JsRuntime`, history, target/session shape, network configuration, and automation
+overrides.
+
+Continuing to add APIs to those coordinators would make lifecycle semantics
+frontend-specific. Profile sharing, independent tabs, active navigation
+cancellation, stale-result rejection, downloads, frames, and renderer/runtime
+recovery all need an owner above an individual `Page` or protocol session.
+
+**Decision.** `vixen-engine` owns one `BrowserCore` per open profile. It runs on
+an engine-owned thread/local executor suitable for the non-`Send` Rc DOM and
+`deno_core::JsRuntime`, and owns:
+
+- one profile service for store, cookies/cache, permissions, HSTS, downloads,
+  clear-data policy, and host configuration;
+- one registry of top-level browsing contexts and future child frames;
+- context-scoped session history, sessionStorage, viewport/input state, active
+  navigation, runtime realms, and committed document state; and
+- document-scoped DOM, style/layout/paint invalidation, script resources, and
+  inspector state.
+
+Commands and events cross a browser-scoped `vixen-api` seam and carry typed
+context/navigation/document/request/runtime/download ids. Asynchronous work also
+carries its creation generation. Cancelling or superseding work invalidates that
+generation; late results are rejected before state mutation, cache/profile side
+effects, or success events.
+
+The shell, headless CLI, CDP, and WPT harness become adapters over this core. They
+may own widgets, GL/EGL surfaces, sockets, protocol session routing, and
+presentation snapshots, but not alternate navigation, history, page-runtime,
+permission, cookie/cache, or profile state. Composition roots may construct
+`vixen-engine`; adapters do not directly combine its leaf subsystems.
+
+The existing `Engine` trait may evolve or be replaced by browser-scoped command,
+event, query, and factory contracts. Vixen still has one concrete engine; this is
+not an engine-plug-in abstraction.
+
+**Alternatives considered.**
+
+- *Keep one independent engine worker per tab and share only a `Store`.* Rejected:
+  cookies/cache/permissions/downloads and host configuration require coordinated
+  in-memory state, while CDP target routing and browser-wide clear-data operations
+  still need a higher owner.
+- *Keep shell and headless coordinators but extract more common helpers.*
+  Rejected: helpers can share algorithms but cannot define atomic commit,
+  cancellation, event ordering, or teardown across independently owned state.
+- *Move the Rc DOM and V8 runtime to the GTK thread.* Rejected: it couples the
+  engine to GUI scheduling and gives headless/CDP a different execution model.
+- *Make every subsystem `Send + Sync` and distribute it across a worker pool.*
+  Rejected for alpha: it adds locking and re-entrancy complexity without a proven
+  need. External transport/blocking work can return generational messages to one
+  deterministic engine executor.
+
+**Consequences.**
+
+- The next alpha work is lifecycle migration before broad API growth.
+- Shell/headless direct `vixen-net`/`vixen-store` and direct orchestration are
+  documented temporary exceptions. `just gate-architecture` protects stable leaf
+  boundaries now and should ban each exception once migrated.
+- Two tabs/targets can own independent documents/runtimes while sharing intended
+  profile state through one service.
+- `stop`, redirects, history, form navigation, page-driven navigation, session
+  restore, downloads, and error pages gain one event/commit model.
+- The browser-core executor becomes a reliability boundary. Long script/layout
+  work needs budgets and cooperative scheduling; stronger process isolation is a
+  later explicit architecture generation, not an accidental worker pool.
+- Existing Page/network/store/runtime tests remain useful but need browser-core
+  integration tests for ownership, partitioning, event ordering, cancellation,
+  stale completions, and frontend parity.
+
+**Implementation status (2026-07-10).** The A1 migration is complete: shell,
+headless, CDP, and WPT route contexts through BrowserCore, and the architecture
+gate forbids their former direct leaf composition. The first A2 slice runs source
+loads on a bounded external Tokio runtime and returns generation-tagged results;
+stop/supersede abort active transport and forced late completions are rejected
+before cookie/profile/history/document/runtime mutation. Parser, page-script, and
+discovered-resource jobs remain synchronous on the owner thread and require the
+next cooperative-cancellation slice.

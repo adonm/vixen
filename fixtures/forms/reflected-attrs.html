@@ -1,0 +1,11 @@
+<!doctype html>
+<title>Form-associated reflection — Vixen fixture</title>
+<body>
+  <form id="profile" action="/submit" method="post" enctype="multipart/form-data" accept-charset="utf-8" novalidate>
+    <input id="avatar" type="file" accept="image/png" name="avatar">
+    <input id="age" type="number" min="1" max="10" step="2" value="3">
+    <input id="code" pattern="[A-Z]+" minlength="2" maxlength="5" value="ABC">
+    <textarea id="bio" cols="40" rows="5" wrap="hard">hello world</textarea>
+    <button id="send" type="submit" formaction="/alt" formmethod="dialog" formenctype="text/plain" formtarget="_blank" formnovalidate value="go">Send</button>
+  </form>
+</body>

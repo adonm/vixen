@@ -22,9 +22,10 @@
 #![forbid(unsafe_code)]
 
 use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use futures_util::{SinkExt, StreamExt};
@@ -32,26 +33,31 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
-use vixen_engine::engine_error::{EngineError, codes};
-use vixen_engine::history::HistoryEntry;
-use vixen_engine::page::Page;
-use vixen_engine::script::{
-    JsBindingEvent, JsConsoleArg, JsConsoleEvent, JsConsoleValue, JsDialogEvent,
-    JsNavigationAction, JsNetworkEvent, JsRuntime, JsValue,
+use vixen_api::{
+    BrowserCommand, BrowserCommandResult, BrowserError, BrowserEvent, BrowsingContextConfig,
+    BrowsingContextId, BrowsingContextState, DocumentTextKind, KeyEventData, MouseEventData,
+    NavigationId, NavigationPhase, RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent,
+    RuntimeConsoleValue, RuntimeContextId, RuntimeDialogEvent, RuntimeEffects, RuntimeNetworkEvent,
+    RuntimePermissionGrant, ScriptValue,
 };
+use vixen_engine::browser::{BrowserConfig, EngineBrowserHandle, spawn_browser};
+use vixen_engine::engine_error::codes;
+use vixen_engine::headers::{validate_header_name, validate_header_value};
+use vixen_engine::script::JsRuntime;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const DEFAULT_CAPTURE_VIEWPORT: (u32, u32) = (800, 600);
 const CDP_DOCUMENT_NODE_ID: usize = 1_000_000_000;
+const MAX_REMOTE_HANDLES: usize = 1_024;
+const MAX_PENDING_CORE_NAVIGATIONS: usize = 1_024;
+const NAVIGATION_WAIT_TIMEOUT: Duration = Duration::from_secs(35);
 
 /// CDP server entry point. Binds `127.0.0.1:{port}` and serves the
 /// WebSocket CDP protocol until the process is killed.
 ///
-/// **Single-threaded.** `deno_core::JsRuntime` is `!Send + !Sync`, so the whole
-/// server runs on one tokio `LocalSet`. Connections are handled serially:
-/// CDP clients (Chrome DevTools, Puppeteer, Playwright) maintain a single
-/// WebSocket per browser instance, so this is not a bottleneck in practice.
+/// BrowserCore owns its dedicated engine thread. The socket adapter stays on a
+/// local task so requests against the shared protocol state remain ordered.
 pub async fn serve(port: u16) -> std::io::Result<()> {
     serve_with_initial_url(port, None).await
 }
@@ -62,9 +68,7 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
 pub async fn serve_with_initial_url(port: u16, initial_url: Option<String>) -> std::io::Result<()> {
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
     let listener = TcpListener::bind(addr).await?;
-    // The state is `Rc<RefCell<>>` so it can move across `await` points in
-    // a single-threaded `LocalSet` without going through `Arc<Mutex>`.
-    let mut initial_state = CdpState::default();
+    let mut initial_state = CdpState::new().map_err(std::io::Error::other)?;
     if let Some(url) = initial_url
         && let Err(e) = initial_state.seed_initial_target(url)
     {
@@ -110,53 +114,126 @@ async fn handle_connection(
     Ok(())
 }
 
-/// All per-process CDP state — the dispatcher and a runtime that backs
-/// `Runtime.evaluate`. Lives behind `Rc<RefCell<>>` because the JS runtime is
-/// `!Send + !Sync`; the whole server runs on a single `LocalSet`.
-#[derive(Default)]
+/// Protocol presentation state. BrowserCore exclusively owns pages, runtimes,
+/// histories, loading, and typed document/runtime generations.
 pub struct CdpState {
-    next_target_id: AtomicU64,
+    browser: EngineBrowserHandle,
+    _profile: tempfile::TempDir,
+    next_session_id: u64,
     targets: Vec<Target>,
     attached_sessions: Vec<TargetSession>,
-    js: Option<JsRuntime>,
+    dispatch_context: Option<BrowsingContextId>,
+    active_presentation_context: Option<BrowsingContextId>,
+    context_presentations: HashMap<BrowsingContextId, ContextPresentation>,
+    pending_core_navigations: HashMap<NavigationId, PendingCoreNavigation>,
+    pending_effects: VecDeque<PendingRuntimeEffects>,
     runtime_enabled: bool,
     network_enabled: bool,
     page_enabled: bool,
     lifecycle_events_enabled: bool,
-    isolated_world_name: Option<String>,
+    bypass_csp: bool,
+    extra_http_headers: Vec<(String, String)>,
+    cache_disabled: bool,
     log_enabled: bool,
     last_mouse_down: Option<MouseDownTarget>,
     last_mouse_over_node_id: Option<usize>,
     last_key_down_text: Option<String>,
     next_object_id: u64,
+    remote_handles: VecDeque<RemoteHandle>,
     emulated_viewport: Option<(u32, u32)>,
     emulated_media: EmulatedMedia,
     next_new_document_script_id: u64,
     new_document_scripts: Vec<NewDocumentScript>,
     runtime_bindings: Vec<String>,
+    isolated_world_name: Option<String>,
+    pending_content_loader_id: Option<u64>,
     download_behavior: DownloadBehavior,
+    permission_grants: Vec<PermissionGrant>,
+    tracing: TraceState,
+    io_streams: HashMap<String, IoStream>,
+    next_io_stream_id: u64,
 }
 
-#[allow(dead_code)] // Bookkeeping fields; required for future per-target routing.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PermissionGrant {
+    origin: Option<String>,
+    runtime_permissions: Vec<String>,
+}
+
+const MAX_TRACE_EVENTS: usize = 4_096;
+const TRACE_READ_CHUNK_BYTES: usize = 64 * 1024;
+
+#[derive(Debug, Default)]
+struct TraceState {
+    active: bool,
+    session_id: Option<String>,
+    events: Vec<Value>,
+    data_loss_occurred: bool,
+}
+
+#[derive(Debug)]
+struct IoStream {
+    bytes: Vec<u8>,
+    offset: usize,
+}
+
 struct Target {
-    id: u64,
+    context_id: BrowsingContextId,
     session_id: u64,
-    loader_id: u64,
-    url: String,
-    title: Option<String>,
-    load_fired: bool,
-    page: Option<Page>,
 }
 
 struct TargetSession {
     session_id: u64,
-    target_id: u64,
+    context_id: BrowsingContextId,
+}
+
+#[derive(Clone, Default)]
+struct ContextPresentation {
+    pending_effects: VecDeque<PendingRuntimeEffects>,
+    runtime_enabled: bool,
+    network_enabled: bool,
+    page_enabled: bool,
+    lifecycle_events_enabled: bool,
+    bypass_csp: bool,
+    extra_http_headers: Vec<(String, String)>,
+    cache_disabled: bool,
+    log_enabled: bool,
+    last_mouse_down: Option<MouseDownTarget>,
+    last_mouse_over_node_id: Option<usize>,
+    last_key_down_text: Option<String>,
+    next_object_id: u64,
+    remote_handles: VecDeque<RemoteHandle>,
+    emulated_viewport: Option<(u32, u32)>,
+    emulated_media: EmulatedMedia,
+    next_new_document_script_id: u64,
+    new_document_scripts: Vec<NewDocumentScript>,
+    runtime_bindings: Vec<String>,
+    isolated_world_name: Option<String>,
+    pending_content_loader_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
 struct NewDocumentScript {
     identifier: String,
     source: String,
+}
+
+#[derive(Clone)]
+struct RemoteHandle {
+    object_id: String,
+    object_group: Option<String>,
+}
+
+#[derive(Clone)]
+struct PendingRuntimeEffects {
+    runtime_context_id: RuntimeContextId,
+    effects: RuntimeEffects,
+}
+
+struct PendingCoreNavigation {
+    context_id: BrowsingContextId,
+    committed: bool,
+    terminal: Option<Result<(), String>>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -222,18 +299,85 @@ enum MouseButton {
 }
 
 impl CdpState {
+    pub fn new() -> Result<Self, String> {
+        let profile = tempfile::Builder::new()
+            .prefix("vixen-cdp-")
+            .tempdir()
+            .map_err(|error| format!("create CDP profile: {error}"))?;
+        let config = BrowserConfig::new(profile.path().join("profile.redb"));
+        Self::with_config_and_profile(config, profile)
+    }
+
+    fn with_config_and_profile(
+        config: BrowserConfig,
+        profile: tempfile::TempDir,
+    ) -> Result<Self, String> {
+        let browser = spawn_browser(config).map_err(|error| error.to_string())?;
+        let mut state = Self {
+            browser,
+            _profile: profile,
+            next_session_id: 0,
+            targets: Vec::new(),
+            attached_sessions: Vec::new(),
+            dispatch_context: None,
+            active_presentation_context: None,
+            context_presentations: HashMap::new(),
+            pending_core_navigations: HashMap::new(),
+            pending_effects: VecDeque::new(),
+            runtime_enabled: false,
+            network_enabled: false,
+            page_enabled: false,
+            lifecycle_events_enabled: false,
+            bypass_csp: false,
+            extra_http_headers: Vec::new(),
+            cache_disabled: false,
+            log_enabled: false,
+            last_mouse_down: None,
+            last_mouse_over_node_id: None,
+            last_key_down_text: None,
+            next_object_id: 0,
+            remote_handles: VecDeque::new(),
+            emulated_viewport: None,
+            emulated_media: EmulatedMedia::default(),
+            next_new_document_script_id: 0,
+            new_document_scripts: Vec::new(),
+            runtime_bindings: Vec::new(),
+            isolated_world_name: None,
+            pending_content_loader_id: None,
+            download_behavior: DownloadBehavior::default(),
+            permission_grants: Vec::new(),
+            tracing: TraceState::default(),
+            io_streams: HashMap::new(),
+            next_io_stream_id: 0,
+        };
+        state.push_loaded_target("about:blank".to_owned())?;
+        Ok(state)
+    }
+
     /// Dispatch a single JSON request (synchronous — no await while state
     /// is borrowed). Returns outgoing lines: exactly one response followed by
     /// zero or more notifications caused by that response.
     pub fn handle_text_sync(&mut self, raw: &str) -> Vec<String> {
-        let req: CdpRequest = match serde_json::from_str(raw) {
-            Ok(r) => r,
+        let value: Value = match serde_json::from_str(raw) {
+            Ok(value) => value,
             Err(e) => {
-                return vec![error_response(None, -32700, &e.to_string())];
+                return vec![error_response(None, CdpError::parse(e.to_string()))];
+            }
+        };
+        let req: CdpRequest = match serde_json::from_value(value) {
+            Ok(request) => request,
+            Err(error) => {
+                return vec![error_response(
+                    None,
+                    CdpError::new(-32600, error.to_string()),
+                )];
             }
         };
         let id = req.id;
+        let started = Instant::now();
         let outcome = self.dispatch(&req);
+        let succeeded = outcome.response.is_ok();
+        self.record_trace_event(&req.method, req.session_id.as_deref(), started, succeeded);
         let resp = match outcome.response {
             Ok(result) => CdpResponse {
                 id,
@@ -254,7 +398,10 @@ impl CdpState {
         out.extend(outcome.pre_response_notifications);
         match serde_json::to_string(&resp) {
             Ok(s) => out.push(s),
-            Err(e) => out.push(error_response(Some(id), -32603, &e.to_string())),
+            Err(e) => out.push(error_response(
+                Some(id),
+                CdpError::new(-32603, e.to_string()),
+            )),
         }
         out.extend(outcome.notifications);
         out
@@ -262,10 +409,32 @@ impl CdpState {
 
     /// Pure dispatch on the method name.
     fn dispatch(&mut self, req: &CdpRequest) -> CdpDispatch {
-        match req.method.as_str() {
+        if req
+            .session_id
+            .as_deref()
+            .is_some_and(|session_id| !self.is_known_session(session_id))
+        {
+            return CdpDispatch::error(
+                -32001,
+                format!(
+                    "{}: unknown or detached session `{}`",
+                    req.method,
+                    req.session_id.as_deref().unwrap_or_default()
+                ),
+            );
+        }
+        self.dispatch_context = self
+            .target_for_session(req.session_id.as_deref())
+            .map(|target| target.context_id);
+        if let Some(context_id) = self.dispatch_context {
+            self.load_presentation(context_id);
+        }
+        let outcome = match req.method.as_str() {
             "Browser.getVersion" => CdpDispatch::ok(self.browser_get_version()),
             "Browser.close" => CdpDispatch::ok(json!({})),
             "Browser.setDownloadBehavior" => self.browser_set_download_behavior(req),
+            "Browser.grantPermissions" => self.browser_grant_permissions(req),
+            "Browser.resetPermissions" => self.browser_reset_permissions(req),
             "Target.createTarget" => self.target_create(req),
             "Target.closeTarget" => self.target_close(req),
             "Target.attachToTarget" => self.target_attach(req),
@@ -282,14 +451,18 @@ impl CdpState {
             }
             "Page.navigate" => self.page_navigate(req),
             "Page.loadEventFired" => CdpDispatch::ok(json!({})),
+            "Page.stopLoading" => self.page_stop_loading(req),
             "Page.reload" => self.page_reload(req),
             "Page.getNavigationHistory" => self.page_get_navigation_history(),
+            "Page.resetNavigationHistory" => self.page_reset_navigation_history(req),
             "Page.navigateToHistoryEntry" => self.page_navigate_to_history_entry(req),
             "Page.captureScreenshot" => self.page_capture_screenshot(req),
             "Page.getLayoutMetrics" => {
                 CdpDispatch::ok(page_get_layout_metrics(self.current_viewport()))
             }
             "Page.getFrameTree" => CdpDispatch::ok(self.page_get_frame_tree(req)),
+            "Page.getResourceTree" => self.page_get_resource_tree(req),
+            "Page.getResourceContent" => self.page_get_resource_content(req),
             "Page.addScriptToEvaluateOnNewDocument" => {
                 self.page_add_script_to_evaluate_on_new_document(req)
             }
@@ -299,6 +472,7 @@ impl CdpState {
             "Page.handleJavaScriptDialog" => self.page_handle_javascript_dialog(req),
             "Page.createIsolatedWorld" => self.page_create_isolated_world(req),
             "Page.setLifecycleEventsEnabled" => self.page_set_lifecycle_events_enabled(req),
+            "Page.setBypassCSP" => self.page_set_bypass_csp(req),
             "Page.bringToFront" => CdpDispatch::ok(json!({})),
             "Runtime.enable" => self.runtime_enable(req),
             "Runtime.disable" => {
@@ -310,9 +484,9 @@ impl CdpState {
             "Runtime.getProperties" => self.runtime_get_properties(req),
             "Runtime.awaitPromise" => self.runtime_await_promise(req),
             "Runtime.addBinding" => self.runtime_add_binding(req),
-            "Runtime.releaseObject"
-            | "Runtime.releaseObjectGroup"
-            | "Runtime.runIfWaitingForDebugger" => CdpDispatch::ok(json!({})),
+            "Runtime.releaseObject" => self.runtime_release_object(req),
+            "Runtime.releaseObjectGroup" => self.runtime_release_object_group(req),
+            "Runtime.runIfWaitingForDebugger" => CdpDispatch::ok(json!({})),
             "Log.enable" => {
                 self.log_enabled = true;
                 CdpDispatch::ok(json!({}))
@@ -329,6 +503,20 @@ impl CdpState {
                 self.network_enabled = false;
                 CdpDispatch::ok(json!({}))
             }
+            "Network.setCacheDisabled" => self.network_set_cache_disabled(req),
+            "Network.setBypassServiceWorker" => CdpDispatch::ok(json!({})),
+            "Network.setExtraHTTPHeaders" => self.network_set_extra_http_headers(req),
+            "Performance.enable" | "Performance.disable" => CdpDispatch::ok(json!({})),
+            "Performance.getMetrics" => self.performance_get_metrics(req),
+            "Security.enable" | "Security.disable" => CdpDispatch::ok(json!({})),
+            "Security.getSecurityState" => self.security_get_state(req),
+            "Tracing.start" => self.tracing_start(req),
+            "Tracing.end" => self.tracing_end(req),
+            "Tracing.getCategories" => CdpDispatch::ok(json!({
+                "categories": ["vixen.cdp", "devtools.timeline"]
+            })),
+            "IO.read" => self.io_read(req),
+            "IO.close" => self.io_close(req),
             "DOM.enable"
             | "DOM.disable"
             | "Emulation.setTouchEmulationEnabled"
@@ -337,7 +525,10 @@ impl CdpState {
             "Emulation.setEmulatedMedia" => self.emulation_set_emulated_media(req),
             "Emulation.clearDeviceMetricsOverride" => {
                 self.emulated_viewport = None;
-                CdpDispatch::ok(json!({}))
+                match self.configure_current_context() {
+                    Ok(()) => CdpDispatch::ok(json!({})),
+                    Err(error) => CdpDispatch::error(-32603, error),
+                }
             }
             "DOM.scrollIntoViewIfNeeded" => CdpDispatch::ok(json!({})),
             "DOM.getDocument" => self.dom_get_document(req),
@@ -345,13 +536,19 @@ impl CdpState {
             "DOM.querySelectorAll" => self.dom_query_selector_all(req),
             "DOM.describeNode" => self.dom_describe_node(req),
             "DOM.resolveNode" => self.dom_resolve_node(req),
+            "DOM.getAttributes" => self.dom_get_attributes(req),
+            "DOM.getOuterHTML" => self.dom_get_outer_html(req),
+            "DOM.setAttributeValue" => self.dom_set_attribute_value(req),
+            "DOM.removeAttribute" => self.dom_remove_attribute(req),
             "DOM.getContentQuads" => self.dom_get_content_quads(req),
             "DOM.getBoxModel" => self.dom_get_box_model(req),
             "Input.dispatchMouseEvent" => self.input_dispatch_mouse_event(req),
             "Input.dispatchKeyEvent" => self.input_dispatch_key_event(req),
             "Input.insertText" => self.input_insert_text(req),
             _ => CdpDispatch::error(-32601, format!("method not found: {}", req.method)),
-        }
+        };
+        self.store_active_presentation();
+        outcome
     }
 
     // --- Method handlers ------------------------------------------------
@@ -368,6 +565,13 @@ impl CdpState {
         self.targets.first()
     }
 
+    fn is_known_session(&self, session_id: &str) -> bool {
+        self.targets.is_empty()
+            || session_id == "browser-session"
+            || self.target_by_primary_session_id(session_id).is_some()
+            || self.target_by_attached_session_id(session_id).is_some()
+    }
+
     fn target_by_primary_session_id(&self, session_id: &str) -> Option<&Target> {
         let target_session_id = session_id.strip_prefix("sess-")?.parse::<u64>().ok()?;
         self.targets
@@ -381,8 +585,429 @@ impl CdpState {
             .attached_sessions
             .iter()
             .find(|session| session.session_id == target_session_id)?
-            .target_id;
-        self.targets.iter().find(|target| target.id == target_id)
+            .context_id;
+        self.targets
+            .iter()
+            .find(|target| target.context_id == target_id)
+    }
+
+    fn context_for_session(&self, session_id: Option<&str>) -> Option<BrowsingContextId> {
+        self.target_for_session(session_id)
+            .map(|target| target.context_id)
+    }
+
+    fn notification_sessions(
+        &self,
+        context_id: BrowsingContextId,
+        requested_session: Option<&str>,
+    ) -> Vec<Option<String>> {
+        if requested_session.is_none() {
+            return vec![None];
+        }
+        let Some(target) = self
+            .targets
+            .iter()
+            .find(|target| target.context_id == context_id)
+        else {
+            return Vec::new();
+        };
+        let mut sessions = vec![Some(format!("sess-{}", target.session_id))];
+        sessions.extend(
+            self.attached_sessions
+                .iter()
+                .filter(|session| session.context_id == context_id)
+                .map(|session| Some(format!("sess-{}", session.session_id))),
+        );
+        sessions
+    }
+
+    fn store_active_presentation(&mut self) {
+        let Some(context_id) = self.active_presentation_context else {
+            return;
+        };
+        self.context_presentations.insert(
+            context_id,
+            ContextPresentation {
+                runtime_enabled: self.runtime_enabled,
+                pending_effects: self.pending_effects.clone(),
+                network_enabled: self.network_enabled,
+                page_enabled: self.page_enabled,
+                lifecycle_events_enabled: self.lifecycle_events_enabled,
+                bypass_csp: self.bypass_csp,
+                extra_http_headers: self.extra_http_headers.clone(),
+                cache_disabled: self.cache_disabled,
+                log_enabled: self.log_enabled,
+                last_mouse_down: self.last_mouse_down.clone(),
+                last_mouse_over_node_id: self.last_mouse_over_node_id,
+                last_key_down_text: self.last_key_down_text.clone(),
+                next_object_id: self.next_object_id,
+                remote_handles: self.remote_handles.clone(),
+                emulated_viewport: self.emulated_viewport,
+                emulated_media: self.emulated_media.clone(),
+                next_new_document_script_id: self.next_new_document_script_id,
+                new_document_scripts: self.new_document_scripts.clone(),
+                runtime_bindings: self.runtime_bindings.clone(),
+                isolated_world_name: self.isolated_world_name.clone(),
+                pending_content_loader_id: self.pending_content_loader_id,
+            },
+        );
+    }
+
+    fn load_presentation(&mut self, context_id: BrowsingContextId) {
+        self.store_active_presentation();
+        let presentation = self
+            .context_presentations
+            .entry(context_id)
+            .or_default()
+            .clone();
+        self.runtime_enabled = presentation.runtime_enabled;
+        self.pending_effects = presentation.pending_effects;
+        self.network_enabled = presentation.network_enabled;
+        self.page_enabled = presentation.page_enabled;
+        self.lifecycle_events_enabled = presentation.lifecycle_events_enabled;
+        self.bypass_csp = presentation.bypass_csp;
+        self.extra_http_headers = presentation.extra_http_headers;
+        self.cache_disabled = presentation.cache_disabled;
+        self.log_enabled = presentation.log_enabled;
+        self.last_mouse_down = presentation.last_mouse_down;
+        self.last_mouse_over_node_id = presentation.last_mouse_over_node_id;
+        self.last_key_down_text = presentation.last_key_down_text;
+        self.next_object_id = presentation.next_object_id;
+        self.remote_handles = presentation.remote_handles;
+        self.emulated_viewport = presentation.emulated_viewport;
+        self.emulated_media = presentation.emulated_media;
+        self.next_new_document_script_id = presentation.next_new_document_script_id;
+        self.new_document_scripts = presentation.new_document_scripts;
+        self.runtime_bindings = presentation.runtime_bindings;
+        self.isolated_world_name = presentation.isolated_world_name;
+        self.pending_content_loader_id = presentation.pending_content_loader_id;
+        self.active_presentation_context = Some(context_id);
+    }
+
+    fn current_context(&self) -> Result<BrowsingContextId, String> {
+        self.dispatch_context
+            .or_else(|| self.targets.first().map(|target| target.context_id))
+            .ok_or_else(|| "no page target".to_owned())
+    }
+
+    fn context_state(
+        &mut self,
+        context_id: BrowsingContextId,
+    ) -> Result<BrowsingContextState, String> {
+        match self
+            .browser
+            .dispatch(BrowserCommand::GetBrowsingContextState { context_id })
+            .map_err(|error| error.to_string())?
+        {
+            BrowserCommandResult::BrowsingContextState(state) => Ok(state),
+            result => Err(format!("unexpected context-state result: {result:?}")),
+        }
+    }
+
+    fn current_state(&mut self) -> Result<BrowsingContextState, String> {
+        let context_id = self.current_context()?;
+        self.context_state(context_id)
+    }
+
+    fn query_selector_all(
+        &mut self,
+        selector: &str,
+        viewport: (u32, u32),
+    ) -> Result<Vec<vixen_api::ElementInfo>, String> {
+        let state = self.current_state()?;
+        match self
+            .browser
+            .dispatch(BrowserCommand::QuerySelectorAll {
+                context_id: state.context_id,
+                document_id: state.document_id,
+                selector: selector.to_owned(),
+                viewport,
+            })
+            .map_err(|error| error.to_string())?
+        {
+            BrowserCommandResult::SelectorMatches(elements) => Ok(elements),
+            result => Err(format!("unexpected selector result: {result:?}")),
+        }
+    }
+
+    fn element_for_node_id(
+        &mut self,
+        node_id: usize,
+    ) -> Result<Option<vixen_api::ElementInfo>, String> {
+        Ok(self
+            .query_selector_all("*", self.current_viewport())?
+            .into_iter()
+            .find(|element| element.node_id == node_id))
+    }
+
+    fn configure_current_context(&mut self) -> Result<(), String> {
+        let context_id = self.current_context()?;
+        self.configure_context(context_id)
+    }
+
+    fn configure_context(&mut self, context_id: BrowsingContextId) -> Result<(), String> {
+        self.store_active_presentation();
+        let presentation = self
+            .context_presentations
+            .get(&context_id)
+            .cloned()
+            .unwrap_or_default();
+        let viewport = presentation
+            .emulated_viewport
+            .unwrap_or(DEFAULT_CAPTURE_VIEWPORT);
+        let preload_scripts = runtime_binding_install_scripts(&presentation.runtime_bindings)
+            .into_iter()
+            .chain(std::iter::once(emulation_override_script(
+                viewport,
+                &presentation.emulated_media,
+            )))
+            .collect();
+        let config = BrowsingContextConfig {
+            extra_http_headers: presentation.extra_http_headers,
+            cache_disabled: presentation.cache_disabled,
+            bypass_csp: presentation.bypass_csp,
+            preload_scripts,
+            new_document_scripts: presentation
+                .new_document_scripts
+                .iter()
+                .map(|script| script.source.clone())
+                .collect(),
+            permission_grants: self
+                .permission_grants
+                .iter()
+                .map(|grant| RuntimePermissionGrant {
+                    origin: grant.origin.clone(),
+                    permissions: grant.runtime_permissions.clone(),
+                })
+                .collect(),
+        };
+        match self
+            .browser
+            .dispatch(BrowserCommand::ConfigureBrowsingContext { context_id, config })
+            .map_err(|error| error.to_string())?
+        {
+            BrowserCommandResult::Accepted => Ok(()),
+            result => Err(format!("unexpected configure-context result: {result:?}")),
+        }
+    }
+
+    fn drain_core_events(&mut self, context_id: BrowsingContextId) -> (bool, Option<String>) {
+        loop {
+            match self.browser.try_next_event() {
+                Ok(Some(event)) => self.record_core_event(event),
+                Ok(None) => break,
+                Err(error) => {
+                    return (false, Some(error.to_string()));
+                }
+            }
+        }
+        self.take_context_navigation_outcome(context_id)
+    }
+
+    fn wait_for_navigation(
+        &mut self,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+    ) -> Result<bool, String> {
+        let deadline = Instant::now() + NAVIGATION_WAIT_TIMEOUT;
+        loop {
+            if let Some((committed, terminal)) = self.take_navigation_outcome(navigation_id) {
+                terminal?;
+                return Ok(committed);
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            let Some(event) = self
+                .browser
+                .wait_next_event(remaining)
+                .map_err(|error| error.to_string())?
+            else {
+                return Err(format!(
+                    "timed out waiting for navigation {navigation_id} in context {context_id}"
+                ));
+            };
+            self.record_core_event(event);
+        }
+    }
+
+    fn record_core_event(&mut self, event: BrowserEvent) {
+        match event {
+            BrowserEvent::NavigationCommitted {
+                context_id,
+                navigation_id,
+                ..
+            } => {
+                let pending = self
+                    .pending_core_navigations
+                    .entry(navigation_id)
+                    .or_insert(PendingCoreNavigation {
+                        context_id,
+                        committed: false,
+                        terminal: None,
+                    });
+                pending.committed = true;
+            }
+            BrowserEvent::NavigationPhaseChanged {
+                context_id,
+                navigation_id,
+                phase: NavigationPhase::Settled,
+                ..
+            } => {
+                self.pending_core_navigations
+                    .entry(navigation_id)
+                    .or_insert(PendingCoreNavigation {
+                        context_id,
+                        committed: false,
+                        terminal: None,
+                    })
+                    .terminal = Some(Ok(()));
+            }
+            BrowserEvent::NavigationFailed {
+                context_id,
+                navigation_id,
+                error,
+                ..
+            } => {
+                self.pending_core_navigations
+                    .entry(navigation_id)
+                    .or_insert(PendingCoreNavigation {
+                        context_id,
+                        committed: false,
+                        terminal: None,
+                    })
+                    .terminal = Some(Err(error.to_string()));
+            }
+            BrowserEvent::NavigationCancelled {
+                context_id,
+                navigation_id,
+                reason,
+                ..
+            } => {
+                self.pending_core_navigations
+                    .entry(navigation_id)
+                    .or_insert(PendingCoreNavigation {
+                        context_id,
+                        committed: false,
+                        terminal: None,
+                    })
+                    .terminal = Some(Err(format!(
+                    "navigation {navigation_id} was cancelled: {reason:?}"
+                )));
+            }
+            BrowserEvent::RuntimeEffects {
+                context_id,
+                runtime_context_id,
+                effects,
+                ..
+            } => self.queue_runtime_effects_for_context(context_id, runtime_context_id, effects),
+            _ => {}
+        }
+        self.prune_pending_core_navigations();
+    }
+
+    fn prune_pending_core_navigations(&mut self) {
+        while self.pending_core_navigations.len() > MAX_PENDING_CORE_NAVIGATIONS {
+            let Some(oldest_terminal) = self
+                .pending_core_navigations
+                .iter()
+                .filter(|(_, pending)| pending.terminal.is_some())
+                .map(|(navigation_id, _)| *navigation_id)
+                .min()
+            else {
+                break;
+            };
+            self.pending_core_navigations.remove(&oldest_terminal);
+        }
+    }
+
+    fn take_navigation_outcome(
+        &mut self,
+        navigation_id: NavigationId,
+    ) -> Option<(bool, Result<(), String>)> {
+        self.pending_core_navigations
+            .get(&navigation_id)?
+            .terminal
+            .as_ref()?;
+        let pending = self
+            .pending_core_navigations
+            .remove(&navigation_id)
+            .expect("pending navigation exists");
+        Some((
+            pending.committed,
+            pending.terminal.expect("terminal outcome exists"),
+        ))
+    }
+
+    fn take_context_navigation_outcome(
+        &mut self,
+        context_id: BrowsingContextId,
+    ) -> (bool, Option<String>) {
+        let navigation_ids = self
+            .pending_core_navigations
+            .iter()
+            .filter(|(_, pending)| pending.context_id == context_id && pending.terminal.is_some())
+            .map(|(navigation_id, _)| *navigation_id)
+            .collect::<Vec<_>>();
+        let mut committed = false;
+        let mut failure = None;
+        for navigation_id in navigation_ids {
+            if let Some((event_committed, terminal)) = self.take_navigation_outcome(navigation_id) {
+                committed |= event_committed;
+                if let Err(error) = terminal {
+                    failure = Some(error);
+                }
+            }
+        }
+        (committed, failure)
+    }
+
+    fn queue_runtime_effects(
+        &mut self,
+        runtime_context_id: RuntimeContextId,
+        effects: RuntimeEffects,
+    ) {
+        if effects.is_empty() {
+            return;
+        }
+        if let Some(pending) = self.pending_effects.back_mut()
+            && pending.runtime_context_id == runtime_context_id
+        {
+            pending.effects.extend(effects);
+            return;
+        }
+        self.pending_effects.push_back(PendingRuntimeEffects {
+            runtime_context_id,
+            effects,
+        });
+    }
+
+    fn queue_runtime_effects_for_context(
+        &mut self,
+        context_id: BrowsingContextId,
+        runtime_context_id: RuntimeContextId,
+        effects: RuntimeEffects,
+    ) {
+        if self.active_presentation_context == Some(context_id) {
+            self.queue_runtime_effects(runtime_context_id, effects);
+            return;
+        }
+        if effects.is_empty() {
+            return;
+        }
+        let pending = &mut self
+            .context_presentations
+            .entry(context_id)
+            .or_default()
+            .pending_effects;
+        if let Some(previous) = pending.back_mut()
+            && previous.runtime_context_id == runtime_context_id
+        {
+            previous.effects.extend(effects);
+        } else {
+            pending.push_back(PendingRuntimeEffects {
+                runtime_context_id,
+                effects,
+            });
+        }
     }
 
     fn browser_get_version(&self) -> Value {
@@ -440,6 +1065,220 @@ impl CdpState {
         CdpDispatch::ok(json!({}))
     }
 
+    fn browser_grant_permissions(&mut self, req: &CdpRequest) -> CdpDispatch {
+        if let Some(context_id) = req.params.get("browserContextId").and_then(Value::as_str)
+            && context_id != "default"
+        {
+            return CdpDispatch::error(
+                -32000,
+                "Browser.grantPermissions: only the default browser context is supported",
+            );
+        }
+        let Some(permissions) = req.params.get("permissions").and_then(Value::as_array) else {
+            return CdpDispatch::error(-32602, "Browser.grantPermissions: missing `permissions`");
+        };
+        let origin = match req.params.get("origin").and_then(Value::as_str) {
+            Some(origin) => match canonical_permission_origin(origin) {
+                Ok(origin) => Some(origin),
+                Err(message) => return CdpDispatch::error(-32602, message),
+            },
+            None => None,
+        };
+        let mut runtime_permissions = Vec::new();
+        for permission in permissions {
+            let Some(permission) = permission.as_str() else {
+                return CdpDispatch::error(
+                    -32602,
+                    "Browser.grantPermissions: permission names must be strings",
+                );
+            };
+            let Some(mapped) = runtime_permission_name(permission) else {
+                if is_supported_cdp_permission(permission) {
+                    continue;
+                }
+                return CdpDispatch::error(
+                    -32602,
+                    format!("Browser.grantPermissions: unsupported permission `{permission}`"),
+                );
+            };
+            if !runtime_permissions.iter().any(|entry| entry == mapped) {
+                runtime_permissions.push(mapped.to_owned());
+            }
+        }
+
+        let grant = PermissionGrant {
+            origin: origin.clone(),
+            runtime_permissions: runtime_permissions.clone(),
+        };
+        if let Some(existing) = self
+            .permission_grants
+            .iter_mut()
+            .find(|entry| entry.origin == origin)
+        {
+            *existing = grant;
+        } else {
+            self.permission_grants.push(grant);
+        }
+        let contexts = self
+            .targets
+            .iter()
+            .map(|target| target.context_id)
+            .collect::<Vec<_>>();
+        for context_id in contexts {
+            if let Err(error) = self.configure_context(context_id) {
+                return CdpDispatch::error(-32603, error);
+            }
+        }
+        CdpDispatch::ok(json!({}))
+    }
+
+    fn browser_reset_permissions(&mut self, req: &CdpRequest) -> CdpDispatch {
+        if let Some(context_id) = req.params.get("browserContextId").and_then(Value::as_str)
+            && context_id != "default"
+        {
+            return CdpDispatch::error(
+                -32000,
+                "Browser.resetPermissions: only the default browser context is supported",
+            );
+        }
+        self.permission_grants.clear();
+        let contexts = self
+            .targets
+            .iter()
+            .map(|target| target.context_id)
+            .collect::<Vec<_>>();
+        for context_id in contexts {
+            if let Err(error) = self.configure_context(context_id) {
+                return CdpDispatch::error(-32603, error);
+            }
+        }
+        CdpDispatch::ok(json!({}))
+    }
+
+    fn tracing_start(&mut self, req: &CdpRequest) -> CdpDispatch {
+        if self.tracing.active {
+            return CdpDispatch::error(-32000, "Tracing.start: tracing is already active");
+        }
+        let transfer_mode = req
+            .params
+            .get("transferMode")
+            .and_then(Value::as_str)
+            .unwrap_or("ReturnAsStream");
+        if transfer_mode != "ReturnAsStream" {
+            return CdpDispatch::error(-32000, "Tracing.start: only ReturnAsStream is supported");
+        }
+        if req
+            .params
+            .get("streamFormat")
+            .and_then(Value::as_str)
+            .is_some_and(|format| format != "json")
+            || req
+                .params
+                .get("streamCompression")
+                .and_then(Value::as_str)
+                .is_some_and(|compression| compression != "none")
+        {
+            return CdpDispatch::error(
+                -32000,
+                "Tracing.start: only uncompressed JSON traces are supported",
+            );
+        }
+        self.tracing = TraceState {
+            active: true,
+            session_id: req.session_id.clone(),
+            events: Vec::new(),
+            data_loss_occurred: false,
+        };
+        CdpDispatch::ok(json!({}))
+    }
+
+    fn tracing_end(&mut self, _req: &CdpRequest) -> CdpDispatch {
+        if !self.tracing.active {
+            return CdpDispatch::error(-32000, "Tracing.end: tracing is not active");
+        }
+        self.tracing.active = false;
+        self.next_io_stream_id = self.next_io_stream_id.saturating_add(1);
+        let handle = format!("vixen-trace-{}", self.next_io_stream_id);
+        let payload = json!({
+            "traceEvents": self.tracing.events,
+            "metadata": {
+                "product": format!("Vixen/{}", env!("CARGO_PKG_VERSION")),
+            }
+        });
+        let bytes =
+            serde_json::to_vec(&payload).unwrap_or_else(|_| b"{\"traceEvents\":[]}".to_vec());
+        self.io_streams
+            .insert(handle.clone(), IoStream { bytes, offset: 0 });
+        let notification_session = self.tracing.session_id.clone();
+        let data_loss_occurred = self.tracing.data_loss_occurred;
+        self.tracing.events.clear();
+        CdpDispatch::ok_with_notifications(
+            json!({}),
+            vec![notification(
+                "Tracing.tracingComplete",
+                json!({
+                    "dataLossOccurred": data_loss_occurred,
+                    "stream": handle,
+                    "traceFormat": "json",
+                    "streamCompression": "none",
+                }),
+                notification_session.as_deref(),
+            )],
+        )
+    }
+
+    fn io_read(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(handle) = req.params.get("handle").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "IO.read: missing `handle`");
+        };
+        let Some(stream) = self.io_streams.get_mut(handle) else {
+            return CdpDispatch::error(-32000, "IO.read: unknown stream handle");
+        };
+        let requested = req
+            .params
+            .get("size")
+            .and_then(Value::as_u64)
+            .and_then(|size| usize::try_from(size).ok())
+            .filter(|size| *size > 0)
+            .unwrap_or(TRACE_READ_CHUNK_BYTES)
+            .min(TRACE_READ_CHUNK_BYTES);
+        let end = stream
+            .offset
+            .saturating_add(requested)
+            .min(stream.bytes.len());
+        let data = BASE64_STANDARD.encode(&stream.bytes[stream.offset..end]);
+        stream.offset = end;
+        CdpDispatch::ok(json!({
+            "base64Encoded": true,
+            "data": data,
+            "eof": stream.offset >= stream.bytes.len(),
+        }))
+    }
+
+    fn io_close(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(handle) = req.params.get("handle").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "IO.close: missing `handle`");
+        };
+        if self.io_streams.remove(handle).is_none() {
+            return CdpDispatch::error(-32000, "IO.close: unknown stream handle");
+        }
+        CdpDispatch::ok(json!({}))
+    }
+
+    fn page_stop_loading(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
+            return CdpDispatch::error(-32000, "Page.stopLoading: no page target");
+        };
+        match self.browser.dispatch(BrowserCommand::Stop { context_id }) {
+            Ok(BrowserCommandResult::Accepted) => CdpDispatch::ok(json!({})),
+            Ok(result) => CdpDispatch::error(
+                -32603,
+                format!("unexpected stop-loading result: {result:?}"),
+            ),
+            Err(error) => CdpDispatch::error(-32603, error.to_string()),
+        }
+    }
+
     fn target_create(&mut self, req: &CdpRequest) -> CdpDispatch {
         let url = req
             .params
@@ -448,16 +1287,23 @@ impl CdpState {
             .unwrap_or("about:blank")
             .to_owned();
         match self.push_loaded_target(url) {
-            Ok(id) => {
+            Ok(context_id) => {
                 let target = self
                     .targets
                     .iter()
-                    .find(|target| target.id == id)
+                    .find(|target| target.context_id == context_id)
                     .expect("created target is stored");
+                let session_id = target.session_id;
+                let state = match self.context_state(context_id) {
+                    Ok(state) => state,
+                    Err(error) => return CdpDispatch::error(-32603, error),
+                };
                 CdpDispatch::ok_with_pre_response_notifications(
-                    json!({ "targetId": format!("tab-{id}") }),
+                    json!({ "targetId": cdp_target_id(context_id) }),
                     vec![target_attached_notification(
-                        target,
+                        context_id,
+                        session_id,
+                        &state,
                         req.session_id.as_deref(),
                     )],
                 )
@@ -473,15 +1319,27 @@ impl CdpState {
         let Some(index) = self
             .targets
             .iter()
-            .position(|target| format!("tab-{}", target.id) == target_id)
+            .position(|target| cdp_target_id(target.context_id) == target_id)
         else {
             return CdpDispatch::ok(json!({ "success": false }));
         };
+        let context_id = self.targets[index].context_id;
+        if let Err(error) = self
+            .browser
+            .dispatch(BrowserCommand::CloseBrowsingContext { context_id })
+        {
+            return CdpDispatch::error(-32603, error.to_string());
+        }
+        self.drain_core_events(context_id);
         let target = self.targets.remove(index);
+        self.context_presentations.remove(&context_id);
+        if self.active_presentation_context == Some(context_id) {
+            self.active_presentation_context = None;
+        }
         self.attached_sessions
-            .retain(|session| session.target_id != target.id);
+            .retain(|session| session.context_id != target.context_id);
         if index == 0 {
-            self.reset_js_for_navigation();
+            self.reset_input_for_navigation();
         }
         CdpDispatch::ok_with_notifications(
             json!({ "success": true }),
@@ -499,15 +1357,16 @@ impl CdpState {
         let Some(target_id) = self
             .targets
             .iter()
-            .find(|target| format!("tab-{}", target.id) == target_id)
-            .map(|target| target.id)
+            .find(|target| cdp_target_id(target.context_id) == target_id)
+            .map(|target| target.context_id)
         else {
             return CdpDispatch::error(-32602, "Target.attachToTarget: unknown `targetId`");
         };
-        let session_id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
+        self.next_session_id += 1;
+        let session_id = self.next_session_id;
         self.attached_sessions.push(TargetSession {
             session_id,
-            target_id,
+            context_id: target_id,
         });
         CdpDispatch::ok(json!({ "sessionId": format!("sess-{session_id}") }))
     }
@@ -533,13 +1392,17 @@ impl CdpState {
         let Some(target) = self.target_for_session(Some(session_id)) else {
             return CdpDispatch::error(-32602, "Target.detachFromTarget: unknown `sessionId`");
         };
-        let target_id = target.id;
+        let target_id = target.context_id;
         let primary_session_id = target.session_id;
         if detached_session_id != primary_session_id {
             self.attached_sessions
                 .retain(|session| session.session_id != detached_session_id);
         }
-        let Some(target) = self.targets.iter().find(|target| target.id == target_id) else {
+        let Some(target) = self
+            .targets
+            .iter()
+            .find(|target| target.context_id == target_id)
+        else {
             return CdpDispatch::error(-32602, "Target.detachFromTarget: unknown `sessionId`");
         };
         CdpDispatch::ok_with_notifications(
@@ -556,23 +1419,35 @@ impl CdpState {
         CdpDispatch::ok(json!({ "sessionId": "browser-session" }))
     }
 
-    fn target_get_targets(&self) -> Value {
-        json!({
-            "targetInfos": self.targets.iter().map(target_info_json).collect::<Vec<_>>()
-        })
+    fn target_get_targets(&mut self) -> Value {
+        let contexts = self
+            .targets
+            .iter()
+            .map(|target| target.context_id)
+            .collect::<Vec<_>>();
+        let target_infos = contexts
+            .into_iter()
+            .filter_map(|context_id| {
+                self.context_state(context_id)
+                    .ok()
+                    .map(|state| target_info_json(context_id, &state))
+            })
+            .collect::<Vec<_>>();
+        json!({ "targetInfos": target_infos })
     }
 
-    fn target_get_target_info(&self, req: &CdpRequest) -> Value {
+    fn target_get_target_info(&mut self, req: &CdpRequest) -> Value {
         let requested = req.params.get("targetId").and_then(Value::as_str);
         let target = requested
             .and_then(|target_id| {
                 self.targets
                     .iter()
-                    .find(|target| format!("tab-{}", target.id) == target_id)
+                    .find(|target| cdp_target_id(target.context_id) == target_id)
             })
-            .or_else(|| self.targets.first());
+            .or_else(|| self.targets.first())
+            .map(|target| target.context_id);
         json!({
-            "targetInfo": target.map(target_info_json).unwrap_or_else(|| json!({
+            "targetInfo": target.and_then(|context_id| self.context_state(context_id).ok().map(|state| target_info_json(context_id, &state))).unwrap_or_else(|| json!({
                 "targetId": "tab-0",
                 "type": "page",
                 "title": "",
@@ -584,7 +1459,7 @@ impl CdpState {
         })
     }
 
-    fn target_set_discover_targets(&self, req: &CdpRequest) -> CdpDispatch {
+    fn target_set_discover_targets(&mut self, req: &CdpRequest) -> CdpDispatch {
         let discover = req
             .params
             .get("discover")
@@ -593,21 +1468,27 @@ impl CdpState {
         if !discover {
             return CdpDispatch::ok(json!({}));
         }
-        let notifications = self
+        let contexts = self
             .targets
             .iter()
-            .map(|target| {
-                notification(
-                    "Target.targetCreated",
-                    json!({ "targetInfo": target_info_json(target) }),
-                    None,
-                )
+            .map(|target| target.context_id)
+            .collect::<Vec<_>>();
+        let notifications = contexts
+            .into_iter()
+            .filter_map(|context_id| {
+                self.context_state(context_id).ok().map(|state| {
+                    notification(
+                        "Target.targetCreated",
+                        json!({ "targetInfo": target_info_json(context_id, &state) }),
+                        None,
+                    )
+                })
             })
             .collect();
         CdpDispatch::ok_with_notifications(json!({}), notifications)
     }
 
-    fn target_set_auto_attach(&self, req: &CdpRequest) -> CdpDispatch {
+    fn target_set_auto_attach(&mut self, req: &CdpRequest) -> CdpDispatch {
         if req.session_id.is_some() {
             return CdpDispatch::ok(json!({}));
         }
@@ -619,10 +1500,23 @@ impl CdpState {
         if !auto_attach {
             return CdpDispatch::ok(json!({}));
         }
-        let notifications = self
+        let targets = self
             .targets
             .iter()
-            .map(|target| target_attached_notification(target, req.session_id.as_deref()))
+            .map(|target| (target.context_id, target.session_id))
+            .collect::<Vec<_>>();
+        let notifications = targets
+            .into_iter()
+            .filter_map(|(context_id, session_id)| {
+                self.context_state(context_id).ok().map(|state| {
+                    target_attached_notification(
+                        context_id,
+                        session_id,
+                        &state,
+                        req.session_id.as_deref(),
+                    )
+                })
+            })
             .collect();
         CdpDispatch::ok_with_notifications(json!({}), notifications)
     }
@@ -632,10 +1526,14 @@ impl CdpState {
             return CdpDispatch::ok(json!({}));
         }
         self.page_enabled = true;
-        let Some(target) = self.target_for_session(req.session_id.as_deref()) else {
+        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
             return CdpDispatch::ok(json!({}));
         };
-        let frame_id = target_frame_id(target);
+        let state = match self.context_state(context_id) {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32603, error),
+        };
+        let frame_id = frame_id(&state);
         CdpDispatch::ok_with_notifications(
             json!({}),
             vec![
@@ -646,12 +1544,12 @@ impl CdpState {
                 ),
                 notification(
                     "Page.frameStoppedLoading",
-                    json!({ "frameId": target_frame_id(target) }),
+                    json!({ "frameId": &frame_id }),
                     req.session_id.as_deref(),
                 ),
                 notification(
                     "Page.frameNavigated",
-                    json!({ "frame": frame_json(target) }),
+                    json!({ "frame": frame_json(&state) }),
                     req.session_id.as_deref(),
                 ),
             ],
@@ -667,68 +1565,110 @@ impl CdpState {
         CdpDispatch::ok(json!({}))
     }
 
+    fn page_set_bypass_csp(&mut self, req: &CdpRequest) -> CdpDispatch {
+        self.bypass_csp = req
+            .params
+            .get("enabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        match self.configure_current_context() {
+            Ok(()) => CdpDispatch::ok(json!({})),
+            Err(error) => CdpDispatch::error(-32603, error),
+        }
+    }
+
+    fn network_set_extra_http_headers(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(headers) = req.params.get("headers").and_then(Value::as_object) else {
+            return CdpDispatch::error(-32602, "Network.setExtraHTTPHeaders: missing `headers`");
+        };
+        let mut parsed = Vec::with_capacity(headers.len());
+        for (name, value) in headers {
+            let Some(value) = value.as_str() else {
+                return CdpDispatch::error(
+                    -32602,
+                    format!("Network.setExtraHTTPHeaders: header `{name}` must be a string"),
+                );
+            };
+            let name = match validate_header_name(name) {
+                Ok(name) => name,
+                Err(err) => {
+                    return CdpDispatch::error(
+                        -32602,
+                        format!("Network.setExtraHTTPHeaders: {err}"),
+                    );
+                }
+            };
+            let value = match validate_header_value(value) {
+                Ok(value) => value,
+                Err(err) => {
+                    return CdpDispatch::error(
+                        -32602,
+                        format!("Network.setExtraHTTPHeaders: {err}"),
+                    );
+                }
+            };
+            parsed.push((name, value));
+        }
+        self.extra_http_headers = parsed.clone();
+        if let Err(error) = self.configure_current_context() {
+            return CdpDispatch::error(-32603, error);
+        }
+        CdpDispatch::ok(json!({}))
+    }
+
+    fn network_set_cache_disabled(&mut self, req: &CdpRequest) -> CdpDispatch {
+        self.cache_disabled = req
+            .params
+            .get("cacheDisabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if let Err(error) = self.configure_current_context() {
+            return CdpDispatch::error(-32603, error);
+        }
+        CdpDispatch::ok(json!({}))
+    }
+
     fn page_navigate(&mut self, req: &CdpRequest) -> CdpDispatch {
         let Some(url) = req.params.get("url").and_then(Value::as_str) else {
             return CdpDispatch::error(-32602, "Page.navigate: missing `url`");
         };
-        let url = url.to_owned();
-        let mut page = match load_cdp_page(&url) {
-            Ok(page) => page,
-            Err(e) => return CdpDispatch::error(-32602, e),
+        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
+            return CdpDispatch::error(-32000, "Page.navigate: no page target");
         };
-        let final_url = page.url().to_owned();
-        let mut history = self
-            .targets
-            .first()
-            .and_then(|target| target.page.as_ref())
-            .map(|page| page.session_history().clone())
-            .unwrap_or_else(|| page.session_history().clone());
-        if !self.targets.is_empty() {
-            history.push(HistoryEntry::navigation(final_url.clone()));
-            page.set_session_history(history);
+        if let Err(error) = self.configure_current_context() {
+            return CdpDispatch::error(-32603, error);
         }
-        self.reset_js_for_navigation();
-        if let Err(e) = self.execute_page_scripts_if_needed(&mut page) {
-            return CdpDispatch::error(-32603, e);
+        self.drain_core_events(context_id);
+        let navigation_id = match self.browser.dispatch(BrowserCommand::Navigate {
+            context_id,
+            url: url.to_owned(),
+        }) {
+            Ok(BrowserCommandResult::NavigationAccepted { navigation_id }) => navigation_id,
+            Ok(result) => {
+                return CdpDispatch::error(
+                    -32603,
+                    format!("unexpected navigation result: {result:?}"),
+                );
+            }
+            Err(error) => return CdpDispatch::error(-32602, error.to_string()),
+        };
+        if let Err(error) = self.wait_for_navigation(context_id, navigation_id) {
+            return CdpDispatch::error(-32603, error);
         }
-        let mut notifications = self.drain_side_effect_notifications(req);
-        let title = page.document().title();
-        let loader_id = now_ms();
-        if let Some(t) = self.targets.first_mut() {
-            t.loader_id = loader_id;
-            t.url = page.url().to_owned();
-            t.title = title;
-            t.load_fired = true;
-            t.page = Some(page);
-        } else {
-            let id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
-            let session_id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
-            self.targets.push(Target {
-                id,
-                session_id,
-                loader_id,
-                url: page.url().to_owned(),
-                title,
-                load_fired: true,
-                page: Some(page),
-            });
-        }
-        let frame_id = self
-            .targets
-            .first()
-            .map(target_frame_id)
-            .unwrap_or_else(|| "tab-0".to_owned());
-        let mut load_notifications =
-            self.current_page_load_notifications(req.session_id.as_deref());
-        load_notifications.append(&mut notifications);
-        notifications = load_notifications;
+        self.reset_input_for_navigation();
+        let state = match self.context_state(context_id) {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32603, error),
+        };
+        let mut notifications = self.current_page_load_notifications(req.session_id.as_deref());
+        notifications.extend(self.drain_side_effect_notifications(req));
         CdpDispatch::ok_with_notifications(
-            json!({ "frameId": frame_id, "loaderId": format!("loader-{loader_id}") }),
+            json!({ "frameId": frame_id(&state), "loaderId": loader_id(&state), "navigationId": navigation_id.to_string() }),
             notifications,
         )
     }
 
-    fn page_capture_screenshot(&self, req: &CdpRequest) -> CdpDispatch {
+    fn page_capture_screenshot(&mut self, req: &CdpRequest) -> CdpDispatch {
         if let Some(format) = req.params.get("format").and_then(Value::as_str)
             && !format.eq_ignore_ascii_case("png")
         {
@@ -738,10 +1678,21 @@ impl CdpState {
             Ok(viewport) => viewport,
             Err(err) => return CdpDispatch::error(-32602, err),
         };
-        let Some(page) = self.targets.first().and_then(|target| target.page.as_ref()) else {
-            return CdpDispatch::error(-32000, "Page.captureScreenshot: no page loaded");
+        let state = match self.current_state() {
+            Ok(state) => state,
+            Err(error) => {
+                return CdpDispatch::error(-32000, format!("Page.captureScreenshot: {error}"));
+            }
         };
-        match crate::capture_screenshot_png(page, viewport) {
+        let paint =
+            match self
+                .browser
+                .capture_paint_snapshot(state.context_id, state.document_id, viewport)
+            {
+                Ok(paint) => paint,
+                Err(error) => return CdpDispatch::error(-32603, error.to_string()),
+            };
+        match crate::capture_commands_png(&paint.commands, viewport) {
             Ok(png) => CdpDispatch::ok(json!({ "data": BASE64_STANDARD.encode(png) })),
             Err(err) => {
                 CdpDispatch::error(-32603, format!("{}: {err}", codes::UNSUPPORTED_SCREENSHOT))
@@ -750,45 +1701,49 @@ impl CdpState {
     }
 
     fn page_reload(&mut self, req: &CdpRequest) -> CdpDispatch {
-        let Some((url, history)) = self
-            .targets
-            .first()
-            .and_then(|target| target.page.as_ref())
-            .map(|page| (page.url().to_owned(), page.session_history().clone()))
-        else {
+        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
             return CdpDispatch::error(-32000, "Page.reload: no page loaded");
         };
-        let mut page = match load_cdp_page(&url) {
-            Ok(page) => page,
-            Err(err) => return CdpDispatch::error(-32603, err),
+        if let Err(error) = self.configure_current_context() {
+            return CdpDispatch::error(-32603, error);
+        }
+        self.drain_core_events(context_id);
+        let navigation_id = match self.browser.dispatch(BrowserCommand::Reload { context_id }) {
+            Ok(BrowserCommandResult::NavigationAccepted { navigation_id }) => navigation_id,
+            Ok(result) => {
+                return CdpDispatch::error(-32603, format!("unexpected reload result: {result:?}"));
+            }
+            Err(error) => return CdpDispatch::error(-32603, error.to_string()),
         };
-        page.set_session_history(history);
-        self.reset_js_for_navigation();
-        if let Err(err) = self.execute_page_scripts_if_needed(&mut page) {
-            return CdpDispatch::error(-32603, err);
+        if let Err(error) = self.wait_for_navigation(context_id, navigation_id) {
+            return CdpDispatch::error(-32603, error);
         }
-        let title = page.document().title();
-        let loader_id = now_ms();
-        if let Some(target) = self.targets.first_mut() {
-            target.loader_id = loader_id;
-            target.url = page.url().to_owned();
-            target.title = title;
-            target.load_fired = true;
-            target.page = Some(page);
-        }
+        self.reset_input_for_navigation();
         CdpDispatch::ok_with_notifications(
             json!({}),
             self.current_page_load_notifications(req.session_id.as_deref()),
         )
     }
 
-    fn page_get_navigation_history(&self) -> CdpDispatch {
-        let Some(page) = self.targets.first().and_then(|target| target.page.as_ref()) else {
+    fn page_get_navigation_history(&mut self) -> CdpDispatch {
+        let Ok(context_id) = self.current_context() else {
             return CdpDispatch::ok(json!({ "currentIndex": 0, "entries": [] }));
         };
-        let history = page.session_history();
+        let history = match self
+            .browser
+            .dispatch(BrowserCommand::GetNavigationHistory { context_id })
+        {
+            Ok(BrowserCommandResult::NavigationHistory(history)) => history,
+            Ok(result) => {
+                return CdpDispatch::error(
+                    -32603,
+                    format!("unexpected history result: {result:?}"),
+                );
+            }
+            Err(error) => return CdpDispatch::error(-32603, error.to_string()),
+        };
         let entries = history
-            .entries()
+            .entries
             .iter()
             .enumerate()
             .map(|(index, entry)| {
@@ -802,9 +1757,26 @@ impl CdpState {
             })
             .collect::<Vec<_>>();
         CdpDispatch::ok(json!({
-            "currentIndex": history.index(),
+            "currentIndex": history.current_index,
             "entries": entries,
         }))
+    }
+
+    fn page_reset_navigation_history(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
+            return CdpDispatch::error(-32000, "Page.resetNavigationHistory: no page loaded");
+        };
+        match self
+            .browser
+            .dispatch(BrowserCommand::ResetNavigationHistory { context_id })
+        {
+            Ok(BrowserCommandResult::Accepted) => CdpDispatch::ok(json!({})),
+            Ok(result) => CdpDispatch::error(
+                -32603,
+                format!("unexpected reset-history result: {result:?}"),
+            ),
+            Err(error) => CdpDispatch::error(-32603, error.to_string()),
+        }
     }
 
     fn page_navigate_to_history_entry(&mut self, req: &CdpRequest) -> CdpDispatch {
@@ -817,15 +1789,27 @@ impl CdpState {
                 );
             }
         };
-        let Some(page) = self.targets.first().and_then(|target| target.page.as_ref()) else {
+        let Ok(context_id) = self.current_context() else {
             return CdpDispatch::error(-32000, "Page.navigateToHistoryEntry: no page loaded");
         };
-        let history = page.session_history();
-        if entry_id > history.length() {
+        let history = match self
+            .browser
+            .dispatch(BrowserCommand::GetNavigationHistory { context_id })
+        {
+            Ok(BrowserCommandResult::NavigationHistory(history)) => history,
+            Ok(result) => {
+                return CdpDispatch::error(
+                    -32603,
+                    format!("unexpected history result: {result:?}"),
+                );
+            }
+            Err(error) => return CdpDispatch::error(-32603, error.to_string()),
+        };
+        if entry_id > history.entries.len() {
             return CdpDispatch::error(-32602, "Page.navigateToHistoryEntry: unknown `entryId`");
         }
         let target_index = entry_id - 1;
-        let delta = target_index as i32 - history.index() as i32;
+        let delta = target_index as i32 - history.current_index as i32;
         let mut notifications = Vec::new();
         if let Err(err) =
             self.apply_history_traversal(delta, req.session_id.as_deref(), &mut notifications)
@@ -835,10 +1819,11 @@ impl CdpState {
         CdpDispatch::ok_with_notifications(json!({}), notifications)
     }
 
-    fn page_get_frame_tree(&self, req: &CdpRequest) -> Value {
+    fn page_get_frame_tree(&mut self, req: &CdpRequest) -> Value {
         let frame = self
-            .target_for_session(req.session_id.as_deref())
-            .map(frame_json)
+            .context_for_session(req.session_id.as_deref())
+            .and_then(|context_id| self.context_state(context_id).ok())
+            .map(|state| frame_json(&state))
             .unwrap_or_else(|| {
                 json!({
                     "id": "tab-0",
@@ -849,6 +1834,57 @@ impl CdpState {
                 })
             });
         json!({ "frameTree": { "frame": frame } })
+    }
+
+    fn page_get_resource_tree(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
+            return CdpDispatch::error(-32000, "Page.getResourceTree: no page loaded");
+        };
+        let state = match self.context_state(context_id) {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32603, error),
+        };
+        CdpDispatch::ok(json!({
+            "frameTree": {
+                "frame": frame_json(&state),
+                "resources": [],
+            }
+        }))
+    }
+
+    fn page_get_resource_content(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let requested_url = req.params.get("url").and_then(Value::as_str);
+        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
+            return CdpDispatch::error(-32000, "Page.getResourceContent: no page loaded");
+        };
+        let state = match self.context_state(context_id) {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32603, error),
+        };
+        if let Some(requested_url) = requested_url
+            && requested_url != state.url
+        {
+            return CdpDispatch::error(-32000, "Page.getResourceContent: unknown resource URL");
+        }
+        let content = match self.browser.dispatch(BrowserCommand::DocumentText {
+            context_id,
+            document_id: state.document_id,
+            viewport: self.current_viewport(),
+            kind: DocumentTextKind::Dom,
+        }) {
+            Ok(BrowserCommandResult::DocumentText(content)) => content,
+            Ok(result) => {
+                return CdpDispatch::error(
+                    -32603,
+                    format!("unexpected document result: {result:?}"),
+                );
+            }
+            Err(error) => return CdpDispatch::error(-32603, error.to_string()),
+        };
+        CdpDispatch::ok(json!({
+            "content": content,
+            "base64Encoded": false,
+        }))
     }
 
     fn page_add_script_to_evaluate_on_new_document(&mut self, req: &CdpRequest) -> CdpDispatch {
@@ -864,6 +1900,9 @@ impl CdpState {
             identifier: identifier.clone(),
             source: source.to_owned(),
         });
+        if let Err(error) = self.configure_current_context() {
+            return CdpDispatch::error(-32603, error);
+        }
         CdpDispatch::ok(json!({ "identifier": identifier }))
     }
 
@@ -876,6 +1915,9 @@ impl CdpState {
         };
         self.new_document_scripts
             .retain(|script| script.identifier != identifier);
+        if let Err(error) = self.configure_current_context() {
+            return CdpDispatch::error(-32603, error);
+        }
         CdpDispatch::ok(json!({}))
     }
 
@@ -896,28 +1938,40 @@ impl CdpState {
     }
 
     fn page_create_isolated_world(&mut self, req: &CdpRequest) -> CdpDispatch {
-        let frame_id = req
+        let state = match self.current_state() {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32000, error),
+        };
+        let state_frame_id = frame_id(&state);
+        let requested_frame_id = req
             .params
             .get("frameId")
             .and_then(Value::as_str)
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| self.current_frame_id());
+            .unwrap_or("");
+        if !requested_frame_id.is_empty() && requested_frame_id != state_frame_id {
+            return CdpDispatch::error(-32602, "Page.createIsolatedWorld: unknown frameId");
+        }
         let world_name = req
             .params
             .get("worldName")
             .and_then(Value::as_str)
-            .unwrap_or("Vixen")
+            .unwrap_or("Vixen utility world")
             .to_owned();
         self.isolated_world_name = Some(world_name.clone());
+        let execution_context_id = utility_context_id(&state);
         let notifications = self.runtime_enabled.then(|| {
-            self.runtime_utility_context_created_notification(
-                &world_name,
-                &frame_id,
-                req.session_id.as_deref(),
-            )
+            self.runtime_context_created_notification(RuntimeContextNotification {
+                id: execution_context_id,
+                name: &world_name,
+                unique_prefix: "vixen-utility-context",
+                is_default: false,
+                context_type: "isolated",
+                frame_id: &state_frame_id,
+                session_id: req.session_id.as_deref(),
+            })
         });
         CdpDispatch::ok_with_notifications(
-            json!({ "executionContextId": 2 }),
+            json!({ "executionContextId": execution_context_id }),
             notifications.into_iter().collect(),
         )
     }
@@ -934,6 +1988,9 @@ impl CdpState {
                 Err(err) => return CdpDispatch::error(-32602, err),
             };
         self.emulated_viewport = Some((width, height));
+        if let Err(error) = self.configure_current_context() {
+            return CdpDispatch::error(-32603, error);
+        }
         CdpDispatch::ok(json!({}))
     }
 
@@ -962,7 +2019,73 @@ impl CdpState {
             media_type,
             color_scheme,
         };
+        if let Err(error) = self.configure_current_context() {
+            return CdpDispatch::error(-32603, error);
+        }
         CdpDispatch::ok(json!({}))
+    }
+
+    fn performance_get_metrics(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let snapshot = self
+            .context_for_session(req.session_id.as_deref())
+            .and_then(|context_id| {
+                let state = self.context_state(context_id).ok()?;
+                match self
+                    .browser
+                    .dispatch(BrowserCommand::Snapshot {
+                        context_id,
+                        document_id: state.document_id,
+                        viewport: self.current_viewport(),
+                    })
+                    .ok()?
+                {
+                    BrowserCommandResult::Snapshot(snapshot) => Some(snapshot),
+                    _ => None,
+                }
+            })
+            .unwrap_or_default();
+        CdpDispatch::ok(json!({
+            "metrics": [
+                { "name": "Timestamp", "value": (now_ms() as f64) / 1000.0 },
+                { "name": "Documents", "value": if snapshot.url.is_empty() { 0.0 } else { 1.0 } },
+                { "name": "Nodes", "value": snapshot.element_count as f64 },
+                { "name": "LayoutCount", "value": 1.0 },
+                { "name": "RecalcStyleCount", "value": 1.0 },
+                { "name": "JSHeapUsedSize", "value": 0.0 },
+                { "name": "JSHeapTotalSize", "value": 0.0 },
+            ]
+        }))
+    }
+
+    fn security_get_state(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let url = self
+            .context_for_session(req.session_id.as_deref())
+            .and_then(|context_id| self.context_state(context_id).ok())
+            .map(|state| state.url)
+            .unwrap_or_else(|| "about:blank".to_owned());
+        let scheme = url::Url::parse(&url)
+            .map(|url| url.scheme().to_owned())
+            .unwrap_or_else(|_| "about".to_owned());
+        let state = match scheme.as_str() {
+            "https" => "secure",
+            "http" => "insecure",
+            _ => "neutral",
+        };
+        CdpDispatch::ok(json!({
+            "securityState": state,
+            "schemeIsCryptographic": scheme == "https",
+            "explanations": [],
+            "insecureContentStatus": {
+                "ranMixedContent": false,
+                "displayedMixedContent": false,
+                "containedMixedForm": false,
+                "ranContentWithCertErrors": false,
+                "displayedContentWithCertErrors": false,
+                "ranInsecureContentStyle": "unknown",
+                "displayedInsecureContentStyle": "unknown"
+            },
+            "summary": "Vixen CDP security state is derived from the current document URL scheme"
+        }))
     }
 
     fn runtime_enable(&mut self, req: &CdpRequest) -> CdpDispatch {
@@ -973,18 +2096,23 @@ impl CdpState {
         )
     }
 
-    fn dom_get_document(&self, req: &CdpRequest) -> CdpDispatch {
-        let Some(target) = self.target_for_session(req.session_id.as_deref()) else {
+    fn dom_get_document(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
             return CdpDispatch::error(-32000, "DOM.getDocument: no page loaded");
         };
-        if target.page.is_none() {
-            return CdpDispatch::error(-32000, "DOM.getDocument: no page loaded");
-        }
+        let state = match self.context_state(context_id) {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32603, error),
+        };
+        let elements = match self.query_selector_all("*", self.current_viewport()) {
+            Ok(elements) => elements,
+            Err(error) => return CdpDispatch::error(-32603, error),
+        };
         let depth = req.params.get("depth").and_then(Value::as_i64).unwrap_or(1);
-        CdpDispatch::ok(json!({ "root": cdp_document_node(target, depth) }))
+        CdpDispatch::ok(json!({ "root": cdp_document_node(&state, &elements, depth) }))
     }
 
-    fn dom_query_selector(&self, req: &CdpRequest) -> CdpDispatch {
+    fn dom_query_selector(&mut self, req: &CdpRequest) -> CdpDispatch {
         let selector = match req.params.get("selector").and_then(Value::as_str) {
             Some(selector) if !selector.is_empty() => selector,
             _ => return CdpDispatch::error(-32602, "DOM.querySelector: missing `selector`"),
@@ -992,13 +2120,7 @@ impl CdpState {
         if let Err(err) = cdp_query_root_node_id(&req.params, "DOM.querySelector") {
             return CdpDispatch::error(-32602, err);
         }
-        let Some(page) = self
-            .target_for_session(req.session_id.as_deref())
-            .and_then(|target| target.page.as_ref())
-        else {
-            return CdpDispatch::error(-32000, "DOM.querySelector: no page loaded");
-        };
-        match page.query_selector_all(selector) {
+        match self.query_selector_all(selector, self.current_viewport()) {
             Ok(elements) => CdpDispatch::ok(json!({
                 "nodeId": elements.first().map(|element| element.node_id).unwrap_or(0),
             })),
@@ -1006,7 +2128,7 @@ impl CdpState {
         }
     }
 
-    fn dom_query_selector_all(&self, req: &CdpRequest) -> CdpDispatch {
+    fn dom_query_selector_all(&mut self, req: &CdpRequest) -> CdpDispatch {
         let selector = match req.params.get("selector").and_then(Value::as_str) {
             Some(selector) if !selector.is_empty() => selector,
             _ => return CdpDispatch::error(-32602, "DOM.querySelectorAll: missing `selector`"),
@@ -1014,13 +2136,7 @@ impl CdpState {
         if let Err(err) = cdp_query_root_node_id(&req.params, "DOM.querySelectorAll") {
             return CdpDispatch::error(-32602, err);
         }
-        let Some(page) = self
-            .target_for_session(req.session_id.as_deref())
-            .and_then(|target| target.page.as_ref())
-        else {
-            return CdpDispatch::error(-32000, "DOM.querySelectorAll: no page loaded");
-        };
-        match page.query_selector_all(selector) {
+        match self.query_selector_all(selector, self.current_viewport()) {
             Ok(elements) => CdpDispatch::ok(json!({
                 "nodeIds": elements.into_iter().map(|element| element.node_id).collect::<Vec<_>>(),
             })),
@@ -1033,16 +2149,21 @@ impl CdpState {
             Ok(node_id) => node_id,
             Err(err) => return CdpDispatch::error(-32602, err),
         };
-        let Some(target) = self.target_for_session(req.session_id.as_deref()) else {
+        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
             return CdpDispatch::error(-32000, "DOM.describeNode: no page loaded");
+        };
+        let state = match self.context_state(context_id) {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32603, error),
         };
         if node_id == CDP_DOCUMENT_NODE_ID {
-            return CdpDispatch::ok(json!({ "node": cdp_document_node(target, 1) }));
+            let elements = match self.query_selector_all("*", self.current_viewport()) {
+                Ok(elements) => elements,
+                Err(error) => return CdpDispatch::error(-32603, error),
+            };
+            return CdpDispatch::ok(json!({ "node": cdp_document_node(&state, &elements, 1) }));
         }
-        let Some(page) = target.page.as_ref() else {
-            return CdpDispatch::error(-32000, "DOM.describeNode: no page loaded");
-        };
-        let element = match element_info_for_node_id(page, node_id) {
+        let element = match self.element_for_node_id(node_id) {
             Ok(Some(element)) => element,
             Ok(None) => return CdpDispatch::error(-32000, "DOM.describeNode: node not found"),
             Err(err) => return CdpDispatch::error(-32603, err),
@@ -1055,6 +2176,11 @@ impl CdpState {
             Ok(node_id) => node_id,
             Err(err) => return CdpDispatch::error(-32602, err),
         };
+        let object_group = req
+            .params
+            .get("objectGroup")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let object_id = self.next_remote_object_id();
         let object_id_json = serde_json::to_string(&object_id).unwrap_or_else(|_| "\"\"".into());
         let store_expr = if node_id == CDP_DOCUMENT_NODE_ID {
@@ -1082,9 +2208,108 @@ impl CdpState {
             )
         };
         match self.evaluate_js(&store_expr) {
-            Ok(value) => CdpDispatch::ok(json!({
-                "object": self.remote_object_from_js_value(&value, Some(&object_id)),
-            })),
+            Ok(value) => {
+                self.register_remote_object_id(object_id.clone(), object_group);
+                CdpDispatch::ok(json!({
+                    "object": self.remote_object_from_js_value(&value, Some(&object_id)),
+                }))
+            }
+            Err(err) => CdpDispatch::error(-32603, err.to_string()),
+        }
+    }
+
+    fn dom_get_attributes(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let object_expr = match self.dom_object_expr_from_params(&req.params, "DOM.getAttributes") {
+            Ok(expr) => expr,
+            Err(err) => return CdpDispatch::error(-32602, err),
+        };
+        let expr = format!(
+            r#"(() => {{
+                const __node = {object_expr};
+                if (!__node || !__node.attributes) throw new Error('DOM.getAttributes: node not found');
+                return JSON.stringify(Array.from(__node.attributes).flatMap((attr) => [attr.name, attr.value]));
+            }})()"#
+        );
+        match self.evaluate_js(&expr) {
+            Ok(ScriptValue::String(attrs)) => match serde_json::from_str::<Value>(&attrs) {
+                Ok(attributes) => CdpDispatch::ok(json!({ "attributes": attributes })),
+                Err(err) => CdpDispatch::error(-32603, format!("DOM.getAttributes: {err}")),
+            },
+            Ok(_) => CdpDispatch::error(-32603, "DOM.getAttributes: runtime returned non-string"),
+            Err(err) => CdpDispatch::error(-32603, err.to_string()),
+        }
+    }
+
+    fn dom_get_outer_html(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let object_expr = match self.dom_object_expr_from_params(&req.params, "DOM.getOuterHTML") {
+            Ok(expr) => expr,
+            Err(err) => return CdpDispatch::error(-32602, err),
+        };
+        let expr = format!(
+            r#"(() => {{
+                const __node = {object_expr};
+                if (__node === document) return document.documentElement ? document.documentElement.outerHTML : '';
+                if (!__node || typeof __node.outerHTML !== 'string') throw new Error('DOM.getOuterHTML: node not found');
+                return __node.outerHTML;
+            }})()"#
+        );
+        match self.evaluate_js(&expr) {
+            Ok(ScriptValue::String(outer_html)) => {
+                CdpDispatch::ok(json!({ "outerHTML": outer_html }))
+            }
+            Ok(value) => CdpDispatch::ok(json!({ "outerHTML": value.to_display() })),
+            Err(err) => CdpDispatch::error(-32603, err.to_string()),
+        }
+    }
+
+    fn dom_set_attribute_value(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let object_expr =
+            match self.dom_object_expr_from_params(&req.params, "DOM.setAttributeValue") {
+                Ok(expr) => expr,
+                Err(err) => return CdpDispatch::error(-32602, err),
+            };
+        let Some(name) = req.params.get("name").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "DOM.setAttributeValue: missing `name`");
+        };
+        let Some(value) = req.params.get("value").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "DOM.setAttributeValue: missing `value`");
+        };
+        let name = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".into());
+        let value = serde_json::to_string(value).unwrap_or_else(|_| "\"\"".into());
+        let expr = format!(
+            r#"(() => {{
+                const __node = {object_expr};
+                if (!__node || typeof __node.setAttribute !== 'function') throw new Error('DOM.setAttributeValue: node not found');
+                __node.setAttribute({name}, {value});
+                return undefined;
+            }})()"#
+        );
+        match self.evaluate_js(&expr) {
+            Ok(_) => CdpDispatch::ok(json!({})),
+            Err(err) => CdpDispatch::error(-32603, err.to_string()),
+        }
+    }
+
+    fn dom_remove_attribute(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let object_expr = match self.dom_object_expr_from_params(&req.params, "DOM.removeAttribute")
+        {
+            Ok(expr) => expr,
+            Err(err) => return CdpDispatch::error(-32602, err),
+        };
+        let Some(name) = req.params.get("name").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "DOM.removeAttribute: missing `name`");
+        };
+        let name = serde_json::to_string(name).unwrap_or_else(|_| "\"\"".into());
+        let expr = format!(
+            r#"(() => {{
+                const __node = {object_expr};
+                if (!__node || typeof __node.removeAttribute !== 'function') throw new Error('DOM.removeAttribute: node not found');
+                __node.removeAttribute({name});
+                return undefined;
+            }})()"#
+        );
+        match self.evaluate_js(&expr) {
+            Ok(_) => CdpDispatch::ok(json!({})),
             Err(err) => CdpDispatch::error(-32603, err.to_string()),
         }
     }
@@ -1103,10 +2328,10 @@ impl CdpState {
             Ok(node_id) => node_id,
             Err(err) => return CdpDispatch::error(-32602, err),
         };
-        let Some(page) = self.targets.first().and_then(|target| target.page.as_ref()) else {
-            return CdpDispatch::error(-32000, "DOM.getContentQuads: no page loaded");
-        };
-        let bbox = match element_bbox_for_node_id(page, node_id) {
+        let bbox = match self
+            .element_for_node_id(node_id)
+            .map(|element| element.and_then(element_cdp_bbox))
+        {
             Ok(Some(bbox)) => bbox,
             Ok(None) => return CdpDispatch::ok(json!({ "quads": [] })),
             Err(err) => return CdpDispatch::error(-32603, err),
@@ -1126,15 +2351,40 @@ impl CdpState {
             Ok(node_id) => node_id,
             Err(err) => return CdpDispatch::error(-32602, err),
         };
-        let Some(page) = self.targets.first().and_then(|target| target.page.as_ref()) else {
-            return CdpDispatch::error(-32000, "DOM.getBoxModel: no page loaded");
-        };
-        let bbox = match element_bbox_for_node_id(page, node_id) {
+        let bbox = match self
+            .element_for_node_id(node_id)
+            .map(|element| element.and_then(element_cdp_bbox))
+        {
             Ok(Some(bbox)) => bbox,
             Ok(None) => return CdpDispatch::error(-32000, "DOM.getBoxModel: node has no box"),
             Err(err) => return CdpDispatch::error(-32603, err),
         };
         CdpDispatch::ok(box_model_from_bbox(bbox))
+    }
+
+    fn dom_object_expr_from_params(
+        &mut self,
+        params: &Value,
+        method: &str,
+    ) -> Result<String, String> {
+        if let Some(object_id) = params.get("objectId").and_then(Value::as_str) {
+            self.validate_remote_object_id(object_id, method)?;
+            return Ok(cdp_object_expr(object_id));
+        }
+        let node_id = self.dom_node_id_from_params(params, method)?;
+        if node_id == CDP_DOCUMENT_NODE_ID {
+            return Ok("document".to_owned());
+        }
+        Ok(format!(
+            r#"(() => {{
+                const __nodeId = {node_id};
+                const __nodes = document.querySelectorAll('*');
+                for (const __node of __nodes) {{
+                    if (__node && __node.__vixenNodeId === __nodeId) return __node;
+                }}
+                return null;
+            }})()"#
+        ))
     }
 
     fn dom_node_id_from_params(&mut self, params: &Value, method: &str) -> Result<usize, String> {
@@ -1161,6 +2411,7 @@ impl CdpState {
     }
 
     fn dom_node_id_from_object(&mut self, object_id: &str, method: &str) -> Result<usize, String> {
+        self.validate_remote_object_id(object_id, method)?;
         let object_expr = cdp_object_expr(object_id);
         let probe = format!(
             "(() => {{ const __o = {object_expr}; const __id = __o && __o.__vixenNodeId; return Number.isInteger(__id) && __id > 0 ? __id : null; }})()"
@@ -1169,8 +2420,8 @@ impl CdpState {
             .evaluate_js(&probe)
             .map_err(|err| format!("{method}: {err}"))?
         {
-            JsValue::Int32(id) if id > 0 => Ok(id as usize),
-            JsValue::Number(id)
+            ScriptValue::Int32(id) if id > 0 => Ok(id as usize),
+            ScriptValue::Number(id)
                 if id.is_finite() && id.fract() == 0.0 && id > 0.0 && id <= usize::MAX as f64 =>
             {
                 Ok(id as usize)
@@ -1186,6 +2437,7 @@ impl CdpState {
         object_id: &str,
         method: &str,
     ) -> Result<Option<(f64, f64, f64, f64)>, String> {
+        self.validate_remote_object_id(object_id, method)?;
         let object_expr = cdp_object_expr(object_id);
         let probe = format!(
             r#"(() => {{
@@ -1208,12 +2460,12 @@ impl CdpState {
             .evaluate_js(&probe)
             .map_err(|err| format!("{method}: {err}"))?
         {
-            JsValue::String(json) => {
+            ScriptValue::String(json) => {
                 let rect: CdpDomRect = serde_json::from_str(&json)
                     .map_err(|err| format!("{method}: invalid object rect: {err}"))?;
                 Ok(Some((rect.x, rect.y, rect.width, rect.height)))
             }
-            JsValue::Null | JsValue::Undefined => Ok(None),
+            ScriptValue::Null | ScriptValue::Undefined => Ok(None),
             _ => Err(format!("{method}: object rect probe returned a non-string")),
         }
     }
@@ -1232,14 +2484,42 @@ impl CdpState {
             .evaluate_js(&probe)
             .map_err(|err| format!("Input.dispatchMouseEvent: {err}"))?
         {
-            JsValue::Int32(id) if id > 0 => Ok(Some(id as usize)),
-            JsValue::Number(id)
+            ScriptValue::Int32(id) if id > 0 => Ok(Some(id as usize)),
+            ScriptValue::Number(id)
                 if id.is_finite() && id.fract() == 0.0 && id > 0.0 && id <= usize::MAX as f64 =>
             {
                 Ok(Some(id as usize))
             }
-            JsValue::Null | JsValue::Undefined => Ok(None),
+            ScriptValue::Null | ScriptValue::Undefined => Ok(None),
             _ => Err("Input.dispatchMouseEvent: point probe returned a non-node id".to_owned()),
+        }
+    }
+
+    fn dispatch_key_to_core(
+        &mut self,
+        event_type: &str,
+        event: KeyEventData,
+    ) -> Result<(), String> {
+        let state = self.current_state()?;
+        let runtime_context_id = state
+            .runtime_context_id
+            .ok_or_else(|| "Input.dispatchKeyEvent: no runtime".to_owned())?;
+        match self
+            .browser
+            .dispatch(BrowserCommand::DispatchKeyEvent {
+                context_id: state.context_id,
+                document_id: state.document_id,
+                runtime_context_id,
+                event_type: event_type.to_owned(),
+                event,
+            })
+            .map_err(|error| error.to_string())?
+        {
+            BrowserCommandResult::InputDispatched(effects) => {
+                self.queue_runtime_effects(runtime_context_id, effects);
+                Ok(())
+            }
+            result => Err(format!("unexpected key-input result: {result:?}")),
         }
     }
 
@@ -1282,15 +2562,22 @@ impl CdpState {
 
         let viewport = self.current_viewport();
         let runtime_target_node_id = self.dom_node_id_at_point_from_runtime(x, y).ok().flatten();
-        let Some(page) = self
-            .targets
-            .first_mut()
-            .and_then(|target| target.page.as_mut())
-        else {
-            return CdpDispatch::error(-32000, "Input.dispatchMouseEvent: no page loaded");
+        let state = match self.current_state() {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32000, error),
         };
-        let target_node_id = runtime_target_node_id
-            .or_else(|| page.element_at(viewport, x, y).map(|target| target.node_id));
+        let target_node_id = runtime_target_node_id.or_else(|| {
+            match self.browser.dispatch(BrowserCommand::HitTest {
+                context_id: state.context_id,
+                document_id: state.document_id,
+                viewport,
+                x,
+                y,
+            }) {
+                Ok(BrowserCommandResult::HitTest(target)) => target.map(|target| target.node_id),
+                _ => None,
+            }
+        });
         let mut dom_events = Vec::new();
         let mut next_mouse_down = self.last_mouse_down.clone();
         let mut next_mouse_over_node_id = self.last_mouse_over_node_id;
@@ -1408,52 +2695,50 @@ impl CdpState {
         }
 
         for dom_event in dom_events {
-            if let Err(err) = dispatch_dom_mouse_event(
-                &mut self.js,
-                page,
-                dom_event.node_id,
-                dom_event.event_type,
-                MouseDispatchInit {
+            let state = match self.current_state() {
+                Ok(state) => state,
+                Err(error) => return CdpDispatch::error(-32000, error),
+            };
+            let Some(runtime_context_id) = state.runtime_context_id else {
+                return CdpDispatch::error(-32000, "Input.dispatchMouseEvent: no runtime");
+            };
+            let modifiers = req
+                .params
+                .get("modifiers")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            match self.browser.dispatch(BrowserCommand::DispatchMouseEvent {
+                context_id: state.context_id,
+                document_id: state.document_id,
+                runtime_context_id,
+                node_id: dom_event.node_id,
+                event_type: dom_event.event_type.to_owned(),
+                event: MouseEventData {
                     x,
                     y,
-                    button,
+                    button: button.dom_button_code(),
                     buttons,
                     detail: click_count,
                     related_node_id: dom_event.related_node_id,
                     bubbles: dom_event.bubbles,
-                    ctrl_key: req
-                        .params
-                        .get("modifiers")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0)
-                        & 2
-                        != 0,
-                    shift_key: req
-                        .params
-                        .get("modifiers")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0)
-                        & 8
-                        != 0,
-                    alt_key: req
-                        .params
-                        .get("modifiers")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0)
-                        & 1
-                        != 0,
-                    meta_key: req
-                        .params
-                        .get("modifiers")
-                        .and_then(Value::as_i64)
-                        .unwrap_or(0)
-                        & 4
-                        != 0,
+                    ctrl_key: modifiers & 2 != 0,
+                    shift_key: modifiers & 8 != 0,
+                    alt_key: modifiers & 1 != 0,
+                    meta_key: modifiers & 4 != 0,
                     delta_x,
                     delta_y,
                 },
-            ) {
-                return CdpDispatch::error(-32603, err);
+            }) {
+                Ok(BrowserCommandResult::InputDispatched(effects)) => {
+                    self.queue_runtime_effects(runtime_context_id, effects);
+                }
+                Ok(result) => {
+                    return CdpDispatch::error(
+                        -32603,
+                        format!("unexpected mouse-input result: {result:?}"),
+                    );
+                }
+                Err(error) => return CdpDispatch::error(-32603, error.to_string()),
             }
         }
         self.last_mouse_down = next_mouse_down;
@@ -1518,19 +2803,9 @@ impl CdpState {
             self.last_key_down_text = None;
         }
 
-        let Some(page) = self
-            .targets
-            .first_mut()
-            .and_then(|target| target.page.as_mut())
-        else {
-            return CdpDispatch::error(-32000, "Input.dispatchKeyEvent: no page loaded");
-        };
-
-        if let Err(err) = dispatch_dom_key_event(
-            &mut self.js,
-            page,
+        if let Err(err) = self.dispatch_key_to_core(
             event_type,
-            KeyDispatchInit {
+            KeyEventData {
                 key,
                 code,
                 text,
@@ -1568,20 +2843,10 @@ impl CdpState {
             None => return CdpDispatch::error(-32602, "Input.insertText: missing `text`"),
         };
 
-        let Some(page) = self
-            .targets
-            .first_mut()
-            .and_then(|target| target.page.as_mut())
-        else {
-            return CdpDispatch::error(-32000, "Input.insertText: no page loaded");
-        };
-
         self.last_key_down_text = None;
-        if let Err(err) = dispatch_dom_key_event(
-            &mut self.js,
-            page,
+        if let Err(err) = self.dispatch_key_to_core(
             "char",
-            KeyDispatchInit {
+            KeyEventData {
                 key: String::new(),
                 code: String::new(),
                 text,
@@ -1620,6 +2885,11 @@ impl CdpState {
             .get("returnByValue")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let object_group = req
+            .params
+            .get("objectGroup")
+            .and_then(Value::as_str)
+            .map(str::to_owned);
         let result = if return_by_value {
             self.evaluate_serialized_value(&format!(
                 "globalThis.eval({})",
@@ -1627,9 +2897,18 @@ impl CdpState {
             ))
             .map(|value| (serialized_remote_object(&value), None))
         } else {
-            self.evaluate_js(&expr).map(|value| {
-                let object_id = if matches!(value, JsValue::Object) {
-                    self.store_evaluated_object(&expr).ok()
+            let object_id = self.next_remote_object_id();
+            let object_id_json =
+                serde_json::to_string(&object_id).unwrap_or_else(|_| "\"\"".to_owned());
+            let expr_json =
+                serde_json::to_string(&expr).unwrap_or_else(|_| "\"undefined\"".to_owned());
+            let store_expr = format!(
+                "(() => {{ const __v = globalThis.eval({expr_json}); if (__v !== null && (typeof __v === 'object' || typeof __v === 'function')) {{ globalThis.__vixenCdpObjects = globalThis.__vixenCdpObjects || Object.create(null); globalThis.__vixenCdpObjects[{object_id_json}] = __v; }} return __v; }})()"
+            );
+            self.evaluate_js(&store_expr).map(|value| {
+                let object_id = if matches!(value, ScriptValue::Object) {
+                    self.register_remote_object_id(object_id.clone(), object_group);
+                    Some(object_id)
                 } else {
                     None
                 };
@@ -1651,32 +2930,8 @@ impl CdpState {
                     notifications,
                 )
             }
-            Err(e) => self
-                .legacy_dom_evaluate(&expr)
-                .unwrap_or_else(|| self.runtime_exception_result(e, req)),
+            Err(e) => self.runtime_exception_result(e, req),
         }
-    }
-
-    fn legacy_dom_evaluate(&self, expr: &str) -> Option<CdpDispatch> {
-        if !crate::looks_like_dom_eval(expr) || crate::uses_runtime_dom_eval(expr) {
-            return None;
-        }
-        let result = self
-            .targets
-            .first()
-            .and_then(|target| target.page.as_ref())?
-            .evaluate_dom_expression(expr)?;
-        Some(match result {
-            Ok(value) => CdpDispatch::ok(remote_object_from_text(value)),
-            Err(e) => CdpDispatch::ok(json!({
-                "result": { "type": "undefined" },
-                "exceptionDetails": {
-                    "exceptionId": 1,
-                    "text": e,
-                    "code": "dom.eval",
-                }
-            })),
-        })
     }
 
     fn runtime_call_function_on(&mut self, req: &CdpRequest) -> CdpDispatch {
@@ -1698,6 +2953,21 @@ impl CdpState {
             .get("returnByValue")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        if let Some(object_id) = req.params.get("objectId").and_then(Value::as_str)
+            && let Err(error) = self.validate_remote_object_id(object_id, "Runtime.callFunctionOn")
+        {
+            return CdpDispatch::error(-32000, error);
+        }
+        if let Some(arguments) = req.params.get("arguments").and_then(Value::as_array) {
+            for argument in arguments {
+                if let Some(object_id) = argument.get("objectId").and_then(Value::as_str)
+                    && let Err(error) =
+                        self.validate_remote_object_id(object_id, "Runtime.callFunctionOn")
+                {
+                    return CdpDispatch::error(-32000, error);
+                }
+            }
+        }
         let object_expr = req
             .params
             .get("objectId")
@@ -1725,6 +2995,17 @@ impl CdpState {
         let call_expr = format!(
             "(() => {{ const __fn = (0, eval)({declaration}); const __recv = {object_expr}; return __fn.call(__recv{call_args}); }})()"
         );
+        let object_group = req
+            .params
+            .get("objectGroup")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+            .or_else(|| {
+                req.params
+                    .get("objectId")
+                    .and_then(Value::as_str)
+                    .and_then(|object_id| self.remote_object_group(object_id))
+            });
 
         let result = if return_by_value {
             self.evaluate_serialized_value(&call_expr)
@@ -1734,10 +3015,17 @@ impl CdpState {
             let object_id_json =
                 serde_json::to_string(&object_id).unwrap_or_else(|_| "\"\"".into());
             let store_expr = format!(
-                "(async () => {{ globalThis.__vixenCdpObjects = globalThis.__vixenCdpObjects || Object.create(null); const __v = await ({call_expr}); globalThis.__vixenCdpObjects[{object_id_json}] = __v; return __v; }})()"
+                "(async () => {{ const __v = await ({call_expr}); if (__v !== null && (typeof __v === 'object' || typeof __v === 'function')) {{ globalThis.__vixenCdpObjects = globalThis.__vixenCdpObjects || Object.create(null); globalThis.__vixenCdpObjects[{object_id_json}] = __v; }} return __v; }})()"
             );
-            self.evaluate_js(&store_expr)
-                .map(|value| self.remote_object_from_js_value(&value, Some(&object_id)))
+            self.evaluate_js(&store_expr).map(|value| {
+                let object_id = if matches!(value, ScriptValue::Object) {
+                    self.register_remote_object_id(object_id.clone(), object_group);
+                    Some(object_id.as_str())
+                } else {
+                    None
+                };
+                self.remote_object_from_js_value(&value, object_id)
+            })
         };
         match result {
             Ok(remote_object) => {
@@ -1761,12 +3049,18 @@ impl CdpState {
         let Some(object_id) = req.params.get("objectId").and_then(Value::as_str) else {
             return CdpDispatch::error(-32602, "Runtime.getProperties: missing `objectId`");
         };
+        if let Err(error) = self.validate_remote_object_id(object_id, "Runtime.getProperties") {
+            return CdpDispatch::error(-32000, error);
+        }
+        let object_group = self.remote_object_group(object_id);
         let own_properties = req
             .params
             .get("ownProperties")
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let object_id = serde_json::to_string(object_id).unwrap_or_else(|_| "\"\"".into());
+        let object_prefix = serde_json::to_string(&self.remote_object_prefix())
+            .unwrap_or_else(|_| "\"vixen-object-invalid-\"".into());
         let script = format!(
             r#"(() => {{
                 const __objectId = {object_id};
@@ -1789,7 +3083,7 @@ impl CdpState {
                     if (type === 'bigint') return {{ type: 'bigint', unserializableValue: String(value) + 'n', description: String(value) + 'n' }};
                     if (type === 'symbol') return {{ type: 'symbol', description: String(value) }};
                     if (value === null) return {{ type: 'object', subtype: 'null', value: null, description: 'null' }};
-                    const objectId = 'vixen-object-js-' + (++globalThis.__vixenCdpObjectCounter);
+                    const objectId = {object_prefix} + 'js-' + (++globalThis.__vixenCdpObjectCounter);
                     __store[objectId] = value;
                     const remote = {{
                         type: type === 'function' ? 'function' : 'object',
@@ -1842,12 +3136,18 @@ impl CdpState {
         );
 
         match self.evaluate_js(&script) {
-            Ok(JsValue::String(properties)) => match serde_json::from_str::<Value>(&properties) {
-                Ok(result) => CdpDispatch::ok(json!({
-                    "result": result,
-                    "internalProperties": [],
-                    "privateProperties": [],
-                })),
+            Ok(ScriptValue::String(properties)) => match serde_json::from_str::<Value>(&properties)
+            {
+                Ok(result) => {
+                    register_remote_ids(&result, |object_id| {
+                        self.register_remote_object_id(object_id.to_owned(), object_group.clone());
+                    });
+                    CdpDispatch::ok(json!({
+                        "result": result,
+                        "internalProperties": [],
+                        "privateProperties": [],
+                    }))
+                }
                 Err(err) => CdpDispatch::error(-32603, format!("Runtime.getProperties: {err}")),
             },
             Ok(_) => CdpDispatch::error(-32603, "Runtime.getProperties: non-string result"),
@@ -1860,11 +3160,17 @@ impl CdpState {
         else {
             return CdpDispatch::error(-32602, "Runtime.awaitPromise: missing `promiseObjectId`");
         };
+        if let Err(error) =
+            self.validate_remote_object_id(promise_object_id, "Runtime.awaitPromise")
+        {
+            return CdpDispatch::error(-32000, error);
+        }
         let return_by_value = req
             .params
             .get("returnByValue")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let object_group = self.remote_object_group(promise_object_id);
         let promise_object_id_json =
             serde_json::to_string(promise_object_id).unwrap_or_else(|_| "\"\"".into());
         let await_expr = format!(
@@ -1885,11 +3191,15 @@ impl CdpState {
             let object_id_json =
                 serde_json::to_string(&object_id).unwrap_or_else(|_| "\"\"".into());
             let store_expr = format!(
-                "(async () => {{ globalThis.__vixenCdpObjects = globalThis.__vixenCdpObjects || Object.create(null); const __v = await ({await_expr}); globalThis.__vixenCdpObjects[{object_id_json}] = __v; return __v; }})()"
+                "(async () => {{ const __v = await ({await_expr}); if (__v !== null && (typeof __v === 'object' || typeof __v === 'function')) {{ globalThis.__vixenCdpObjects = globalThis.__vixenCdpObjects || Object.create(null); globalThis.__vixenCdpObjects[{object_id_json}] = __v; }} return __v; }})()"
             );
             self.evaluate_js(&store_expr).map(|value| {
-                let stored_object_id =
-                    matches!(value, JsValue::Object).then_some(object_id.as_str());
+                let stored_object_id = if matches!(value, ScriptValue::Object) {
+                    self.register_remote_object_id(object_id.clone(), object_group);
+                    Some(object_id.as_str())
+                } else {
+                    None
+                };
                 self.remote_object_from_js_value(&value, stored_object_id)
             })
         };
@@ -1911,6 +3221,43 @@ impl CdpState {
         }
     }
 
+    fn runtime_release_object(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(object_id) = req.params.get("objectId").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "Runtime.releaseObject: missing `objectId`");
+        };
+        if let Err(error) = self.validate_remote_object_id(object_id, "Runtime.releaseObject") {
+            return CdpDispatch::error(-32000, error);
+        }
+        let object_id = object_id.to_owned();
+        self.remote_handles
+            .retain(|handle| handle.object_id != object_id);
+        match self.delete_remote_objects_from_runtime(&[object_id]) {
+            Ok(_) => CdpDispatch::ok(json!({})),
+            Err(error) => CdpDispatch::error(-32603, error.to_string()),
+        }
+    }
+
+    fn runtime_release_object_group(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(object_group) = req.params.get("objectGroup").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "Runtime.releaseObjectGroup: missing `objectGroup`");
+        };
+        let object_ids = self
+            .remote_handles
+            .iter()
+            .filter(|handle| handle.object_group.as_deref() == Some(object_group))
+            .map(|handle| handle.object_id.clone())
+            .collect::<Vec<_>>();
+        if object_ids.is_empty() {
+            return CdpDispatch::ok(json!({}));
+        }
+        self.remote_handles
+            .retain(|handle| handle.object_group.as_deref() != Some(object_group));
+        match self.delete_remote_objects_from_runtime(&object_ids) {
+            Ok(_) => CdpDispatch::ok(json!({})),
+            Err(error) => CdpDispatch::error(-32603, error.to_string()),
+        }
+    }
+
     fn runtime_add_binding(&mut self, req: &CdpRequest) -> CdpDispatch {
         let Some(name) = req.params.get("name").and_then(Value::as_str) else {
             return CdpDispatch::error(-32602, "Runtime.addBinding: missing `name`");
@@ -1921,34 +3268,14 @@ impl CdpState {
         if !self.runtime_bindings.iter().any(|binding| binding == name) {
             self.runtime_bindings.push(name.to_owned());
         }
-        if self.js.is_some()
-            && let Err(err) = self.install_runtime_binding(name)
-        {
+        if let Err(err) = self.configure_current_context() {
             return CdpDispatch::error(-32603, err);
         }
         CdpDispatch::ok(json!({}))
     }
 
-    fn install_runtime_binding(&mut self, name: &str) -> Result<(), String> {
-        let Some(rt) = self.js.as_mut() else {
-            return Ok(());
-        };
-        let script = runtime_binding_install_script(name);
-        if let Some(page) = self
-            .targets
-            .first_mut()
-            .and_then(|target| target.page.as_mut())
-        {
-            rt.evaluate_with_page_mut(&script, page)
-        } else {
-            rt.evaluate(&script)
-        }
-        .map(|_| ())
-        .map_err(|err| format!("runtime binding install failed: {err}"))
-    }
-
-    fn runtime_exception_result(&mut self, e: EngineError, req: &CdpRequest) -> CdpDispatch {
-        let code = e.code();
+    fn runtime_exception_result(&mut self, e: BrowserError, req: &CdpRequest) -> CdpDispatch {
+        let code = e.code;
         let msg = e.to_string();
         let mut notifications = self.drain_side_effect_notifications(req);
         if self.runtime_enabled {
@@ -1971,84 +3298,175 @@ impl CdpState {
         )
     }
 
-    fn evaluate_js(&mut self, expr: &str) -> Result<JsValue, EngineError> {
-        let viewport = self.current_viewport();
-        let media = self.emulated_media.clone();
-        if self.js.is_none() {
-            self.js = Some(JsRuntime::new()?);
-        }
-        let binding_scripts = runtime_binding_install_scripts(&self.runtime_bindings);
-        let page = self
-            .targets
-            .first_mut()
-            .and_then(|target| target.page.as_mut());
-        let rt = self.js.as_mut().expect("runtime just initialised");
-        let emulation_script = emulation_override_script(viewport, &media);
-        if let Some(page) = page {
-            for script in binding_scripts {
-                rt.evaluate_with_page_mut(&script, page)?;
+    fn evaluate_js(&mut self, expr: &str) -> Result<ScriptValue, BrowserError> {
+        let context_id = self
+            .current_context()
+            .map_err(|message| BrowserError::new("browser.unknown-context", message))?;
+        let state = self
+            .context_state(context_id)
+            .map_err(|message| BrowserError::new("browser.closed", message))?;
+        let runtime_context_id = state.runtime_context_id.ok_or_else(|| {
+            BrowserError::new("browser.stale-runtime", "document has no active runtime")
+        })?;
+        let before = state.clone();
+        let result = match self
+            .browser
+            .dispatch(BrowserCommand::EvaluateForAutomation {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id,
+                source: expr.to_owned(),
+            })? {
+            BrowserCommandResult::AutomationEvaluation(evaluation) => {
+                self.queue_runtime_effects(runtime_context_id, evaluation.effects);
+                evaluation.value
             }
-            rt.evaluate_with_page_mut(&emulation_script, page)?;
-            rt.evaluate_with_page_mut(expr, page)
-        } else {
-            for script in binding_scripts {
-                rt.evaluate(&script)?;
+            result => {
+                return Err(BrowserError::new(
+                    "browser.closed",
+                    format!("unexpected automation-evaluation result: {result:?}"),
+                ));
             }
-            rt.evaluate(&emulation_script)?;
-            rt.evaluate(expr)
+        };
+        if let Ok(after) = self.context_state(context_id)
+            && (after.document_id != before.document_id || after.active_navigation_id.is_some())
+            && after.url == before.url
+            && after.history_length == before.history_length
+            && after.history_index == before.history_index
+        {
+            self.pending_content_loader_id = Some(before.document_id.get());
         }
+        Ok(result)
     }
 
     fn current_viewport(&self) -> (u32, u32) {
         self.emulated_viewport.unwrap_or(DEFAULT_CAPTURE_VIEWPORT)
     }
 
-    fn evaluate_serialized_value(&mut self, expr: &str) -> Result<Value, EngineError> {
+    fn evaluate_serialized_value(&mut self, expr: &str) -> Result<Value, BrowserError> {
         let expr = format!(
             "(async () => {{ const __v = await ({expr}); return JSON.stringify({{ t: typeof __v, v: __v === undefined ? null : __v }}); }})()"
         );
         match self.evaluate_js(&expr)? {
-            JsValue::String(serialized) => Ok(serde_json::from_str(&serialized)
+            ScriptValue::String(serialized) => Ok(serde_json::from_str(&serialized)
                 .unwrap_or_else(|_| json!({ "t": "undefined", "v": Value::Null }))),
             other => Ok(json!({ "t": "string", "v": other.to_display() })),
         }
     }
 
-    fn store_evaluated_object(&mut self, expr: &str) -> Result<String, EngineError> {
-        let object_id = self.next_remote_object_id();
-        let object_id_json = serde_json::to_string(&object_id).unwrap_or_else(|_| "\"\"".into());
-        let expr_json = serde_json::to_string(expr).unwrap_or_else(|_| "\"undefined\"".into());
-        let store_expr = format!(
-            "globalThis.__vixenCdpObjects = globalThis.__vixenCdpObjects || Object.create(null); globalThis.__vixenCdpObjects[{object_id_json}] = globalThis.eval({expr_json}); undefined"
-        );
-        self.evaluate_js(&store_expr)?;
-        Ok(object_id)
-    }
-
     fn next_remote_object_id(&mut self) -> String {
         self.next_object_id += 1;
-        format!("vixen-object-{}", self.next_object_id)
+        let state = self.current_state().ok();
+        let object_id = format!(
+            "vixen-object-c{}-r{}-{}",
+            state
+                .as_ref()
+                .map(|state| state.context_id.get())
+                .unwrap_or(0),
+            state
+                .and_then(|state| state.runtime_context_id)
+                .map(|runtime| runtime.get())
+                .unwrap_or(0),
+            self.next_object_id
+        );
+        object_id
     }
 
-    fn remote_object_from_js_value(&mut self, value: &JsValue, object_id: Option<&str>) -> Value {
+    fn remote_object_prefix(&mut self) -> String {
+        let state = self.current_state().ok();
+        format!(
+            "vixen-object-c{}-r{}-",
+            state
+                .as_ref()
+                .map(|state| state.context_id.get())
+                .unwrap_or(0),
+            state
+                .and_then(|state| state.runtime_context_id)
+                .map(|runtime| runtime.get())
+                .unwrap_or(0),
+        )
+    }
+
+    fn register_remote_object_id(&mut self, object_id: String, object_group: Option<String>) {
+        if self
+            .remote_handles
+            .iter()
+            .any(|handle| handle.object_id == object_id)
+        {
+            return;
+        }
+        let evicted = if self.remote_handles.len() >= MAX_REMOTE_HANDLES {
+            self.remote_handles
+                .pop_front()
+                .map(|handle| handle.object_id)
+        } else {
+            None
+        };
+        self.remote_handles.push_back(RemoteHandle {
+            object_id,
+            object_group,
+        });
+        if let Some(object_id) = evicted {
+            let _ = self.delete_remote_objects_from_runtime(&[object_id]);
+        }
+    }
+
+    fn validate_remote_object_id(&mut self, object_id: &str, method: &str) -> Result<(), String> {
+        if !object_id.starts_with(&self.remote_object_prefix()) {
+            return Err(format!(
+                "{method}: objectId belongs to a stale or different runtime generation"
+            ));
+        }
+        if !self
+            .remote_handles
+            .iter()
+            .any(|handle| handle.object_id == object_id)
+        {
+            return Err(format!("{method}: unknown or released objectId"));
+        }
+        Ok(())
+    }
+
+    fn remote_object_group(&self, object_id: &str) -> Option<String> {
+        self.remote_handles
+            .iter()
+            .find(|handle| handle.object_id == object_id)
+            .and_then(|handle| handle.object_group.clone())
+    }
+
+    fn delete_remote_objects_from_runtime(
+        &mut self,
+        object_ids: &[String],
+    ) -> Result<ScriptValue, BrowserError> {
+        let object_ids = serde_json::to_string(object_ids).unwrap_or_else(|_| "[]".to_owned());
+        self.evaluate_js(&format!(
+            "if (globalThis.__vixenCdpObjects) for (const __id of {object_ids}) delete globalThis.__vixenCdpObjects[__id]; undefined"
+        ))
+    }
+
+    fn remote_object_from_js_value(
+        &mut self,
+        value: &ScriptValue,
+        object_id: Option<&str>,
+    ) -> Value {
         match value {
-            JsValue::Int32(n) => {
+            ScriptValue::Int32(n) => {
                 json!({ "type": "number", "value": n, "description": value.to_display() })
             }
-            JsValue::Number(n) => {
+            ScriptValue::Number(n) => {
                 json!({ "type": "number", "value": n, "description": value.to_display() })
             }
-            JsValue::String(s) => {
+            ScriptValue::String(s) => {
                 json!({ "type": "string", "value": s, "description": value.to_display() })
             }
-            JsValue::Bool(b) => {
+            ScriptValue::Bool(b) => {
                 json!({ "type": "boolean", "value": b, "description": value.to_display() })
             }
-            JsValue::Null => {
+            ScriptValue::Null => {
                 json!({ "type": "object", "subtype": "null", "value": Value::Null, "description": "null" })
             }
-            JsValue::Undefined => json!({ "type": "undefined", "description": "undefined" }),
-            JsValue::Object => {
+            ScriptValue::Undefined => json!({ "type": "undefined", "description": "undefined" }),
+            ScriptValue::Object => {
                 let mut object = serde_json::Map::new();
                 object.insert("type".to_owned(), json!("object"));
                 object.insert("description".to_owned(), json!("Object"));
@@ -2073,330 +3491,90 @@ impl CdpState {
             "(() => {{ const __o = {object_expr}; if (!__o) return ''; if (typeof Node !== 'undefined' && __o instanceof Node) return 'node'; if (Array.isArray(__o)) return 'array'; return ''; }})()"
         );
         match self.evaluate_js(&probe).ok()? {
-            JsValue::String(value) => Some(value),
+            ScriptValue::String(value) => Some(value),
             _ => None,
         }
     }
 
     fn seed_initial_target(&mut self, url: String) -> Result<(), String> {
-        self.push_loaded_target(url).map(|_| ())
-    }
-
-    fn push_loaded_target(&mut self, url: String) -> Result<u64, String> {
-        let mut page = load_cdp_page(&url)?;
-        if self.targets.is_empty() {
-            self.execute_page_scripts_if_needed(&mut page)?;
-            self.discard_console_events();
-            self.discard_dialog_events();
-        }
-        let title = page.document().title();
-        let id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
-        let session_id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
-        self.targets.push(Target {
-            id,
-            session_id,
-            loader_id: id,
-            url,
-            title,
-            load_fired: false,
-            page: Some(page),
-        });
-        Ok(id)
-    }
-
-    fn execute_page_scripts_if_needed(&mut self, page: &mut Page) -> Result<(), String> {
-        if self.new_document_scripts.is_empty() && !page.has_classic_scripts() {
-            return Ok(());
-        }
-        if self.js.is_none() {
-            let rt = JsRuntime::new().map_err(|e| format!("JS runtime init failed: {e}"))?;
-            self.js = Some(rt);
-        }
-        let viewport = self.current_viewport();
-        let media = self.emulated_media.clone();
-        let scripts = self.new_document_scripts.clone();
-        let binding_scripts = runtime_binding_install_scripts(&self.runtime_bindings);
-        let emulation_script = emulation_override_script(viewport, &media);
-        let rt = self.js.as_mut().expect("runtime just initialised");
-        for script in binding_scripts {
-            rt.evaluate_with_page_mut(&script, page)
-                .map_err(|e| format!("runtime binding install failed: {e}"))?;
-        }
-        rt.evaluate_with_page_mut(&emulation_script, page)
-            .map_err(|e| format!("new document emulation script failed: {e}"))?;
-        for script in scripts {
-            rt.evaluate_with_page_mut(&script.source, page)
-                .map_err(|e| format!("new document script failed: {e}"))?;
-        }
-        if !page.has_classic_scripts() {
-            return Ok(());
-        }
-        rt.execute_page_scripts(page)
+        let context_id = self.current_context()?;
+        self.configure_context(context_id)?;
+        self.drain_core_events(context_id);
+        let navigation_id = match self
+            .browser
+            .dispatch(BrowserCommand::Navigate { context_id, url })
+        {
+            Ok(BrowserCommandResult::NavigationAccepted { navigation_id }) => navigation_id,
+            Ok(result) => return Err(format!("unexpected initial navigation result: {result:?}")),
+            Err(error) => return Err(error.to_string()),
+        };
+        self.wait_for_navigation(context_id, navigation_id)
             .map(|_| ())
-            .map_err(|e| format!("page script failed: {e}"))
+    }
+
+    fn push_loaded_target(&mut self, url: String) -> Result<BrowsingContextId, String> {
+        let context_id = match self
+            .browser
+            .dispatch(BrowserCommand::CreateBrowsingContext)
+            .map_err(|error| error.to_string())?
+        {
+            BrowserCommandResult::BrowsingContextCreated { context_id } => context_id,
+            result => return Err(format!("unexpected create-target result: {result:?}")),
+        };
+        self.next_session_id += 1;
+        self.targets.push(Target {
+            context_id,
+            session_id: self.next_session_id,
+        });
+        self.context_presentations
+            .insert(context_id, ContextPresentation::default());
+        self.dispatch_context = Some(context_id);
+        self.load_presentation(context_id);
+        self.configure_context(context_id)?;
+        self.drain_core_events(context_id);
+        let navigation_id = match self
+            .browser
+            .dispatch(BrowserCommand::Navigate { context_id, url })
+        {
+            Ok(BrowserCommandResult::NavigationAccepted { navigation_id }) => navigation_id,
+            Ok(result) => return Err(format!("unexpected target navigation result: {result:?}")),
+            Err(error) => return Err(error.to_string()),
+        };
+        if let Err(error) = self.wait_for_navigation(context_id, navigation_id) {
+            let _ = self
+                .browser
+                .dispatch(BrowserCommand::CloseBrowsingContext { context_id });
+            self.targets
+                .retain(|target| target.context_id != context_id);
+            return Err(error);
+        }
+        Ok(context_id)
     }
 
     fn drain_navigation_notifications(&mut self, req: &CdpRequest) -> Result<Vec<String>, String> {
-        let actions = match self.js.as_mut() {
-            Some(js) => js.drain_navigation_actions().map_err(|e| e.to_string())?,
-            None => Vec::new(),
+        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
+            return Ok(Vec::new());
         };
-        self.apply_navigation_actions(actions, req.session_id.as_deref())
-    }
-
-    fn apply_navigation_actions(
-        &mut self,
-        actions: Vec<JsNavigationAction>,
-        session_id: Option<&str>,
-    ) -> Result<Vec<String>, String> {
-        let mut notifications = Vec::new();
-        for action in actions {
-            match action {
-                JsNavigationAction::Navigate { url, replace } => {
-                    self.navigate_from_action(url, replace, session_id, &mut notifications)?;
-                }
-                JsNavigationAction::SetContent { html } => {
-                    self.set_content_from_action(html, session_id, &mut notifications)?;
-                }
-                JsNavigationAction::FormSubmit {
-                    form_id,
-                    form_node_id,
-                    submitter_node_id,
-                    action,
-                    method,
-                    ..
-                } => {
-                    if let Some(url) = self.form_submission_navigation_url(
-                        &form_id,
-                        form_node_id,
-                        submitter_node_id,
-                        &action,
-                        &method,
-                    )? {
-                        self.navigate_from_action(url, false, session_id, &mut notifications)?;
-                    }
-                }
-                JsNavigationAction::HistoryPush {
-                    url,
-                    state_json,
-                    title,
-                } => self.apply_history_state_action(
-                    url,
-                    state_json,
-                    title,
-                    false,
-                    session_id,
-                    &mut notifications,
-                )?,
-                JsNavigationAction::HistoryReplace {
-                    url,
-                    state_json,
-                    title,
-                } => self.apply_history_state_action(
-                    url,
-                    state_json,
-                    title,
-                    true,
-                    session_id,
-                    &mut notifications,
-                )?,
-                JsNavigationAction::HistoryTraverse { delta } => {
-                    self.apply_history_traversal(delta, session_id, &mut notifications)?;
-                }
-            }
-        }
-        Ok(notifications)
-    }
-
-    fn set_content_from_action(
-        &mut self,
-        html: String,
-        session_id: Option<&str>,
-        notifications: &mut Vec<String>,
-    ) -> Result<(), String> {
-        let (url, history) =
-            if let Some(page) = self.targets.first().and_then(|target| target.page.as_ref()) {
-                (page.url().to_owned(), page.session_history().clone())
-            } else {
-                let page = Page::from_html("about:blank", "")
-                    .map_err(|err| format!("set content fallback page: {err}"))?;
-                (page.url().to_owned(), page.session_history().clone())
-            };
-        let mut page = Page::from_html(url, &html).map_err(|err| format!("set content: {err}"))?;
-        page.set_session_history(history);
-
-        self.reset_js_for_navigation();
-        self.execute_page_scripts_if_needed(&mut page)?;
-        let title = page.document().title();
-        let loader_id = now_ms();
-        if let Some(target) = self.targets.first_mut() {
-            target.loader_id = loader_id;
-            target.url = page.url().to_owned();
-            target.title = title;
-            target.load_fired = true;
-            target.page = Some(page);
+        let active_navigation_id = self.context_state(context_id)?.active_navigation_id;
+        let (committed, failure) = if let Some(navigation_id) = active_navigation_id {
+            (self.wait_for_navigation(context_id, navigation_id)?, None)
         } else {
-            let id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
-            let session = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
-            self.targets.push(Target {
-                id,
-                session_id: session,
-                loader_id,
-                url: page.url().to_owned(),
-                title,
-                load_fired: true,
-                page: Some(page),
-            });
+            self.drain_core_events(context_id)
+        };
+        if let Some(error) = failure {
+            return Err(error);
         }
-        notifications.extend(self.current_page_load_notifications(session_id));
-        Ok(())
-    }
-
-    fn navigate_from_action(
-        &mut self,
-        url: String,
-        replace: bool,
-        session_id: Option<&str>,
-        notifications: &mut Vec<String>,
-    ) -> Result<(), String> {
-        let mut page = load_cdp_page(&url)?;
-        let final_url = page.url().to_owned();
-        let mut history = self
-            .targets
-            .first()
-            .and_then(|target| target.page.as_ref())
-            .map(|page| page.session_history().clone())
-            .unwrap_or_else(|| page.session_history().clone());
-        if self
-            .targets
-            .first()
-            .and_then(|target| target.page.as_ref())
-            .is_some()
-        {
-            let entry = HistoryEntry::navigation(final_url);
-            if replace {
-                history.replace(entry);
+        if committed {
+            self.reset_input_for_navigation();
+            if let Some(loader_id) = self.pending_content_loader_id.take() {
+                Ok(self
+                    .current_content_replaced_notifications(req.session_id.as_deref(), loader_id))
             } else {
-                history.push(entry);
+                Ok(self.current_page_load_notifications(req.session_id.as_deref()))
             }
-            page.set_session_history(history);
-        }
-
-        self.reset_js_for_navigation();
-        self.execute_page_scripts_if_needed(&mut page)?;
-        let title = page.document().title();
-        let loader_id = now_ms();
-        if let Some(target) = self.targets.first_mut() {
-            target.loader_id = loader_id;
-            target.url = page.url().to_owned();
-            target.title = title;
-            target.load_fired = true;
-            target.page = Some(page);
         } else {
-            let id = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
-            let session = self.next_target_id.fetch_add(1, Ordering::SeqCst) + 1;
-            self.targets.push(Target {
-                id,
-                session_id: session,
-                loader_id,
-                url: page.url().to_owned(),
-                title,
-                load_fired: true,
-                page: Some(page),
-            });
+            Ok(Vec::new())
         }
-        notifications.extend(self.current_page_load_notifications(session_id));
-        Ok(())
-    }
-
-    fn form_submission_navigation_url(
-        &self,
-        form_id: &str,
-        form_node_id: usize,
-        submitter_node_id: Option<usize>,
-        action: &str,
-        method: &str,
-    ) -> Result<Option<String>, String> {
-        let Some(page) = self.targets.first().and_then(|target| target.page.as_ref()) else {
-            return Err("form submission has no page loaded".to_owned());
-        };
-        let submission = if form_node_id != 0 {
-            Some(page.form_submission_by_node_id(form_node_id, submitter_node_id)?)
-        } else if !form_id.is_empty() {
-            Some(page.form_submission(form_id)?)
-        } else {
-            None
-        };
-        let action = submission
-            .as_ref()
-            .map(|submission| submission.action.clone())
-            .unwrap_or_else(|| {
-                page.resolve_url(action)
-                    .unwrap_or_else(|| action.to_owned())
-            });
-        let method = submission
-            .as_ref()
-            .map(|submission| submission.method.clone())
-            .unwrap_or_else(|| method.to_owned())
-            .to_ascii_lowercase();
-        match method.as_str() {
-            "dialog" => Ok(None),
-            "post" => Ok(Some(action)),
-            _ => {
-                let Some(submission) = submission else {
-                    return Ok(Some(action));
-                };
-                Ok(Some(append_form_query(&action, &submission.body)?))
-            }
-        }
-    }
-
-    fn apply_history_state_action(
-        &mut self,
-        url: String,
-        state_json: String,
-        title: String,
-        replace: bool,
-        session_id: Option<&str>,
-        notifications: &mut Vec<String>,
-    ) -> Result<(), String> {
-        let (frame_id, navigated_url) = {
-            let Some(target) = self.targets.first_mut() else {
-                return Err("history action has no target".to_owned());
-            };
-            let frame_id = target_frame_id(target);
-            let Some(page) = target.page.as_mut() else {
-                return Err("history action has no page loaded".to_owned());
-            };
-            ensure_same_origin_history_url(page.url(), &url)?;
-            let mut history = page.session_history().clone();
-            let mut entry = HistoryEntry::push_state(url, state_json.into_bytes());
-            if !title.is_empty() {
-                entry.title = Some(title);
-            }
-            if replace {
-                history.replace(entry);
-            } else {
-                history.push(entry);
-            }
-            page.set_session_history(history);
-            target.url = page.url().to_owned();
-            target.title = page.document().title();
-            (frame_id, target.url.clone())
-        };
-
-        if let (Some(js), Some(page)) = (
-            self.js.as_mut(),
-            self.targets.first().and_then(|target| target.page.as_ref()),
-        ) {
-            js.sync_page_realm_key(page);
-        }
-        notifications.push(notification(
-            "Page.navigatedWithinDocument",
-            json!({ "frameId": frame_id, "url": navigated_url }),
-            session_id,
-        ));
-        Ok(())
     }
 
     fn apply_history_traversal(
@@ -2408,79 +3586,72 @@ impl CdpState {
         if delta == 0 {
             return Ok(());
         }
-        let Some(page) = self.targets.first().and_then(|target| target.page.as_ref()) else {
+        let Some(context_id) = self.context_for_session(session_id) else {
             return Err("history traversal has no page loaded".to_owned());
         };
-        let mut history = page.session_history().clone();
-        let Some(entry) = history.go(delta).cloned() else {
-            return Ok(());
+        let before = self.context_state(context_id)?;
+        self.drain_core_events(context_id);
+        let navigation_id = match self
+            .browser
+            .dispatch(BrowserCommand::TraverseHistory { context_id, delta })
+        {
+            Ok(BrowserCommandResult::Accepted) => None,
+            Ok(BrowserCommandResult::NavigationAccepted { navigation_id }) => Some(navigation_id),
+            Ok(result) => return Err(format!("unexpected history-traversal result: {result:?}")),
+            Err(error) => return Err(error.to_string()),
         };
-
-        if entry.state.is_some() {
-            let (frame_id, navigated_url) = {
-                let target = self.targets.first_mut().expect("target checked above");
-                let frame_id = target_frame_id(target);
-                let page = target.page.as_mut().expect("page checked above");
-                page.set_session_history(history);
-                target.url = page.url().to_owned();
-                target.title = page.document().title();
-                (frame_id, target.url.clone())
-            };
-            self.reset_js_for_navigation();
+        let (committed, failure) = if let Some(navigation_id) = navigation_id {
+            (self.wait_for_navigation(context_id, navigation_id)?, None)
+        } else {
+            self.drain_core_events(context_id)
+        };
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        let after = self.context_state(context_id)?;
+        if committed {
+            notifications.extend(self.current_page_load_notifications(session_id));
+        } else if after.url != before.url {
             notifications.push(notification(
                 "Page.navigatedWithinDocument",
-                json!({ "frameId": frame_id, "url": navigated_url }),
+                json!({ "frameId": frame_id(&after), "url": after.url }),
                 session_id,
             ));
-            return Ok(());
         }
-
-        let mut page = load_cdp_page(&entry.url)?;
-        page.set_session_history(history);
-        self.reset_js_for_navigation();
-        self.execute_page_scripts_if_needed(&mut page)?;
-        let title = page.document().title();
-        let loader_id = now_ms();
-        if let Some(target) = self.targets.first_mut() {
-            target.loader_id = loader_id;
-            target.url = page.url().to_owned();
-            target.title = title;
-            target.load_fired = true;
-            target.page = Some(page);
-        }
-        notifications.extend(self.current_page_load_notifications(session_id));
         Ok(())
     }
 
-    fn current_origin_for_session(&self, session_id: Option<&str>) -> String {
-        self.target_for_session(session_id)
-            .map(|target| origin_for_url(&target.url))
+    fn current_origin_for_session(&mut self, session_id: Option<&str>) -> String {
+        self.context_for_session(session_id)
+            .and_then(|context_id| self.context_state(context_id).ok())
+            .map(|state| origin_for_url(&state.url))
             .unwrap_or_else(|| "://".to_owned())
     }
 
-    fn current_frame_id(&self) -> String {
-        self.targets
-            .first()
-            .map(target_frame_id)
+    fn current_frame_id_for_session(&mut self, session_id: Option<&str>) -> String {
+        self.context_for_session(session_id)
+            .and_then(|context_id| self.context_state(context_id).ok())
+            .map(|state| frame_id(&state))
             .unwrap_or_else(|| "tab-0".to_owned())
     }
 
-    fn current_frame_id_for_session(&self, session_id: Option<&str>) -> String {
-        self.target_for_session(session_id)
-            .map(target_frame_id)
-            .unwrap_or_else(|| "tab-0".to_owned())
-    }
-
-    fn current_loader_id_for_session(&self, session_id: Option<&str>) -> u64 {
-        self.target_for_session(session_id)
-            .map(|target| target.loader_id)
+    fn current_loader_id_for_session(&mut self, session_id: Option<&str>) -> u64 {
+        self.context_for_session(session_id)
+            .and_then(|context_id| self.context_state(context_id).ok())
+            .map(|state| state.document_id.get())
             .unwrap_or(0)
     }
 
-    fn runtime_main_context_created_notification(&self, session_id: Option<&str>) -> String {
+    fn runtime_main_context_created_notification(&mut self, session_id: Option<&str>) -> String {
         let frame_id = self.current_frame_id_for_session(session_id);
+        let runtime_id = self
+            .context_for_session(session_id)
+            .and_then(|context_id| self.context_state(context_id).ok())
+            .and_then(|state| state.runtime_context_id)
+            .map(|runtime_id| runtime_id.get())
+            .unwrap_or(0);
         self.runtime_context_created_notification(RuntimeContextNotification {
-            id: 1,
+            id: runtime_id,
             name: "Vixen",
             unique_prefix: "vixen-main-context",
             is_default: true,
@@ -2490,25 +3661,8 @@ impl CdpState {
         })
     }
 
-    fn runtime_utility_context_created_notification(
-        &self,
-        world_name: &str,
-        frame_id: &str,
-        session_id: Option<&str>,
-    ) -> String {
-        self.runtime_context_created_notification(RuntimeContextNotification {
-            id: 2,
-            name: world_name,
-            unique_prefix: "vixen-utility-context",
-            is_default: false,
-            context_type: "isolated",
-            frame_id,
-            session_id,
-        })
-    }
-
     fn runtime_context_created_notification(
-        &self,
+        &mut self,
         context: RuntimeContextNotification<'_>,
     ) -> String {
         notification(
@@ -2530,16 +3684,110 @@ impl CdpState {
         )
     }
 
-    fn current_page_load_notifications(&self, session_id: Option<&str>) -> Vec<String> {
-        let Some(target) = self.target_for_session(session_id) else {
+    fn current_page_load_notifications(&mut self, session_id: Option<&str>) -> Vec<String> {
+        let Some(context_id) = self.context_for_session(session_id) else {
             return Vec::new();
         };
-        let frame_id = target_frame_id(target);
+        let Ok(state) = self.context_state(context_id) else {
+            return Vec::new();
+        };
+        self.notification_sessions(context_id, session_id)
+            .into_iter()
+            .flat_map(|session_id| {
+                self.page_load_notifications_for_session(&state, session_id.as_deref())
+            })
+            .collect()
+    }
+
+    fn current_content_replaced_notifications(
+        &mut self,
+        session_id: Option<&str>,
+        loader_id: u64,
+    ) -> Vec<String> {
+        let Some(context_id) = self.context_for_session(session_id) else {
+            return Vec::new();
+        };
+        let Ok(state) = self.context_state(context_id) else {
+            return Vec::new();
+        };
+        let frame_id = frame_id(&state);
+        let timestamp = now_ms();
+        self.notification_sessions(context_id, session_id)
+            .into_iter()
+            .flat_map(|session_id| {
+                let session_id = session_id.as_deref();
+                let mut notifications = Vec::new();
+                if self.runtime_enabled {
+                    notifications.push(notification(
+                        "Runtime.executionContextsCleared",
+                        json!({}),
+                        session_id,
+                    ));
+                    notifications.push(self.runtime_main_context_created_notification(session_id));
+                    if let Some(world_name) = self.isolated_world_name.clone() {
+                        notifications.push(self.runtime_context_created_notification(
+                            RuntimeContextNotification {
+                                id: utility_context_id(&state),
+                                name: &world_name,
+                                unique_prefix: "vixen-utility-context",
+                                is_default: false,
+                                context_type: "isolated",
+                                frame_id: &frame_id,
+                                session_id,
+                            },
+                        ));
+                    }
+                }
+                notifications.push(notification(
+                    "Page.domContentEventFired",
+                    json!({ "timestamp": timestamp }),
+                    session_id,
+                ));
+                if self.lifecycle_events_enabled {
+                    notifications.push(notification(
+                        "Page.lifecycleEvent",
+                        json!({
+                            "frameId": &frame_id,
+                            "loaderId": format!("loader-{loader_id}"),
+                            "name": "DOMContentLoaded",
+                            "timestamp": timestamp,
+                        }),
+                        session_id,
+                    ));
+                }
+                notifications.push(notification(
+                    "Page.loadEventFired",
+                    json!({ "timestamp": timestamp }),
+                    session_id,
+                ));
+                if self.lifecycle_events_enabled {
+                    notifications.push(notification(
+                        "Page.lifecycleEvent",
+                        json!({
+                            "frameId": &frame_id,
+                            "loaderId": format!("loader-{loader_id}"),
+                            "name": "load",
+                            "timestamp": timestamp,
+                        }),
+                        session_id,
+                    ));
+                }
+                notifications
+            })
+            .collect()
+    }
+
+    fn page_load_notifications_for_session(
+        &mut self,
+        state: &BrowsingContextState,
+        session_id: Option<&str>,
+    ) -> Vec<String> {
+        let frame_id = frame_id(state);
         let timestamp = now_ms();
         let mut notifications = Vec::new();
         if self.network_enabled {
             notifications.push(network_request_will_be_sent_notification(
-                target, &frame_id, timestamp, session_id,
+                state, &frame_id, timestamp, session_id,
             ));
         }
         notifications.push(notification(
@@ -2549,7 +3797,7 @@ impl CdpState {
         ));
         if self.lifecycle_events_enabled {
             notifications.push(page_lifecycle_event_notification(
-                target, "init", timestamp, session_id,
+                state, "init", timestamp, session_id,
             ));
         }
         if self.runtime_enabled {
@@ -2561,24 +3809,32 @@ impl CdpState {
         }
         notifications.push(notification(
             "Page.frameNavigated",
-            json!({ "frame": frame_json(target) }),
+            json!({ "frame": frame_json(state) }),
             session_id,
         ));
         if self.lifecycle_events_enabled {
             notifications.push(page_lifecycle_event_notification(
-                target, "commit", timestamp, session_id,
+                state, "commit", timestamp, session_id,
             ));
         }
         if self.network_enabled {
             notifications.push(network_response_received_notification(
-                target, &frame_id, timestamp, session_id,
+                state, &frame_id, timestamp, session_id,
             ));
         }
         if self.runtime_enabled {
             notifications.push(self.runtime_main_context_created_notification(session_id));
-            if let Some(world_name) = self.isolated_world_name.as_deref() {
-                notifications.push(self.runtime_utility_context_created_notification(
-                    world_name, &frame_id, session_id,
+            if let Some(world_name) = self.isolated_world_name.clone() {
+                notifications.push(self.runtime_context_created_notification(
+                    RuntimeContextNotification {
+                        id: utility_context_id(state),
+                        name: &world_name,
+                        unique_prefix: "vixen-utility-context",
+                        is_default: false,
+                        context_type: "isolated",
+                        frame_id: &frame_id,
+                        session_id,
+                    },
                 ));
             }
         }
@@ -2589,7 +3845,7 @@ impl CdpState {
         ));
         if self.lifecycle_events_enabled {
             notifications.push(page_lifecycle_event_notification(
-                target,
+                state,
                 "DOMContentLoaded",
                 timestamp,
                 session_id,
@@ -2602,106 +3858,107 @@ impl CdpState {
         ));
         if self.lifecycle_events_enabled {
             notifications.push(page_lifecycle_event_notification(
-                target, "load", timestamp, session_id,
+                state, "load", timestamp, session_id,
             ));
         }
         if self.network_enabled {
             notifications.push(network_loading_finished_notification(
-                target, timestamp, session_id,
+                state, timestamp, session_id,
             ));
         }
         notifications.push(notification(
             "Page.frameStoppedLoading",
-            json!({ "frameId": target_frame_id(target) }),
+            json!({ "frameId": &frame_id }),
             session_id,
         ));
         notifications
     }
 
-    fn drain_console_notifications(&mut self, req: &CdpRequest) -> Vec<String> {
-        let events = match self.js.as_mut() {
-            Some(js) => js.drain_console_events().unwrap_or_default(),
-            None => Vec::new(),
-        };
-        if !self.runtime_enabled {
-            return Vec::new();
+    fn drain_side_effect_notifications(&mut self, req: &CdpRequest) -> Vec<String> {
+        let pending = std::mem::take(&mut self.pending_effects);
+        let mut console_events = Vec::new();
+        let mut dialog_events = Vec::new();
+        let mut binding_events = Vec::new();
+        let mut network_events = Vec::new();
+        for pending in pending {
+            let runtime_id = pending.runtime_context_id.get();
+            console_events.extend(
+                pending
+                    .effects
+                    .console
+                    .into_iter()
+                    .map(|event| (runtime_id, event)),
+            );
+            dialog_events.extend(pending.effects.dialogs);
+            binding_events.extend(
+                pending
+                    .effects
+                    .bindings
+                    .into_iter()
+                    .map(|event| (runtime_id, event)),
+            );
+            network_events.extend(pending.effects.network);
         }
-        events
-            .into_iter()
-            .map(|event| console_notification(event, req.session_id.as_deref()))
-            .collect()
-    }
 
-    fn drain_dialog_notifications(&mut self, req: &CdpRequest) -> Vec<String> {
-        let events = match self.js.as_mut() {
-            Some(js) => js.drain_dialog_events().unwrap_or_default(),
-            None => Vec::new(),
-        };
-        events
-            .into_iter()
-            .map(|event| self.dialog_notification(event, req.session_id.as_deref()))
-            .collect()
-    }
-
-    fn drain_binding_notifications(&mut self, req: &CdpRequest) -> Vec<String> {
-        let events = match self.js.as_mut() {
-            Some(js) => js.drain_binding_events().unwrap_or_default(),
-            None => Vec::new(),
-        };
-        if !self.runtime_enabled {
-            return Vec::new();
+        let session_id = req.session_id.as_deref();
+        let mut notifications = Vec::new();
+        if self.runtime_enabled {
+            notifications.extend(
+                console_events
+                    .into_iter()
+                    .map(|(runtime_id, event)| console_notification(event, runtime_id, session_id)),
+            );
         }
-        events
-            .into_iter()
-            .map(|event| binding_notification(event, req.session_id.as_deref()))
-            .collect()
-    }
-
-    fn drain_network_notifications(&mut self, req: &CdpRequest) -> Vec<String> {
-        let events = match self.js.as_mut() {
-            Some(js) => js.drain_network_events().unwrap_or_default(),
-            None => Vec::new(),
-        };
+        notifications.extend(
+            dialog_events
+                .into_iter()
+                .map(|event| self.dialog_notification(event, session_id)),
+        );
+        if self.runtime_enabled {
+            notifications.extend(
+                binding_events
+                    .into_iter()
+                    .map(|(runtime_id, event)| binding_notification(event, runtime_id, session_id)),
+            );
+        }
         if !self.network_enabled {
-            return Vec::new();
+            return notifications;
         }
         let session_id = req.session_id.as_deref();
         let frame_id = self.current_frame_id_for_session(session_id);
         let loader_id = self.current_loader_id_for_session(session_id);
         let document_url = self
-            .target_for_session(session_id)
-            .map(|target| target.url.as_str().to_owned())
+            .context_for_session(session_id)
+            .and_then(|context_id| self.context_state(context_id).ok())
+            .map(|state| state.url)
             .unwrap_or_else(|| "about:blank".to_owned());
         let timestamp = now_ms();
-        events
-            .into_iter()
-            .flat_map(|event| {
-                network_fetch_notifications(
-                    event,
-                    &frame_id,
-                    loader_id,
-                    &document_url,
-                    timestamp,
-                    session_id,
-                )
-            })
-            .collect()
-    }
-
-    fn drain_side_effect_notifications(&mut self, req: &CdpRequest) -> Vec<String> {
-        let mut notifications = self.drain_console_notifications(req);
-        notifications.extend(self.drain_dialog_notifications(req));
-        notifications.extend(self.drain_binding_notifications(req));
-        notifications.extend(self.drain_network_notifications(req));
+        notifications.extend(network_events.into_iter().flat_map(|event| {
+            network_fetch_notifications(
+                event,
+                &frame_id,
+                loader_id,
+                &document_url,
+                timestamp,
+                session_id,
+            )
+        }));
         notifications
     }
 
-    fn dialog_notification(&self, event: JsDialogEvent, session_id: Option<&str>) -> String {
+    fn dialog_notification(
+        &mut self,
+        event: RuntimeDialogEvent,
+        session_id: Option<&str>,
+    ) -> String {
+        let state = self
+            .context_for_session(session_id)
+            .and_then(|context_id| self.context_state(context_id).ok());
         notification(
             "Page.javascriptDialogOpening",
             json!({
-                "url": self.targets.first().map(|target| target.url.as_str()).unwrap_or("about:blank"),
-                "frameId": self.current_frame_id(),
+                "url": state.as_ref().map(|state| state.url.as_str()).unwrap_or("about:blank"),
+                "frameId": state.as_ref().map(frame_id).unwrap_or_else(|| "tab-0".to_owned()),
                 "message": event.message,
                 "type": event.kind,
                 "hasBrowserHandler": true,
@@ -2711,54 +3968,69 @@ impl CdpState {
         )
     }
 
-    fn discard_console_events(&mut self) {
-        if let Some(js) = self.js.as_mut() {
-            let _ = js.drain_console_events();
-        }
-    }
-
-    fn discard_dialog_events(&mut self) {
-        if let Some(js) = self.js.as_mut() {
-            let _ = js.drain_dialog_events();
-        }
-    }
-
-    fn reset_js_for_navigation(&mut self) {
-        if let Some(js) = self.js.as_mut() {
-            js.reset_realm();
-        }
+    fn reset_input_for_navigation(&mut self) {
         self.last_mouse_down = None;
         self.last_mouse_over_node_id = None;
         self.last_key_down_text = None;
+        self.remote_handles.clear();
+    }
+
+    fn record_trace_event(
+        &mut self,
+        method: &str,
+        session_id: Option<&str>,
+        started: Instant,
+        succeeded: bool,
+    ) {
+        if !self.tracing.active {
+            return;
+        }
+        if self.tracing.events.len() >= MAX_TRACE_EVENTS {
+            self.tracing.data_loss_occurred = true;
+            return;
+        }
+        let duration = started.elapsed().as_micros().min(u64::MAX as u128) as u64;
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_micros().min(u64::MAX as u128) as u64)
+            .unwrap_or_default()
+            .saturating_sub(duration);
+        self.tracing.events.push(json!({
+            "name": method,
+            "cat": "vixen.cdp",
+            "ph": "X",
+            "ts": timestamp,
+            "dur": duration,
+            "pid": 1,
+            "tid": 1,
+            "args": {
+                "sessionId": session_id,
+                "ok": succeeded,
+            }
+        }));
     }
 }
 
 impl CdpState {
-    /// Construct a state pre-seeded with a JS runtime (used by tests so they
-    /// don't pay JS runtime init cost on every call).
+    /// Preserve the deterministic test setup while moving the runtime itself
+    /// behind BrowserCore. The supplied runtime is consumed only for its
+    /// transport policy and never stored by CDP.
     pub fn with_runtime(rt: JsRuntime) -> Self {
-        Self {
-            next_target_id: AtomicU64::new(0),
-            targets: Vec::new(),
-            attached_sessions: Vec::new(),
-            js: Some(rt),
-            runtime_enabled: false,
-            network_enabled: false,
-            page_enabled: false,
-            lifecycle_events_enabled: false,
-            isolated_world_name: None,
-            log_enabled: false,
-            last_mouse_down: None,
-            last_mouse_over_node_id: None,
-            last_key_down_text: None,
-            next_object_id: 0,
-            emulated_viewport: None,
-            emulated_media: EmulatedMedia::default(),
-            next_new_document_script_id: 0,
-            new_document_scripts: Vec::new(),
-            runtime_bindings: Vec::new(),
-            download_behavior: DownloadBehavior::default(),
-        }
+        let network = rt.network_config();
+        drop(rt);
+        let profile = tempfile::Builder::new()
+            .prefix("vixen-cdp-test-")
+            .tempdir()
+            .expect("create CDP test profile");
+        let mut config = BrowserConfig::new(profile.path().join("profile.redb"));
+        config.network = network;
+        Self::with_config_and_profile(config, profile).expect("start CDP BrowserCore")
+    }
+}
+
+impl Default for CdpState {
+    fn default() -> Self {
+        Self::new().expect("start CDP BrowserCore")
     }
 }
 
@@ -2799,68 +4071,110 @@ impl CdpDispatch {
     fn error(code: i32, message: impl Into<String>) -> Self {
         Self {
             pre_response_notifications: Vec::new(),
-            response: Err(CdpError {
-                code,
-                message: message.into(),
-            }),
+            response: Err(CdpError::new(code, message)),
             notifications: Vec::new(),
         }
     }
 }
 
-fn load_cdp_page(url: &str) -> Result<Page, String> {
-    if url == "about:blank" {
-        return Page::from_html("about:blank", "").map_err(|e| format!("parse about:blank: {e}"));
+fn canonical_permission_origin(origin: &str) -> Result<String, String> {
+    let url = url::Url::parse(origin)
+        .map_err(|error| format!("Browser.grantPermissions: invalid origin: {error}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err("Browser.grantPermissions: origin must use HTTP(S)".to_owned());
     }
-    crate::load_page(url)
+    Ok(url.origin().ascii_serialization())
 }
 
-fn append_form_query(action: &str, body: &[u8]) -> Result<String, String> {
-    if body.is_empty() {
-        return Ok(action.to_owned());
-    }
-    let mut url =
-        url::Url::parse(action).map_err(|err| format!("invalid form action URL: {err}"))?;
-    let body = String::from_utf8_lossy(body);
-    let query = match url.query() {
-        Some(existing) if !existing.is_empty() => format!("{existing}&{body}"),
-        _ => body.into_owned(),
-    };
-    url.set_query(Some(&query));
-    Ok(url.to_string())
-}
-
-fn ensure_same_origin_history_url(current: &str, next: &str) -> Result<(), String> {
-    let current = url::Url::parse(current).map_err(|err| format!("invalid current URL: {err}"))?;
-    let next = url::Url::parse(next).map_err(|err| format!("invalid history URL: {err}"))?;
-    if current.scheme() == "file" && next.scheme() == "file" {
-        return Ok(());
-    }
-    if current.origin() == next.origin() {
-        Ok(())
-    } else {
-        Err("history state URL must be same-origin".to_owned())
+fn runtime_permission_name(permission: &str) -> Option<&'static str> {
+    match permission {
+        "geolocation" => Some("geolocation"),
+        "notifications" => Some("notifications"),
+        "videoCapture" => Some("camera"),
+        "audioCapture" => Some("microphone"),
+        "clipboardReadWrite" => Some("clipboard-read"),
+        "durableStorage" => Some("persistent-storage"),
+        _ => None,
     }
 }
 
-fn target_info_json(target: &Target) -> Value {
+fn is_supported_cdp_permission(permission: &str) -> bool {
+    matches!(
+        permission,
+        "geolocation"
+            | "midi"
+            | "midiSysex"
+            | "notifications"
+            | "durableStorage"
+            | "audioCapture"
+            | "videoCapture"
+            | "backgroundSync"
+            | "ambientLightSensor"
+            | "sensors"
+            | "accessibilityEvents"
+            | "clipboardReadWrite"
+            | "clipboardSanitizedWrite"
+            | "paymentHandler"
+            | "idleDetection"
+            | "periodicBackgroundSync"
+            | "wakeLockScreen"
+            | "wakeLockSystem"
+            | "nfc"
+            | "displayCapture"
+            | "localFonts"
+            | "storageAccess"
+            | "topLevelStorageAccess"
+            | "windowManagement"
+            | "capturedSurfaceControl"
+            | "speakerSelection"
+            | "localNetworkAccess"
+            | "localNetwork"
+            | "loopbackNetwork"
+    )
+}
+
+fn cdp_target_id(context_id: BrowsingContextId) -> String {
+    format!("tab-{}", context_id.get())
+}
+
+fn frame_id(state: &BrowsingContextState) -> String {
+    format!("tab-{}", state.main_frame_id.get())
+}
+
+fn utility_context_id(state: &BrowsingContextState) -> u64 {
+    state
+        .runtime_context_id
+        .map(|runtime_id| runtime_id.get().saturating_add(1_000_000_000))
+        .unwrap_or(1_000_000_000)
+}
+
+fn loader_id(state: &BrowsingContextState) -> String {
+    format!("loader-{}", state.document_id.get())
+}
+
+fn target_info_json(context_id: BrowsingContextId, state: &BrowsingContextState) -> Value {
     json!({
-        "targetId": format!("tab-{}", target.id),
+        "targetId": cdp_target_id(context_id),
         "type": "page",
-        "title": target.title.as_deref().unwrap_or(""),
-        "url": target.url,
+        "title": state.title.as_deref().unwrap_or(""),
+        "url": state.url,
         "attached": false,
         "canAccessOpener": false,
         "browserContextId": "default",
     })
 }
 
-fn target_attached_notification(target: &Target, session_id: Option<&str>) -> String {
+fn target_attached_notification(
+    context_id: BrowsingContextId,
+    target_session_id: u64,
+    state: &BrowsingContextState,
+    session_id: Option<&str>,
+) -> String {
     notification(
         "Target.attachedToTarget",
         json!({
-            "sessionId": format!("sess-{}", target.session_id),
-            "targetInfo": target_info_json(target),
+            "sessionId": format!("sess-{target_session_id}"),
+            "targetInfo": target_info_json(context_id, state),
             "waitingForDebugger": false,
         }),
         session_id,
@@ -2880,18 +4194,14 @@ fn target_detached_notification_for_session(
         "Target.detachedFromTarget",
         json!({
             "sessionId": format!("sess-{detached_session_id}"),
-            "targetId": format!("tab-{}", target.id),
+            "targetId": cdp_target_id(target.context_id),
         }),
         session_id,
     )
 }
 
-fn target_frame_id(target: &Target) -> String {
-    format!("tab-{}", target.id)
-}
-
 fn page_lifecycle_event_notification(
-    target: &Target,
+    state: &BrowsingContextState,
     name: &str,
     timestamp: u64,
     session_id: Option<&str>,
@@ -2899,8 +4209,8 @@ fn page_lifecycle_event_notification(
     notification(
         "Page.lifecycleEvent",
         json!({
-            "frameId": target_frame_id(target),
-            "loaderId": format!("loader-{}", target.loader_id),
+            "frameId": frame_id(state),
+            "loaderId": loader_id(state),
             "name": name,
             "timestamp": timestamp,
         }),
@@ -2908,12 +4218,12 @@ fn page_lifecycle_event_notification(
     )
 }
 
-fn frame_json(target: &Target) -> Value {
+fn frame_json(state: &BrowsingContextState) -> Value {
     json!({
-        "id": target_frame_id(target),
-        "loaderId": format!("loader-{}", target.loader_id),
-        "url": target.url,
-        "securityOrigin": origin_for_url(&target.url),
+        "id": frame_id(state),
+        "loaderId": loader_id(state),
+        "url": state.url,
+        "securityOrigin": origin_for_url(&state.url),
         "mimeType": "text/html",
     })
 }
@@ -3071,13 +4381,12 @@ fn cdp_query_root_node_id(params: &Value, method: &str) -> Result<usize, String>
     usize::try_from(node_id).map_err(|_| format!("{method}: `nodeId` is too large"))
 }
 
-fn cdp_document_node(target: &Target, depth: i64) -> Value {
-    let child = target
-        .page
-        .as_ref()
-        .and_then(|page| page.query_selector_all("*").ok())
-        .and_then(|elements| elements.into_iter().next())
-        .map(|element| cdp_node_from_element(&element));
+fn cdp_document_node(
+    state: &BrowsingContextState,
+    elements: &[vixen_api::ElementInfo],
+    depth: i64,
+) -> Value {
+    let child = elements.first().map(cdp_node_from_element);
     let child_node_count = usize::from(child.is_some());
     let mut node = json!({
         "nodeId": CDP_DOCUMENT_NODE_ID,
@@ -3087,8 +4396,8 @@ fn cdp_document_node(target: &Target, depth: i64) -> Value {
         "localName": "",
         "nodeValue": "",
         "childNodeCount": child_node_count,
-        "documentURL": target.url.as_str(),
-        "baseURL": target.url.as_str(),
+        "documentURL": state.url,
+        "baseURL": state.url,
         "xmlVersion": "",
     });
     if depth != 0
@@ -3097,23 +4406,6 @@ fn cdp_document_node(target: &Target, depth: i64) -> Value {
         node["children"] = json!([child]);
     }
     node
-}
-
-fn element_info_for_node_id(
-    page: &Page,
-    node_id: usize,
-) -> Result<Option<vixen_api::ElementInfo>, String> {
-    Ok(page
-        .query_selector_all_in_viewport("*", DEFAULT_CAPTURE_VIEWPORT)?
-        .into_iter()
-        .find(|element| element.node_id == node_id))
-}
-
-fn element_bbox_for_node_id(
-    page: &Page,
-    node_id: usize,
-) -> Result<Option<(f64, f64, f64, f64)>, String> {
-    Ok(element_info_for_node_id(page, node_id)?.and_then(element_cdp_bbox))
 }
 
 fn cdp_node_from_element(element: &vixen_api::ElementInfo) -> Value {
@@ -3177,111 +4469,6 @@ fn box_model_from_bbox(bbox: (f64, f64, f64, f64)) -> Value {
             "height": bbox.3,
         }
     })
-}
-
-struct MouseDispatchInit {
-    x: f64,
-    y: f64,
-    button: MouseButton,
-    buttons: i64,
-    detail: i64,
-    related_node_id: Option<usize>,
-    bubbles: bool,
-    ctrl_key: bool,
-    shift_key: bool,
-    alt_key: bool,
-    meta_key: bool,
-    delta_x: f64,
-    delta_y: f64,
-}
-
-struct KeyDispatchInit {
-    key: String,
-    code: String,
-    text: String,
-    apply_text: bool,
-    ctrl_key: bool,
-    shift_key: bool,
-    alt_key: bool,
-    meta_key: bool,
-    repeat: bool,
-    location: i64,
-}
-
-fn dispatch_dom_mouse_event(
-    js: &mut Option<JsRuntime>,
-    page: &mut Page,
-    node_id: usize,
-    event_type: &str,
-    init: MouseDispatchInit,
-) -> Result<(), String> {
-    if js.is_none() {
-        *js = Some(JsRuntime::new().map_err(|e| format!("JS runtime init failed: {e}"))?);
-    }
-    let event_type = serde_json::to_string(event_type).map_err(|e| e.to_string())?;
-    let init = json!({
-        "bubbles": init.bubbles,
-        "clientX": init.x,
-        "clientY": init.y,
-        "screenX": init.x,
-        "screenY": init.y,
-        "button": init.button.dom_button_code(),
-        "buttons": init.buttons,
-        "detail": init.detail,
-        "relatedNodeId": init.related_node_id,
-        "ctrlKey": init.ctrl_key,
-        "shiftKey": init.shift_key,
-        "altKey": init.alt_key,
-        "metaKey": init.meta_key,
-        "deltaX": init.delta_x,
-        "deltaY": init.delta_y,
-        "deltaZ": 0,
-        "deltaMode": 0,
-    });
-    let init = serde_json::to_string(&init).map_err(|e| e.to_string())?;
-    let src = format!(
-        "globalThis.__vixenDispatchMouseEvent ? globalThis.__vixenDispatchMouseEvent({node_id}, {event_type}, {init}) : false"
-    );
-    js.as_mut()
-        .expect("runtime just initialised")
-        .evaluate_with_page_mut(&src, page)
-        .map(|_| ())
-        .map_err(|e| format!("Input.dispatchMouseEvent: {e}"))
-}
-
-fn dispatch_dom_key_event(
-    js: &mut Option<JsRuntime>,
-    page: &mut Page,
-    event_type: &str,
-    init: KeyDispatchInit,
-) -> Result<(), String> {
-    if js.is_none() {
-        *js = Some(JsRuntime::new().map_err(|e| format!("JS runtime init failed: {e}"))?);
-    }
-    let event_type = serde_json::to_string(event_type).map_err(|e| e.to_string())?;
-    let init = json!({
-        "key": init.key,
-        "code": init.code,
-        "location": init.location,
-        "ctrlKey": init.ctrl_key,
-        "shiftKey": init.shift_key,
-        "altKey": init.alt_key,
-        "metaKey": init.meta_key,
-        "repeat": init.repeat,
-        "isComposing": false,
-        "text": init.text,
-        "inputText": init.text,
-        "applyText": init.apply_text,
-    });
-    let init = serde_json::to_string(&init).map_err(|e| e.to_string())?;
-    let src = format!(
-        "globalThis.__vixenDispatchKeyEvent ? globalThis.__vixenDispatchKeyEvent({event_type}, {init}) : false"
-    );
-    js.as_mut()
-        .expect("runtime just initialised")
-        .evaluate_with_page_mut(&src, page)
-        .map(|_| ())
-        .map_err(|e| format!("Input.dispatchKeyEvent: {e}"))
 }
 
 fn finite_param(params: &Value, name: &str) -> Result<f64, String> {
@@ -3365,15 +4552,6 @@ fn capture_viewport(params: &Value, default_viewport: (u32, u32)) -> Result<(u32
     Ok((width.round() as u32, height.round() as u32))
 }
 
-fn remote_object_from_text(value: String) -> Value {
-    json!({
-        "result": {
-            "type": "string",
-            "value": value,
-        }
-    })
-}
-
 fn serialized_remote_object(serialized: &Value) -> Value {
     let kind = serialized
         .get("t")
@@ -3396,6 +4574,28 @@ fn serialized_remote_object(serialized: &Value) -> Value {
         "object" => json!({ "type": "object", "value": value, "description": "Object" }),
         _ => json!({ "type": kind, "value": value }),
     }
+}
+
+fn register_remote_ids(value: &Value, mut register: impl FnMut(&str)) {
+    fn visit(value: &Value, register: &mut impl FnMut(&str)) {
+        match value {
+            Value::Array(values) => {
+                for value in values {
+                    visit(value, register);
+                }
+            }
+            Value::Object(object) => {
+                if let Some(object_id) = object.get("objectId").and_then(Value::as_str) {
+                    register(object_id);
+                }
+                for value in object.values() {
+                    visit(value, register);
+                }
+            }
+            _ => {}
+        }
+    }
+    visit(value, &mut register);
 }
 
 fn cdp_object_expr(object_id: &str) -> String {
@@ -3452,6 +4652,37 @@ struct CdpResponse {
 struct CdpError {
     code: i32,
     message: String,
+    data: CdpErrorData,
+}
+
+#[derive(Debug, Serialize)]
+struct CdpErrorData {
+    #[serde(rename = "vixenCode")]
+    vixen_code: &'static str,
+}
+
+impl CdpError {
+    fn new(code: i32, message: impl Into<String>) -> Self {
+        let vixen_code = match code {
+            -32700 => "cdp.parse-error",
+            -32600 => "cdp.invalid-request",
+            -32601 => "cdp.method-not-found",
+            -32602 => "cdp.invalid-params",
+            -32603 => "cdp.internal",
+            -32001 => "cdp.invalid-session",
+            _ => "cdp.invalid-state",
+        };
+        let detail = message.into();
+        Self {
+            code,
+            message: format!("{vixen_code}: {detail}"),
+            data: CdpErrorData { vixen_code },
+        }
+    }
+
+    fn parse(message: impl Into<String>) -> Self {
+        Self::new(-32700, message)
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -3462,14 +4693,14 @@ struct CdpNotification {
     params: Value,
 }
 
-fn error_response(id: Option<u64>, code: i32, message: &str) -> String {
+fn error_response(id: Option<u64>, error: CdpError) -> String {
     serde_json::to_string(&json!({
         "id": id,
-        "error": { "code": code, "message": message }
+        "error": error,
     }))
     .unwrap_or_else(|_| {
         format!(
-            "{{\"id\":{},\"error\":{{\"code\":{code}}}}}",
+            "{{\"id\":{},\"error\":{{\"code\":-32603}}}}",
             id.unwrap_or(0)
         )
     })
@@ -3484,13 +4715,17 @@ fn notification(method: &str, params: Value, session_id: Option<&str>) -> String
     .unwrap_or_else(|_| "{}".into())
 }
 
-fn console_notification(event: JsConsoleEvent, session_id: Option<&str>) -> String {
+fn console_notification(
+    event: RuntimeConsoleEvent,
+    runtime_id: u64,
+    session_id: Option<&str>,
+) -> String {
     notification(
         "Runtime.consoleAPICalled",
         json!({
             "type": event.kind,
             "args": event.args.iter().map(remote_object_from_console_arg).collect::<Vec<_>>(),
-            "executionContextId": 1,
+            "executionContextId": runtime_id,
             "timestamp": now_ms(),
             "stackTrace": { "callFrames": [] },
         }),
@@ -3498,13 +4733,17 @@ fn console_notification(event: JsConsoleEvent, session_id: Option<&str>) -> Stri
     )
 }
 
-fn binding_notification(event: JsBindingEvent, session_id: Option<&str>) -> String {
+fn binding_notification(
+    event: RuntimeBindingEvent,
+    runtime_id: u64,
+    session_id: Option<&str>,
+) -> String {
     notification(
         "Runtime.bindingCalled",
         json!({
             "name": event.name,
             "payload": event.payload,
-            "executionContextId": 1,
+            "executionContextId": runtime_id,
         }),
         session_id,
     )
@@ -3533,7 +4772,7 @@ fn exception_thrown_notification(text: &str, code: &str, session_id: Option<&str
 }
 
 fn network_request_will_be_sent_notification(
-    target: &Target,
+    state: &BrowsingContextState,
     frame_id: &str,
     timestamp: u64,
     session_id: Option<&str>,
@@ -3541,11 +4780,11 @@ fn network_request_will_be_sent_notification(
     notification(
         "Network.requestWillBeSent",
         json!({
-            "requestId": network_request_id(target),
-            "loaderId": format!("loader-{}", target.loader_id),
-            "documentURL": target.url.as_str(),
+            "requestId": network_request_id(state),
+            "loaderId": loader_id(state),
+            "documentURL": state.url,
             "request": {
-                "url": target.url.as_str(),
+                "url": state.url,
                 "method": "GET",
                 "headers": {},
                 "mixedContentType": "none",
@@ -3564,7 +4803,7 @@ fn network_request_will_be_sent_notification(
 }
 
 fn network_response_received_notification(
-    target: &Target,
+    state: &BrowsingContextState,
     frame_id: &str,
     timestamp: u64,
     session_id: Option<&str>,
@@ -3572,13 +4811,13 @@ fn network_response_received_notification(
     notification(
         "Network.responseReceived",
         json!({
-            "requestId": network_request_id(target),
-            "loaderId": format!("loader-{}", target.loader_id),
+            "requestId": network_request_id(state),
+            "loaderId": loader_id(state),
             "timestamp": timestamp,
             "type": "Document",
             "frameId": frame_id,
             "response": {
-                "url": target.url.as_str(),
+                "url": state.url,
                 "status": 200,
                 "statusText": "OK",
                 "headers": {},
@@ -3587,7 +4826,7 @@ fn network_response_received_notification(
                 "connectionId": 0,
                 "encodedDataLength": 0,
                 "securityState": "neutral",
-                "protocol": network_protocol_for_url(&target.url),
+                "protocol": network_protocol_for_url(&state.url),
             },
             "hasExtraInfo": false,
         }),
@@ -3596,14 +4835,14 @@ fn network_response_received_notification(
 }
 
 fn network_loading_finished_notification(
-    target: &Target,
+    state: &BrowsingContextState,
     timestamp: u64,
     session_id: Option<&str>,
 ) -> String {
     notification(
         "Network.loadingFinished",
         json!({
-            "requestId": network_request_id(target),
+            "requestId": network_request_id(state),
             "timestamp": timestamp,
             "encodedDataLength": 0,
         }),
@@ -3612,7 +4851,7 @@ fn network_loading_finished_notification(
 }
 
 fn network_fetch_notifications(
-    event: JsNetworkEvent,
+    event: RuntimeNetworkEvent,
     frame_id: &str,
     loader_id: u64,
     document_url: &str,
@@ -3620,21 +4859,34 @@ fn network_fetch_notifications(
     session_id: Option<&str>,
 ) -> Vec<String> {
     match event {
-        JsNetworkEvent::Request {
+        RuntimeNetworkEvent::Request {
             request_id,
             url,
             method,
-        } => vec![network_fetch_request_will_be_sent_notification(
-            &request_id,
-            &url,
-            &method,
-            frame_id,
-            loader_id,
-            document_url,
-            timestamp,
+        } => vec![notification(
+            "Network.requestWillBeSent",
+            json!({
+                "requestId": request_id,
+                "loaderId": format!("loader-{loader_id}"),
+                "documentURL": document_url,
+                "request": {
+                    "url": url,
+                    "method": method,
+                    "headers": {},
+                    "mixedContentType": "none",
+                    "initialPriority": "High",
+                    "referrerPolicy": "strict-origin-when-cross-origin",
+                },
+                "timestamp": timestamp,
+                "wallTime": timestamp as f64 / 1000.0,
+                "initiator": { "type": "script" },
+                "type": "Fetch",
+                "frameId": frame_id,
+                "hasUserGesture": false,
+            }),
             session_id,
         )],
-        JsNetworkEvent::Redirect {
+        RuntimeNetworkEvent::Redirect {
             request_id,
             from,
             status,
@@ -3648,7 +4900,7 @@ fn network_fetch_notifications(
             timestamp,
             session_id,
         )],
-        JsNetworkEvent::Response {
+        RuntimeNetworkEvent::Response {
             request_id,
             url,
             status,
@@ -3664,7 +4916,7 @@ fn network_fetch_notifications(
             ),
             network_fetch_loading_finished_notification(&request_id, timestamp, session_id),
         ],
-        JsNetworkEvent::Failure {
+        RuntimeNetworkEvent::Failure {
             request_id,
             url,
             error_text,
@@ -3678,41 +4930,6 @@ fn network_fetch_notifications(
             session_id,
         )],
     }
-}
-
-fn network_fetch_request_will_be_sent_notification(
-    request_id: &str,
-    url: &str,
-    method: &str,
-    frame_id: &str,
-    loader_id: u64,
-    document_url: &str,
-    timestamp: u64,
-    session_id: Option<&str>,
-) -> String {
-    notification(
-        "Network.requestWillBeSent",
-        json!({
-            "requestId": request_id,
-            "loaderId": format!("loader-{loader_id}"),
-            "documentURL": document_url,
-            "request": {
-                "url": url,
-                "method": method,
-                "headers": {},
-                "mixedContentType": "none",
-                "initialPriority": "High",
-                "referrerPolicy": "strict-origin-when-cross-origin",
-            },
-            "timestamp": timestamp,
-            "wallTime": timestamp as f64 / 1000.0,
-            "initiator": { "type": "script" },
-            "type": "Fetch",
-            "frameId": frame_id,
-            "hasUserGesture": false,
-        }),
-        session_id,
-    )
 }
 
 fn network_fetch_response_received_notification(
@@ -3807,8 +5024,8 @@ fn http_status_text(status: u16) -> &'static str {
     }
 }
 
-fn network_request_id(target: &Target) -> String {
-    format!("request-{}", target.loader_id)
+fn network_request_id(state: &BrowsingContextState) -> String {
+    format!("request-{}", state.document_id.get())
 }
 
 fn network_protocol_for_url(raw: &str) -> &'static str {
@@ -3821,7 +5038,7 @@ fn network_protocol_for_url(raw: &str) -> &'static str {
     }
 }
 
-fn remote_object_from_console_arg(arg: &JsConsoleArg) -> Value {
+fn remote_object_from_console_arg(arg: &RuntimeConsoleArg) -> Value {
     let mut object = serde_json::Map::new();
     object.insert("type".to_owned(), json!(arg.type_name));
     if let Some(subtype) = &arg.subtype {
@@ -3837,12 +5054,12 @@ fn remote_object_from_console_arg(arg: &JsConsoleArg) -> Value {
     Value::Object(object)
 }
 
-fn console_value_json(value: &JsConsoleValue) -> Value {
+fn console_value_json(value: &RuntimeConsoleValue) -> Value {
     match value {
-        JsConsoleValue::String(value) => json!(value),
-        JsConsoleValue::Number(value) => json!(value),
-        JsConsoleValue::Bool(value) => json!(value),
-        JsConsoleValue::Null => Value::Null,
+        RuntimeConsoleValue::String(value) => json!(value),
+        RuntimeConsoleValue::Number(value) => json!(value),
+        RuntimeConsoleValue::Bool(value) => json!(value),
+        RuntimeConsoleValue::Null => Value::Null,
     }
 }
 
@@ -3871,6 +5088,16 @@ mod tests {
             params,
         };
         state.dispatch(&req).response.expect("success response")
+    }
+
+    fn dispatch_error(state: &mut CdpState, method: &str, params: Value) -> CdpError {
+        let req = CdpRequest {
+            id: 1,
+            session_id: None,
+            method: method.into(),
+            params,
+        };
+        state.dispatch(&req).response.expect_err("CDP error")
     }
 
     fn spawn_fetch_server(
@@ -3963,7 +5190,7 @@ mod tests {
         assert_eq!(v["sessionId"], "sess-3");
 
         let v = dispatch_one(&mut s, "Target.getTargets", json!({}));
-        assert_eq!(v["targetInfos"].as_array().unwrap().len(), 1);
+        assert_eq!(v["targetInfos"].as_array().unwrap().len(), 2);
 
         let req = CdpRequest {
             id: 2,
@@ -4083,7 +5310,7 @@ mod tests {
         assert_eq!(response["result"]["success"], true);
         assert_eq!(detached["method"], "Target.detachedFromTarget");
         assert_eq!(detached["params"]["targetId"], target_id);
-        assert!(s.targets.is_empty());
+        assert_eq!(s.targets.len(), 1, "the initial target remains open");
     }
 
     #[test]
@@ -4105,7 +5332,7 @@ mod tests {
             "Target.createTarget",
             json!({ "url": format!("file://{}", two.display()) }),
         );
-        assert_eq!(first["targetId"], "tab-1");
+        assert_eq!(first["targetId"], "tab-2");
         assert_eq!(second["targetId"], "tab-3");
 
         let attached = dispatch_one(
@@ -4114,7 +5341,7 @@ mod tests {
             json!({ "targetId": second["targetId"].as_str().unwrap(), "flatten": true }),
         );
         let session_id = attached["sessionId"].as_str().unwrap();
-        assert_eq!(session_id, "sess-5");
+        assert_eq!(session_id, "sess-4");
 
         let frame_req = CdpRequest {
             id: 11,
@@ -4141,12 +5368,52 @@ mod tests {
         assert_eq!(detached.response.expect("detach"), json!({}));
         let notification: Value = serde_json::from_str(&detached.notifications[0]).unwrap();
         assert_eq!(notification["method"], "Target.detachedFromTarget");
-        assert_eq!(notification["params"]["sessionId"], "sess-5");
+        assert_eq!(notification["params"]["sessionId"], "sess-4");
         assert_eq!(notification["params"]["targetId"], "tab-3");
-        assert_eq!(s.targets.len(), 2, "detach must not close the target");
+        assert_eq!(s.targets.len(), 3, "detach must not close the target");
         assert!(
             s.attached_sessions.is_empty(),
             "detach drops only the routed session"
+        );
+    }
+
+    #[test]
+    fn navigation_notifies_every_session_attached_to_the_target() {
+        let mut s = CdpState::default();
+        let attached = dispatch_one(
+            &mut s,
+            "Target.attachToTarget",
+            json!({ "targetId": "tab-1", "flatten": true }),
+        );
+        assert_eq!(attached["sessionId"], "sess-2");
+        for session_id in ["sess-1", "sess-2"] {
+            let enabled = CdpRequest {
+                id: 1,
+                session_id: Some(session_id.to_owned()),
+                method: "Runtime.enable".to_owned(),
+                params: json!({}),
+            };
+            s.dispatch(&enabled).response.expect("runtime enabled");
+        }
+
+        let navigate = CdpRequest {
+            id: 2,
+            session_id: Some("sess-2".to_owned()),
+            method: "Page.navigate".to_owned(),
+            params: json!({ "url": "about:blank" }),
+        };
+        let outcome = s.dispatch(&navigate);
+        outcome.response.expect("navigation accepted");
+        let context_sessions = outcome
+            .notifications
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|event| event["method"] == "Runtime.executionContextCreated")
+            .map(|event| event["sessionId"].as_str().unwrap().to_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            context_sessions,
+            std::collections::BTreeSet::from(["sess-1".to_owned(), "sess-2".to_owned()])
         );
     }
 
@@ -4161,7 +5428,7 @@ mod tests {
         dispatch_one(&mut s, "Network.enable", json!({}));
         let navigate = CdpRequest {
             id: 1,
-            session_id: Some("sess-2".to_owned()),
+            session_id: Some("sess-1".to_owned()),
             method: "Page.navigate".to_owned(),
             params: json!({ "url": url }),
         };
@@ -4178,7 +5445,7 @@ mod tests {
             .iter()
             .find(|event| event["method"] == "Network.requestWillBeSent")
             .expect("request event");
-        assert_eq!(request["sessionId"], "sess-2");
+        assert_eq!(request["sessionId"], "sess-1");
         assert_eq!(request["params"]["loaderId"], loader_id);
         assert_eq!(request["params"]["request"]["method"], "GET");
         assert!(
@@ -4322,7 +5589,7 @@ mod tests {
     }
 
     #[test]
-    fn capture_screenshot_validates_without_touching_gl() {
+    fn capture_screenshot_uses_initial_core_target() {
         let mut s = CdpState::default();
         let no_page = CdpRequest {
             id: 1,
@@ -4330,11 +5597,11 @@ mod tests {
             method: "Page.captureScreenshot".into(),
             params: json!({}),
         };
-        let err = s
+        let screenshot = s
             .dispatch(&no_page)
             .response
-            .expect_err("capture without page must fail");
-        assert_eq!(err.code, -32000);
+            .expect("initial target screenshot");
+        assert!(!screenshot["data"].as_str().unwrap().is_empty());
 
         let bad_format = CdpRequest {
             id: 2,
@@ -4373,7 +5640,7 @@ mod tests {
     }
 
     #[test]
-    fn input_mouse_event_validates_without_page() {
+    fn input_mouse_event_validates_on_initial_target() {
         let mut s = CdpState::default();
         let req = CdpRequest {
             id: 1,
@@ -4381,11 +5648,7 @@ mod tests {
             method: "Input.dispatchMouseEvent".into(),
             params: json!({ "type": "mousePressed", "x": 1, "y": 1, "button": "left" }),
         };
-        let err = s
-            .dispatch(&req)
-            .response
-            .expect_err("input without page must fail");
-        assert_eq!(err.code, -32000);
+        assert!(s.dispatch(&req).response.is_ok());
 
         let req = CdpRequest {
             id: 2,
@@ -4401,7 +5664,7 @@ mod tests {
     }
 
     #[test]
-    fn input_key_event_validates_without_page() {
+    fn input_key_event_validates_on_initial_target() {
         let mut s = CdpState::default();
         let req = CdpRequest {
             id: 1,
@@ -4409,11 +5672,7 @@ mod tests {
             method: "Input.dispatchKeyEvent".into(),
             params: json!({ "type": "keyDown", "key": "A", "text": "A" }),
         };
-        let err = s
-            .dispatch(&req)
-            .response
-            .expect_err("keyboard input without page must fail");
-        assert_eq!(err.code, -32000);
+        assert!(s.dispatch(&req).response.is_ok());
 
         let req = CdpRequest {
             id: 2,
@@ -4429,7 +5688,7 @@ mod tests {
     }
 
     #[test]
-    fn input_insert_text_validates_without_page() {
+    fn input_insert_text_validates_on_initial_target() {
         let mut s = CdpState::default();
         let req = CdpRequest {
             id: 1,
@@ -4437,11 +5696,7 @@ mod tests {
             method: "Input.insertText".into(),
             params: json!({ "text": "A" }),
         };
-        let err = s
-            .dispatch(&req)
-            .response
-            .expect_err("insertText without page must fail");
-        assert_eq!(err.code, -32000);
+        assert!(s.dispatch(&req).response.is_ok());
 
         let req = CdpRequest {
             id: 2,
@@ -4675,6 +5930,120 @@ mod tests {
     }
 
     #[test]
+    fn runtime_remote_handles_are_released_by_object_and_group() {
+        let mut s = CdpState::default();
+        let grouped = dispatch_one(
+            &mut s,
+            "Runtime.evaluate",
+            json!({
+                "expression": "({ nested: { ok: true } })",
+                "objectGroup": "test-group",
+            }),
+        );
+        let grouped_id = grouped["result"]["objectId"].as_str().unwrap();
+        let properties = dispatch_one(
+            &mut s,
+            "Runtime.getProperties",
+            json!({ "objectId": grouped_id, "ownProperties": true }),
+        );
+        let nested_id = properties["result"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|property| property["name"] == "nested")
+            .unwrap()["value"]["objectId"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+
+        dispatch_one(
+            &mut s,
+            "Runtime.releaseObjectGroup",
+            json!({ "objectGroup": "test-group" }),
+        );
+        for object_id in [grouped_id, nested_id.as_str()] {
+            let error = dispatch_error(
+                &mut s,
+                "Runtime.getProperties",
+                json!({ "objectId": object_id }),
+            );
+            assert_eq!(error.code, -32000);
+            assert!(error.message.contains("unknown or released objectId"));
+        }
+
+        let single = dispatch_one(
+            &mut s,
+            "Runtime.evaluate",
+            json!({ "expression": "({ value: 1 })" }),
+        );
+        let single_id = single["result"]["objectId"].as_str().unwrap();
+        dispatch_one(
+            &mut s,
+            "Runtime.releaseObject",
+            json!({ "objectId": single_id }),
+        );
+        let error = dispatch_error(
+            &mut s,
+            "Runtime.getProperties",
+            json!({ "objectId": single_id }),
+        );
+        assert_eq!(error.code, -32000);
+        assert!(error.message.contains("unknown or released objectId"));
+    }
+
+    #[test]
+    fn runtime_remote_handles_are_generation_scoped_and_bounded() {
+        let mut s = CdpState::default();
+        let remote = dispatch_one(
+            &mut s,
+            "Runtime.evaluate",
+            json!({ "expression": "({ retained: true })" }),
+        );
+        let object_id = remote["result"]["objectId"].as_str().unwrap().to_owned();
+        let prefix = s.remote_object_prefix();
+        for serial in 0..MAX_REMOTE_HANDLES {
+            s.register_remote_object_id(format!("{prefix}test-{serial}"), None);
+        }
+        assert_eq!(s.remote_handles.len(), MAX_REMOTE_HANDLES);
+        assert!(
+            !s.remote_handles
+                .iter()
+                .any(|handle| handle.object_id == object_id)
+        );
+        let stored = dispatch_one(
+            &mut s,
+            "Runtime.evaluate",
+            json!({
+                "expression": format!(
+                    "Object.prototype.hasOwnProperty.call(globalThis.__vixenCdpObjects, {})",
+                    serde_json::to_string(&object_id).unwrap()
+                ),
+                "returnByValue": true,
+            }),
+        );
+        assert_eq!(stored["result"]["value"], false);
+
+        let fresh = dispatch_one(
+            &mut s,
+            "Runtime.evaluate",
+            json!({ "expression": "({ staleAfterNavigation: true })" }),
+        );
+        let stale_id = fresh["result"]["objectId"].as_str().unwrap().to_owned();
+        dispatch_one(&mut s, "Page.navigate", json!({ "url": "about:blank" }));
+        let error = dispatch_error(
+            &mut s,
+            "Runtime.getProperties",
+            json!({ "objectId": stale_id }),
+        );
+        assert_eq!(error.code, -32000);
+        assert!(
+            error
+                .message
+                .contains("stale or different runtime generation")
+        );
+    }
+
+    #[test]
     fn runtime_await_promise_resolves_stored_promise_handles() {
         let mut s = CdpState::default();
         let remote = dispatch_one(
@@ -4740,7 +6109,7 @@ mod tests {
         assert_eq!(binding["sessionId"], "sess-1");
         assert_eq!(binding["params"]["name"], "hostBinding");
         assert_eq!(binding["params"]["payload"], "payload");
-        assert_eq!(binding["params"]["executionContextId"], 1);
+        assert_eq!(binding["params"]["executionContextId"], 2);
     }
 
     #[test]
@@ -4850,6 +6219,129 @@ mod tests {
     }
 
     #[test]
+    fn dom_attribute_and_outer_html_methods_mutate_page_dom() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("attrs.html");
+        std::fs::write(
+            &html,
+            "<main id='root'><button id='hit' data-state='old'>Go</button></main>",
+        )
+        .unwrap();
+        let url = format!("file://{}", html.display());
+
+        let mut s = CdpState::default();
+        dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
+        let node_id = dispatch_one(
+            &mut s,
+            "DOM.querySelector",
+            json!({ "nodeId": CDP_DOCUMENT_NODE_ID, "selector": "#hit" }),
+        )["nodeId"]
+            .as_u64()
+            .unwrap();
+
+        let attrs = dispatch_one(&mut s, "DOM.getAttributes", json!({ "nodeId": node_id }));
+        assert_eq!(
+            attrs["attributes"].as_array().unwrap(),
+            &vec![json!("id"), json!("hit"), json!("data-state"), json!("old")]
+        );
+
+        dispatch_one(
+            &mut s,
+            "DOM.setAttributeValue",
+            json!({ "nodeId": node_id, "name": "data-state", "value": "new" }),
+        );
+        let outer = dispatch_one(&mut s, "DOM.getOuterHTML", json!({ "nodeId": node_id }));
+        assert_eq!(
+            outer["outerHTML"].as_str().unwrap(),
+            "<button id=\"hit\" data-state=\"new\">Go</button>"
+        );
+
+        dispatch_one(
+            &mut s,
+            "DOM.removeAttribute",
+            json!({ "nodeId": node_id, "name": "data-state" }),
+        );
+        let value = dispatch_one(
+            &mut s,
+            "Runtime.evaluate",
+            json!({ "expression": "document.querySelector('#hit').getAttribute('data-state')" }),
+        );
+        assert_eq!(value["result"]["subtype"], "null");
+    }
+
+    #[test]
+    fn page_performance_and_security_methods_are_browser_shaped() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("resource.html");
+        std::fs::write(&html, "<title>Resource</title><main>Body</main>").unwrap();
+        let url = format!("file://{}", html.display());
+
+        let mut s = CdpState::default();
+        dispatch_one(&mut s, "Page.navigate", json!({ "url": url.clone() }));
+
+        let resources = dispatch_one(&mut s, "Page.getResourceTree", json!({}));
+        assert_eq!(resources["frameTree"]["frame"]["url"], url);
+        assert_eq!(
+            resources["frameTree"]["resources"]
+                .as_array()
+                .unwrap()
+                .len(),
+            0
+        );
+
+        let content = dispatch_one(&mut s, "Page.getResourceContent", json!({ "url": url }));
+        assert_eq!(content["base64Encoded"], false);
+        assert!(content["content"].as_str().unwrap().contains("Resource"));
+
+        let metrics = dispatch_one(&mut s, "Performance.getMetrics", json!({}));
+        assert!(
+            metrics["metrics"].as_array().unwrap().iter().any(|entry| {
+                entry["name"] == "Nodes" && entry["value"].as_f64().unwrap() >= 1.0
+            })
+        );
+
+        let security = dispatch_one(&mut s, "Security.getSecurityState", json!({}));
+        assert_eq!(security["securityState"], "neutral");
+        assert_eq!(security["schemeIsCryptographic"], false);
+
+        dispatch_one(&mut s, "Page.stopLoading", json!({}));
+        dispatch_one(&mut s, "Page.resetNavigationHistory", json!({}));
+        let history = dispatch_one(&mut s, "Page.getNavigationHistory", json!({}));
+        assert_eq!(history["entries"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn page_set_bypass_csp_controls_page_script_execution() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("csp.html");
+        std::fs::write(
+            &html,
+            r#"<meta http-equiv="Content-Security-Policy" content="script-src 'none'">
+               <body><script>document.body.setAttribute('data-ran', 'yes');</script></body>"#,
+        )
+        .unwrap();
+        let url = format!("file://{}", html.display());
+
+        let mut s = CdpState::default();
+        dispatch_one(&mut s, "Page.navigate", json!({ "url": url.clone() }));
+        let blocked = dispatch_one(
+            &mut s,
+            "Runtime.evaluate",
+            json!({ "expression": "document.body.getAttribute('data-ran')" }),
+        );
+        assert_eq!(blocked["result"]["subtype"], "null");
+
+        dispatch_one(&mut s, "Page.setBypassCSP", json!({ "enabled": true }));
+        dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
+        let bypassed = dispatch_one(
+            &mut s,
+            "Runtime.evaluate",
+            json!({ "expression": "document.body.getAttribute('data-ran')" }),
+        );
+        assert_eq!(bypassed["result"]["value"], "yes");
+    }
+
+    #[test]
     fn dom_geometry_methods_project_layout_boxes() {
         let dir = tempfile::tempdir().unwrap();
         let html = dir.path().join("geometry.html");
@@ -4862,13 +6354,14 @@ mod tests {
 
         let mut s = CdpState::default();
         dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
-        let node_id = s.targets[0]
-            .page
-            .as_ref()
-            .unwrap()
-            .query_selector_all("#hit")
-            .unwrap()[0]
-            .node_id;
+        let document = dispatch_one(&mut s, "DOM.getDocument", json!({}));
+        let node_id = dispatch_one(
+            &mut s,
+            "DOM.querySelector",
+            json!({ "nodeId": document["root"]["nodeId"], "selector": "#hit" }),
+        )["nodeId"]
+            .as_u64()
+            .unwrap();
 
         let quads = dispatch_one(&mut s, "DOM.getContentQuads", json!({ "nodeId": node_id }));
         let quad = quads["quads"][0].as_array().unwrap();
@@ -4910,13 +6403,13 @@ mod tests {
         );
         assert_eq!(resolved_quads["quads"][0], quads["quads"][0]);
 
-        let input_node_id = s.targets[0]
-            .page
-            .as_ref()
-            .unwrap()
-            .query_selector_all("#empty")
-            .unwrap()[0]
-            .node_id;
+        let input_node_id = dispatch_one(
+            &mut s,
+            "DOM.querySelector",
+            json!({ "nodeId": document["root"]["nodeId"], "selector": "#empty" }),
+        )["nodeId"]
+            .as_u64()
+            .unwrap();
         let input_model = dispatch_one(
             &mut s,
             "DOM.getBoxModel",
@@ -4987,7 +6480,13 @@ mod tests {
             method: "Page.createIsolatedWorld".to_owned(),
             params: json!({ "frameId": "tab-1", "worldName": "playwright-utility" }),
         };
-        assert!(s.dispatch(&isolated_world).response.is_ok());
+        let isolated = s.dispatch(&isolated_world);
+        assert!(isolated.response.is_ok());
+        assert!(isolated.notifications.iter().any(|line| {
+            let notification = serde_json::from_str::<Value>(line).unwrap();
+            notification["method"] == "Runtime.executionContextCreated"
+                && notification["params"]["context"]["auxData"]["type"] == "isolated"
+        }));
 
         let navigate = CdpRequest {
             id: 3,
@@ -5014,8 +6513,78 @@ mod tests {
         }));
         assert!(notifications.iter().any(|notif| {
             notif["method"] == "Runtime.executionContextCreated"
-                && notif["params"]["context"]["name"] == "playwright-utility"
+                && notif["params"]["context"]["auxData"]["type"] == "isolated"
         }));
+    }
+
+    #[test]
+    fn set_content_console_marker_keeps_its_source_runtime_generation() {
+        let mut s = CdpState::default();
+        let session_id = Some("sess-1".to_owned());
+        for method in ["Runtime.enable", "Page.setLifecycleEventsEnabled"] {
+            let request = CdpRequest {
+                id: 1,
+                session_id: session_id.clone(),
+                method: method.to_owned(),
+                params: if method == "Page.setLifecycleEventsEnabled" {
+                    json!({ "enabled": true })
+                } else {
+                    json!({})
+                },
+            };
+            assert!(s.dispatch(&request).response.is_ok());
+        }
+        let old_runtime_id = s.current_state().unwrap().runtime_context_id.unwrap().get();
+        let request = CdpRequest {
+            id: 2,
+            session_id,
+            method: "Runtime.callFunctionOn".to_owned(),
+            params: json!({
+                "functionDeclaration": "(html, tag) => { document.open(); console.debug(tag); document.write(html); document.close(); }",
+                "arguments": [
+                    { "value": "<!doctype html><title>replacement</title><main id='replaced'>ready</main>" },
+                    { "value": "playwright:set-content-marker" }
+                ],
+                "returnByValue": true
+            }),
+        };
+        let outcome = s.dispatch(&request);
+        assert!(outcome.response.is_ok());
+        let notifications = outcome
+            .notifications
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).expect("notification JSON"))
+            .collect::<Vec<_>>();
+        let console_index = notifications
+            .iter()
+            .position(|event| event["method"] == "Runtime.consoleAPICalled")
+            .expect("setContent marker");
+        let cleared_index = notifications
+            .iter()
+            .position(|event| event["method"] == "Runtime.executionContextsCleared")
+            .expect("runtime reset");
+        let load_index = notifications
+            .iter()
+            .position(|event| event["method"] == "Page.loadEventFired")
+            .expect("replacement load event");
+        assert_eq!(
+            notifications[console_index]["params"]["executionContextId"],
+            old_runtime_id
+        );
+        assert!(console_index < cleared_index);
+        assert!(cleared_index < load_index);
+        assert_ne!(
+            s.current_state().unwrap().runtime_context_id.unwrap().get(),
+            old_runtime_id
+        );
+        assert_eq!(
+            dispatch_one(
+                &mut s,
+                "Runtime.evaluate",
+                json!({ "expression": "document.title" }),
+            )["result"]["value"],
+            "replacement"
+        );
     }
 
     #[test]
@@ -5048,5 +6617,173 @@ mod tests {
         let response: Value = serde_json::from_str(&eval[0]).unwrap();
         assert_eq!(response["result"]["result"]["type"], "string");
         assert_eq!(response["result"]["result"]["value"], "complete");
+    }
+
+    #[test]
+    fn browser_permission_overrides_reach_runtime_and_reset() {
+        let mut state = CdpState::default();
+        dispatch_one(&mut state, "Page.navigate", json!({ "url": "about:blank" }));
+        dispatch_one(
+            &mut state,
+            "Browser.grantPermissions",
+            json!({ "permissions": ["notifications"] }),
+        );
+
+        let granted = dispatch_one(
+            &mut state,
+            "Runtime.evaluate",
+            json!({
+                "expression": "Promise.all(['notifications','geolocation'].map((name) => navigator.permissions.query({ name }).then((status) => status.state))).then((states) => states.join(':'))",
+                "returnByValue": true,
+            }),
+        );
+        assert_eq!(granted["result"]["value"], "granted:denied");
+
+        dispatch_one(&mut state, "Browser.resetPermissions", json!({}));
+        let reset = dispatch_one(
+            &mut state,
+            "Runtime.evaluate",
+            json!({
+                "expression": "navigator.permissions.query({ name: 'notifications' }).then((status) => status.state)",
+                "returnByValue": true,
+            }),
+        );
+        assert_eq!(reset["result"]["value"], "prompt");
+    }
+
+    #[test]
+    fn tracing_stream_records_bounded_protocol_events() {
+        let mut state = CdpState::default();
+        let start = state.handle_text_sync(
+            &json!({
+                "id": 1,
+                "method": "Tracing.start",
+                "params": { "transferMode": "ReturnAsStream", "categories": "devtools.timeline" }
+            })
+            .to_string(),
+        );
+        assert_eq!(
+            serde_json::from_str::<Value>(&start[0]).unwrap()["result"],
+            json!({})
+        );
+        state.handle_text_sync(
+            &json!({ "id": 2, "method": "Browser.getVersion", "params": {} }).to_string(),
+        );
+        state.handle_text_sync(
+            &json!({ "id": 3, "method": "Page.stopLoading", "params": {} }).to_string(),
+        );
+        let end = state.handle_text_sync(
+            &json!({ "id": 4, "method": "Tracing.end", "params": {} }).to_string(),
+        );
+        let complete = end
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|message| message["method"] == "Tracing.tracingComplete")
+            .expect("tracingComplete notification");
+        let handle = complete["params"]["stream"].as_str().unwrap();
+
+        let read = state.handle_text_sync(
+            &json!({ "id": 5, "method": "IO.read", "params": { "handle": handle } }).to_string(),
+        );
+        let read: Value = serde_json::from_str(&read[0]).unwrap();
+        assert_eq!(read["result"]["base64Encoded"], true);
+        assert_eq!(read["result"]["eof"], true);
+        let bytes = BASE64_STANDARD
+            .decode(read["result"]["data"].as_str().unwrap())
+            .unwrap();
+        let trace: Value = serde_json::from_slice(&bytes).unwrap();
+        let names = trace["traceEvents"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|event| event["name"].as_str())
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"Tracing.start"));
+        assert!(names.contains(&"Browser.getVersion"));
+        assert!(names.contains(&"Page.stopLoading"));
+        assert!(!names.contains(&"Tracing.end"));
+
+        assert_eq!(
+            dispatch_one(&mut state, "IO.close", json!({ "handle": handle })),
+            json!({})
+        );
+    }
+
+    #[test]
+    fn protocol_errors_have_stable_machine_codes() {
+        let mut state = CdpState::default();
+        let parse: Value = serde_json::from_str(&state.handle_text_sync("{")[0]).unwrap();
+        assert_eq!(parse["error"]["code"], -32700);
+        assert_eq!(parse["error"]["data"]["vixenCode"], "cdp.parse-error");
+        assert!(
+            parse["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("cdp.parse-error:")
+        );
+
+        let invalid: Value =
+            serde_json::from_str(&state.handle_text_sync(r#"{"id":1}"#)[0]).unwrap();
+        assert_eq!(invalid["error"]["code"], -32600);
+        assert_eq!(invalid["error"]["data"]["vixenCode"], "cdp.invalid-request");
+
+        let missing: Value = serde_json::from_str(
+            &state.handle_text_sync(r#"{"id":2,"method":"Vixen.missing"}"#)[0],
+        )
+        .unwrap();
+        assert_eq!(missing["error"]["code"], -32601);
+        assert_eq!(
+            missing["error"]["data"]["vixenCode"],
+            "cdp.method-not-found"
+        );
+
+        state.seed_initial_target("about:blank".to_owned()).unwrap();
+        let invalid_session: Value = serde_json::from_str(
+            &state.handle_text_sync(r#"{"id":3,"sessionId":"sess-999","method":"Runtime.enable"}"#)
+                [0],
+        )
+        .unwrap();
+        assert_eq!(invalid_session["error"]["code"], -32001);
+        assert_eq!(
+            invalid_session["error"]["data"]["vixenCode"],
+            "cdp.invalid-session"
+        );
+    }
+
+    #[test]
+    fn trace_event_buffer_is_bounded() {
+        let mut state = CdpState::default();
+        state.tracing.active = true;
+        for _ in 0..(MAX_TRACE_EVENTS + 10) {
+            state.record_trace_event("DOM.getDocument", None, Instant::now(), true);
+        }
+        assert_eq!(state.tracing.events.len(), MAX_TRACE_EVENTS);
+        assert!(state.tracing.data_loss_occurred);
+    }
+
+    #[test]
+    fn pending_core_navigation_outcomes_are_bounded() {
+        let mut state = CdpState::default();
+        let context_id = state.current_context().unwrap();
+        for raw in 1..=(MAX_PENDING_CORE_NAVIGATIONS as u64 + 1) {
+            state.pending_core_navigations.insert(
+                NavigationId::new(raw).unwrap(),
+                PendingCoreNavigation {
+                    context_id,
+                    committed: true,
+                    terminal: Some(Ok(())),
+                },
+            );
+        }
+        state.prune_pending_core_navigations();
+        assert_eq!(
+            state.pending_core_navigations.len(),
+            MAX_PENDING_CORE_NAVIGATIONS
+        );
+        assert!(
+            !state
+                .pending_core_navigations
+                .contains_key(&NavigationId::new(1).unwrap())
+        );
     }
 }

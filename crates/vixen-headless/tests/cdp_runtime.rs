@@ -37,6 +37,63 @@ fn dispatch_lines(state: &mut CdpState, method: &str, params: Value) -> Vec<Valu
         .collect()
 }
 
+fn dispatch_session(
+    state: &mut CdpState,
+    session_id: Option<&str>,
+    method: &str,
+    params: Value,
+) -> Value {
+    let req = json!({
+        "id": 91,
+        "sessionId": session_id,
+        "method": method,
+        "params": params,
+    });
+    state
+        .handle_text_sync(&req.to_string())
+        .into_iter()
+        .map(|line| serde_json::from_str::<Value>(&line).unwrap())
+        .find(|message| message["id"] == 91)
+        .unwrap_or_else(|| panic!("{method} returned no response"))
+}
+
+fn spawn_page_server(
+    host: &str,
+    requests: usize,
+) -> (
+    String,
+    vixen_net::NetworkConfig,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        for _ in 0..requests {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let read = stream.read(&mut request).unwrap_or(0);
+            let request = String::from_utf8_lossy(&request[..read]);
+            let path = request
+                .lines()
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .unwrap_or("/");
+            let body = format!("<!doctype html><title>{path}</title><main>{path}</main>");
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
+    });
+    let mut config = vixen_net::NetworkConfig::default();
+    config.dns_overrides.push((host.to_owned(), vec![addr]));
+    (format!("http://{host}:{}", addr.port()), config, handle)
+}
+
 fn spawn_fetch_server(
     host: &str,
     body: &str,
@@ -60,6 +117,79 @@ fn spawn_fetch_server(
             body
         );
         stream.write_all(response.as_bytes()).unwrap();
+    });
+
+    let mut config = vixen_net::NetworkConfig::default();
+    config.dns_overrides.push((host.to_owned(), vec![addr]));
+    (
+        format!("http://{host}:{}/payload", addr.port()),
+        config,
+        handle,
+    )
+}
+
+fn spawn_header_echo_server(
+    host: &str,
+) -> (
+    String,
+    vixen_net::NetworkConfig,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0_u8; 2048];
+        let read = stream.read(&mut request).unwrap_or(0);
+        let headers = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+        let body = if headers.contains("\r\nx-cdp-token: abc\r\n") {
+            "header-seen"
+        } else {
+            "header-missing"
+        };
+        let response = format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream.write_all(response.as_bytes()).unwrap();
+    });
+
+    let mut config = vixen_net::NetworkConfig::default();
+    config.dns_overrides.push((host.to_owned(), vec![addr]));
+    (
+        format!("http://{host}:{}/payload", addr.port()),
+        config,
+        handle,
+    )
+}
+
+fn spawn_sequential_fetch_server(
+    host: &str,
+    bodies: [&'static str; 2],
+) -> (
+    String,
+    vixen_net::NetworkConfig,
+    std::thread::JoinHandle<()>,
+) {
+    use std::io::{Read, Write};
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let addr = listener.local_addr().unwrap();
+    let handle = std::thread::spawn(move || {
+        for body in bodies {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 512];
+            let _ = stream.read(&mut request);
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream.write_all(response.as_bytes()).unwrap();
+        }
     });
 
     let mut config = vixen_net::NetworkConfig::default();
@@ -572,6 +702,56 @@ fn runtime_evaluate_surface() {
 }
 
 #[test]
+fn network_extra_http_headers_apply_to_runtime_fetch() {
+    let (url, network_config, server) = spawn_header_echo_server("vixen-cdp-headers.com");
+    let rt = JsRuntime::with_network_config(network_config).expect("JS init");
+    let mut s = CdpState::with_runtime(rt);
+
+    dispatch_one(
+        &mut s,
+        "Network.setExtraHTTPHeaders",
+        json!({ "headers": { "X-CDP-Token": "abc" } }),
+    );
+    let value = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": format!("fetch({url:?}).then((response) => response.text())") }),
+    );
+    assert_eq!(value["result"]["type"], "string");
+    assert_eq!(value["result"]["value"], "header-seen");
+    server.join().unwrap();
+}
+
+#[test]
+fn network_cache_disabled_bypasses_runtime_fetch_cache() {
+    let (url, network_config, server) =
+        spawn_sequential_fetch_server("vixen-cdp-cache.com", ["first", "second"]);
+    let rt = JsRuntime::with_network_config(network_config).expect("JS init");
+    let mut s = CdpState::with_runtime(rt);
+
+    let first = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": format!("fetch({url:?}).then((response) => response.text())") }),
+    );
+    assert_eq!(first["result"]["value"], "first");
+
+    dispatch_one(
+        &mut s,
+        "Network.setCacheDisabled",
+        json!({ "cacheDisabled": true }),
+    );
+    let second = dispatch_one(
+        &mut s,
+        "Runtime.evaluate",
+        json!({ "expression": format!("fetch({url:?}, {{ cache: 'force-cache' }}).then((response) => response.text())") }),
+    );
+    assert_eq!(second["result"]["type"], "string");
+    assert_eq!(second["result"]["value"], "second");
+    server.join().unwrap();
+}
+
+#[test]
 fn runtime_navigation_history_and_form_actions_update_page() {
     let dir = tempfile::tempdir().unwrap();
     let one = dir.path().join("one.html");
@@ -845,4 +1025,113 @@ fn page_navigate_same_url_resets_page_realm() {
         json!({ "expression": "__clicks" }),
     );
     assert_eq!(v["result"]["value"], 1);
+}
+
+#[test]
+fn two_targets_route_to_independent_core_contexts() {
+    let (origin, network, server) = spawn_page_server("cdp-contexts.com", 3);
+    let runtime = JsRuntime::with_network_config(network).expect("JS init");
+    let mut state = CdpState::with_runtime(runtime);
+
+    let first_target = dispatch_session(&mut state, None, "Target.getTargets", json!({}))["result"]
+        ["targetInfos"][0]["targetId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let first_session = dispatch_session(
+        &mut state,
+        None,
+        "Target.attachToTarget",
+        json!({ "targetId": first_target, "flatten": true }),
+    )["result"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let create_second = dispatch_session(
+        &mut state,
+        None,
+        "Target.createTarget",
+        json!({ "url": format!("{origin}/b") }),
+    );
+    let second_target = create_second["result"]["targetId"]
+        .as_str()
+        .unwrap_or_else(|| panic!("create second target failed: {create_second}"))
+        .to_owned();
+    let second_session = dispatch_session(
+        &mut state,
+        None,
+        "Target.attachToTarget",
+        json!({ "targetId": second_target, "flatten": true }),
+    )["result"]["sessionId"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    assert!(
+        dispatch_session(
+            &mut state,
+            Some(&first_session),
+            "Page.navigate",
+            json!({ "url": format!("{origin}/a") }),
+        )["error"]
+            .is_null()
+    );
+    let seeded = dispatch_session(
+        &mut state,
+        Some(&first_session),
+        "Runtime.evaluate",
+        json!({
+            "expression": "globalThis.onlyFirst = 7; sessionStorage.setItem('session', 'first'); localStorage.setItem('shared', 'from-first'); 'seeded'"
+        }),
+    );
+    assert_eq!(seeded["result"]["result"]["value"], "seeded");
+
+    let isolated = dispatch_session(
+        &mut state,
+        Some(&second_session),
+        "Runtime.evaluate",
+        json!({
+            "expression": "`${typeof globalThis.onlyFirst}:${sessionStorage.getItem('session')}:${localStorage.getItem('shared')}`"
+        }),
+    );
+    assert_eq!(
+        isolated["result"]["result"]["value"],
+        "undefined:null:from-first"
+    );
+
+    dispatch_session(
+        &mut state,
+        Some(&first_session),
+        "Page.navigate",
+        json!({ "url": format!("{origin}/next") }),
+    );
+    let second_unchanged = dispatch_session(
+        &mut state,
+        Some(&second_session),
+        "Runtime.evaluate",
+        json!({ "expression": "document.title + ':' + localStorage.getItem('shared')" }),
+    );
+    assert_eq!(
+        second_unchanged["result"]["result"]["value"],
+        "/b:from-first"
+    );
+
+    assert_eq!(
+        dispatch_session(
+            &mut state,
+            None,
+            "Target.closeTarget",
+            json!({ "targetId": first_target }),
+        )["result"]["success"],
+        true
+    );
+    let second_after_close = dispatch_session(
+        &mut state,
+        Some(&second_session),
+        "Runtime.evaluate",
+        json!({ "expression": "document.title" }),
+    );
+    assert_eq!(second_after_close["result"]["result"]["value"], "/b");
+
+    server.join().unwrap();
 }

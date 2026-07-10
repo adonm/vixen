@@ -16,6 +16,7 @@
 //! Everything else (domain matching, path matching, secure-gating, expiry,
 //! `Max-Age` semantics) follows RFC 6265.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -72,6 +73,16 @@ pub struct CookieSnapshot {
     pub http_only: bool,
     pub same_site: SameSite,
     pub creation_unix: i64,
+}
+
+/// Identity-keyed cookie changes made by an isolated fetch jar.
+///
+/// The fields stay private so callers can only construct deltas by comparing a
+/// worker jar with the snapshots that seeded it.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CookieJarDelta {
+    upserts: Vec<CookieSnapshot>,
+    removals: Vec<(String, String, String)>,
 }
 
 /// Why a `Set-Cookie` / `document.cookie` write was rejected.
@@ -208,6 +219,44 @@ impl CookieJar {
                 creation_unix: cookie.created.unix_timestamp(),
             })
             .collect()
+    }
+
+    /// Return only the cookie identities changed since `baseline` seeded this
+    /// jar. This is intended for isolated fetch tasks that must not replace a
+    /// concurrently updated profile jar wholesale.
+    pub fn delta_from_snapshots(&self, baseline: &[CookieSnapshot]) -> CookieJarDelta {
+        let baseline = snapshots_by_identity(baseline.iter().cloned());
+        let current = snapshots_by_identity(self.snapshots());
+        let upserts = current
+            .iter()
+            .filter(|(identity, snapshot)| baseline.get(*identity) != Some(*snapshot))
+            .map(|(_, snapshot)| snapshot.clone())
+            .collect();
+        let removals = baseline
+            .keys()
+            .filter(|identity| !current.contains_key(*identity))
+            .cloned()
+            .collect();
+        CookieJarDelta { upserts, removals }
+    }
+
+    /// Merge an isolated fetch jar's changes without disturbing unrelated
+    /// cookies added to this jar after the worker snapshot was taken.
+    pub fn apply_delta(&mut self, delta: CookieJarDelta) {
+        let removals: BTreeSet<_> = delta.removals.into_iter().collect();
+        self.cookies.retain(|cookie| {
+            !removals.contains(&(
+                cookie.name.clone(),
+                cookie.domain.clone(),
+                cookie.path.clone(),
+            ))
+        });
+        let now = self.now();
+        for snapshot in delta.upserts {
+            if let Some(cookie) = cookie_from_snapshot(snapshot, now) {
+                let _ = self.upsert(cookie);
+            }
+        }
     }
 
     /// Store a cookie parsed from a `Set-Cookie` header value.
@@ -391,6 +440,49 @@ impl CookieJar {
             .collect::<Vec<_>>()
             .join("; ")
     }
+}
+
+fn snapshots_by_identity(
+    snapshots: impl IntoIterator<Item = CookieSnapshot>,
+) -> BTreeMap<(String, String, String), CookieSnapshot> {
+    snapshots
+        .into_iter()
+        .map(|snapshot| {
+            (
+                (
+                    snapshot.name.clone(),
+                    snapshot.domain.clone(),
+                    snapshot.path.clone(),
+                ),
+                snapshot,
+            )
+        })
+        .collect()
+}
+
+fn cookie_from_snapshot(snapshot: CookieSnapshot, now: OffsetDateTime) -> Option<Cookie> {
+    let expires = snapshot
+        .expires_unix
+        .and_then(|timestamp| OffsetDateTime::from_unix_timestamp(timestamp).ok());
+    let cookie = Cookie {
+        name: snapshot.name,
+        value: snapshot.value,
+        domain: snapshot.domain.to_ascii_lowercase(),
+        host_only: snapshot.host_only,
+        path: if snapshot.path.is_empty() {
+            "/".to_owned()
+        } else {
+            snapshot.path
+        },
+        expires,
+        created: OffsetDateTime::from_unix_timestamp(snapshot.creation_unix).unwrap_or(now),
+        last_access: now,
+        secure: snapshot.secure,
+        http_only: snapshot.http_only,
+        same_site: snapshot.same_site,
+        seq: 0,
+    };
+    (!is_expired(&cookie, now)).then_some(cookie)
 }
 
 fn is_expired(c: &Cookie, now: OffsetDateTime) -> bool {
@@ -839,6 +931,32 @@ mod tests {
         let mut restored = CookieJar::with_clock(fixed(t));
         restored.replace_with_snapshots(snapshots);
         assert_eq!(restored.cookies_for(&url, false, Method::Get), "sid=abc");
+    }
+
+    #[test]
+    fn cookie_delta_merges_worker_changes_without_replacing_unrelated_cookies() {
+        let t = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+        let url = Url::parse("https://example.com/path").unwrap();
+        let mut profile = jar(t);
+        profile.set_cookie("updated=old", &url, true).unwrap();
+        profile.set_cookie("removed=old", &url, true).unwrap();
+        let baseline = profile.snapshots();
+
+        let mut worker = CookieJar::from_snapshots(baseline.clone());
+        worker.set_cookie("updated=new", &url, true).unwrap();
+        worker
+            .set_cookie("removed=gone; Max-Age=0", &url, true)
+            .unwrap();
+        worker.set_cookie("added=new", &url, true).unwrap();
+        let delta = worker.delta_from_snapshots(&baseline);
+
+        profile.set_cookie("concurrent=kept", &url, true).unwrap();
+        profile.apply_delta(delta);
+        let cookies = profile.cookies_for(&url, false, Method::Get);
+        assert!(cookies.contains("updated=new"));
+        assert!(cookies.contains("added=new"));
+        assert!(cookies.contains("concurrent=kept"));
+        assert!(!cookies.contains("removed="));
     }
 
     fn now() -> OffsetDateTime {

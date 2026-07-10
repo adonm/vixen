@@ -4051,6 +4051,7 @@ dependencies = [
  "base64",
  "cssparser",
  "deno_core",
+ "getrandom 0.3.4",
  "gleam",
  "html5ever",
  "markup5ever",
@@ -4113,12 +4114,9 @@ dependencies = [
  "libloading",
  "relm4",
  "tempfile",
- "tokio",
  "url",
  "vixen-api",
  "vixen-engine",
- "vixen-net",
- "vixen-store",
 ]
 
 [[package]]

@@ -12,6 +12,20 @@ use crate::form_submission::{
     multipart_content_type,
 };
 
+/// Page-owned selection state that survives runtime realm replacement.
+///
+/// The current DOM bridge only gives parsed elements stable positive node ids,
+/// so this state deliberately covers document/element boundary points. Text
+/// node boundary persistence remains unsupported rather than being restored to
+/// the wrong node after a structural mutation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PageSelection {
+    pub anchor_node_id: usize,
+    pub anchor_offset: usize,
+    pub focus_node_id: usize,
+    pub focus_offset: usize,
+}
+
 /// Deterministic projection of a form submission. The Phase 6 host hooks will
 /// turn this same entry-list + encoder output into network requests; headless
 /// uses it now so `--submit-form` is observable without a network stack.

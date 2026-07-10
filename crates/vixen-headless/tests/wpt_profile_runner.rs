@@ -7,7 +7,7 @@
 
 mod support;
 
-use support::{PageHarnessEngine, assert_clean_report, resolve_workspace_path};
+use support::{HarnessBrowser, assert_clean_report, resolve_workspace_path};
 use vixen_wpt::WptProfile;
 
 #[test]
@@ -26,8 +26,7 @@ fn external_wpt_profile_passes_when_configured() {
         .to_manifest(&wpt_root)
         .unwrap_or_else(|e| panic!("materialize WPT profile manifest: {e}"));
 
-    let report = vixen_wpt::run_manifest(&manifest, |url| {
-        Box::new(PageHarnessEngine::from_fixture(&wpt_root, url))
-    });
+    let browser = HarnessBrowser::new(&wpt_root);
+    let report = vixen_wpt::run_manifest(&manifest, |url| Box::new(browser.engine_for(url)));
     assert_clean_report(&report);
 }

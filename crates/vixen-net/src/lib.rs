@@ -83,7 +83,9 @@ pub mod url_policy;
 pub mod websocket;
 
 pub use coep::{Coep, is_cross_origin_isolated, parse_coep};
-pub use cookie::{Cookie, CookieError, CookieJar, CookieSnapshot, MAX_COOKIES, SameSite};
+pub use cookie::{
+    Cookie, CookieError, CookieJar, CookieJarDelta, CookieSnapshot, MAX_COOKIES, SameSite,
+};
 pub use coop::{Coop, parse_coop};
 pub use corp::{
     CoepCorpOutcome, Corp, CorpOutcome, check_corp, coep_corp_gate, is_same_site, parse_corp,
@@ -93,7 +95,7 @@ pub use cors::{
     CorsCredentialsMode, CorsError, CorsResponseHeaders, cors_check, cors_filtered_headers,
 };
 pub use csp::{ContentSecurityPolicy, CspPolicy, HashAlg, HostSource, Source};
-pub use fetch_types::{Method, NetworkEvent, RedirectMode, TextResponse};
+pub use fetch_types::{Method, NetworkEvent, RedirectMode, TextRequest, TextResponse};
 pub use integrity::{
     HashAlgorithm, IntegrityOutcome, IntensityItem, parse_integrity, verify as verify_integrity,
 };

@@ -192,6 +192,17 @@
       ]
     },
     {
+      "url": "fixtures/dom/text-tracks.html",
+      "checks": [
+        { "type": "title", "expected": "Text track reflection — Vixen fixture" },
+        { "type": "selector-count", "selector": "track", "expected": 2 },
+        { "type": "js-eval", "expr": "(() => { const track = document.querySelector('#captions'); return [track.kind, track.src, track.srclang, track.label, track.default, track.readyState].join('|'); })()", "expected": "captions|captions.vtt|en|English|true|0" },
+        { "type": "js-eval", "expr": "(() => { const track = document.querySelector('#captions').track; return [track instanceof TextTrack, track.kind, track.label, track.language, track.id, track.mode, track.cues === null, track.activeCues === null].join('|'); })()", "expected": "true|captions|English|en|captions|disabled|true|true" },
+        { "type": "js-eval", "expr": "(() => { const list = document.querySelector('#movie').textTracks; return [list instanceof TextTrackList, list.length, list[0].label, list.item(1).kind, list.getTrackById('captions').language].join('|'); })()", "expected": "true|2|English|descriptions|en" },
+        { "type": "js-eval", "expr": "(() => { const track = document.querySelector('#captions'); track.kind = 'subtitles'; track.srclang = 'fr'; track.default = false; return [track.getAttribute('kind'), track.getAttribute('srclang'), track.hasAttribute('default')].join('|'); })()", "expected": "subtitles|fr|false" }
+      ]
+    },
+    {
       "url": "fixtures/dom/resources.html",
       "checks": [
         { "type": "title", "expected": "Resource element reflection — Vixen fixture" },
@@ -257,6 +268,115 @@
       ]
     },
     {
+      "url": "fixtures/dom/canvas.html",
+      "checks": [
+        { "type": "title", "expected": "Canvas 2D reflection — Vixen fixture" },
+        { "type": "selector-count", "selector": "canvas", "expected": 2 },
+        { "type": "js-eval", "expr": "(() => { const canvas = document.querySelector('#default-canvas'); return [canvas.width, canvas.height].join('|'); })()", "expected": "300|150" },
+        { "type": "js-eval", "expr": "(() => { const canvas = document.querySelector('#plot'); return [canvas.width, canvas.height, canvas.getContext('webgl') === null].join('|'); })()", "expected": "320|180|true" },
+        { "type": "js-eval", "expr": "(() => { const canvas = document.querySelector('#plot'); const ctx = canvas.getContext('2d'); return [ctx instanceof CanvasRenderingContext2D, ctx.canvas === canvas, canvas.getContext('2d') === ctx].join('|'); })()", "expected": "true|true|true" },
+        { "type": "js-eval", "expr": "(() => { const ctx = document.querySelector('#plot').getContext('2d'); ctx.globalAlpha = 0.5; ctx.fillStyle = 'red'; ctx.lineWidth = 3; ctx.fillRect(0, 0, 10, 10); return [ctx.globalAlpha, ctx.fillStyle, ctx.lineWidth].join('|'); })()", "expected": "0.5|red|3" },
+        { "type": "js-eval", "expr": "(() => { const metrics = document.querySelector('#plot').getContext('2d').measureText('abc'); return [metrics instanceof TextMetrics, metrics.width, metrics.actualBoundingBoxRight].join('|'); })()", "expected": "true|30|30" },
+        { "type": "js-eval", "expr": "document.querySelector('#plot').toDataURL().startsWith('data:image/png;base64,')", "expected": "true" },
+        { "type": "js-eval", "expr": "(() => { const data = document.querySelector('#plot').getContext('2d').createImageData(2, 3); return [data.width, data.height, data.data.length, data.colorSpace].join('|'); })()", "expected": "2|3|24|srgb" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/offscreen-canvas.html",
+      "checks": [
+        { "type": "title", "expected": "Offscreen canvas reflection — Vixen fixture" },
+        { "type": "body-contains", "expected": "Offscreen canvas smoke." },
+        { "type": "js-eval", "expr": "(() => { const image = new ImageData(2, 3); return [image instanceof ImageData, image.width, image.height, image.data.length, image.colorSpace].join('|'); })()", "expected": "true|2|3|24|srgb" },
+        { "type": "js-eval", "expr": "(() => { const canvas = new OffscreenCanvas(64, 32); const ctx = canvas.getContext('2d'); return [canvas.width, canvas.height, ctx instanceof OffscreenCanvasRenderingContext2D, ctx.canvas === canvas, canvas.getContext('webgl') === null].join('|'); })()", "expected": "64|32|true|true|true" },
+        { "type": "js-eval", "expr": "new OffscreenCanvas(4, 2).convertToBlob({ type: 'image/png' }).then((blob) => [blob instanceof Blob, blob.type, blob.size].join('|'))", "expected": "true|image/png|0" },
+        { "type": "js-eval", "expr": "(() => { const bitmap = new OffscreenCanvas(4, 2).transferToImageBitmap(); const before = [bitmap instanceof ImageBitmap, bitmap.width, bitmap.height].join('|'); bitmap.close(); return before + '|' + bitmap.width + '|' + bitmap.height; })()", "expected": "true|4|2|0|0" },
+        { "type": "js-eval", "expr": "(() => { const path = new Path2D(); path.moveTo(0, 0); path.lineTo(1, 1); path.closePath(); return path instanceof Path2D; })()", "expected": "true" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/table-collections.html",
+      "checks": [
+        { "type": "title", "expected": "Table collection reflection — Vixen fixture" },
+        { "type": "selector-count", "selector": "table", "expected": 1 },
+        { "type": "selector-count", "selector": "tr", "expected": 4 },
+        { "type": "selector-count", "selector": "td", "expected": 5 },
+        { "type": "js-eval", "expr": "(() => { const table = document.querySelector('#data'); return [table.caption.id, table.tHead.id, table.tFoot.id, table.tBodies.length, table.rows.length].join('|'); })()", "expected": "caption|head|foot|2|4" },
+        { "type": "js-eval", "expr": "(() => { const table = document.querySelector('#data'); return [table.rows[0].id, table.rows.item(2).id, table.tBodies[1].id].join('|'); })()", "expected": "head-row|row-b|body-b" },
+        { "type": "js-eval", "expr": "(() => { const body = document.querySelector('#body-a'); const row = document.querySelector('#row-a'); return [body.rows.length, body.rows[0] === row, row.rowIndex, row.sectionRowIndex, row.cells.length].join('|'); })()", "expected": "1|true|1|0|2" },
+        { "type": "js-eval", "expr": "(() => { const row = document.querySelector('#row-a'); return [row.cells[0].id, row.cells[1].cellIndex, document.querySelector('#foot-cell').colSpan].join('|'); })()", "expected": "cell-a1|1|2" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/html-element-attrs.html",
+      "checks": [
+        { "type": "title", "expected": "HTMLElement reflected attributes — Vixen fixture" },
+        { "type": "selector-count", "selector": "main", "expected": 1 },
+        { "type": "selector-count", "selector": "button", "expected": 1 },
+        { "type": "js-eval", "expr": "(() => { const panel = document.querySelector('#panel'); return [panel.tabIndex, panel.accessKey, panel.accessKeyLabel, panel.draggable].join('|'); })()", "expected": "3|k|k|true" },
+        { "type": "js-eval", "expr": "(() => { const panel = document.querySelector('#panel'); return [panel.spellcheck, panel.translate, panel.inputMode, panel.enterKeyHint, panel.popover].join('|'); })()", "expected": "false|false|search|go|manual" },
+        { "type": "js-eval", "expr": "(() => { const panel = document.querySelector('#panel'); return [panel.title, panel.lang, panel.dir].join('|'); })()", "expected": "Panel|en-GB|ltr" },
+        { "type": "js-eval", "expr": "(() => { const panel = document.querySelector('#panel'); panel.tabIndex = 5; panel.draggable = false; panel.spellcheck = true; panel.translate = true; return [panel.getAttribute('tabindex'), panel.getAttribute('draggable'), panel.getAttribute('spellcheck'), panel.getAttribute('translate')].join('|'); })()", "expected": "5|false|true|yes" },
+        { "type": "js-eval", "expr": "(() => { const button = document.querySelector('#button'); button.inputMode = 'numeric'; button.enterKeyHint = 'done'; button.popover = 'auto'; return [button.inputMode, button.enterKeyHint, button.getAttribute('popover')].join('|'); })()", "expected": "numeric|done|auto" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/shadow-root.html",
+      "checks": [
+        { "type": "title", "expected": "Shadow root reflection — Vixen fixture" },
+        { "type": "selector-count", "selector": "section", "expected": 1 },
+        { "type": "js-eval", "expr": "(() => { const host = document.querySelector('#host'); const root = host.attachShadow({ mode: 'open' }); return [root instanceof ShadowRoot, root instanceof DocumentFragment, root.mode, root.host === host, root.nodeType, root.childElementCount].join('|'); })()", "expected": "true|true|open|true|11|0" },
+        { "type": "js-eval", "expr": "(() => { const fragment = document.createDocumentFragment(); return [fragment instanceof DocumentFragment, fragment.nodeName, fragment.childNodes.length, fragment.querySelector('x') === null].join('|'); })()", "expected": "true|#document-fragment|0|true" },
+        { "type": "js-eval", "expr": "(() => { const root = document.querySelector('#closed-host').attachShadow({ mode: 'closed' }); root.innerHTML = '<span>Shadow</span>'; return [root.mode, root.innerHTML, root.getRootNode() === root].join('|'); })()", "expected": "closed|<span>Shadow</span>|true" },
+        { "type": "js-eval", "expr": "(() => { const host = document.querySelector('#duplicate-host'); host.attachShadow({ mode: 'open' }); try { host.attachShadow({ mode: 'open' }); return 'missing'; } catch (err) { return err instanceof TypeError; } })()", "expected": "true" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/template-slot.html",
+      "checks": [
+        { "type": "title", "expected": "Template and slot reflection — Vixen fixture" },
+        { "type": "selector-count", "selector": "template", "expected": 1 },
+        { "type": "selector-count", "selector": "slot", "expected": 1 },
+        { "type": "js-eval", "expr": "(() => { const template = document.querySelector('#card'); return [template.content instanceof DocumentFragment, template.content.childNodes.length, template.content.querySelector('slot') === null].join('|'); })()", "expected": "true|0|true" },
+        { "type": "js-eval", "expr": "(() => { const slot = document.querySelector('#title-slot'); return [slot.name, slot.assignedNodes().length, slot.assignedElements().length].join('|'); })()", "expected": "title|0|0" },
+        { "type": "js-eval", "expr": "(() => { const slot = document.querySelector('#title-slot'); slot.name = 'heading'; return [slot.getAttribute('name'), slot.assignedElements({ flatten: true }).length].join('|'); })()", "expected": "heading|0" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/construction-serialization.html",
+      "checks": [
+        { "type": "title", "expected": "DOM construction serialization — Vixen fixture" },
+        { "type": "selector-count", "selector": "section", "expected": 1 },
+        { "type": "js-eval", "expr": "(() => { const el = document.createElementNS('http://www.w3.org/2000/svg', 'svg:path'); el.id = 'made'; el.textContent = 'Made'; return [el instanceof HTMLElement, el.localName, el.id, el.textContent].join('|'); })()", "expected": "true|path|made|Made" },
+        { "type": "js-eval", "expr": "(() => { const source = document.querySelector('#source'); return new XMLSerializer().serializeToString(source); })()", "expected": "<section id=\"source\"><p data-x=\"1\">Text &amp; more</p></section>" },
+        { "type": "js-eval", "expr": "(() => { const text = document.createTextNode('A < B'); return new XMLSerializer().serializeToString(text); })()", "expected": "A &lt; B" },
+        { "type": "js-eval", "expr": "(() => { const fragment = document.createDocumentFragment(); fragment.innerHTML = '<b>Hi</b>'; return new XMLSerializer().serializeToString(fragment); })()", "expected": "<b>Hi</b>" }
+      ]
+    },
+    {
+      "url": "fixtures/dom/platform-apis.html",
+      "checks": [
+        { "type": "title", "expected": "Platform APIs — Vixen fixture" },
+        { "type": "selector-count", "selector": "#observe-target", "expected": 1 },
+        { "type": "js-eval", "expr": "(() => { const bytes = new Uint8Array(8); const out = crypto.getRandomValues(bytes); return [out === bytes, bytes.length, typeof crypto.subtle].join('|'); })()", "expected": "true|8|object" },
+        { "type": "js-eval", "expr": "/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(crypto.randomUUID())", "expected": "true" },
+        { "type": "js-eval", "expr": "navigator.clipboard.writeText('vixen-clip').then(() => navigator.clipboard.readText())", "expected": "vixen-clip" },
+        { "type": "js-eval", "expr": "new ClipboardItem({'text/plain': new Blob(['clip'], {type:'text/plain'})}).getType('text/plain').then((blob) => blob.text())", "expected": "clip" },
+        { "type": "js-eval", "expr": "new Promise((resolve) => { const target = document.querySelector('#observe-target'); const io = new IntersectionObserver((entries, observer) => { const entry = entries[0]; observer.disconnect(); resolve([entry.target.id, entry.isIntersecting, entry.intersectionRatio, entry.rootBounds.width > 0].join('|')); }); io.observe(target); })", "expected": "observe-target|true|1|true" },
+        { "type": "js-eval", "expr": "new Promise((resolve) => { const target = document.querySelector('#observe-target'); const ro = new ResizeObserver((entries, observer) => { const entry = entries[0]; observer.disconnect(); resolve([entry.target.id, entry.contentRect.width > 0, entry.contentBoxSize[0].inlineSize > 0].join('|')); }); ro.observe(target); })", "expected": "observe-target|true|true" },
+        { "type": "js-eval", "expr": "new Promise((resolve) => { const ws = new WebSocket('ws://example.test/socket'); ws.addEventListener('close', (event) => resolve([ws.readyState, event.code, event.wasClean].join('|'))); })", "expected": "3|1006|false" }
+      ]
+    },
+    {
+      "url": "fixtures/events/focus-order.html",
+      "checks": [
+        { "type": "title", "expected": "Focus event order — Vixen fixture" },
+        { "type": "selector-count", "selector": "input", "expected": 2 },
+        { "type": "js-eval", "expr": "(() => { const a = document.querySelector('#first'); const b = document.querySelector('#second'); a.focus(); const events = []; for (const el of [a,b]) for (const type of ['focusout','focusin','blur','focus']) el.addEventListener(type, (event) => events.push(type + ':' + event.currentTarget.id + ':' + event.bubbles + ':' + (event.relatedTarget ? event.relatedTarget.id : ''))); b.focus(); return events.join('>'); })()", "expected": "focusout:first:true:second>focusin:second:true:first>blur:first:false:second>focus:second:false:first" },
+        { "type": "js-eval", "expr": "(() => { document.querySelector('#second').focus(); return document.activeElement.id; })()", "expected": "second" },
+        { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
       "url": "fixtures/forms/validation.html",
       "checks": [
         { "type": "title", "expected": "Forms validation — Vixen fixture" },
@@ -283,8 +403,29 @@
         { "type": "js-eval", "expr": "document.querySelector('#email').validity.valueMissing", "expected": "true" },
         { "type": "js-eval", "expr": "document.querySelector('#plan').checkValidity()", "expected": "true" },
         { "type": "js-eval", "expr": "document.querySelector('#notes').willValidate", "expected": "false" },
+        { "type": "js-eval", "expr": "(() => { const seen = []; for (const id of ['email','pw']) document.querySelector('#' + id).addEventListener('invalid', (event) => seen.push(id + ':' + event.bubbles + ':' + event.cancelable)); document.querySelector('#login').checkValidity(); return seen.join('>'); })()", "expected": "email:false:true>pw:false:true" },
+        { "type": "js-eval", "expr": "(() => { const form = document.querySelector('#login'); let submitted = false; form.addEventListener('submit', () => { submitted = true; }); form.requestSubmit(document.querySelector('#submit')); return submitted; })()", "expected": "false" },
         { "type": "body-contains", "expected": "Newsletter" },
         { "type": "no-critical-diagnostics" }
+      ]
+    },
+    {
+      "url": "fixtures/forms/reflected-attrs.html",
+      "checks": [
+        { "type": "title", "expected": "Form-associated reflection — Vixen fixture" },
+        { "type": "selector-count", "selector": "form", "expected": 1 },
+        { "type": "selector-count", "selector": "input", "expected": 3 },
+        { "type": "selector-count", "selector": "textarea", "expected": 1 },
+        { "type": "selector-count", "selector": "button", "expected": 1 },
+        { "type": "js-eval", "expr": "(() => { const form = document.querySelector('#profile'); return [form.method, form.enctype, form.acceptCharset, form.noValidate].join('|'); })()", "expected": "post|multipart/form-data|utf-8|true" },
+        { "type": "js-eval", "expr": "(() => { const file = document.querySelector('#avatar'); return [file.accept, file.files.length, file.valueAsDate === null].join('|'); })()", "expected": "image/png|0|true" },
+        { "type": "js-eval", "expr": "(() => { const age = document.querySelector('#age'); age.stepUp(); age.stepDown(2); return [age.min, age.max, age.step, age.value, age.valueAsNumber].join('|'); })()", "expected": "1|10|2|1|1" },
+        { "type": "js-eval", "expr": "(() => { const age = document.querySelector('#age'); age.valueAsNumber = 7; return [age.value, age.valueAsNumber].join('|'); })()", "expected": "7|7" },
+        { "type": "js-eval", "expr": "(() => { const code = document.querySelector('#code'); return [code.pattern, code.minLength, code.maxLength, code.textLength].join('|'); })()", "expected": "[A-Z]+|2|5|3" },
+        { "type": "js-eval", "expr": "(() => { const bio = document.querySelector('#bio'); bio.setSelectionRange(6, 11); bio.setRangeText('Vixen', undefined, undefined, 'select'); return [bio.value, bio.textLength, bio.selectionStart, bio.selectionEnd, bio.cols, bio.rows, bio.wrap].join('|'); })()", "expected": "hello Vixen|11|6|11|40|5|hard" },
+        { "type": "js-eval", "expr": "(() => { const send = document.querySelector('#send'); return [send.formAction, send.formMethod, send.formEnctype, send.formTarget, send.formNoValidate, send.value].join('|'); })()", "expected": "/alt|dialog|text/plain|_blank|true|go" },
+        { "type": "js-eval", "expr": "(() => { const code = document.querySelector('#code'); code.setCustomValidity('bad code'); const before = [code.validationMessage, code.validity.customError, code.checkValidity()].join('|'); code.setCustomValidity(''); return before + '|' + code.validationMessage; })()", "expected": "bad code|true|false|" },
+        { "type": "js-eval", "expr": "(() => { const file = document.querySelector('#avatar'); file.indeterminate = true; return file.indeterminate; })()", "expected": "true" }
       ]
     },
     {
@@ -889,6 +1030,9 @@
         { "type": "js-eval", "expr": "new Event('message').target === null", "expected": "true" },
         { "type": "js-eval", "expr": "new Event('message').composedPath().length", "expected": "0" },
         { "type": "js-eval", "expr": "new CustomEvent('note', {detail:'payload'}).detail", "expected": "payload" },
+        { "type": "js-eval", "expr": "new MessageEvent('message', {data:{answer:42}}).data.answer", "expected": "42" },
+        { "type": "js-eval", "expr": "new Promise((resolve) => { const channel = new MessageChannel(); channel.port2.onmessage = (event) => resolve(event.data.answer); channel.port1.postMessage({answer: 42}); })", "expected": "42" },
+        { "type": "js-eval", "expr": "new Promise((resolve) => { const a = new BroadcastChannel('fixture-channel'); const b = new BroadcastChannel('fixture-channel'); b.onmessage = (event) => { a.close(); b.close(); resolve(event.data); }; a.postMessage('broadcast-ok'); })", "expected": "broadcast-ok" },
         { "type": "js-eval", "expr": "document.querySelector('#window-post-message').dispatchEvent(new Event('click'))", "expected": "true" },
         { "type": "js-eval", "expr": "document.querySelector('#window-post-message').dispatchEvent(new CustomEvent('click', {detail:'payload'}))", "expected": "true" },
         { "type": "body-contains", "expected": "MessageChannel" }
@@ -970,6 +1114,8 @@
         { "type": "js-eval", "expr": "document.createRange().endOffset", "expected": "0" },
         { "type": "js-eval", "expr": "window.getSelection().rangeCount", "expected": "0" },
         { "type": "js-eval", "expr": "document.getSelection().isCollapsed", "expected": "true" },
+        { "type": "js-eval", "expr": "(() => { const root = document.querySelector('#multi-paragraph'); const range = document.createRange(); range.setStart(root, 0); range.setEnd(root, 2); const selection = getSelection(); selection.addRange(range); return [selection.rangeCount, selection.type, selection.direction, selection.anchorNode.id, selection.focusOffset, selection.toString().includes('First paragraph'), selection.toString().includes('Second paragraph')].join('|'); })()", "expected": "1|Range|forward|multi-paragraph|2|true|true" },
+        { "type": "js-eval", "expr": "(() => { const selection = getSelection(); selection.collapse(document.querySelector('#multi-paragraph'), 1); return [selection.type, selection.isCollapsed, selection.anchorOffset, selection.focusOffset].join('|'); })()", "expected": "Caret|true|1|1" },
         { "type": "body-contains", "expected": "lazy dog" },
         { "type": "body-contains", "expected": "extract me" }
       ]

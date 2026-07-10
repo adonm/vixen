@@ -83,6 +83,15 @@ test-store:
 test-engine:
     cargo test -p vixen-engine
 
+# ADR-017 ownership vertical: production BrowserCore transport, context/runtime
+# generations, bounded events, profile/session partitioning, and headless adapter.
+test-browser-core:
+    cargo test -p vixen-engine browser::tests -- --test-threads=1
+    cargo test -p vixen-headless browser_adapter::tests -- --test-threads=1
+    cargo test -p vixen-headless eval_gate_returns_three -- --test-threads=1
+    cargo test -p vixen-headless interaction_flags_run_through_browser_core -- --test-threads=1
+    cargo test -p vixen-shell --features browser-core browser_adapter::tests -- --test-threads=1
+
 test-script:
     cargo test -p vixen-engine script
 
@@ -97,6 +106,12 @@ _node-deps:
 
 cdp-playwright-smoke: _node-deps
     mise x node@24 -- npm run cdp:playwright-smoke
+
+# Focused Alpha 6 automation product gate: dispatcher/runtime integration plus
+# the real external Playwright client over CDP WebSocket.
+gate-alpha6-cdp: cdp-playwright-smoke
+    cargo test -p vixen-headless cdp::tests
+    cargo test -p vixen-headless --test cdp_runtime
 
 # --- Lint / format -----------------------------------------------------------
 
@@ -115,8 +130,13 @@ clippy:
 
 # Fast alpha-slice gate: pair this with focused tests and the relevant phase
 # gate. It is not a substitute for reviewer smoke before commit/push.
-gate-alpha: fmt-check clippy check-all-host gate-webidl
+gate-alpha: fmt-check clippy check-all-host gate-webidl gate-architecture test-browser-core
     cargo test -p vixen-headless --test wpt_runner
+
+# Stable crate-boundary allowlist. Shell/headless direct-composition exceptions
+# remain documented until the authoritative engine lifecycle replaces them.
+gate-architecture:
+    python3 scripts/check-vixen-deps.py
 
 # Reviewer smoke: formatting, linting, and all host-runnable tests.
 gate-smoke: fmt-check clippy check-all-host test-host
@@ -151,6 +171,10 @@ gate-phase3:
 # Example: `just wpt-profile fixtures/wpt-profiles/layout.json .tmp/wpt`.
 wpt-profile profile root=".tmp/wpt":
     VIXEN_WPT_PROFILE="{{profile}}" VIXEN_WPT_ROOT="{{root}}" cargo test -p vixen-headless --test wpt_profile_runner -- --nocapture
+
+# Reproduce the compatibility counts published in docs/COMPAT.md.
+compat-report:
+    cargo test -p vixen-headless --test wpt_runner -- --nocapture
 
 # Phase 4 current gate: pure layout-resolution prep plus the first executable
 # Page-backed Vixen layout-tree / line-layout slices.
@@ -209,38 +233,28 @@ _fuzz-tools-present:
 fuzz-security: _fuzz-tools-present
     cargo fuzz run url_policy_validate -- -max_len=4096 -runs=1000000
     cargo fuzz run csp_parse       -- -max_len=4096 -runs=1000000
+    cargo fuzz run cookie_set_cookie -- -max_len=4096 -runs=1000000
+    cargo fuzz run html5ever_parse -- -max_len=16384 -runs=1000000
 
 # Backward-compatible name retained for older notes/scripts.
 fuzz-init: fuzz-security
 
 # --- Size (docs/ACCEPTANCE.md "Binary size gates") ---------------------------
-# Measure stripped release binaries. Document any change > +50 KiB in the
-# commit message (docs/ACCEPTANCE.md).
-size-fp: build-release
+# Build and measure the real Flatpak GUI plus the headless release binary.
+# Budgets remain measurement-only until docs/ACCEPTANCE.md publishes baselines.
+size-fp: flatpak-build build-release
     @set -eu; \
-        gui="target/release/vixen"; \
+        gui="build-aux/_build/files/bin/vixen"; \
         headless="target/release/vixen-headless"; \
         test -x "$gui" || { echo "missing $gui" >&2; exit 1; }; \
         test -x "$headless" || { echo "missing $headless" >&2; exit 1; }; \
         gui_bytes=$(stat -c '%s' "$gui"); \
         headless_bytes=$(stat -c '%s' "$headless"); \
-        gui_limit=$((14 * 1024 * 1024)); \
-        headless_limit=$((14 * 1024 * 1024)); \
         printf '%s %s bytes\n' "$gui" "$gui_bytes"; \
-        printf '%s %s bytes\n' "$headless" "$headless_bytes"; \
-        failed=0; \
-        if [ "$gui_bytes" -gt "$gui_limit" ]; then \
-            echo "vixen exceeds JS-runtime size target ($gui_bytes > $gui_limit bytes)" >&2; \
-            failed=1; \
-        fi; \
-        if [ "$headless_bytes" -gt "$headless_limit" ]; then \
-            echo "vixen-headless exceeds JS-runtime size target ($headless_bytes > $headless_limit bytes)" >&2; \
-            failed=1; \
-        fi; \
-        exit "$failed"
+        printf '%s %s bytes\n' "$headless" "$headless_bytes"
 
 build-release:
-    cargo build --release -p vixen --bin vixen -p vixen-headless --bin vixen-headless
+    cargo build --release -p vixen-headless --bin vixen-headless
 
 # --- Run ---------------------------------------------------------------------
 # Launch the GUI. Needs the GNOME SDK; the supported path is the flatpak

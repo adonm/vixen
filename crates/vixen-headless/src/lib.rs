@@ -1,11 +1,10 @@
 //! vixen-headless — headless CLI + CDP server.
 //!
 //! Phase 2 implements the CLI flag surface (docs/SPEC.md "Headless CLI
-//! surface") and wires `--url`/`--eval` to the `deno_core` runtime
-//! (`vixen-engine::script`). Phase 3+ DOM/selector/layout/paint paths run
-//! through `vixen_engine::page::Page`; broad host-binding smoke still uses that
-//! facade while the first focused `document` / `Element` evals run in
-//! the JS runtime with a Page snapshot.
+//! surface"). `--eval` navigates and evaluates through the engine-owned browser
+//! core. Screenshot, selector, and URL-only actions use the same adapter;
+//! textual document and interaction-summary projections do as well. CDP routes
+//! targets through the same engine-owned browser core.
 //! Renderer/CDP-only failures keep stable error codes (`unsupported.screenshot`,
 //! `invalid-selector`) at their trust boundaries.
 
@@ -16,12 +15,15 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
+use vixen_api::DocumentTextKind;
 use vixen_engine::engine_error::codes;
+#[cfg(test)]
 use vixen_engine::page::Page;
 use vixen_engine::paint::{self, RgbaFrame};
-use vixen_engine::script::JsRuntime;
+#[cfg(test)]
 use vixen_net::{CookieJar, Method, Network};
 
+mod browser_adapter;
 pub mod cdp;
 mod interactions;
 pub mod surface;
@@ -181,8 +183,8 @@ pub fn run(cli: Cli) -> ExitCode {
     }
 
     // --extract-selector: validate the selector first (`invalid-selector` on
-    // malformed input — docs/SPEC.md), then walk the parsed DOM and print
-    // each match as JSON. Selector matching runs through Stylo (Phase 3).
+    // malformed input — docs/SPEC.md), then query the core-owned document and
+    // print each match as JSON. Selector matching runs through Stylo (Phase 3).
     if let Some(sel) = cli.extract_selector.as_deref() {
         return run_extract_selector(url, sel, viewport);
     }
@@ -195,9 +197,16 @@ pub fn run(cli: Cli) -> ExitCode {
 
     // Nothing else to do: still perform the load so URL-only runs exercise the
     // same file/HTTP trust boundary as the other page actions.
-    match load_page(url) {
-        Ok(page) => {
-            eprintln!("loaded {}", page.url());
+    match browser_adapter::BrowserSession::load(url) {
+        Ok(mut session) => {
+            let loaded_url = match session.current_url() {
+                Ok(loaded_url) => loaded_url,
+                Err(error) => {
+                    eprintln!("error: {error}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            eprintln!("loaded {loaded_url}");
             ExitCode::SUCCESS
         }
         Err(e) => {
@@ -210,10 +219,9 @@ pub fn run(cli: Cli) -> ExitCode {
 /// `--cdp [--cdp-port N]`: run the CDP WebSocket server on 127.0.0.1:N.
 /// Blocks until interrupted; exit code 1 on bind failure (e.g. port in use).
 ///
-/// `deno_core::JsRuntime` is `!Send + !Sync`, so the server runs on a single-threaded
-/// tokio runtime + `LocalSet`. CDP clients keep one long-lived WebSocket
-/// connection per browser instance, so single-threaded serving is not a
-/// bottleneck in practice.
+/// The connection adapter uses local `Rc<RefCell<_>>` protocol state, so it runs
+/// on a single-threaded tokio runtime + `LocalSet`. BrowserCore owns its separate
+/// engine thread.
 fn run_cdp_server(initial_url: &str, port: u16) -> ExitCode {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -240,14 +248,21 @@ fn run_cdp_server(initial_url: &str, port: u16) -> ExitCode {
 }
 
 fn run_screenshot(url: &str, viewport: (u32, u32), output: &Path) -> ExitCode {
-    let page = match load_page(url) {
-        Ok(page) => page,
+    let mut session = match browser_adapter::BrowserSession::load(url) {
+        Ok(session) => session,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let png = match capture_screenshot_png(&page, viewport) {
+    let snapshot = match session.capture_paint_snapshot(viewport) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("{}: {error}", codes::UNSUPPORTED_SCREENSHOT);
+            return ExitCode::FAILURE;
+        }
+    };
+    let png = match capture_commands_png(&snapshot.commands, viewport) {
         Ok(png) => png,
         Err(err) => {
             eprintln!("{}: {err}", codes::UNSUPPORTED_SCREENSHOT);
@@ -263,15 +278,17 @@ fn run_screenshot(url: &str, viewport: (u32, u32), output: &Path) -> ExitCode {
     }
 }
 
-pub(crate) fn capture_screenshot_png(page: &Page, viewport: (u32, u32)) -> Result<Vec<u8>, String> {
+pub(crate) fn capture_commands_png(
+    commands: &[vixen_engine::display_list::PaintCommand],
+    viewport: (u32, u32),
+) -> Result<Vec<u8>, String> {
     let surface = match surface::SurfacelessSurface::new(viewport) {
         Ok(surface) => surface,
         Err(err) => {
             return Err(err.to_string());
         }
     };
-    let commands = page.display_list(viewport);
-    let frame = match paint::render_commands_to_rgba(&surface, &commands, viewport) {
+    let frame = match paint::render_commands_to_rgba(&surface, commands, viewport) {
         Ok(frame) => frame,
         Err(err) => {
             return Err(err.to_string());
@@ -440,8 +457,8 @@ fn memory_stats() -> MemoryStats {
     }
 }
 
-/// `--extract-selector <css>`: parse the URL's HTML, walk the DOM, and
-/// print every element matching `css` as a JSON object (one per line).
+/// `--extract-selector <css>`: query the core-owned document and print every
+/// element matching `css` as a JSON object (one per line).
 /// Returns the stable `invalid-selector` code on malformed selectors
 /// (docs/SPEC.md). Selector matching uses Stylo via `vixen_engine::style_dom`.
 fn run_extract_selector(url: &str, sel: &str, viewport: (u32, u32)) -> ExitCode {
@@ -455,14 +472,14 @@ fn run_extract_selector(url: &str, sel: &str, viewport: (u32, u32)) -> ExitCode 
         }
     };
 
-    let page = match load_page(url) {
-        Ok(p) => p,
+    let mut session = match browser_adapter::BrowserSession::load(url) {
+        Ok(session) => session,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let matches = match page.query_selector_all_in_viewport(sel, viewport) {
+    let matches = match session.query_selector_all(sel, viewport) {
         Ok(matches) => matches,
         Err(_) => {
             eprintln!("{}", codes::INVALID_SELECTOR);
@@ -495,55 +512,20 @@ fn run_extract_selector(url: &str, sel: &str, viewport: (u32, u32)) -> ExitCode 
 
 /// `--url file://… --eval '1+2'` → load the page context then prints `3`.
 fn run_eval(url: &str, js: &str) -> ExitCode {
-    let mut page = match load_page(url) {
-        Ok(page) => page,
-        Err(e) => {
-            eprintln!("error: {e}");
+    let mut session = match browser_adapter::BrowserSession::load(url) {
+        Ok(session) => session,
+        Err(error) => {
+            eprintln!("error: {error}");
             return ExitCode::FAILURE;
         }
     };
-
-    let mut rt = match JsRuntime::new() {
-        Ok(rt) => rt,
-        Err(e) => {
-            eprintln!("error: failed to start JS engine: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // `--url` is the page context. The runtime host is the product eval path;
-    // the old Page string projection is now only a compatibility fallback for
-    // legacy smoke expressions that are intentionally not routed to the host yet.
-    if let Err(e) = rt.execute_page_scripts(&mut page) {
-        if let Some(result) = run_dom_eval_on_page(&page, js) {
-            return print_dom_eval_result(result);
-        }
-        eprintln!("error: page script failed: {e}");
-        return ExitCode::FAILURE;
-    }
-    match rt.evaluate_with_page_mut(js, &mut page) {
+    match session.evaluate(js) {
         Ok(value) => {
             println!("{}", value.to_display());
             ExitCode::SUCCESS
         }
-        Err(e) => {
-            if let Some(result) = run_dom_eval_on_page(&page, js) {
-                return print_dom_eval_result(result);
-            }
-            eprintln!("error: {e}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn print_dom_eval_result(result: Result<String, String>) -> ExitCode {
-    match result {
-        Ok(value) => {
-            println!("{value}");
-            ExitCode::SUCCESS
-        }
-        Err(e) => {
-            eprintln!("error: {e}");
+        Err(error) => {
+            eprintln!("error: {error}");
             ExitCode::FAILURE
         }
     }
@@ -560,6 +542,7 @@ fn run_dom_eval(url: &str, js: &str) -> Option<Result<String, String>> {
     }
 }
 
+#[cfg(test)]
 fn run_dom_eval_on_page(page: &Page, js: &str) -> Option<Result<String, String>> {
     if uses_runtime_dom_eval(js) {
         return None;
@@ -570,6 +553,7 @@ fn run_dom_eval_on_page(page: &Page, js: &str) -> Option<Result<String, String>>
     page.evaluate_dom_expression(js)
 }
 
+#[cfg(test)]
 pub(crate) fn uses_runtime_dom_eval(js: &str) -> bool {
     let js = js.trim_start();
     runtime_document_projection_eval(js)
@@ -587,6 +571,7 @@ pub(crate) fn uses_runtime_dom_eval(js: &str) -> bool {
         || simple_cssom_eval(js)
 }
 
+#[cfg(test)]
 fn runtime_document_projection_eval(js: &str) -> bool {
     matches!(
         js,
@@ -612,10 +597,12 @@ fn runtime_document_projection_eval(js: &str) -> bool {
     )
 }
 
+#[cfg(test)]
 fn runtime_location_eval(js: &str) -> bool {
     matches!(js, "location.href" | "window.location.href")
 }
 
+#[cfg(test)]
 fn runtime_web_api_eval(js: &str) -> bool {
     js.starts_with("document.createRange()")
         || js.starts_with("document.createTreeWalker(")
@@ -669,6 +656,7 @@ fn runtime_web_api_eval(js: &str) -> bool {
         || js.starts_with("window.matchMedia(")
 }
 
+#[cfg(test)]
 fn simple_document_element_eval(js: &str, prefix: &str) -> bool {
     let Some(member) = js.strip_prefix(prefix) else {
         return false;
@@ -676,6 +664,7 @@ fn simple_document_element_eval(js: &str, prefix: &str) -> bool {
     is_simple_dom_host_member(member)
 }
 
+#[cfg(test)]
 pub(crate) fn looks_like_dom_eval(js: &str) -> bool {
     let js = js.trim_start();
     js.starts_with("document.")
@@ -723,6 +712,7 @@ pub(crate) fn looks_like_dom_eval(js: &str) -> bool {
         || js.starts_with("new URLSearchParams(")
 }
 
+#[cfg(test)]
 fn simple_query_selector_eval(js: &str, prefix: &str) -> bool {
     let Some((selector, tail)) = single_string_arg_call_tail(js, prefix) else {
         return false;
@@ -733,6 +723,7 @@ fn simple_query_selector_eval(js: &str, prefix: &str) -> bool {
     is_simple_dom_host_selector(selector) && is_simple_dom_host_member(member)
 }
 
+#[cfg(test)]
 fn simple_get_element_by_id_eval(js: &str) -> bool {
     let Some((id, tail)) = single_string_arg_call_tail(js, "document.getElementById(") else {
         return false;
@@ -743,6 +734,7 @@ fn simple_get_element_by_id_eval(js: &str) -> bool {
     is_simple_dom_host_name(id) && is_simple_dom_host_member(member)
 }
 
+#[cfg(test)]
 fn simple_query_selector_all_length_eval(js: &str) -> bool {
     let Some((selector, tail)) = single_string_arg_call_tail(js, "document.querySelectorAll(")
     else {
@@ -751,6 +743,7 @@ fn simple_query_selector_all_length_eval(js: &str) -> bool {
     tail == ").length" && is_simple_dom_host_selector(selector)
 }
 
+#[cfg(test)]
 fn simple_document_collection_length_eval(js: &str, prefix: &str) -> bool {
     let Some((name, tail)) = single_string_arg_call_tail(js, prefix) else {
         return false;
@@ -764,6 +757,7 @@ fn simple_document_collection_length_eval(js: &str, prefix: &str) -> bool {
     is_simple_dom_host_selector_atom(name)
 }
 
+#[cfg(test)]
 fn simple_get_computed_style_eval(js: &str) -> bool {
     ["getComputedStyle(", "window.getComputedStyle("]
         .iter()
@@ -783,6 +777,7 @@ fn simple_get_computed_style_eval(js: &str) -> bool {
         })
 }
 
+#[cfg(test)]
 fn is_simple_computed_style_member(member: &str) -> bool {
     if simple_dom_host_string_method(member, ".getPropertyValue(") {
         return true;
@@ -793,6 +788,7 @@ fn is_simple_computed_style_member(member: &str) -> bool {
     false
 }
 
+#[cfg(test)]
 fn simple_cssom_eval(js: &str) -> bool {
     if matches!(
         js,
@@ -813,6 +809,7 @@ fn simple_cssom_eval(js: &str) -> bool {
     is_ascii_usize(index.trim()) && is_simple_css_rule_member(member)
 }
 
+#[cfg(test)]
 fn is_simple_css_rule_member(member: &str) -> bool {
     matches!(member, ".selectorText" | ".cssText" | ".style.length")
         || simple_dom_host_string_method(member, ".style.getPropertyValue(")
@@ -822,6 +819,7 @@ fn is_simple_css_rule_member(member: &str) -> bool {
             .is_some_and(simple_dom_host_usize_index)
 }
 
+#[cfg(test)]
 fn simple_dom_geometry_member(member: &str) -> bool {
     if let Some(rest) = member.strip_prefix(".getBoundingClientRect()") {
         return simple_dom_rect_member(rest);
@@ -832,6 +830,7 @@ fn simple_dom_geometry_member(member: &str) -> bool {
     false
 }
 
+#[cfg(test)]
 fn simple_dom_rect_list_member(member: &str) -> bool {
     if let Some(rest) = member.strip_prefix("[0]") {
         return simple_dom_rect_member(rest);
@@ -842,6 +841,7 @@ fn simple_dom_rect_list_member(member: &str) -> bool {
     false
 }
 
+#[cfg(test)]
 fn simple_dom_rect_member(member: &str) -> bool {
     let member = member.strip_prefix(".toJSON()").unwrap_or(member);
     matches!(
@@ -850,6 +850,7 @@ fn simple_dom_rect_member(member: &str) -> bool {
     )
 }
 
+#[cfg(test)]
 fn dom_host_usize_method_tail<'a>(member: &'a str, prefix: &str) -> Option<(usize, &'a str)> {
     let rest = member.strip_prefix(prefix)?;
     let (raw_index, tail) = rest.split_once(')')?;
@@ -857,6 +858,7 @@ fn dom_host_usize_method_tail<'a>(member: &'a str, prefix: &str) -> Option<(usiz
     Some((index, tail))
 }
 
+#[cfg(test)]
 fn is_simple_dom_host_member(member: &str) -> bool {
     matches!(
         member,
@@ -882,6 +884,7 @@ fn is_simple_dom_host_member(member: &str) -> bool {
         || simple_dom_geometry_member(member)
 }
 
+#[cfg(test)]
 fn simple_dom_host_string_method(member: &str, prefix: &str) -> bool {
     let Some((name, tail)) = single_string_arg_call_tail(member, prefix) else {
         return false;
@@ -889,6 +892,7 @@ fn simple_dom_host_string_method(member: &str, prefix: &str) -> bool {
     tail == ")" && is_simple_dom_host_name(name)
 }
 
+#[cfg(test)]
 fn simple_dom_host_selector_method(member: &str, prefix: &str) -> bool {
     let Some((selector, tail)) = single_string_arg_call_tail(member, prefix) else {
         return false;
@@ -896,6 +900,7 @@ fn simple_dom_host_selector_method(member: &str, prefix: &str) -> bool {
     tail == ")" && is_simple_dom_host_selector(selector)
 }
 
+#[cfg(test)]
 fn simple_dom_token_list_member(member: &str, prefix: &str) -> bool {
     let Some(rest) = member.strip_prefix(prefix) else {
         return false;
@@ -906,6 +911,7 @@ fn simple_dom_token_list_member(member: &str, prefix: &str) -> bool {
         || simple_dom_host_usize_index(rest)
 }
 
+#[cfg(test)]
 fn simple_dom_host_usize_method(member: &str, prefix: &str) -> bool {
     let Some(inner) = member
         .strip_prefix(prefix)
@@ -916,6 +922,7 @@ fn simple_dom_host_usize_method(member: &str, prefix: &str) -> bool {
     is_ascii_usize(inner.trim())
 }
 
+#[cfg(test)]
 fn simple_dom_host_usize_index(member: &str) -> bool {
     let Some(inner) = member
         .strip_prefix('[')
@@ -926,10 +933,12 @@ fn simple_dom_host_usize_index(member: &str) -> bool {
     is_ascii_usize(inner.trim())
 }
 
+#[cfg(test)]
 fn is_ascii_usize(input: &str) -> bool {
     !input.is_empty() && input.bytes().all(|byte| byte.is_ascii_digit())
 }
 
+#[cfg(test)]
 fn simple_dataset_member(member: &str) -> bool {
     let Some(rest) = member.strip_prefix(".dataset") else {
         return false;
@@ -943,6 +952,7 @@ fn simple_dataset_member(member: &str) -> bool {
     false
 }
 
+#[cfg(test)]
 fn single_string_arg_call_tail<'a>(input: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
     let rest = input.strip_prefix(prefix)?;
     let bytes = rest.as_bytes();
@@ -968,6 +978,7 @@ fn single_string_arg_call_tail<'a>(input: &'a str, prefix: &str) -> Option<(&'a 
     None
 }
 
+#[cfg(test)]
 fn is_simple_dom_host_selector(selector: &str) -> bool {
     if selector == "*" {
         return true;
@@ -985,6 +996,7 @@ fn is_simple_dom_host_selector(selector: &str) -> bool {
             .is_some_and(|b| b.is_ascii_alphabetic())
 }
 
+#[cfg(test)]
 fn is_simple_dom_host_selector_atom(name: &str) -> bool {
     let Some(first) = name.bytes().next() else {
         return false;
@@ -995,6 +1007,7 @@ fn is_simple_dom_host_selector_atom(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
 }
 
+#[cfg(test)]
 fn is_simple_dom_host_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -1002,6 +1015,7 @@ fn is_simple_dom_host_name(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
 }
 
+#[cfg(test)]
 fn is_simple_dom_host_dataset_ident(name: &str) -> bool {
     let Some(first) = name.bytes().next() else {
         return false;
@@ -1012,6 +1026,7 @@ fn is_simple_dom_host_dataset_ident(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
+#[cfg(test)]
 fn is_simple_dom_host_dataset_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -1023,32 +1038,56 @@ fn is_simple_dom_host_dataset_name(name: &str) -> bool {
 /// `--dump-display-list` / `--paint-stats`: load the URL's HTML and print the requested
 /// DOM/layout/paint projections.
 fn run_dom_outputs(url: &str, cli: &Cli, viewport: (u32, u32)) -> ExitCode {
-    let page = match load_page(url) {
-        Ok(p) => p,
+    let mut session = match browser_adapter::BrowserSession::load(url) {
+        Ok(session) => session,
         Err(e) => {
             eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-    if cli.dump_dom {
-        print!("{}", page.dump_dom());
+    let result = (|| {
+        if cli.dump_dom {
+            print!(
+                "{}",
+                session.document_text(DocumentTextKind::Dom, viewport)?
+            );
+        }
+        if cli.extract_text {
+            println!(
+                "{}",
+                session.document_text(DocumentTextKind::TextContent, viewport)?
+            );
+        }
+        if cli.dump_layout_tree {
+            print!(
+                "{}",
+                session.document_text(DocumentTextKind::LayoutTree, viewport)?
+            );
+        }
+        if cli.dump_lines {
+            print!(
+                "{}",
+                session.document_text(DocumentTextKind::Lines, viewport)?
+            );
+        }
+        if cli.dump_display_list {
+            print!("{}", session.display_list_text(viewport)?);
+        }
+        if cli.paint_stats {
+            print!(
+                "{}",
+                session.document_text(DocumentTextKind::PaintStats, viewport)?
+            );
+        }
+        Ok::<(), String>(())
+    })();
+    match result {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("error: {error}");
+            ExitCode::FAILURE
+        }
     }
-    if cli.extract_text {
-        println!("{}", page.text_content());
-    }
-    if cli.dump_layout_tree {
-        print!("{}", page.dump_layout_tree(viewport));
-    }
-    if cli.dump_lines {
-        print!("{}", page.dump_lines(viewport));
-    }
-    if cli.dump_display_list {
-        print!("{}", page.dump_display_list(viewport));
-    }
-    if cli.paint_stats {
-        print!("{}", page.dump_paint_stats(viewport));
-    }
-    ExitCode::SUCCESS
 }
 
 fn parse_viewport(input: &str) -> Result<(u32, u32), String> {
@@ -1067,9 +1106,9 @@ fn parse_viewport(input: &str) -> Result<(u32, u32), String> {
     Ok((w, h))
 }
 
-/// Load and parse a page through the shared engine facade. This is the single
-/// vertical integration entry for headless DOM/selector surfaces while the full
-/// network/style/layout/paint pipeline grows behind `vixen_engine::page::Page`.
+/// Test-only loader for the legacy-evaluation classifier tests. Production CLI
+/// and CDP loading both cross BrowserCore.
+#[cfg(test)]
 fn load_page(url: &str) -> Result<Page, String> {
     let LoadedSource {
         final_url,
@@ -1087,6 +1126,7 @@ fn load_page(url: &str) -> Result<Page, String> {
 }
 
 #[derive(Debug)]
+#[cfg(test)]
 struct LoadedSource {
     final_url: String,
     html: String,
@@ -1096,6 +1136,7 @@ struct LoadedSource {
 /// Read a page's source. `file://` is direct filesystem I/O; HTTP(S) crosses
 /// the `vixen-net` trust boundary so URL policy, redirects, cookies, timeouts,
 /// and body-size limits are all enforced in one place.
+#[cfg(test)]
 fn load_url_source(url: &str) -> Result<LoadedSource, String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
     match parsed.scheme() {
@@ -1123,6 +1164,7 @@ fn load_url_source(url: &str) -> Result<LoadedSource, String> {
     }
 }
 
+#[cfg(test)]
 fn fetch_http_source(url: url::Url) -> Result<LoadedSource, String> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1286,7 +1328,7 @@ mod tests {
     }
 
     #[test]
-    fn dump_lines_runs_through_page_layout_facade() {
+    fn dump_lines_runs_through_browser_core() {
         let dir = tempfile::tempdir().unwrap();
         let html = dir.path().join("lines.html");
         std::fs::write(
@@ -1306,7 +1348,7 @@ mod tests {
     }
 
     #[test]
-    fn dump_layout_tree_runs_through_page_layout_facade() {
+    fn dump_layout_tree_runs_through_browser_core() {
         let dir = tempfile::tempdir().unwrap();
         let html = dir.path().join("layout-tree.html");
         std::fs::write(
@@ -1326,7 +1368,7 @@ mod tests {
     }
 
     #[test]
-    fn dump_display_list_runs_through_page_paint_facade() {
+    fn dump_display_list_runs_through_browser_core() {
         let dir = tempfile::tempdir().unwrap();
         let html = dir.path().join("paint.html");
         std::fs::write(
@@ -1346,7 +1388,7 @@ mod tests {
     }
 
     #[test]
-    fn paint_stats_runs_through_page_paint_facade() {
+    fn paint_stats_runs_through_browser_core() {
         let dir = tempfile::tempdir().unwrap();
         let html = dir.path().join("stats.html");
         std::fs::write(
@@ -1366,7 +1408,7 @@ mod tests {
     }
 
     #[test]
-    fn interaction_flags_run_through_page_facade() {
+    fn interaction_flags_run_through_browser_core() {
         let dir = tempfile::tempdir().unwrap();
         let html = dir.path().join("interactions.html");
         std::fs::write(

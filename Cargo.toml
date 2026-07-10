@@ -1,26 +1,26 @@
 # Vixen workspace + GUI binary crate.
 #
-# Layout per docs/ARCHITECTURE.md. The 7 engine/library crates live under
+# Layout per docs/ARCHITECTURE.md. The seven engine/library crates live under
 # `crates/`; the thin GUI binary lives at `src/main.rs` and delegates to
 # `vixen_shell::run()` (ADR-010).
 #
-# Dependency direction (enforced by `cargo tree` audit in CI, see
-# docs/ARCHITECTURE.md "Boundary rules"). `▲` points from a consumer up to
-# its dependency:
+# Stable target dependency direction (docs/ARCHITECTURE.md, ADR-017):
 #
-#                          vixen-api   (traits + DTOs only, no impl deps)
-#                              ▲
-#    ┌─────────────────────────┼───────────────────┬──────────────────┐
-#    │                         │                   │                  │
-# vixen-shell              vixen-engine          vixen-wpt         vixen-headless
-#                              │                                   (dev-dep:
-#                              ▼                                    vixen-wpt)
-#                          vixen-net   (leaf — HTTP, cookies, CSP,
-#                                       URL policy, permissions)
+#                      vixen-api (contracts only)
+#                           ▲
+#          ┌────────────────┼────────────────┐
+#          │                │                │
+#     vixen-shell      vixen-engine      vixen-wpt
+#                           │
+#                     ┌─────┴─────┐
+#                     ▼           ▼
+#                 vixen-net   vixen-store
 #
-# vixen-store — standalone leaf (redb persistence; no vixen-crate deps today)
-# The only edge into vixen-net is vixen-engine → vixen-net (fetch + cookie
-# delegation; URL policy / CSP re-applied at every fetch from script.rs).
+# `vixen-headless` is a CLI/CDP composition root over vixen-api + vixen-engine
+# (and a dev-dependency on vixen-wpt). The current shell and headless direct
+# composition edges are explicit migration exceptions until BrowserCore lands;
+# `just gate-architecture` enforces the stable leaf boundaries today and will
+# tighten as ADR-017 removes those exceptions.
 
 [workspace]
 resolver = "2"

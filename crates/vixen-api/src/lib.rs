@@ -4,14 +4,33 @@
 //! consumers (`vixen-shell` GUI, `vixen-headless` CLI, `vixen-wpt` harness).
 //! It owns **no concrete engine dependencies** — only traits and data types
 //! — so the trait shape compiles and tests run at zero build cost
-//! (docs/ARCHITECTURE.md "Boundary rules", docs/PLAN.md Phase 0 gate).
+//! (docs/ARCHITECTURE.md "Dependency direction", docs/PLAN.md Phase 0 gate).
 //!
-//! Trait signatures are the stable contract; consumers program against
-//! `&dyn Engine` / `Box<dyn Engine>`, never concrete types.
+//! The current per-tab `Engine` trait is transitional: ADR-017 moves production
+//! ownership to one browser-scoped core and an evolved command/event seam. This
+//! crate remains the implementation-free home for those frontend contracts.
 
 #![forbid(unsafe_code)]
 
 use std::path::PathBuf;
+
+mod browser;
+mod ids;
+
+pub use browser::{
+    AutomationEvaluation, BrowserCommand, BrowserCommandResult, BrowserError, BrowserEvent,
+    BrowserHandle, BrowsingContextConfig, BrowsingContextState, DiagnosticScope, DocumentTextKind,
+    FocusEventInfo, FocusProjection, FormEntryInfo, FormEntryValueInfo, FormSubmissionInfo,
+    KeyEventData, MouseEventData, NavigationCancellationReason, NavigationHistoryEntry,
+    NavigationHistorySnapshot, NavigationPhase, ProfileDataSelection, ProfileSessionState,
+    RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue,
+    RuntimeDialogEvent, RuntimeEffects, RuntimeNetworkEvent, RuntimePermissionGrant, ScriptValue,
+    error_codes as browser_error_codes,
+};
+pub use ids::{
+    BrowserId, BrowsingContextId, DocumentId, DownloadId, FrameId, InvalidId, NavigationId,
+    ProfileId, RequestId, RuntimeContextId,
+};
 
 // ---------------------------------------------------------------------------
 // Diagnostics (docs/SPEC.md "Diagnostics shape")
@@ -55,14 +74,14 @@ impl EngineDiagnostic {
 }
 
 // ---------------------------------------------------------------------------
-// Engine delegate callbacks (docs/ARCHITECTURE.md "EngineDelegate")
+// Transitional delegate callbacks (docs/ARCHITECTURE.md "Command and event seam")
 // ---------------------------------------------------------------------------
 
-/// A single `Box<dyn EngineDelegate>` replaces N `Box<dyn Fn>` callbacks
-/// (docs/ARCHITECTURE.md). The shell implements this; its implementation
-/// posts each callback into the Relm4 message stream for the relevant tab
-/// component (ADR-010). The trait stays GUI-agnostic so `vixen-engine` does
-/// not depend on `relm4`.
+/// Transitional callback surface for the per-tab [`Engine`] trait.
+///
+/// The production browser-scoped seam selected by ADR-017 will use context- and
+/// generation-tagged events. This trait remains GUI-agnostic during migration so
+/// `vixen-engine` does not depend on Relm4.
 pub trait EngineDelegate: Send {
     fn uri_changed(&mut self, uri: &str);
     fn title_changed(&mut self, title: &str);
@@ -75,7 +94,7 @@ pub trait EngineDelegate: Send {
 }
 
 // ---------------------------------------------------------------------------
-// Inspection surface (docs/ARCHITECTURE.md "EngineInspector")
+// Inspection surface (docs/ARCHITECTURE.md "Style, layout, paint, and inspection")
 // ---------------------------------------------------------------------------
 
 /// Optional inspection surface used by the shell's right-click inspector,
@@ -90,12 +109,15 @@ pub trait EngineInspector {
 }
 
 // ---------------------------------------------------------------------------
-// Engine (docs/ARCHITECTURE.md "Engine")
+// Engine (docs/ARCHITECTURE.md "Command and event seam")
 // ---------------------------------------------------------------------------
 
-/// The shell-facing engine interface. Each tab owns a Relm4 `EngineWorker`
-/// that holds a `Box<dyn Engine>` on a background thread (ADR-010); the tab
-/// component talks to the worker, never to the engine directly.
+/// Transitional shell-facing, per-tab engine interface.
+///
+/// There is no production implementation yet. ADR-017 supersedes the old
+/// one-worker/engine-per-tab ownership with a browser-scoped core that owns the
+/// profile and all browsing contexts; this trait may evolve or be replaced by
+/// browser command/event/factory contracts during that migration.
 pub trait Engine {
     // Navigation
     fn load_uri(&mut self, uri: &str);
@@ -132,7 +154,7 @@ pub trait Engine {
 }
 
 // ---------------------------------------------------------------------------
-// Graphics context seam (docs/ARCHITECTURE.md "GlContext", ADR-006)
+// Graphics context seam (docs/ARCHITECTURE.md "Style, layout, paint, and inspection")
 // ---------------------------------------------------------------------------
 
 /// Minimal graphics-context abstraction so `vixen-engine` can drive WebRender
@@ -153,7 +175,7 @@ pub trait GlContext {
 }
 
 // ---------------------------------------------------------------------------
-// Profile (docs/ARCHITECTURE.md "EngineProfile")
+// Profile (docs/ARCHITECTURE.md "Profile and storage")
 // ---------------------------------------------------------------------------
 
 /// Configuration for instantiating an engine.
@@ -196,24 +218,27 @@ pub enum HardwareAccelerationMode {
 // ---------------------------------------------------------------------------
 
 /// Download lifecycle events surfaced through `EngineDelegate`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadEvent {
     Started {
-        id: u64,
+        id: DownloadId,
         filename: String,
         total_bytes: Option<u64>,
         mime: String,
     },
     Progress {
-        id: u64,
+        id: DownloadId,
         received_bytes: u64,
         total_bytes: Option<u64>,
     },
     Completed {
-        id: u64,
+        id: DownloadId,
+    },
+    Cancelled {
+        id: DownloadId,
     },
     Failed {
-        id: u64,
+        id: DownloadId,
         message: String,
     },
 }
@@ -237,7 +262,7 @@ pub enum Permission {
 }
 
 /// Hit-test result returned by `EngineInspector::inspect_element_at`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ElementInfo {
     pub node_id: usize,
     pub tag: String,
@@ -250,7 +275,7 @@ pub struct ElementInfo {
 }
 
 /// Coarse document snapshot returned by `EngineInspector::capture_snapshot`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct PageSnapshot {
     pub url: String,
     pub title: Option<String>,

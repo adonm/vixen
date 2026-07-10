@@ -1,272 +1,414 @@
 # Roadmap
 
-This is the current delivery order toward the full project goal: a credible
-modern-Linux Firefox replacement with a focused desktop shell, first-class
-headless/CDP automation, and maximum web capability per byte. Historical phase
-notes stay in `PLAN.md`; this file should describe what to build next, with only
-short baselines for already-landed foundations.
+This is the delivery sequence from the current component-rich prototype to the
+full project goal: a credible Firefox replacement for modern Linux, with a
+focused desktop shell and first-class headless/CDP automation. It is deliberately
+more ambitious than a demo-browser plan, but it does not turn ambition into an
+unsupported compatibility claim.
 
-## Current baseline: foundations, not milestones
+Historical phase instructions live in [`PLAN.md`](PLAN.md), executable evidence
+in [`MILESTONES.md`](MILESTONES.md), and measured support in
+[`COMPAT.md`](COMPAT.md). Already-landed feature inventories do not belong in the
+future milestones below.
 
-Treat these as available building blocks and avoid re-listing them as roadmap
-work:
+## Destination and release ladder
 
-- Developer loop: hk-owned git lifecycle gates, `just` recipes, text-first WPT /
-  fixture reports, and actionable failure output.
-- Rendering seam: one display-list path feeds WebRender for GUI and headless;
-  screenshots use that same path.
-- Runtime seam: `deno_core`/V8 is the JavaScript runtime for WPT, headless, CDP,
-  and page scripts. Runtime Web API host modules own eval-visible APIs; pure
-  value objects may stay JS-only, while page/network/storage/security APIs cross
-  explicit Rust ops/resources.
-- Profile seam: `vixen-store` persists bounded cookies, Web Storage, fetch cache,
-  history, session restore (tabs, active tab, scroll/focus/form hints), downloads,
-  permissions, and HSTS/security state.
-  Clear-data selections are explicit and profile paths/download destinations are
-  XDG/app-ID scoped.
-- Network/fetch seam: `fetch()` and the minimal `XMLHttpRequest` surface share
-  the same `vixen-net` path for URL policy, cookies, request headers/bodies,
-  redirect modes, CSP `connect-src`, referrer policy, active mixed-content
-  blocking, CORS modes/preflight/visibility filtering, cache modes including
-  conditional `no-cache` revalidation, and stable success/failure network events
-  surfaced to CDP.
-- Automation seam: CDP already covers navigation, runtime eval/object basics,
-  console/exceptions, dialogs, exposed bindings, init scripts, lifecycle-event
-  opt-in (`init`, `commit`, `DOMContentLoaded`, `load`), network events,
-  screenshot capture, DOM query/resolve basics, viewport
-  media emulation, and basic mouse/keyboard input.
+The stages are capability gates, not dates:
 
-## Standing lessons from peer browsers and our recent slices
+1. **Alpha — one browser architecture.** GUI, headless, CDP, WPT, page scripts,
+   and profile services drive one engine-owned browser lifecycle. Narrow behavior
+   is acceptable; parallel state models are not.
+2. **Beta — a measured useful browser.** A controlled real-site corridor works
+   in GUI and automation with representative rendering, interaction, persistence,
+   downloads, diagnostics, and Linux integration.
+3. **v1.0 — an honest daily-driver minimum.** The published corridor is reliable
+   enough for focused daily use, release/security operations are credible, and
+   every supported capability has reproducible evidence.
+4. **Replacement horizon — broad modern-browser capability.** Media,
+   accessibility, offline applications, richer graphics/communications, extension
+   support, and stronger process isolation expand the useful site set until
+   “Firefox replacement” describes ordinary use rather than only a corridor.
 
-These constraints should shape every milestone:
+No stage implies global Firefox or WPT parity. Compatibility claims always name
+the profile, platform, command, and measured result.
 
-- **One path, many seams.** A feature is not browser-shaped if it works only in
-  headless, only in CDP, or only in a runtime shim. Prefer the path that serves
-  GUI, headless, WPT, CDP, and page scripts together.
-- **Host integration is compatibility.** Cert stores, sandbox/file access,
-  fontconfig/fallback fonts, XDG downloads, portals, GL/EGL drivers, Flatpak, and
-  distro CA layouts need smoke coverage before daily-browser claims.
-- **Profile data is product state.** Downloads, cache bounds, clear-data flows,
-  session restore, permissions, HSTS, favicons, and storage quotas are part of the
-  browser engine/product contract, not shell polish.
-- **Inspector can perturb the page.** DevTools/CDP snapshots, overlays, geometry
-  queries, mutation observers, and animation inspection must tolerate stale
-  layout and must not create an automation-only DOM.
-- **Every real-site failure needs a reduction.** Screenshots are triage; a small
-  fixture, WPT import, or explicit unreduced issue is the regression guard.
-- **Security is fail-closed and diagnosed.** URL/header/cookie/CSP/storage inputs
-  validate near the trust boundary; policy blocks should be distinguishable from
-  TLS/network/protocol/unsupported-feature failures.
+## Proven baseline — use it, do not roadmap it
 
-## Alpha: freeze the browser-shaped architecture
+As of 2026-07-10 the repository has these building blocks:
 
-Alpha is not broad web parity. Alpha means the architecture can carry the full
-browser without replacement. The goal is one small browser that can load,
-interact with, inspect, and persist a controlled real-site corridor.
+- A seven-crate workspace, hk/`just` development gates, stable diagnostics, fuzz
+  targets, and a WPT/fixture harness. The committed manifest currently measures
+  **269 fixtures / 2,015 checks at 100%**; `COMPAT.md` owns the detailed counts.
+- `html5ever` parsing, Stylo-backed selector/cascade integration, a Vixen-owned
+  layout tree and focused formatting helpers, one display list, and one WebRender
+  path used by GUI/headless screenshot surfaces.
+- A persistent `deno_core`/V8 runtime seam, generated WebIDL scaffolding, focused
+  page-backed DOM/CSSOM/geometry/events/forms/selection behavior, and explicit
+  Rust ops/resources for selected stateful Web APIs.
+- Shared network policy primitives for URL validation, redirects, cookies, CSP,
+  mixed content, referrer policy, CORS/preflight, cache revalidation, SRI, and
+  stable network events; fetch and the minimal XHR surface reuse these parts.
+- Bounded redb tables for cookies, Web Storage, fetch cache, history, sessions,
+  downloads, permissions, and HSTS/security records, plus explicit clear-data
+  selections and app-ID/XDG path helpers.
+- A useful CDP slice covering navigation, runtime evaluation/handles, DOM basics,
+  input, lifecycle/network/console/dialog events, screenshots, permissions,
+  tracing-lite, and stable protocol errors, with an external Playwright smoke.
+- A Relm4/libadwaita shell vertical with tabs, URL loading, basic navigation,
+  visible WebRender output, diagnostics, and bounded session restore.
 
-### 1. Authoritative browsing lifecycle and profile object
+These are substantial components now routed through one initial browser owner,
+not yet a broadly compatible browser. API shape or inert reflection is still not
+counted as implemented behavior when the underlying subsystem does not exist.
 
-- Build one engine-owned profile object so tabs share cookies, history, cache,
-  HSTS, permissions, and localStorage, while sessionStorage and in-flight
-  navigation remain tab scoped.
-- Route document navigation, reload/stop, same-document history traversal, form
-  submission, `document.write`, script DOM mutation, redirects, CSP/referrer
-  policy, permissions, session restore, and error pages through one `Page` /
-  engine lifecycle.
-- Emit stable lifecycle diagnostics for load start, response commit,
-  DOMContentLoaded, load, same-document navigation, network failure, policy block,
-  cancellation, renderer/runtime reset, and profile write failure.
-- Persist/restore scroll position, focused element, form state where appropriate,
-  and same-document history state without requiring layout to be current during
-  mutation notification.
-- Proof: network/storage/history/navigation WPT profiles, CDP navigation-wait
-  tests, shell reload/back/forward/session-restore smoke, and store persistence
-  tests.
+## The critical gap
 
-### 2. Page-backed DOM, WebIDL, events, and forms
+The production path is now the browser-scoped `BrowserHandle` seam rather than
+the older tab-shaped `vixen_api::Engine` trait. Shell, headless CLI, CDP targets,
+and the WPT adapter create contexts in one `vixen-engine::browser::BrowserCore`;
+they no longer own parallel `Page`, `JsRuntime`, network, cookie, history, or
+profile-session state. CDP has one core context/runtime generation per target,
+with bounded generation-scoped remote handles.
 
-- Replace remaining synthetic host-object behavior with page-backed Node,
-  Element, Document, HTMLFormElement, controls, events, focus, selection,
-  mutation, custom elements-lite hooks where cheap, and browser-real form state.
-- Keep generated WebIDL as the interface manifest, but require every stateful
-  interface to read/write authoritative page data or an explicit host resource.
-  JS-only shims are only for pure value objects.
-- Complete forms as a browser vertical: constraint validation, visible control
-  value/checked/selected state, labels, submit/reset, entry-list construction,
-  encoding, navigation/fetch handoff, and event ordering.
-- Prioritize geometry APIs (`getBoundingClientRect`, `getClientRects`,
-  `getBoxQuads`, offset/client/scroll metrics, Range rectangles) because real
-  apps, automation, hit-testing, and anti-bot probes depend on them.
-- Proof: DOM/events/forms WPT profiles, WebIDL conformance fixtures, and CDP DOM
-  query/resolve tests using the same page-backed objects.
+The largest remaining delivery risk has moved from frontend ownership
+duplication to the live document lifecycle. Parser/script/resource work still
+runs synchronously on the core owner after source loading, and compatibility
+projections still coexist with the live page/runtime. Adding broad API shape
+before converging those paths would preserve plausible but disconnected state.
 
-### 3. Layout and rendering broadening for real pages
+Other material gaps remain:
 
-- Replace deterministic text metrics and projection shortcuts with the owned
-  layout pipeline: block, inline, positioned, floats, overflow/scroll, flex, grid,
-  multicol where cheap, intrinsic sizing, and enough fragmentation for common
-  documents.
-- Add text shaping/font fallback, replaced-element sizing, images/srcset,
-  viewport/meta behavior, clipping/scrollbars, sticky/fixed positioning,
-  stacking/compositing, filters, transforms, opacity, and invalidation that feed
-  the single display-list/WebRender path.
-- Treat intrinsic sizing, min/max-content, form-control anonymous layout,
-  grid/subgrid, line clamp, scroll snap, multicol, text kerning/shaping, and
-  animation/compositor invalidation as high-risk real-site features, not edge
-  cases.
-- Keep one styled-DOM → layout-tree → display-list flow; no post-pass geometry
-  fixups that hide bad authoritative data.
-- Proof: imported layout/ref profiles, visual fixtures, real-site corridor
-  screenshots, paint/display-list invariants, and `COMPAT.md` pass-count updates.
+- main-document source loading is asynchronous, cancellable, and generation
+  checked, but parser, script, and discovered-resource work is still synchronous
+  and not cooperatively interruptible;
+- DOM/runtime snapshots and compatibility projections still coexist with live
+  page state;
+- layout uses deterministic text metrics and narrow block/inline/flex/grid
+  coverage rather than shaped text and a broad formatting pipeline;
+- images, fonts, subresource loading, media, accessibility, workers, IndexedDB,
+  service workers, and multi-frame/multi-page execution are absent or only
+  browser-shaped probes;
+- downloads have persistence/protocol shape but no complete HTTP transfer
+  lifecycle; and
+- Linux cert/proxy/font/portal/GPU behavior and release measurements are not yet
+  proven across a supported matrix.
 
-### 4. Network, security, and privacy envelope reaches browser shape
+## Design rules for every stage
 
-- Finish fetch/XHR semantics that matter for real sites: streaming bodies where
-  needed, upload/download progress, abort propagation, richer cache freshness and
-  validators, preflight caching, redirect/CORS corner cases, error taxonomy, and
-  DevTools-visible request/response metadata.
-- Wire permissions-policy, prompts/decisions, sandboxing, COOP/COEP/CORP,
-  partitioned cookies/storage, private-network access blocking, SRI, nosniff,
-  Trusted Types sinks, and HSTS upgrades through one fail-closed policy layer.
-- Make Linux network/platform behavior testable: cert-store discovery, proxy/env
-  handling, HTTP/2 quirks, Flatpak portal access, sandboxed filesystem reads, and
-  distro CA-bundle layouts.
-- Add a “site blocked us” diagnostic path that separates policy blocks, TLS/cert
-  failures, network protocol failures, CSP/mixed-content/CORS blocks, unsupported
-  feature detection, and likely anti-bot/fingerprinting failures.
-- Proof: `vixen-net` policy tests, security WPT profiles, focused fuzz targets,
-  CDP network assertions, and controlled Linux compatibility smokes.
+1. **One authoritative state graph.** Profile → browser → browsing context →
+   document owns state. Frontends send commands and observe events; they do not
+   create alternate history, network, runtime, or permission models.
+2. **One behavior, many adapters.** GUI, headless, CDP, WPT, and page scripts
+   must reach the same navigation, DOM, layout, network, and profile operations.
+3. **State owner before API shape.** Stateful WebIDL/CDP/shell surfaces land only
+   after an engine owner exists. Pure immutable value objects may remain JS-only.
+4. **Generational asynchronous work.** Every navigation and document has a stable
+   id. Cancellation invalidates the generation, transport aborts where possible,
+   and stale completions cannot commit state or emit success events.
+5. **Policy before exposure or side effects.** Validate untrusted inputs and apply
+   URL/CSP/CORS/mixed-content/integrity/storage policy before script exposure,
+   cache insertion, persistence, download creation, or UI handoff.
+6. **Bound everything user or content controlled.** Queues, caches, object
+   handles, traces, profile tables, decoded resources, DOM growth, script work,
+   and diagnostics need explicit limits and useful failure modes.
+7. **Inspection cannot invent a second page.** CDP snapshots and geometry may
+   request an explicit style/layout update or return a stable stale-state error;
+   they may not maintain automation-only DOM or layout state.
+8. **Measure, then budget.** Binary size, memory, startup, navigation, frame time,
+   and profile growth get reproducible baselines before hard thresholds. Do not
+   preserve fictional limits from an obsolete dependency graph.
+9. **Real-site failures become reductions.** A screenshot starts triage. A local
+   fixture, pinned WPT case, or explicitly tracked unreduced failure prevents
+   regression.
 
-### 5. Desktop shell becomes a daily-smoke browser
+## Alpha — converge on one browser core
 
-- Move from “window can display a page” to the tight browser vertical: tabs,
-  URL/search entry, reload/stop, back/forward, find, zoom, downloads/status,
-  permission prompts, error pages, history, session restore, settings, and basic
-  privacy controls.
-- Keep chrome small and inspectable; add UI only when it supports daily browsing,
-  debugging, recovery, or profile control.
-- Make profile state visible and recoverable: cookies/history/cache/storage survive
-  restart, clear-data flows are explicit, profile DB growth is bounded, and
-  session restore is deterministic.
-- Treat downloads as first-class browser state: XDG download directory, progress,
-  cancel/pause/resume when available, persisted history, clear-data integration,
-  and safe “show in folder.”
-- Smoke every tab/chrome transition that can desynchronize UI state: duplicate,
-  close, restore, switch by click/keyboard, hover previews, focus, reload/stop,
-  crashed/error page recovery, and renderer/runtime reset.
-- Proof: `just flatpak-build`, manual GNOME smoke, `just gate-smoke`, and a
-  realworld fixture checklist in `COMPAT.md` or a smoke report.
+Alpha freezes an architecture capable of carrying the full goal. Complete these
+in order; later work may proceed in parallel only when it does not create a new
+state owner.
 
-### 6. Automation is a product surface, not a test harness
+Progress as of 2026-07-10: A1 is routed through the dependency-free typed
+`vixen-api` command/event seam and one `vixen-engine::browser::BrowserCore`.
+BrowserCore owns one engine thread, profile Store/network/cookies, bounded
+context/runtime registries, history, evaluation, inspection, and paint inputs.
+WPT, headless CLI, CDP, and the GTK shell are thin adapters over that owner; two
+CDP/shell contexts prove independent globals/sessionStorage/history with intended
+profile sharing. The 2,015-check fixture manifest, GTK-free shell tests, and the
+external Playwright smoke remain green.
 
-- Grow CDP toward a Playwright MVP: target/session lifecycle, runtime handles and
-  properties, DOM querying, input, navigation waits, downloads, dialogs,
-  console/network/lifecycle events, permissions, screenshots, tracing-lite, and
-  stable errors.
-- Keep headless CLI, CDP, WPT, and GUI using the same engine/runtime/page paths;
-  no automation-only DOM, no headless-only navigation model, no fake network
-  model for tests.
-- Add inspector stress tests with CDP/devtools attached during animation, DOM
-  mutation, style/layout invalidation, form-control shadow updates, downloads,
-  navigation, error pages, and renderer recovery.
-- Maintain at least one external Playwright smoke script against controlled HTTP
-  fixtures and one terminal/app fixture such as the Zuko target in
-  `PROJECT_DIRECTION.md`.
-- Proof: `docs/CDP_PLAYWRIGHT_SMOKE.md`, CDP integration tests, WPT harness reuse,
-  and repeatable Playwright smoke commands.
+The first A2 slice is also landed: dispatch acknowledges navigation before source
+completion; a bounded Tokio loader performs cancellable HTTP/file reads; each
+completion carries its context/navigation generation; current-generation cookie
+deltas merge at the core boundary; and deterministic navigate/navigate plus
+navigate/stop races prove late source results cannot commit, append history,
+overwrite cookies, or emit terminal success. Parser/runtime construction and
+post-commit script/resource work remain on the owner thread and are the next A2
+boundary.
 
-### 7. Compatibility loop scales honestly
+### A1. Engine-owned profile, browser, and browsing contexts
 
-- Expand imported WPT profiles by user-visible risk, not easy pass counts:
-  layout/paint, DOM/events/forms, storage/history/network, CSS cascade/values,
-  then automation-relevant APIs.
-- Publish measured local/imported fixture pass counts in `COMPAT.md` after
-  meaningful behavior changes.
-- Choose implementation slices from failing WPTs and real-site diagnostics; do not
-  claim broad parity until representative profiles run green.
-- Maintain a real-site reduction queue. Every corridor failure should be
-  classified as layout, DOM/Web API, network/security, storage/profile,
-  media/downloads, shell/platform, performance, or anti-bot/fingerprinting, then
-  reduced or explicitly marked unreduced.
-- Proof: `vixen-wpt` profile reports with local/imported split, green local
-  release-blocking fixtures, screenshots for the real-site corridor, and linked
-  reductions.
+- Implement one production browser core in `vixen-engine` and expose it through
+  an evolved `vixen-api` command/event seam.
+- One profile service owns the store, cookies, cache, permissions, HSTS,
+  downloads, clear-data policy, and host configuration. One browser service owns
+  the tab/context registry. Each context owns its active document, runtime,
+  session history, viewport/input state, and navigation controller.
+- Give tab/context, document, frame, navigation, request, runtime-context, and
+  download records stable typed ids. Include those ids in diagnostics/events so
+  stale work and cross-target routing are testable.
+- Run the non-`Send` DOM and V8 state on one engine-owned local executor. Shell
+  and protocol I/O may use workers, but engine ownership must not be split across
+  per-frontend state machines.
+- Replace shell/headless direct orchestration with thin adapters. Direct
+  `vixen-net`/`vixen-store` use outside the engine is migration debt, not an
+  extension point.
 
-## Beta: credible Linux browser claim
+**Proof:** a production `Engine`/browser-core implementation, two tabs sharing
+profile state but not session state, GUI/headless/CDP navigation through the same
+commands, dependency-boundary checks, and tests that no frontend owns an
+independent navigation history.
 
-Beta starts when the architecture is frozen, the shell is usable for a controlled
-daily-smoke corridor, and failures are measured rather than anecdotal.
+### A2. Asynchronous navigation and document commit
 
-1. **Measured real-site corridor** — choose a small, public, reproducible set of
-   static sites, docs sites, forms-heavy pages, media/download pages, and app-like
-   pages. Load them in GUI and headless, publish screenshots, diagnostics, known
-   gaps, and exact commands.
-2. **Compatibility dashboards** — track WPT/profile pass counts, local fixture
-   status, real-site corridor status, CDP/Playwright smoke status, and known
-   unsupported APIs in one compatibility report.
-3. **Performance and footprint budget** — track binary size, startup time,
-   navigation latency, style/layout/paint time, JS eval latency, memory after
-   first page, animation frame stability, download throughput, profile DB growth,
-   and screenshot time. Regressions need explicit product tradeoffs.
-4. **Reliability discipline** — no panics on malformed content, deterministic
-   errors for unsupported capabilities, bounded memory at network/storage/script
-   boundaries, restart-safe profile writes, useful crash diagnostics, and recovery
-   from renderer/runtime reset.
-5. **Security hardening** — complete audit/deny gates, fuzz URL/CSP/cookie/header
-   and HTML/storage boundaries, keep private-network fetch blocking and CSP/CORS
-   fail-closed, and document the single-process isolation limits honestly.
-6. **Packaging and platform smoke** — Flatpak/install paths, GNOME integration,
-   portals, certs, fonts, downloads, settings schemas, and GPU/EGL paths are
-   smoke-tested on the supported Linux target matrix.
+- Model navigation as explicit phases: intent → policy → request → response →
+  commit → parse → scripts/subresources → DOMContentLoaded → load → settled or
+  failed/cancelled.
+- Make reload, stop, redirects, history traversal, form submission,
+  `location`/history APIs, `document.write`, error pages, and session restore enter
+  the same controller.
+- Propagate cancellation through transport, body reads, parser/resource tasks,
+  and runtime jobs. A superseded navigation must not mutate the current document,
+  cache forbidden data, append history, or emit a later `load`.
+- Separate provisional and committed documents so errors before and after commit
+  have deterministic behavior.
 
-## v1.0: daily-driver minimum
+**Proof:** race tests for navigate/navigate, navigate/stop, redirect/stop,
+history/reload, late network completion, and runtime reset; matching shell and
+CDP lifecycle traces; no stale commit after cancellation.
 
-Vixen can call itself a v1 browser only when it is honest and useful, not because
-every web API exists.
+**Current proof:** navigate/navigate and navigate/stop use gated transport plus
+forced late completions; shell/headless/WPT/CDP wait for matching typed terminal
+events; the external Playwright smoke covers navigation, history, reload, and
+`document.write`/`setContent`. Redirect/stop, history/reload races, parser/runtime
+cooperative cancellation, and asynchronous CDP event delivery remain.
 
-- The measured corridor is usable with known gaps documented.
-- Core browsing works: navigation, forms, cookies/storage/cache, downloads,
-  history/session restore, error pages, permissions, and privacy controls.
-- Rendering is good enough for common documents/apps: stable layout/paint,
-  readable typography, usable forms, scroll/overflow, images, and enough flex/grid
-  for the corridor.
-- Automation works as a product: Playwright/CDP can navigate, inspect, input,
-  screenshot, wait, observe network/console/dialogs/downloads, and report stable
-  errors through the same paths as GUI.
-- Security posture is explicit: fail-closed policy boundaries, fuzz/audit gates,
-  bounded profile/network/script state, documented sandbox/isolation limitations,
-  and a credible update/release process.
-- Every v1 capability in `ACCEPTANCE.md` has a gate, a fixture/profile, a
-  compatibility entry, and a Flatpak/install smoke path.
+### A3. Live document/runtime integration
 
-## v1.x / v2 ambition: after the core browser is credible
+- Replace remaining snapshots and string-expression projections with live
+  page-backed Node/Element/Document, CSSOM, events, focus, selection, forms,
+  history, storage, and geometry resources.
+- Execute parser-discovered classic/module scripts in document order with an
+  event loop and microtask checkpoints tied to the document lifecycle.
+- Make DOM mutation invalidate style/layout/paint and inspector state through one
+  explicit mechanism. Preserve browser event ordering and realm teardown.
+- Establish the frame/realm model needed for same-origin child frames and
+  cross-origin boundaries, even if initial frame support is narrow.
+- Delete compatibility shims as their supported behavior moves to the live path;
+  unsupported APIs must remain explicit rather than returning plausible fiction.
 
-- Media, audio/video controls, WebAudio basics, codec integration, and media
-  permissions.
-- Accessibility tree integration, keyboard navigation, caret/selection fidelity,
-  and screen-reader smoke deep enough for daily browsing.
-- Service workers, IndexedDB, Cache Storage, Push/Notifications, Background Sync,
-  and offline app behavior.
-- WebSockets/EventSource, WebTransport/WebRTC where justified, compression,
-  streams, and richer fetch/upload/download bodies.
-- Extension-shaped APIs only after the browser core is stable; prefer a small,
-  explicit permissions model over cloning a full extension ecosystem early.
-- Site isolation/OOPIF only if the single-process architecture becomes the
-  limiting security issue; design it as a new architecture, not as an ad-hoc
-  worker pool.
-- WebGPU/mobile/cross-platform ports only after measured Linux desktop and
-  headless goals are credible.
+**Proof:** DOM/events/forms/history/storage profiles running through V8 against
+the live document, script-driven rendered mutations, realm/navigation teardown
+tests, and CDP queries that observe exactly the same nodes.
+
+### A4. Real document loader and profile policy
+
+- Build one resource loader for document, script, style, image, font, fetch/XHR,
+  and download requests, with shared request ids, redirect/policy processing,
+  cookies/cache, priorities, cancellation, and diagnostics.
+- Integrate profile-shared cookies, cache, permissions, HSTS, localStorage, and
+  history. Keep sessionStorage and in-flight work context scoped; define
+  partition keys before adding third-party persistence.
+- Finish streaming/abort/progress semantics where observable and ensure response
+  policy runs before exposure, execution, decode, persistence, or cache insert.
+- Treat cert roots, proxies, XDG paths, portals, fonts, and GL/EGL capabilities as
+  explicit host services with structured diagnostics.
+
+**Proof:** multi-tab profile tests, resource waterfall assertions, CORS/CSP/SRI/
+mixed-content/cache WPT profiles, cancellation tests, and controlled Linux host
+integration smokes.
+
+### A5. Owned style, layout, and paint lifecycle
+
+- Replace the compact cascade projection with full Stylo computed values behind
+  the authoritative document/style state.
+- Replace deterministic text metrics with real font discovery, shaping,
+  fallback, line breaking, glyph runs, and intrinsic measurement.
+- Carry DOM/style invalidation through the Vixen layout tree to one display list
+  and WebRender path; no frontend geometry or post-pass coordinate correction.
+- Establish scroll, hit-test, selection/caret, image, clipping, stacking,
+  transform, and animation state as engine-owned data.
+
+**Proof:** shaped-text and fallback-font fixtures, script mutation → repaint,
+GUI/headless pixel comparisons, layout/ref profiles, and inspector queries during
+invalidation.
+
+### Alpha exit gate
+
+Alpha is reached only when:
+
+- a production browser core owns lifecycle/profile state;
+- shell, headless, CDP, and WPT are adapters over it;
+- two independent contexts can load, script, render, inspect, and share only the
+  profile state they should share;
+- active navigation can be cancelled without stale commits;
+- the live DOM/runtime drives visible layout/paint; and
+- the architecture, compatibility counts, known gaps, and measurements are
+  reproducible from checked-in commands.
+
+## Beta — turn the architecture into a useful browser
+
+Once ownership is singular, broaden capability by user-visible risk rather than
+by easiest API count.
+
+### B1. Rendering and content fidelity
+
+- Complete common block/inline formatting, floats, positioned/fixed/sticky
+  layout, overflow/scroll, flex, grid, tables, intrinsic sizing, replaced
+  elements, and enough fragmentation/print behavior for the measured corridor.
+- Support responsive raster images, SVG document/image basics, web fonts,
+  gradients/borders/shadows, transforms, opacity/compositing, filters, animation,
+  caret/selection, and native-looking form controls through the same pipeline.
+- Prioritize typography, intrinsic sizing, tables, form controls, and scrolling:
+  they dominate real-page breakage even when small synthetic layout tests pass.
+
+### B2. Browser runtime and application basics
+
+- Widen live DOM, HTML, CSSOM, events, forms, navigation, URL, encoding, streams,
+  timers, observers, messaging, WebSocket, and EventSource behavior from failing
+  profiles and corridor reductions.
+- Add multi-frame execution, same-origin access rules, sandboxing, module loading,
+  workers, and resource timing sufficient for representative app-like pages.
+- Keep inert probes out of the supported matrix until observable behavior exists.
+
+### B3. Network, security, privacy, and downloads
+
+- Complete HTTP transfer streaming, upload/download progress, redirects,
+  authentication/proxy behavior, HTTP/2 interoperability, cache freshness, and a
+  real download manager with safe filenames, resume where supported, and profile
+  history.
+- Integrate Permissions Policy, sandboxing, COOP/COEP/CORP, HSTS, nosniff,
+  Trusted Types sinks, partitioned state, private-network access, and prompt/user
+  decisions into the shared loader/profile model.
+- Diagnose policy block, DNS/connectivity, TLS/cert, HTTP/protocol, unsupported
+  feature, and likely anti-bot/fingerprinting failure separately.
+
+### B4. Daily-smoke desktop product
+
+- Deliver robust tabs, address/search, reload/stop, back/forward, find, zoom,
+  downloads, permission prompts, error/recovery pages, history, session restore,
+  settings, clear-data/privacy controls, keyboard navigation, and safe external
+  opens.
+- Make every chrome transition resilient to late engine events, tab close,
+  document/runtime reset, and failed profile writes.
+- Keep the shell focused: UI exists to browse, recover, inspect, automate, or
+  control profile/security state—not to become a feature buffet.
+
+### B5. Automation and inspection as products
+
+- Support independent targets/runtimes, browser contexts where semantics exist,
+  reliable navigation waits, DOM/runtime handles, input, downloads, dialogs,
+  network/console/lifecycle events, screenshots, permissions, and bounded traces.
+- Drive additions from external Playwright workflows and documented protocol
+  contracts, not from method-name coverage alone.
+- Stress inspection during animation, mutation, style/layout invalidation,
+  navigation, downloads, errors, and runtime recovery.
+
+### B6. Compatibility, performance, and reliability loop
+
+- Expand pinned WPT profiles across parsing, DOM/events/forms, CSS/layout/paint,
+  network/security, storage/history, runtime APIs, and accessibility-relevant
+  behavior. Report local/imported and source×category results.
+- Publish a reproducible real-site corridor spanning static content, docs,
+  forms, downloads, app-like pages, and automation-heavy pages.
+- Track startup, first navigation, style/layout/paint, frame stability, memory,
+  screenshot latency, transfer throughput, binary/install size, and profile
+  growth. Add budgets only after representative baselines exist.
+- Eliminate panics/data loss on malformed content; bound content-controlled work;
+  make recovery and diagnostics useful.
+
+### Beta exit gate
+
+The corridor loads in GUI and headless, supports meaningful interaction and
+persistence, survives restart/error/cancellation cases, and has published
+screenshots, reductions, WPT/profile counts, automation results, performance
+measurements, and known gaps on the supported Linux matrix.
+
+## v1.0 — honest daily-driver minimum
+
+Vixen may call itself v1.0 when all of the following are true:
+
+- common document, documentation, form, download, and app-like pages in the
+  published corridor are readable and usable with stable typography, images,
+  layout, scrolling, interaction, navigation, and profile state;
+- shell and Playwright/CDP use the same engine paths and recover predictably from
+  network, document, runtime, renderer, and profile failures;
+- supported network/security/privacy behavior is fail-closed, observable, and
+  backed by tests/fuzzing/audit; single-process isolation limits are prominent;
+- Flatpak install/update, certs, fonts, portals, downloads, GPU/EGL, settings,
+  session restore, and clear-data flows pass on the declared Linux targets;
+- compatibility, performance, memory, binary/install size, and unsupported
+  capabilities are published from reproducible commands; and
+- every v1 claim maps to an acceptance gate, fixture/profile or smoke, and an
+  owner in the shared architecture.
+
+v1.0 is a useful supported subset, not the end of the Firefox-replacement goal.
+
+## Replacement horizon — continue until ordinary browsing is credible
+
+After v1, prioritize these programs by measured site impact:
+
+1. **Accessible browser:** accessibility tree, AT-SPI integration, screen-reader
+   smoke, keyboard/caret/selection fidelity, forced colors, reduced motion, zoom,
+   and accessible native controls.
+2. **Media platform:** GStreamer-backed audio/video, common codecs, controls,
+   captions/tracks, fullscreen/PiP, autoplay/permission policy, Media Source where
+   justified, and WebAudio basics.
+3. **Offline/application platform:** IndexedDB, Cache Storage, service workers,
+   workers/shared workers, file/blob streaming, notifications, installable apps,
+   and offline lifecycle semantics.
+4. **Communications:** production WebSocket/EventSource, WebRTC and device
+   permissions, richer streaming/compression, and WebTransport only where demand
+   and security design justify it.
+5. **Graphics and documents:** Canvas 2D behavior, SVG breadth, WebGL, WebGPU,
+   print/PDF, color management, advanced typography/writing modes, and the long
+   tail of CSS layout/paint.
+6. **User ecosystem:** a deliberately scoped extension model, content blocking,
+   password/autofill integration, import/export, developer tools, and policy
+   controls without cloning every Firefox chrome feature.
+7. **Defense in depth:** renderer/content process sandboxing, site isolation or
+   OOPIF, brokered host access, crash containment, and update/signing hardening.
+   Treat this as an explicit architecture generation, not an ad-hoc worker pool.
+8. **Broader compatibility:** continuously widen WPT and real-site profiles until
+   exceptions are uncommon enough that replacement is an honest default-use
+   description. Cross-platform ports remain separate product decisions.
+
+## Immediate execution order
+
+The first three convergence batches are complete. The source-loading part of the
+fourth is complete. The next coherent batches are:
+
+1. Finish A2 across redirects, parser/runtime jobs, history/reload races, and
+   asynchronous CDP lifecycle delivery; preserve exactly one terminal outcome.
+2. Move parser-discovered scripts and supported DOM mutations onto the live
+   document/runtime, deleting replaced snapshot/string shims.
+3. Land font discovery/shaping/fallback and image subresource decode as the first
+   broad rendering verticals, then widen layout by failing imported ref tests.
+4. Build the HTTP download lifecycle and shell/CDP events over profile-owned
+   downloads.
+5. Establish measured real-site, Linux-host, performance, and size baselines that
+   gate beta work.
 
 ## Working rule
 
-Every milestone should land as one coherent batch with:
+Every milestone lands with:
 
-- a browser-visible seam (`Page`, headless, CDP, GUI, or WPT profile),
-- focused tests/fixtures,
-- a compatibility/limitation update when behavior changes,
-- green focused checks plus hk pre-push gates before push.
+- one named authoritative owner and no new parallel state model;
+- a browser-visible path through the shared core;
+- focused unit tests plus an integration fixture/profile/smoke;
+- stable, bounded diagnostics at trust and lifecycle boundaries;
+- compatibility/limitation updates when observable behavior changes; and
+- the cheapest focused checks followed by the relevant hk/`just` gate.
 
-Prefer small, boring, engine-shaped slices. A slice is not complete if it only
-works in one seam while a parallel model remains elsewhere. Architecture changes
-are the only routine reason to stop for human direction before alpha; after
-alpha, architecture changes need a new ADR.
+Prefer small, boring vertical slices. A large surface of plausible objects is
+less valuable than one real navigation, document, render, or persistence path
+that every frontend shares.

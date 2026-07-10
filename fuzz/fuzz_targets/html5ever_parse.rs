@@ -5,9 +5,9 @@
 //! (docs/ARCHITECTURE.md); html5ever is highly permissive but must remain
 //! panic-free on attacker input.
 //!
-//! Note: lives in the vixen-fuzz workspace which today only depends on
-//! `vixen-net`; this target adds a `vixen-engine` dependency behind a target
-//! selector so the main `vixen-net`-only fuzz workspace stays small.
+//! This lives in the standalone `vixen-fuzz` workspace, so its engine
+//! dependency never pulls libFuzzer or nightly requirements into normal host
+//! workspace builds.
 //!
 //! Run: `cargo +nightly fuzz run html5ever_parse -- -runs=1000000`.
 

@@ -195,6 +195,28 @@ impl Range {
         }
     }
 
+    /// Apply DOM `Range.setStart()`. If the new start is after the current end,
+    /// the range collapses to the new boundary instead of swapping endpoints.
+    pub fn set_start(&mut self, boundary: Boundary) {
+        if boundary.compare(self.end) == Ordering::After {
+            self.start = boundary;
+            self.end = boundary;
+        } else {
+            self.start = boundary;
+        }
+    }
+
+    /// Apply DOM `Range.setEnd()`. If the new end is before the current start,
+    /// the range collapses to the new boundary instead of swapping endpoints.
+    pub fn set_end(&mut self, boundary: Boundary) {
+        if boundary.compare(self.start) == Ordering::Before {
+            self.start = boundary;
+            self.end = boundary;
+        } else {
+            self.end = boundary;
+        }
+    }
+
     /// `true` iff `boundary` lies within `[start, end]` (inclusive) — the
     /// § 5.2 "contained" predicate for a single boundary point. The § 5.2
     /// "contained node" predicate (a whole node is contained iff its parent
@@ -427,6 +449,30 @@ mod tests {
         let c = r.collapse(false);
         assert!(c.is_collapsed());
         assert_eq!(c.start, Boundary::at(n(2), 5));
+    }
+
+    #[test]
+    fn range_set_start_crossing_end_collapses_at_new_start() {
+        let mut range = Range::new(Boundary::at(n(1), 0), Boundary::at(n(2), 0));
+        let new_start = Boundary::at(n(3), 1);
+
+        range.set_start(new_start);
+
+        assert_eq!(range.start, new_start);
+        assert_eq!(range.end, new_start);
+        assert!(range.is_collapsed());
+    }
+
+    #[test]
+    fn range_set_end_crossing_start_collapses_at_new_end() {
+        let mut range = Range::new(Boundary::at(n(2), 0), Boundary::at(n(3), 0));
+        let new_end = Boundary::at(n(1), 1);
+
+        range.set_end(new_end);
+
+        assert_eq!(range.start, new_end);
+        assert_eq!(range.end, new_end);
+        assert!(range.is_collapsed());
     }
 
     #[test]

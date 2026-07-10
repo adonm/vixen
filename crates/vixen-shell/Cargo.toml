@@ -8,7 +8,7 @@
 #
 # Module layout (docs/ARCHITECTURE.md "Crate layout"):
 #   app.rs browser_window.rs tabs.rs tab.rs location_entry.rs find_bar.rs
-#   engine_factory.rs engine_worker.rs settings.rs profile.rs (paths/session) config.rs modals/
+#   engine_factory.rs engine_worker.rs settings.rs profile.rs (paths/downloads) config.rs modals/
 [package]
 name = "vixen-shell"
 version = "0.1.0"
@@ -20,30 +20,26 @@ publish = false
 
 [features]
 default = []
+# Host-runnable BrowserCore adapter; deliberately excludes GTK/libadwaita.
+browser-core = ["dep:vixen-engine"]
 # Pull in the GTK4/libadwaita/Relm4 stack and build the real browser window.
 # Requires gtk4, libadwaita-1 dev packages (pkg-config).
 gtk-shell = [
+    "browser-core",
     "dep:gtk4",
     "dep:relm4",
     "dep:libadwaita",
-    "dep:vixen-engine",
-    "dep:vixen-net",
     "dep:libloading",
-    "dep:tokio",
-    "dep:url",
 ]
 
 [dependencies]
 vixen-api = { path = "../vixen-api" }
 vixen-engine = { path = "../vixen-engine", optional = true }
-vixen-net = { path = "../vixen-net", optional = true }
-vixen-store = { path = "../vixen-store" }
 gtk4 = { version = "0.9", optional = true }
 relm4 = { version = "0.9", features = ["libadwaita"], optional = true }
 libadwaita = { version = "0.7", optional = true }
 libloading = { version = "0.8", optional = true }
-tokio = { version = "1", features = ["rt"], optional = true }
-url = { version = "2", optional = true }
+url = "2"
 
 [dev-dependencies]
 tempfile = "3"

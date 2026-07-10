@@ -2,8 +2,9 @@
 //! `<script integrity>` / `<link integrity>` attribute the fetch layer
 //! consults to verify a subresource's bytes match a known-good hash before
 //! executing / applying them. The hash family + the metadata grammar live
-//! here; the fetch integration (`compute hash over the response body, abort
-//! on mismatch`) lands in the Phase 7 fetch layer.
+//! here; the runtime fetch path now verifies its bounded text response before
+//! exposing or caching it. Raw-byte streaming verification remains part of the
+//! future streaming-body fetch path.
 //!
 //! What lives here:
 //! - [`HashAlgorithm`] — the three SRI-mandated algorithms (`sha256` /
@@ -15,14 +16,14 @@
 //!   separated entries, the `-`-split algorithm/digest, the base64 STANDARD
 //!   alphabet.
 //! - [`verify`] — compute the § 3.3.4 "apply algorithm to bytes" + the
-//!   constant-time compare; **any** matching entry passes (the spec's "best
-//!   candidate" rule).
+//!   constant-time compare; only entries using the strongest algorithm present
+//!   are eligible under the spec's "best candidate" rule.
 //! - [`IntegrityOutcome`] — pass / no-metadata / mismatch, for the fetch
 //!   layer's `Sec-Fetch-*`-shaped error reporting.
 //!
 //! What does *not* live here:
-//! - The fetch-layer body hash (the response is streamed; the fetch layer
-//!   accumulates bytes and calls [`verify`] at the end).
+//! - Incremental hashing of a streaming response body; the current bounded
+//!   text path calls [`verify`] after buffering.
 //! - The `integrity` block on CSP `require-sri-for` (deprecated directive;
 //!   not implemented).
 //! - The `?<options>` enforcement (the spec defines `ct` for content-type
@@ -109,6 +110,14 @@ impl HashAlgorithm {
             _ => None,
         }
     }
+
+    const fn strength(self) -> u8 {
+        match self {
+            HashAlgorithm::Sha256 => 1,
+            HashAlgorithm::Sha384 => 2,
+            HashAlgorithm::Sha512 => 3,
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -185,9 +194,9 @@ pub fn parse_integrity(attribute: &str) -> Vec<IntensityItem> {
 
 /// Verify a subresource's body against the parsed `integrity` metadata per
 /// W3C SRI § 3.3.4. Computes each entry's hash over `body` (raw response
-/// bytes) and compares in constant time; **any** match passes (the spec's
-/// "best candidate" rule — a resource with `sha256-… sha512-…` passes if
-/// either hash matches).
+/// bytes) and compares in constant time. The "best candidate" rule first
+/// selects the strongest algorithm present; weaker matching digests cannot
+/// override a mismatch at that strength.
 ///
 /// - Empty metadata ⇒ [`IntegrityOutcome::NoMetadata`] (SRI does not apply).
 /// - ≥ 1 match ⇒ [`IntegrityOutcome::Verified`] with the matched algorithm.
@@ -199,8 +208,16 @@ pub fn verify(items: &[IntensityItem], body: &[u8]) -> IntegrityOutcome {
     if items.is_empty() {
         return IntegrityOutcome::NoMetadata;
     }
-    let mut attempted = Vec::with_capacity(items.len());
-    for item in items {
+    let strongest = items
+        .iter()
+        .map(|item| item.algorithm.strength())
+        .max()
+        .unwrap_or_default();
+    let candidates = items
+        .iter()
+        .filter(|item| item.algorithm.strength() == strongest);
+    let mut attempted = Vec::new();
+    for item in candidates {
         let expected = STANDARD.decode(&item.digest).unwrap_or_default();
         let matched = match item.algorithm {
             HashAlgorithm::Sha256 => constant_time_eq(Sha256::digest(body).as_slice(), &expected),
@@ -371,7 +388,7 @@ mod tests {
 
     #[test]
     fn verify_any_match_passes() {
-        // Two entries; only the second matches.
+        // Two strengths; the strongest entry matches.
         let body = b"document.title = 'x'";
         let wrong = sri_digest(HashAlgorithm::Sha256, b"different body");
         let right = sri_digest(HashAlgorithm::Sha512, body);
@@ -383,12 +400,24 @@ mod tests {
     }
 
     #[test]
+    fn verify_weaker_match_does_not_override_stronger_mismatch() {
+        let body = b"document.title = 'x'";
+        let weak_match = sri_digest(HashAlgorithm::Sha256, body);
+        let strong_mismatch = sri_digest(HashAlgorithm::Sha512, b"different body");
+        let items = parse_integrity(&format!("sha256-{weak_match} sha512-{strong_mismatch}"));
+        assert_eq!(
+            verify(&items, body),
+            IntegrityOutcome::Mismatch(vec![HashAlgorithm::Sha512])
+        );
+    }
+
+    #[test]
     fn verify_mismatch_blocks() {
         let body = b"alert(1)";
         let items = parse_integrity("sha256-aaaa sha512-bbbb");
         match verify(&items, body) {
             IntegrityOutcome::Mismatch(algs) => {
-                assert_eq!(algs, vec![HashAlgorithm::Sha256, HashAlgorithm::Sha512]);
+                assert_eq!(algs, vec![HashAlgorithm::Sha512]);
             }
             other => panic!("expected Mismatch, got {other:?}"),
         }
