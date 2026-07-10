@@ -3,6 +3,9 @@
 **/*.rs.bk
 Cargo.lock.bak
 
+# mdBook output
+/book
+
 # Workspace-local CARGO_HOME (docs/guidance/cargo-home.md). We pin
 # `.cargo/config.toml` (project config); the cache subdirs are build state.
 /.cargo/*

@@ -21,6 +21,11 @@
   </categories>
   <url type="homepage">https://codeberg.org/adonm/vixen</url>
   <releases>
+    <release version="0.1.1" date="2026-07-10">
+      <description>
+        <p>Patch release with GitHub CI, Flatpak bundles, and project documentation.</p>
+      </description>
+    </release>
     <release version="0.1.0" date="2026-07-08">
       <description>
         <p>Initial GTK WebRender browser vertical with tab lifecycle.</p>

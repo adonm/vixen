@@ -1,0 +1,18 @@
+[book]
+title = "Vixen"
+authors = ["adonm"]
+description = "A modern-Linux browser in Rust with a minimal GNOME shell, headless/CDP automation, and Flatpak releases."
+language = "en"
+multilingual = false
+src = "docs"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+cname = "vixen.adonm.dev"
+git-repository-url = "https://github.com/adonm/vixen"
+edit-url-template = "https://github.com/adonm/vixen/edit/main/docs/{path}"
+preferred-dark-theme = "ayu"
+site-url = "/"

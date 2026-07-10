@@ -16,6 +16,7 @@ alias smoke := gate-smoke
 alias test := test-host
 alias webidl := gate-webidl
 alias hooks := hooks-install
+alias docs := book-build
 
 # Container runtime + the flatpak-builder image that owns the GNOME SDK.
 # Bump these two together (and runtime-version in build-aux/*.json) to move SDK.
@@ -123,6 +124,14 @@ fmt-check:
 
 clippy:
     cargo clippy --workspace --all-targets -- -D warnings
+
+# --- Documentation -----------------------------------------------------------
+
+book-build:
+    mdbook build
+
+book-serve *ARGS:
+    mdbook serve --open {{ARGS}}
 
 # --- Executable gates --------------------------------------------------------
 # These are current, runnable milestone gates. They complement (not replace)

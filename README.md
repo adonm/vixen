@@ -1,5 +1,12 @@
 # Vixen
 
+[![CI](https://github.com/adonm/vixen/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/adonm/vixen/actions/workflows/ci.yml)
+[![Pages](https://github.com/adonm/vixen/actions/workflows/pages.yml/badge.svg?branch=main)](https://github.com/adonm/vixen/actions/workflows/pages.yml)
+[![Docs](https://img.shields.io/badge/docs-vixen.adonm.dev-blue)](https://vixen.adonm.dev/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](Cargo.toml)
+[![Flatpak](https://img.shields.io/badge/flatpak-GNOME%2050-4a86cf.svg)](docs/guidance/gnome-sdk-flatpak-builder.md)
+
 A modern-Linux Firefox replacement built in Rust: minimal desktop browser,
 first-class headless/CDP automation, and the most web capability per byte.
 

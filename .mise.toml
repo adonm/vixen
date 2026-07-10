@@ -48,6 +48,7 @@ _.path = ["{{ config_root }}/.cargo/bin"]
 rust = { version = "1.96.1", profile = "default", components = "rustfmt,clippy" }
 just = "1.55.1"
 hk = "1.50.0"
+mdbook = "0.4.52"
 # Self-contained: `just setup-dev-tools` uses binstall to fetch optional tooling.
 cargo-binstall = "1.20.1"
 # Playwright/CDP smoke runner. We use `playwright-core` (package.json), so no
