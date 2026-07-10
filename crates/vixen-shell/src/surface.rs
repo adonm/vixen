@@ -7,15 +7,13 @@
 
 #![allow(unsafe_code)]
 
-use std::ffi::{CString, c_char, c_void};
+use std::ffi::{CString, c_void};
 use std::rc::Rc;
 
 use gtk4::prelude::*;
 use vixen_api::GlContext;
 use vixen_engine::display_list::PaintCommand;
 use vixen_engine::paint::{PaintError, Renderer};
-
-type EpoxyGetProcAddress = unsafe extern "C" fn(*const c_char) -> *mut c_void;
 
 const EPOXY_LIBRARIES: &[&str] = &["libepoxy.so.0", "libepoxy.so"];
 
@@ -84,8 +82,7 @@ impl GlAreaRenderer {
 }
 
 struct EpoxyProcLoader {
-    _library: libloading::Library,
-    get_proc_address: EpoxyGetProcAddress,
+    library: libloading::Library,
 }
 
 impl EpoxyProcLoader {
@@ -98,31 +95,29 @@ impl EpoxyProcLoader {
                 Ok(library) => library,
                 Err(_) => continue,
             };
-            // SAFETY: libepoxy exposes `epoxy_get_proc_address` with this C ABI.
-            // The `Library` is retained in `Self` for at least as long as the
-            // copied function pointer can be called.
-            let get_proc_address =
-                match unsafe { library.get::<EpoxyGetProcAddress>(b"epoxy_get_proc_address\0") } {
-                    Ok(symbol) => *symbol,
-                    Err(_) => continue,
-                };
-            return Some(Self {
-                _library: library,
-                get_proc_address,
-            });
+            return Some(Self { library });
         }
         None
     }
 
     fn proc_address(&self, name: &str) -> *const c_void {
-        let Ok(name) = CString::new(name) else {
+        let Some(symbol_name) = epoxy_symbol_name(name) else {
             return std::ptr::null();
         };
-        // SAFETY: libepoxy resolves the symbol for the current GDK GL context;
-        // callers invoke this only after `make_current` has made that context
-        // current on this thread.
-        unsafe { (self.get_proc_address)(name.as_ptr()) as *const c_void }
+        // SAFETY: libepoxy exports stable `epoxy_gl*` wrapper functions. Each
+        // wrapper resolves/dispatches to the current GDK GL context when called,
+        // and `library` is retained for at least as long as returned function
+        // pointers can be used by WebRender/gleam.
+        unsafe {
+            self.library
+                .get::<*const c_void>(symbol_name.as_bytes_with_nul())
+                .map_or(std::ptr::null(), |symbol| *symbol)
+        }
     }
+}
+
+fn epoxy_symbol_name(name: &str) -> Option<CString> {
+    CString::new(format!("epoxy_{name}")).ok()
 }
 
 impl GlContext for GlAreaSurface {
@@ -141,5 +136,21 @@ impl GlContext for GlAreaSurface {
         let width = u32::try_from(self.area.width()).unwrap_or(0);
         let height = u32::try_from(self.area.height()).unwrap_or(0);
         (width.saturating_mul(scale), height.saturating_mul(scale))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn epoxy_symbol_names_match_flatpak_runtime_exports() {
+        assert_eq!(
+            epoxy_symbol_name("glGetString")
+                .expect("symbol")
+                .as_bytes_with_nul(),
+            b"epoxy_glGetString\0"
+        );
+        assert!(epoxy_symbol_name("gl\0GetString").is_none());
     }
 }

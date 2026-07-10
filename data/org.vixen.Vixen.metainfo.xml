@@ -21,6 +21,11 @@
   </categories>
   <url type="homepage">https://codeberg.org/adonm/vixen</url>
   <releases>
+    <release version="0.1.2" date="2026-07-10">
+      <description>
+        <p>Fix Flatpak GL symbol loading for GTK/WebRender rendering.</p>
+      </description>
+    </release>
     <release version="0.1.1" date="2026-07-10">
       <description>
         <p>Patch release with GitHub CI, Flatpak bundles, and project documentation.</p>

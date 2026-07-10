@@ -38,7 +38,7 @@ default-members = ["crates/vixen-api", "crates/vixen-net", "crates/vixen-store"]
 # GUI binary (thin; calls vixen_shell::run()).
 [package]
 name = "vixen"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 rust-version = "1.88"   # let-chains used in vixen-net per docs/SPEC.md
 description = "A focused modern-Linux browser built for capability per byte"
