@@ -136,6 +136,9 @@ async function main() {
 
     await session.send('Runtime.enable');
     await session.send('Page.enable');
+    const lifecycleEvents = [];
+    session.on('Page.lifecycleEvent', (event) => lifecycleEvents.push(event));
+    await session.send('Page.setLifecycleEventsEnabled', { enabled: true });
     const networkEvents = [];
     for (const method of ['Network.requestWillBeSent', 'Network.responseReceived', 'Network.loadingFinished']) {
       session.on(method, (event) => networkEvents.push({ method, event }));
@@ -155,6 +158,15 @@ async function main() {
       () => ['Network.requestWillBeSent', 'Network.responseReceived', 'Network.loadingFinished'].every((method) => networkEvents.some((entry) => entry.method === method)),
       'Network navigation events',
     );
+    const expectedLifecycle = ['init', 'commit', 'DOMContentLoaded', 'load'];
+    await waitForCondition(
+      () => expectedLifecycle.every((name) => lifecycleEvents.some((event) => event.name === name)),
+      'Page lifecycle events',
+    );
+    const lifecycleNames = lifecycleEvents.slice(0, expectedLifecycle.length).map((event) => event.name);
+    if (JSON.stringify(lifecycleNames) !== JSON.stringify(expectedLifecycle)) {
+      fail(`Page lifecycle events were out of order: ${JSON.stringify(lifecycleNames)}`);
+    }
     const requestEvent = networkEvents.find((entry) => entry.method === 'Network.requestWillBeSent')?.event;
     const responseEvent = networkEvents.find((entry) => entry.method === 'Network.responseReceived')?.event;
     const finishedEvent = networkEvents.find((entry) => entry.method === 'Network.loadingFinished')?.event;

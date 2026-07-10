@@ -387,6 +387,7 @@ Common recipes:
 | `just gate-push` | Long pre-push gate invoked by hk |
 | `just webidl` / `just gate-webidl` | Generated WebIDL/runtime host seam coverage |
 | `just audit` | `cargo audit` + `cargo deny check` |
+| `just baseline-headless` | Measure release headless startup + first navigation + eval path |
 | `just flatpak-update-sdk` / `just flatpak-build` | Manage and build against the GNOME SDK container |
 | `just flatpak-install-local` / `just flatpak-run` | Install/run the locally exported Flatpak for GUI smoke |
 

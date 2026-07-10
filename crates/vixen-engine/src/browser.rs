@@ -2444,6 +2444,44 @@ mod tests {
         wait_for_navigation(handle, context_id, navigation_id).unwrap();
     }
 
+    fn reload(handle: &mut EngineBrowserHandle, context_id: BrowsingContextId) -> NavigationId {
+        match handle
+            .dispatch(BrowserCommand::Reload { context_id })
+            .unwrap()
+        {
+            BrowserCommandResult::NavigationAccepted { navigation_id } => navigation_id,
+            other => panic!("unexpected reload result: {other:?}"),
+        }
+    }
+
+    fn traverse_history(
+        handle: &mut EngineBrowserHandle,
+        context_id: BrowsingContextId,
+        delta: i32,
+    ) -> Option<NavigationId> {
+        match handle
+            .dispatch(BrowserCommand::TraverseHistory { context_id, delta })
+            .unwrap()
+        {
+            BrowserCommandResult::NavigationAccepted { navigation_id } => Some(navigation_id),
+            BrowserCommandResult::Accepted => None,
+            other => panic!("unexpected history traversal result: {other:?}"),
+        }
+    }
+
+    fn history(
+        handle: &mut EngineBrowserHandle,
+        context_id: BrowsingContextId,
+    ) -> NavigationHistorySnapshot {
+        match handle
+            .dispatch(BrowserCommand::GetNavigationHistory { context_id })
+            .unwrap()
+        {
+            BrowserCommandResult::NavigationHistory(history) => history,
+            other => panic!("unexpected history result: {other:?}"),
+        }
+    }
+
     fn dispatch_navigation(
         handle: &mut EngineBrowserHandle,
         context_id: BrowsingContextId,
@@ -2530,6 +2568,26 @@ mod tests {
         title: &str,
         set_cookie: Option<&str>,
     ) {
+        inject_late_source_completion_with_events(
+            handle,
+            context_id,
+            navigation_id,
+            url,
+            title,
+            set_cookie,
+            Vec::new(),
+        );
+    }
+
+    fn inject_late_source_completion_with_events(
+        handle: &EngineBrowserHandle,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+        url: String,
+        title: &str,
+        set_cookie: Option<&str>,
+        events: Vec<NetworkEvent>,
+    ) {
         let baseline = Vec::new();
         let mut worker_jar = CookieJar::from_snapshots(baseline.clone());
         if let Some(set_cookie) = set_cookie {
@@ -2546,7 +2604,7 @@ mod tests {
                     final_url: url,
                     html: format!("<!doctype html><title>{title}</title>"),
                     headers: Vec::new(),
-                    events: Vec::new(),
+                    events,
                 }),
                 cookie_delta: worker_jar.delta_from_snapshots(&baseline),
             }))
@@ -2606,12 +2664,16 @@ mod tests {
                         let body = response
                             .recv_timeout(Duration::from_secs(10))
                             .expect("gated response watchdog");
-                        let response = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: source={}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                            cookie_value,
-                            body.len(),
+                        let response = if body.starts_with("HTTP/") {
                             body
-                        );
+                        } else {
+                            format!(
+                                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nSet-Cookie: source={}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                                cookie_value,
+                                body.len(),
+                                body
+                            )
+                        };
                         let _ = stream.write_all(response.as_bytes());
                         let _ = completed.send(());
                     }));
@@ -2650,6 +2712,68 @@ mod tests {
         fn join(self) {
             self.join.join().unwrap();
         }
+    }
+
+    fn redirect_response(location: &str) -> String {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    }
+
+    fn assert_navigation_cancelled(
+        events: &[BrowserEvent],
+        navigation_id: NavigationId,
+        reason: NavigationCancellationReason,
+    ) {
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationCancelled {
+                navigation_id: event_navigation_id,
+                reason: event_reason,
+                ..
+            } if *event_navigation_id == navigation_id && *event_reason == reason
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationPhaseChanged {
+                navigation_id: event_navigation_id,
+                phase: NavigationPhase::Cancelled,
+                ..
+            } if *event_navigation_id == navigation_id
+        )));
+    }
+
+    fn assert_no_terminal_success(events: &[BrowserEvent], navigation_id: NavigationId) {
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationCommitted { navigation_id: event_navigation_id, .. }
+                | BrowserEvent::NavigationFailed { navigation_id: event_navigation_id, .. }
+                | BrowserEvent::DomContentLoaded { navigation_id: event_navigation_id, .. }
+                | BrowserEvent::DocumentLoadCompleted { navigation_id: event_navigation_id, .. }
+                if *event_navigation_id == navigation_id
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationPhaseChanged {
+                navigation_id: event_navigation_id,
+                phase: NavigationPhase::Settled | NavigationPhase::Failed,
+                ..
+            } if *event_navigation_id == navigation_id
+        )));
+    }
+
+    fn phases_for(events: &[BrowserEvent], navigation_id: NavigationId) -> Vec<NavigationPhase> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                BrowserEvent::NavigationPhaseChanged {
+                    navigation_id: event_navigation_id,
+                    phase,
+                    ..
+                } if *event_navigation_id == navigation_id => Some(*phase),
+                _ => None,
+            })
+            .collect()
     }
 
     fn state(
@@ -2807,6 +2931,120 @@ mod tests {
     }
 
     #[test]
+    fn navigation_emits_ordered_phase_sequence() {
+        let config = test_config();
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, "https://same.test/a");
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+
+        assert_eq!(
+            phases_for(&events, navigation_id),
+            vec![
+                NavigationPhase::Intent,
+                NavigationPhase::Policy,
+                NavigationPhase::Request,
+                NavigationPhase::Response,
+                NavigationPhase::Commit,
+                NavigationPhase::Parse,
+                NavigationPhase::ScriptsAndSubresources,
+                NavigationPhase::DomContentLoaded,
+                NavigationPhase::Load,
+                NavigationPhase::Settled,
+            ]
+        );
+
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn redirect_navigation_emits_redirect_event_and_commits_final_url() {
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let redirect_url = server.url("/redirect");
+        let final_url = server.url("/final");
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &redirect_url);
+        let request_redirect = server.request();
+        assert_eq!(request_redirect.path, "/redirect");
+        request_redirect
+            .respond
+            .send(redirect_response(&final_url))
+            .unwrap();
+        request_redirect
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("redirect response watchdog");
+
+        let request_final = server.request();
+        assert_eq!(request_final.path, "/final");
+        request_final
+            .respond
+            .send("<!doctype html><title>Redirected</title><main>final</main>".to_owned())
+            .unwrap();
+        request_final
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("final response watchdog");
+
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        let state = state(&mut handle, context_id);
+        assert_eq!(state.url, final_url);
+        assert_eq!(state.title.as_deref(), Some("Redirected"));
+        assert_eq!(history(&mut handle, context_id).entries[0].url, final_url);
+
+        let redirect_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    BrowserEvent::NavigationRedirected {
+                        navigation_id: event_navigation_id,
+                        from_url,
+                        to_url,
+                        status: 302,
+                        ..
+                    } if *event_navigation_id == navigation_id
+                        && from_url == &redirect_url
+                        && to_url == &final_url
+                )
+            })
+            .expect("redirect event");
+        let response_index = phases_for(&events, navigation_id)
+            .iter()
+            .position(|phase| *phase == NavigationPhase::Response)
+            .expect("response phase");
+        let phase_event_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    BrowserEvent::NavigationPhaseChanged {
+                        navigation_id: event_navigation_id,
+                        phase: NavigationPhase::Response,
+                        ..
+                    } if *event_navigation_id == navigation_id
+                )
+            })
+            .expect("response phase event");
+        assert!(redirect_index < phase_event_index);
+        assert_eq!(response_index, 3);
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
     fn newer_navigation_wins_when_superseded_source_responds_late() {
         let server = GatedHttpServer::start(3);
         let mut config = test_config();
@@ -2908,8 +3146,185 @@ mod tests {
     }
 
     #[test]
-    fn stop_keeps_late_source_completion_from_committing_or_emitting_terminal_load_events() {
-        let server = GatedHttpServer::start(1);
+    fn reload_supersedes_active_navigation_and_rejects_late_completion() {
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/a");
+        let stable = state(&mut handle, context_id);
+        let stable_history = history(&mut handle, context_id);
+        drain_events(&mut handle);
+
+        let slow_navigation = dispatch_navigation(&mut handle, context_id, &server.url("/slow"));
+        let slow_request = server.request();
+        assert_eq!(slow_request.path, "/slow");
+        assert_eq!(
+            state(&mut handle, context_id).active_navigation_id,
+            Some(slow_navigation)
+        );
+
+        let reload_navigation = reload(&mut handle, context_id);
+        let mut events = wait_for_navigation(&mut handle, context_id, reload_navigation).unwrap();
+        events.extend(drain_events(&mut handle));
+        let reloaded = state(&mut handle, context_id);
+        assert_eq!(reloaded.url, "https://same.test/a");
+        assert_eq!(reloaded.title.as_deref(), Some("A"));
+        assert_eq!(reloaded.active_navigation_id, None);
+        assert_eq!(history(&mut handle, context_id), stable_history);
+
+        slow_request
+            .respond
+            .send("<!doctype html><title>Slow stale</title>".to_owned())
+            .unwrap();
+        slow_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("slow response watchdog");
+        inject_late_source_completion(
+            &handle,
+            context_id,
+            slow_navigation,
+            server.url("/slow"),
+            "Injected stale slow",
+            Some("source=slow"),
+        );
+        events.extend(drain_events(&mut handle));
+        let after_late = state(&mut handle, context_id);
+        assert_eq!(after_late.document_id, reloaded.document_id);
+        assert_eq!(after_late.title.as_deref(), Some("A"));
+        assert_eq!(history(&mut handle, context_id), stable_history);
+
+        let probe_navigation = dispatch_navigation(&mut handle, context_id, &server.url("/probe"));
+        let probe_request = server.request();
+        assert_eq!(probe_request.path, "/probe");
+        assert!(
+            !probe_request
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("source=slow")
+        );
+        probe_request
+            .respond
+            .send("<!doctype html><title>Probe</title>".to_owned())
+            .unwrap();
+        probe_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("probe response watchdog");
+        events.extend(wait_for_navigation(&mut handle, context_id, probe_navigation).unwrap());
+        assert_navigation_cancelled(
+            &events,
+            slow_navigation,
+            NavigationCancellationReason::Superseded,
+        );
+        assert_no_terminal_success(&events, slow_navigation);
+        assert_ne!(stable.document_id, reloaded.document_id);
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn history_traversal_supersedes_active_navigation_and_rejects_late_completion() {
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/a");
+        navigate(&mut handle, context_id, "https://same.test/b");
+        let before = state(&mut handle, context_id);
+        assert_eq!(before.history_length, 2);
+        assert_eq!(before.history_index, 1);
+        assert!(before.can_go_back);
+        drain_events(&mut handle);
+
+        let slow_navigation = dispatch_navigation(&mut handle, context_id, &server.url("/c"));
+        let slow_request = server.request();
+        assert_eq!(slow_request.path, "/c");
+        assert_eq!(
+            state(&mut handle, context_id).active_navigation_id,
+            Some(slow_navigation)
+        );
+
+        let history_navigation = traverse_history(&mut handle, context_id, -1)
+            .expect("history traversal should produce a document navigation");
+        let mut events = wait_for_navigation(&mut handle, context_id, history_navigation).unwrap();
+        events.extend(drain_events(&mut handle));
+        let after_traverse = state(&mut handle, context_id);
+        assert_eq!(after_traverse.url, "https://same.test/a");
+        assert_eq!(after_traverse.title.as_deref(), Some("A"));
+        assert_eq!(after_traverse.history_length, 2);
+        assert_eq!(after_traverse.history_index, 0);
+        assert!(after_traverse.can_go_forward);
+        let traversed_history = history(&mut handle, context_id);
+        assert_eq!(traversed_history.entries[0].url, "https://same.test/a");
+        assert_eq!(traversed_history.entries[1].url, "https://same.test/b");
+
+        slow_request
+            .respond
+            .send("<!doctype html><title>Stale C</title>".to_owned())
+            .unwrap();
+        slow_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("slow C response watchdog");
+        inject_late_source_completion(
+            &handle,
+            context_id,
+            slow_navigation,
+            server.url("/c"),
+            "Injected stale C",
+            Some("source=c"),
+        );
+        events.extend(drain_events(&mut handle));
+        let after_late = state(&mut handle, context_id);
+        assert_eq!(after_late.document_id, after_traverse.document_id);
+        assert_eq!(after_late.title.as_deref(), Some("A"));
+        assert_eq!(history(&mut handle, context_id), traversed_history);
+
+        let probe_navigation = dispatch_navigation(&mut handle, context_id, &server.url("/probe"));
+        let probe_request = server.request();
+        assert_eq!(probe_request.path, "/probe");
+        assert!(
+            !probe_request
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("source=c")
+        );
+        probe_request
+            .respond
+            .send("<!doctype html><title>Probe</title>".to_owned())
+            .unwrap();
+        probe_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("probe response watchdog");
+        events.extend(wait_for_navigation(&mut handle, context_id, probe_navigation).unwrap());
+        assert_navigation_cancelled(
+            &events,
+            slow_navigation,
+            NavigationCancellationReason::Superseded,
+        );
+        assert_no_terminal_success(&events, slow_navigation);
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn redirect_stop_rejects_late_redirect_completion() {
+        let server = GatedHttpServer::start(3);
         let mut config = test_config();
         server.configure(&mut config);
         let profile_path = config.profile_path.clone();
@@ -2917,6 +3332,112 @@ mod tests {
         let context_id = create(&mut handle);
         drain_events(&mut handle);
         let initial = state(&mut handle, context_id);
+        let initial_history = history(&mut handle, context_id);
+
+        let redirect_url = server.url("/redirect-stop");
+        let final_url = server.url("/redirect-final");
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &redirect_url);
+        let redirect_request = server.request();
+        assert_eq!(redirect_request.path, "/redirect-stop");
+        redirect_request
+            .respond
+            .send(redirect_response(&final_url))
+            .unwrap();
+        redirect_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("redirect-stop response watchdog");
+
+        let final_request = server.request();
+        assert_eq!(final_request.path, "/redirect-final");
+        assert_eq!(
+            state(&mut handle, context_id).active_navigation_id,
+            Some(navigation_id)
+        );
+        assert_eq!(
+            handle
+                .dispatch(BrowserCommand::Stop { context_id })
+                .unwrap(),
+            BrowserCommandResult::Accepted
+        );
+        let mut events = drain_events(&mut handle);
+
+        final_request
+            .respond
+            .send("<!doctype html><title>Too late final</title>".to_owned())
+            .unwrap();
+        final_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("late redirected final response watchdog");
+        inject_late_source_completion_with_events(
+            &handle,
+            context_id,
+            navigation_id,
+            final_url.clone(),
+            "Injected stale redirect",
+            Some("source=redirect-final"),
+            vec![NetworkEvent::Redirect {
+                from: redirect_url,
+                to: final_url,
+                status: 302,
+            }],
+        );
+        events.extend(drain_events(&mut handle));
+        let after_late = state(&mut handle, context_id);
+        assert_eq!(after_late.document_id, initial.document_id);
+        assert_eq!(after_late.url, initial.url);
+        assert_eq!(history(&mut handle, context_id), initial_history);
+
+        let probe_navigation = dispatch_navigation(&mut handle, context_id, &server.url("/probe"));
+        let probe_request = server.request();
+        assert_eq!(probe_request.path, "/probe");
+        assert!(
+            !probe_request
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("source=redirect-final")
+        );
+        probe_request
+            .respond
+            .send("<!doctype html><title>Probe</title>".to_owned())
+            .unwrap();
+        probe_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("probe response watchdog");
+        events.extend(wait_for_navigation(&mut handle, context_id, probe_navigation).unwrap());
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Stopped,
+        );
+        assert_no_terminal_success(&events, navigation_id);
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationRedirected {
+                navigation_id: event_navigation_id,
+                ..
+            } if *event_navigation_id == navigation_id
+        )));
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn stop_keeps_late_source_completion_from_committing_or_emitting_terminal_load_events() {
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+        let initial = state(&mut handle, context_id);
+        let initial_history = history(&mut handle, context_id);
 
         let navigation_id = dispatch_navigation(&mut handle, context_id, &server.url("/stopped"));
         let request = server.request();
@@ -2955,30 +3476,34 @@ mod tests {
         let after_late_response = state(&mut handle, context_id);
         events.extend(drain_events(&mut handle));
         assert_eq!(after_late_response.document_id, initial.document_id);
-        assert!(events.iter().any(|event| matches!(
-            event,
-            BrowserEvent::NavigationCancelled {
-                navigation_id: event_navigation_id,
-                reason: NavigationCancellationReason::Stopped,
-                ..
-            } if *event_navigation_id == navigation_id
-        )));
-        assert!(!events.iter().any(|event| matches!(
-            event,
-            BrowserEvent::NavigationCommitted { navigation_id: event_navigation_id, .. }
-                | BrowserEvent::NavigationFailed { navigation_id: event_navigation_id, .. }
-                | BrowserEvent::DomContentLoaded { navigation_id: event_navigation_id, .. }
-                | BrowserEvent::DocumentLoadCompleted { navigation_id: event_navigation_id, .. }
-                if *event_navigation_id == navigation_id
-        )));
-        assert!(!events.iter().any(|event| matches!(
-            event,
-            BrowserEvent::NavigationPhaseChanged {
-                navigation_id: event_navigation_id,
-                phase: NavigationPhase::Settled | NavigationPhase::Failed,
-                ..
-            } if *event_navigation_id == navigation_id
-        )));
+        assert_eq!(after_late_response.url, initial.url);
+        assert_eq!(history(&mut handle, context_id), initial_history);
+
+        let probe_navigation = dispatch_navigation(&mut handle, context_id, &server.url("/probe"));
+        let probe_request = server.request();
+        assert_eq!(probe_request.path, "/probe");
+        assert!(
+            !probe_request
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("source=stopped")
+        );
+        probe_request
+            .respond
+            .send("<!doctype html><title>Probe</title>".to_owned())
+            .unwrap();
+        probe_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("probe response watchdog");
+        events.extend(wait_for_navigation(&mut handle, context_id, probe_navigation).unwrap());
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Stopped,
+        );
+        assert_no_terminal_success(&events, navigation_id);
 
         server.join();
         drop(handle);

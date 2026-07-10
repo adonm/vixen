@@ -136,14 +136,16 @@ CDP/shell contexts prove independent globals/sessionStorage/history with intende
 profile sharing. The 2,015-check fixture manifest, GTK-free shell tests, and the
 external Playwright smoke remain green.
 
-The first A2 slice is also landed: dispatch acknowledges navigation before source
-completion; a bounded Tokio loader performs cancellable HTTP/file reads; each
-completion carries its context/navigation generation; current-generation cookie
-deltas merge at the core boundary; and deterministic navigate/navigate plus
-navigate/stop races prove late source results cannot commit, append history,
-overwrite cookies, or emit terminal success. Parser/runtime construction and
-post-commit script/resource work remain on the owner thread and are the next A2
-boundary.
+The first A2 slices are also landed: dispatch acknowledges navigation before
+source completion; a bounded Tokio loader performs cancellable HTTP/file reads;
+each completion carries its context/navigation generation; current-generation
+cookie deltas merge at the core boundary; successful navigations emit the ordered
+phase sequence; redirects surface typed request ids before response/commit; and
+deterministic navigate/navigate, navigate/stop, redirect/stop, reload/active-load,
+and history/active-load races prove late source results cannot commit, append
+history, overwrite cookies, or emit terminal success. Parser/runtime construction
+and post-commit script/resource work remain on the owner thread and are the next
+A2 boundary.
 
 ### A1. Engine-owned profile, browser, and browsing contexts
 
@@ -186,11 +188,13 @@ independent navigation history.
 history/reload, late network completion, and runtime reset; matching shell and
 CDP lifecycle traces; no stale commit after cancellation.
 
-**Current proof:** navigate/navigate and navigate/stop use gated transport plus
-forced late completions; shell/headless/WPT/CDP wait for matching typed terminal
+**Current proof:** navigate/navigate, navigate/stop, redirect/stop, reload during
+an active load, and history traversal during an active load use gated transport
+plus forced late completions; successful navigation phase order and redirect event
+ordering are asserted; shell/headless/WPT/CDP wait for matching typed terminal
 events; the external Playwright smoke covers navigation, history, reload, and
-`document.write`/`setContent`. Redirect/stop, history/reload races, parser/runtime
-cooperative cancellation, and asynchronous CDP event delivery remain.
+ordered opt-in lifecycle notifications plus `document.write`/`setContent`.
+Parser/runtime cooperative cancellation and asynchronous CDP event delivery remain.
 
 ### A3. Live document/runtime integration
 
@@ -384,8 +388,9 @@ After v1, prioritize these programs by measured site impact:
 
 ## Immediate execution order
 
-The first three convergence batches are complete. The source-loading part of the
-fourth is complete. The next coherent batches are:
+The first three convergence batches are complete. The source-loading and core
+race-proof parts of the fourth are complete, and the first measurement-only
+headless latency command exists. The next coherent batches are:
 
 1. Finish A2 across redirects, parser/runtime jobs, history/reload races, and
    asynchronous CDP lifecycle delivery; preserve exactly one terminal outcome.
@@ -395,8 +400,8 @@ fourth is complete. The next coherent batches are:
    broad rendering verticals, then widen layout by failing imported ref tests.
 4. Build the HTTP download lifecycle and shell/CDP events over profile-owned
    downloads.
-5. Establish measured real-site, Linux-host, performance, and size baselines that
-   gate beta work.
+5. Broaden the first headless latency measurement into real-site, Linux-host,
+   performance, memory, profile-growth, and size baselines that gate beta work.
 
 ## Working rule
 

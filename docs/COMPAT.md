@@ -171,11 +171,13 @@ metadata only, not expressions, request headers, form values, or page text.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,
-generation-checked, and directly cancellable; deterministic stop/supersede tests
-force late completions and prove no stale document/cookie commit. CDP currently
-waits synchronously for each matching terminal event, so active `Page.stopLoading`
-cannot yet race a `Page.navigate` on the same protocol connection. There is still
-no HTTP download manager or Playwright context-tracing archive implementation.
+generation-checked, and directly cancellable; deterministic stop/supersede,
+redirect/stop, reload, and history-traversal race tests force late completions and
+prove no stale document/history/cookie commit or terminal success event. CDP
+currently waits synchronously for each matching terminal event, so active
+`Page.stopLoading` cannot yet race a `Page.navigate` on the same protocol
+connection. There is still no HTTP download manager or Playwright context-tracing
+archive implementation.
 
 ---
 

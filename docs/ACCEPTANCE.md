@@ -177,6 +177,19 @@ and install-size method here. Then adopt explicit warning/failure regression
 thresholds against that baseline. A release is blocked if its measured artifacts
 exceed those accepted thresholds without a documented product tradeoff.
 
+## Performance baseline gates
+
+`just baseline-headless` builds the release `vixen-headless` binary and measures
+the startup + first navigation + `Runtime.evaluate` path against the committed
+`fixtures/dom/basic.html` fixture. The command reports the host, binary path,
+binary byte count, samples, and min/median/p95/max/mean latency. Like `size-fp`,
+it is measurement-only until a supported-machine baseline and regression policy
+are published here.
+
+Before beta, extend this section with representative startup, first navigation,
+style/layout/paint, memory, and profile-growth baselines. Do not turn the current
+single-fixture latency sample into a release blocker by itself.
+
 ---
 
 ## Phase gates summary

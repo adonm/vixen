@@ -262,6 +262,10 @@ size-fp: flatpak-build build-release
         printf '%s %s bytes\n' "$gui" "$gui_bytes"; \
         printf '%s %s bytes\n' "$headless" "$headless_bytes"
 
+# Measurement-only until docs/ACCEPTANCE.md publishes accepted regressions.
+baseline-headless: build-release
+    node scripts/headless-baseline.mjs --binary target/release/vixen-headless --fixture fixtures/dom/basic.html
+
 build-release:
     cargo build --release -p vixen-headless --bin vixen-headless
 

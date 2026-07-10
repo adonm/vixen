@@ -22,13 +22,14 @@ which layer today?”
 | `just gate-phase4` | Vixen layout-tree/line/fragment behavior and layout fixtures |
 | `just gate-phase5` | display-list/WebRender screenshot and visual fixture path |
 | `just gate-phase6` | engine host-family tests, WebIDL, headless runtime, and CDP runtime integration |
-| `just gate-alpha6-cdp` | external Playwright/CDP smoke over BrowserCore targets, including lifecycle, DOM/input, network, permissions, tracing, and stable errors |
-| `just test-browser-core` | ADR-017 production owner/thread/typed-generation proof with two independent contexts, shared profile localStorage, isolated runtime/sessionStorage/history, asynchronous source loading, stop/supersede late-completion rejection, bounded event lag, headless adapter coverage, and GTK-free multi-context shell routing |
+| `just gate-alpha6-cdp` | external Playwright/CDP smoke over BrowserCore targets, including ordered lifecycle, DOM/input, network, permissions, tracing, and stable errors |
+| `just test-browser-core` | ADR-017 production owner/thread/typed-generation proof with two independent contexts, shared profile localStorage, isolated runtime/sessionStorage/history, asynchronous source loading, ordered phases, redirect event ordering, stop/supersede/reload/history race late-completion rejection, bounded event lag, headless adapter coverage, and GTK-free multi-context shell routing |
 | `just compat-report` | current BrowserCore-backed committed fixture/profile counts and per-source/category output |
 | `just fuzz-security` | URL, CSP, cookie, and HTML parser fuzz targets at the configured run count |
 | `just audit` | `cargo audit` plus `cargo deny check` |
 | `just flatpak-build` | supported GNOME SDK/Flatpak GUI build path |
 | `just size-fp` | measured Flatpak GUI and release headless artifact sizes; measurement only until baselines become accepted budgets |
+| `just baseline-headless` | measured release headless startup + first-navigation + eval latency on a committed DOM fixture; measurement only until baselines become accepted budgets |
 
 ## Evidence rules
 
