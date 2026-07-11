@@ -165,6 +165,7 @@ impl Network {
                 headers: Vec::new(),
                 body: None,
             },
+            |_| {},
         )
         .await
     }
@@ -192,6 +193,7 @@ impl Network {
                 headers,
                 body: None,
             },
+            |_| {},
         )
         .await
     }
@@ -204,14 +206,35 @@ impl Network {
         request: TextRequest,
     ) -> Result<TextResponse, NetworkError> {
         validate_http_url(&request.url)?;
-        self.fetch(jar, request).await
+        self.fetch(jar, request, |_| {}).await
     }
 
-    async fn fetch(
+    /// Fetch a fully specified bounded-text request and synchronously report
+    /// each lifecycle event as it occurs. Events are also retained in the
+    /// successful [`TextResponse`]; progress already reported is not retracted
+    /// if a later redirect hop or body read fails.
+    pub async fn get_text_with_cookies_request_with_progress<F>(
         &mut self,
         jar: &mut CookieJar,
         request: TextRequest,
-    ) -> Result<TextResponse, NetworkError> {
+        on_progress: F,
+    ) -> Result<TextResponse, NetworkError>
+    where
+        F: FnMut(&NetworkEvent),
+    {
+        validate_http_url(&request.url)?;
+        self.fetch(jar, request, on_progress).await
+    }
+
+    async fn fetch<F>(
+        &mut self,
+        jar: &mut CookieJar,
+        request: TextRequest,
+        mut on_progress: F,
+    ) -> Result<TextResponse, NetworkError>
+    where
+        F: FnMut(&NetworkEvent),
+    {
         let TextRequest {
             url: start,
             cross_site,
@@ -229,10 +252,14 @@ impl Network {
 
         loop {
             visited.insert(current.to_string());
-            events.push(NetworkEvent::RequestStart {
-                url: current.to_string(),
-                method,
-            });
+            record_progress(
+                &mut events,
+                NetworkEvent::RequestStart {
+                    url: current.to_string(),
+                    method,
+                },
+                &mut on_progress,
+            );
 
             let cookie_header = jar.cookies_for(&current, cross_site, method);
             let mut req = self.client.request(method.into(), current.clone());
@@ -269,6 +296,26 @@ impl Network {
 
             let status = resp.status().as_u16();
 
+            if is_followable_redirect(status) && redirect_mode == RedirectMode::Manual {
+                record_progress(
+                    &mut events,
+                    NetworkEvent::Response {
+                        url: current.to_string(),
+                        status,
+                    },
+                    &mut on_progress,
+                );
+                return Ok(TextResponse {
+                    body: String::new(),
+                    headers: flatten_headers(resp.headers()),
+                    status,
+                    final_url: current.to_string(),
+                    set_cookie,
+                    redirects,
+                    events,
+                });
+            }
+
             if is_followable_redirect(status) && redirect_mode != RedirectMode::Manual {
                 if redirect_mode == RedirectMode::Error {
                     return Err(NetworkError::RedirectDisallowed {
@@ -301,15 +348,28 @@ impl Network {
                 // URL policy re-applied at every fetch boundary (redirects
                 // included).
                 validate_http_url(&next)?;
-                events.push(NetworkEvent::Redirect {
-                    from: current.to_string(),
-                    to: next.to_string(),
-                    status,
-                });
+                record_progress(
+                    &mut events,
+                    NetworkEvent::Redirect {
+                        from: current.to_string(),
+                        to: next.to_string(),
+                        status,
+                    },
+                    &mut on_progress,
+                );
                 redirects += 1;
                 current = next;
                 continue;
             }
+
+            record_progress(
+                &mut events,
+                NetworkEvent::Response {
+                    url: current.to_string(),
+                    status,
+                },
+                &mut on_progress,
+            );
 
             // Body-size guard: prefer Content-Length, then the actual bytes.
             if let Some(cl) = resp.content_length()
@@ -339,10 +399,6 @@ impl Network {
             // Content-Type `charset` parameter entirely, so non-UTF-8 response
             // bodies are silently mangled to U+FFFD.
             let body = String::from_utf8_lossy(&bytes).into_owned();
-            events.push(NetworkEvent::Response {
-                url: current.to_string(),
-                status,
-            });
 
             return Ok(TextResponse {
                 body,
@@ -355,6 +411,14 @@ impl Network {
             });
         }
     }
+}
+
+fn record_progress<F>(events: &mut Vec<NetworkEvent>, event: NetworkEvent, on_progress: &mut F)
+where
+    F: FnMut(&NetworkEvent),
+{
+    on_progress(&event);
+    events.push(event);
 }
 
 /// Lower-case + join multi-valued headers into one `, `-separated entry.
@@ -419,7 +483,11 @@ impl From<Method> for reqwest::Method {
 
 #[cfg(test)]
 mod tests {
+    use std::io::{Read, Write};
+
     use super::*;
+
+    const PROGRESS_TEST_HOST: &str = "network-progress-vixen.com";
 
     #[test]
     fn body_size_guard_is_pure() {
@@ -526,6 +594,203 @@ mod tests {
         // The reqwest+rustls client must construct (rustls-tls feature on).
         let net = Network::with_defaults().expect("client builds");
         assert_eq!(net.config().max_redirects, DEFAULT_MAX_REDIRECTS);
+    }
+
+    #[tokio::test]
+    async fn network_progress_callback_follows_fetch_order() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let start = format!("http://{PROGRESS_TEST_HOST}:{}/start", address.port());
+        let final_url = format!("http://{PROGRESS_TEST_HOST}:{}/final", address.port());
+        let server_final_url = final_url.clone();
+        let server = std::thread::spawn(move || {
+            let (mut redirect, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = redirect.read(&mut request).unwrap();
+            redirect
+                .write_all(
+                    format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {server_final_url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+
+            let (mut final_response, _) = listener.accept().unwrap();
+            let _ = final_response.read(&mut request).unwrap();
+            final_response
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok")
+                .unwrap();
+        });
+        let mut config = NetworkConfig::default();
+        config
+            .dns_overrides
+            .push((PROGRESS_TEST_HOST.to_owned(), vec![address]));
+        let mut network = Network::new(config).unwrap();
+        let mut jar = CookieJar::default();
+        let mut progress = Vec::new();
+
+        let response = network
+            .get_text_with_cookies_request_with_progress(
+                &mut jar,
+                TextRequest {
+                    url: Url::parse(&start).unwrap(),
+                    cross_site: false,
+                    method: Method::Get,
+                    redirect_mode: RedirectMode::Follow,
+                    headers: Vec::new(),
+                    body: None,
+                },
+                |event| progress.push(event.clone()),
+            )
+            .await
+            .unwrap();
+
+        let expected = vec![
+            NetworkEvent::RequestStart {
+                url: start,
+                method: Method::Get,
+            },
+            NetworkEvent::Redirect {
+                from: format!("http://{PROGRESS_TEST_HOST}:{}/start", address.port()),
+                to: final_url.clone(),
+                status: 302,
+            },
+            NetworkEvent::RequestStart {
+                url: final_url.clone(),
+                method: Method::Get,
+            },
+            NetworkEvent::Response {
+                url: final_url,
+                status: 200,
+            },
+        ];
+        assert_eq!(progress, expected);
+        assert_eq!(response.events, expected);
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn manual_redirect_does_not_buffer_or_reject_oversized_body() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = format!("http://{PROGRESS_TEST_HOST}:{}/manual", address.port());
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 302 Found\r\nLocation: /final\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+        });
+        let mut config = NetworkConfig {
+            max_body_bytes: 8,
+            ..NetworkConfig::default()
+        };
+        config
+            .dns_overrides
+            .push((PROGRESS_TEST_HOST.to_owned(), vec![address]));
+        let mut network = Network::new(config).unwrap();
+        let mut jar = CookieJar::default();
+
+        let response = network
+            .get_text_with_cookies_request(
+                &mut jar,
+                TextRequest {
+                    url: Url::parse(&url).unwrap(),
+                    cross_site: false,
+                    method: Method::Get,
+                    redirect_mode: RedirectMode::Manual,
+                    headers: Vec::new(),
+                    body: None,
+                },
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status, 302);
+        assert_eq!(response.header("location"), Some("/final"));
+        assert!(response.body.is_empty());
+        assert_eq!(
+            response.events,
+            vec![
+                NetworkEvent::RequestStart {
+                    url: url.clone(),
+                    method: Method::Get,
+                },
+                NetworkEvent::Response { url, status: 302 },
+            ]
+        );
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn network_progress_redirect_survives_later_transport_error() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let start = format!("http://{PROGRESS_TEST_HOST}:{}/start", address.port());
+        let broken = format!("http://{PROGRESS_TEST_HOST}:{}/broken", address.port());
+        let server_broken = broken.clone();
+        let server = std::thread::spawn(move || {
+            let (mut redirect, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = redirect.read(&mut request).unwrap();
+            redirect
+                .write_all(
+                    format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {server_broken}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+            let (mut broken_response, _) = listener.accept().unwrap();
+            let _ = broken_response.read(&mut request).unwrap();
+        });
+        let mut config = NetworkConfig::default();
+        config
+            .dns_overrides
+            .push((PROGRESS_TEST_HOST.to_owned(), vec![address]));
+        let mut network = Network::new(config).unwrap();
+        let mut jar = CookieJar::default();
+        let mut progress = Vec::new();
+
+        network
+            .get_text_with_cookies_request_with_progress(
+                &mut jar,
+                TextRequest {
+                    url: Url::parse(&start).unwrap(),
+                    cross_site: false,
+                    method: Method::Get,
+                    redirect_mode: RedirectMode::Follow,
+                    headers: Vec::new(),
+                    body: None,
+                },
+                |event| progress.push(event.clone()),
+            )
+            .await
+            .expect_err("the redirected response closes before headers");
+
+        assert_eq!(
+            progress,
+            vec![
+                NetworkEvent::RequestStart {
+                    url: start.clone(),
+                    method: Method::Get,
+                },
+                NetworkEvent::Redirect {
+                    from: start,
+                    to: broken.clone(),
+                    status: 302,
+                },
+                NetworkEvent::RequestStart {
+                    url: broken,
+                    method: Method::Get,
+                },
+            ]
+        );
+        server.join().unwrap();
     }
 
     #[test]

@@ -64,6 +64,23 @@ impl RuntimeNetworkState {
             *cache = PreflightCache::default();
         }
     }
+
+    pub(super) fn cookie_snapshots(&self) -> Result<Vec<CookieSnapshot>, String> {
+        self.cookies
+            .lock()
+            .map(|jar| jar.snapshots())
+            .map_err(|_| "cookie jar poisoned".to_owned())
+    }
+
+    pub(super) fn apply_cookie_delta(
+        &self,
+        delta: vixen_net::CookieJarDelta,
+    ) -> Result<(), String> {
+        self.cookies
+            .lock()
+            .map(|mut jar| jar.apply_delta(delta))
+            .map_err(|_| "cookie jar poisoned".to_owned())
+    }
 }
 
 type StorageEntries = Vec<(String, String)>;
@@ -1331,6 +1348,46 @@ fn load_cookie_jar(
     Ok(CookieJar::from_snapshots(snapshots))
 }
 
+pub(super) fn merge_profile_cookies(
+    store: &Store,
+    url: &Url,
+    jar: &mut CookieJar,
+    profile_baseline: &mut Vec<CookieSnapshot>,
+) -> Result<(), String> {
+    let worker_delta = jar.delta_from_snapshots(profile_baseline);
+    let origin_key = cookie_origin_key(url);
+    let mut snapshots = profile_baseline.clone();
+    snapshots.extend(
+        store
+            .cookies_for(&origin_key)
+            .map_err(|err| err.to_string())?
+            .into_iter()
+            .map(cookie_record_to_snapshot),
+    );
+    let mut merged = CookieJar::from_snapshots(snapshots);
+    *profile_baseline = merged.snapshots();
+    merged.apply_delta(worker_delta);
+    *jar = merged;
+    Ok(())
+}
+
+pub(super) fn persist_profile_cookie_delta(
+    store: &Store,
+    url: &Url,
+    delta: &vixen_net::CookieJarDelta,
+) -> Result<(), String> {
+    let origin_key = cookie_origin_key(url);
+    let origin_host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let snapshots = store
+        .cookies_for(&origin_key)
+        .map_err(|err| err.to_string())?
+        .into_iter()
+        .map(cookie_record_to_snapshot);
+    let mut jar = CookieJar::from_snapshots(snapshots);
+    jar.apply_delta(delta.clone());
+    persist_cookie_snapshots(store, &origin_key, &origin_host, &jar.snapshots())
+}
+
 fn persist_cookie_jar(
     shared: &Arc<Mutex<CookieJar>>,
     store: Option<&Store>,
@@ -1347,15 +1404,24 @@ fn persist_cookie_jar(
     let Some(store) = store else {
         return Ok(());
     };
+    persist_cookie_snapshots(store, origin_key, origin_host, &snapshots)
+}
+
+fn persist_cookie_snapshots(
+    store: &Store,
+    origin_key: &str,
+    origin_host: &str,
+    snapshots: &[CookieSnapshot],
+) -> Result<(), String> {
     store
         .clear_cookies(origin_key)
         .map_err(|err| err.to_string())?;
     for snapshot in snapshots
-        .into_iter()
+        .iter()
         .filter(|snapshot| cookie_snapshot_matches_host(snapshot, origin_host))
     {
         store
-            .put_cookie(origin_key, &cookie_snapshot_to_record(snapshot))
+            .put_cookie(origin_key, &cookie_snapshot_to_record(snapshot.clone()))
             .map_err(|err| err.to_string())?;
     }
     Ok(())

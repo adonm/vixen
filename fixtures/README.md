@@ -19,6 +19,8 @@ fixtures/
 ├── layout/        # layout tree, boxes, fragments, flex/grid/positioning
 ├── network/       # fetch/XHR and network-observable behavior
 ├── paint/         # display-list, visual-hash, and reference equivalence
+├── performance/   # hermetic scenario descriptors for measurement controls
+├── realworld/     # controlled site-shaped local controls, not compatibility claims
 ├── security/      # policy and fail-closed browser behavior
 └── wpt-profiles/  # descriptors for pinned external WPT checkout runs
 ```
@@ -31,6 +33,8 @@ fixtures/
   stay in an ignored pinned checkout and are selected by `wpt-profiles/` JSON.
 - A real-site screenshot is triage, not a regression test. Reduce failures here
   or into a pinned external WPT profile when practical.
+- `realworld/` pages are deliberately site-shaped controlled controls. They do
+  not represent live external sites or prove general external-site compatibility.
 - New behavior uses the production/shared engine path. Do not add a harness-only
   parser, DOM, layout, network, or runtime semantic.
 - Fixture checks in one manifest entry share one BrowserCore context/runtime;

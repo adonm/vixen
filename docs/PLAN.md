@@ -1777,10 +1777,10 @@ Final tock before v1.0.
    needed.
 2. Dead-code removal pass: `cargo machete`, fix every clippy warning,
    audit `#[allow(dead_code)]` annotations.
-3. Performance baselines: establish criterion baselines for
-   `benches/{parse,style,layout,render}` as each lands (Phase 3+).
-   Future releases gate on no > 10 % regression vs the most recent
-   release.
+3. Performance baselines: use the dependency-light process suite in
+   `docs/BASELINES.md`, and add focused `benches/{parse,style,layout,render}` as
+   production subsystem paths become isolatable. Adopt regression gates only
+   after representative reports and a comparison policy are accepted.
 4. Binary size measurement: `just size-fp`. Confirm targets per
    `docs/ACCEPTANCE.md`.
 5. WPT target profile from `docs/COMPAT.md` is green. Migrate remaining
@@ -1842,9 +1842,11 @@ directory contains reference renderings. Each visual WPT fixture
 compares against the baseline with a perceptual hash and 1 % pixel-diff
 tolerance. Failures dump a side-by-side diff to `target/reftest-diff/`.
 
-**Performance regression.** `benches/{parse,style,layout,render}`
-criterion benches run on every release. Gate: no > 10 % regression vs
-previous release.
+**Performance regression.** The current Node-built-in process suite measures
+hermetic headless paths, Linux process memory, profile growth, and artifacts.
+Focused `benches/{parse,style,layout,render}` remain future work. There is no
+accepted Criterion baseline or 10% release gate; thresholds require the reviewed
+report policy in `docs/BASELINES.md` and `docs/ACCEPTANCE.md`.
 
 ---
 

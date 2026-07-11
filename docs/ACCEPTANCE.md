@@ -167,10 +167,13 @@ drop the flag.
 
 ## Binary size gates
 
-`just size-fp` builds and measures the real Flatpak GUI artifact and the stripped
-release headless binary. The active `deno_core`/V8 + GTK + WebRender dependency
-graph does not yet have an accepted reproducible baseline, so the command is
-measurement-only rather than enforcing invented limits.
+`just size-fp` builds and reports the exported Flatpak `/app` payload plus the
+stripped release headless binary through the structured artifact-size script.
+`just size-headless` works without Flatpak. Reports include logical and allocated
+bytes, SHA-256, file count, and hardlink-deduplicated accounting. The separately
+supplied GNOME runtime is explicitly excluded. The active `deno_core`/V8 + GTK +
+WebRender dependency graph does not yet have an accepted reproducible baseline,
+so these commands are measurement-only rather than enforcing invented limits.
 
 Before beta, publish the environment, artifact paths, GUI/headless byte counts,
 and install-size method here. Then adopt explicit warning/failure regression
@@ -179,16 +182,21 @@ exceed those accepted thresholds without a documented product tradeoff.
 
 ## Performance baseline gates
 
-`just baseline-headless` builds the release `vixen-headless` binary and measures
-the startup + first navigation + `Runtime.evaluate` path against the committed
-`fixtures/dom/basic.html` fixture. The command reports the host, binary path,
-binary byte count, samples, and min/median/p95/max/mean latency. Like `size-fp`,
-it is measurement-only until a supported-machine baseline and regression policy
-are published here.
+`just baseline-headless` measures separate committed startup/version,
+navigation/runtime, layout, paint/display-list, and screenshot controls. It
+reports wall-time and best-effort Linux process-memory samples with artifact,
+git, toolchain, host, and renderer fingerprints. `just baseline-profile-growth`
+measures an opaque temporary profile after deterministic repeated and unique
+visits and verifies localStorage after reopening it. `just baseline-beta` runs
+those hermetic controls plus headless artifact sizing.
 
-Before beta, extend this section with representative startup, first navigation,
-style/layout/paint, memory, and profile-growth baselines. Do not turn the current
-single-fixture latency sample into a release blocker by itself.
+This completes the local latency, memory, profile-growth, headless, and artifact-
+size measurement foundation. All values remain measurement-only until the
+accepted-report process in [`BASELINES.md`](BASELINES.md) produces reviewed host
+baselines and explicit policies here. Real external-site measurements, the
+GUI/Flatpak host matrix, frame time, JS heap, and transfer throughput remain
+unmeasured; do not turn local controls into complete-site or release-budget
+claims.
 
 ---
 

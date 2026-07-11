@@ -73,18 +73,18 @@ The user-facing rank is:
 
 ## Design lessons now baked in
 
-Recent work proved that shared fetch/storage/runtime pieces are valuable, but it
-also exposed a larger risk: shell and headless/CDP still assemble those pieces
-with separate lifecycle state. The following lessons are now requirements:
+Recent work proved that shared fetch/storage/runtime pieces are valuable and that
+component sharing alone is insufficient. BrowserCore now gives shell, headless,
+CDP, and WPT one engine-owned lifecycle. The following lessons are requirements:
 
 1. **One browser state graph.** Profile → browser → browsing context → document
-   is the ownership hierarchy. Build or choose that owner, then expose it to JS,
-   CDP, WPT, GUI, and headless. Parallel navigation, history, runtime, permission,
-   or profile coordinators are temporary migration debt.
+   is the ownership hierarchy. BrowserCore is that owner and exposes it to JS,
+   CDP, WPT, GUI, and headless. Parallel frontend navigation, history, runtime,
+   permission, or profile coordinators are forbidden regressions.
 2. **A component seam is not lifecycle integration.** Sharing `Page`, `Network`,
    or `JsRuntime` types is insufficient if frontends decide independently when to
-   create, commit, cancel, persist, or destroy them. Alpha requires a production
-   engine-owned lifecycle.
+   create, commit, cancel, persist, or destroy them. Those decisions remain in
+   the production engine-owned lifecycle.
 3. **Asynchrony needs identity.** Context, navigation, document, request, runtime,
    and download work carries stable ids/generations. Cancellation invalidates the
    generation, and late work cannot mutate current state or emit success.

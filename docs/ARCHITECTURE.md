@@ -81,7 +81,7 @@ Rules:
 
 `just gate-architecture` now enforces these frontend boundaries in addition to
 the stable leaf-crate rules. Remaining migration debt is inside the document
-implementation: compatibility projections and synchronous parser/script work
+implementation: compatibility projections and synchronous runtime/resource work
 must converge on the live document lifecycle.
 
 The committed/external WPT adapter is no longer an exception: it creates
@@ -99,9 +99,12 @@ adapter-owned presentation work.
 
 CDP maps every target to a BrowserCore context, keeps only bounded protocol
 presentation/session/remote-handle state, and retains events by target while
-waiting. The GTK shell uses the same context/history/paint and profile-session
-commands through one app-level worker. Host-runnable multi-context tests cover
-both adapters; the Flatpak build remains the supported GTK SDK proof.
+waiting. Its socket loop polls BrowserCore events while `Page.navigate` or
+`Page.reload` is pending, so the same connection can dispatch `Page.stopLoading`
+without creating a second event consumer. The GTK shell uses the same context/
+history/paint and profile-session commands through one app-level worker.
+Host-runnable multi-context tests cover both adapters; the Flatpak build remains
+the supported GTK SDK proof.
 
 ## Authoritative ownership model (target)
 
@@ -174,9 +177,34 @@ owns only sendable network/input data and an isolated cookie snapshot; completio
 returns a typed context/navigation message and a cookie delta. Stop, supersede,
 context close, and shutdown abort the task and invalidate its generation. The
 owner checks the generation before applying cookies, parsing, writing profile
-history, replacing the document/runtime, or emitting success. Parsing, runtime
-construction, and page-script/resource execution are still synchronous owner-
-thread work and need later cooperative cancellation/checkpoints.
+history, replacing the document/runtime, or emitting success. HTML parsing runs
+as bounded owner-thread quanta, checks commands between quanta, and drops stale
+parser state after stop or supersede. Runtime construction and page-script/
+resource execution remain owner-thread work. Configured and parser-discovered
+scripts advance one item per generation-checked quantum, followed by separate
+DOMContentLoaded, load, and settle quanta. Individual V8 execution, promise
+pumping, microtask checkpoints, and runtime-effect drains share a five-second
+production watchdog. Timeout terminates V8, unwinds the job, cancels the
+termination state, and joins the exact watchdog before another job can start, so
+a late timeout cannot poison or terminate the next evaluation. This bounds pure
+V8/promise work but does not yet let a queued stop command interrupt it early;
+synchronous native host calls and non-script discovered resources still need
+sendable, generation-cancellable worker paths.
+
+Parser-discovered external classic scripts are the first post-commit resource on
+that worker model. The owner resolves the URL and current script policy, then
+sends only network/profile-cookie data to the existing bounded Tokio runtime.
+Manual redirect handling validates URL policy, script CSP, and active mixed-
+content policy before every hop and does not buffer redirect bodies. Completion
+carries context, navigation, document, runtime, and resource request ids plus an
+isolated cookie delta. The owner rechecks every id and final HTTP status/`nosniff`
+before exposing source or resuming script work. Accepted cookie deltas apply to
+the core, active runtime, and each current profile-store origin partition; delta-
+against-current persistence preserves unrelated writes from other contexts and
+makes accepted cookies visible after profile reopen. Stop, supersede, close, and
+shutdown cancel the task and emit one bounded request/failure sequence; late
+completions are inert. File documents and file scripts share one async reader that
+checks the configured body limit both before allocation and while reading.
 
 ADR-010's Relm4 component model remains useful, but its one-engine-worker-per-tab
 ownership is superseded by ADR-017. The shell should have one browser adapter (or
@@ -206,6 +234,14 @@ whose concepts are:
 Every command and event names the relevant context and generation. Ordering is
 defined on the engine thread; adapters may translate but not reorder lifecycle
 within a context. Stable diagnostics and protocol errors are product contracts.
+Evaluation and input results include the exact ordered cross-document navigation
+ids they created. CDP stores those ids in per-request continuations and uses one
+production event pump to settle page, target-creation, history, runtime, and input
+requests while the socket remains readable. Earlier ids from one command are
+consumed as superseded; disconnected or timed-out requests retain claimed
+tombstones until their late terminal outcome can no longer be misattributed.
+Configured initial-URL startup remains a pre-connect readiness barrier rather than
+a concurrent event consumer.
 
 Do not add a generic engine-selection abstraction. Vixen still has one engine
 and one JS runtime. The seam isolates product frontends and thread ownership, not
@@ -232,14 +268,23 @@ frontend/page intent
 
 Before commit, failure normally preserves the current document. After commit,
 failure belongs to the new document/error-page lifecycle. Redirects keep one
-navigation lineage but distinct request ids. Same-document history changes keep
-the document id and update URL/history/scroll state through the same controller.
+navigation lineage but distinct request ids. The bounded network worker reports
+each redirect to `BrowserCore` as it occurs; the core generation-checks it,
+advances the active request id, and emits it before final response completion.
+Request-start and final-response progress map to the existing navigation phases
+rather than creating duplicate lifecycle events. Same-document history changes
+keep the document id and update URL/history/scroll state through the same
+controller.
 
 Implemented `stop()` invalidates the active generation and aborts source
 transport/body reads. Forced late completions are rejected before cookie,
-profile, history, document, runtime, or event mutation. The target extends the
-same cancellation through parser/resource/runtime jobs and pending lifecycle
-work; those owner-thread phases are not yet cooperatively interruptible.
+profile, history, document, runtime, or event mutation. HTML parsing is also
+generation scoped and cooperatively interruptible between bounded source quanta;
+stop, reload, and history-traversal parser races prove stale work cannot commit.
+Configured/author scripts and pending lifecycle stages are generation-scoped
+quanta as well: stop/supersede suppresses unstarted items and later lifecycle
+success. The target still extends cancellation inside individual runtime and
+resource jobs.
 
 ## Document, runtime, and Web APIs
 
@@ -259,10 +304,10 @@ JS uses `deno_core` directly:
   stale handles;
 - parser scripts, modules, tasks, and microtasks join the document lifecycle.
 
-`Page::evaluate_dom_expression` and snapshot host objects are compatibility
-bridges. Do not widen them. Move supported behavior to the live DOM/runtime and
-delete each replaced projection so there is one answer for GUI, script, CDP, and
-WPT.
+The obsolete `Page` string-expression and headless classifier shims are deleted;
+all evaluation adapters use `BrowserCore`/`JsRuntime`. Runtime/document snapshots
+remain transitional, so this cleanup does not establish live DOM snapshot
+convergence.
 
 API surface alone is not support. Inert media/canvas/web-component objects may
 help automation probes, but `COMPAT.md` must classify them as shape-only until

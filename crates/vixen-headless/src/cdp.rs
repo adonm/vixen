@@ -10,11 +10,11 @@
 //! - `Runtime.enable`, `Runtime.evaluate`, `Runtime.awaitPromise`, `Runtime.addBinding`, `Runtime.consoleAPICalled`
 //! - `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`
 //!
-//! Architecture: the [`CdpDispatcher`] owns the per-connection state and is
-//! pure with respect to networking — every method is a synchronous
-//! `handle(method, params) -> Response`. [`serve`] wraps it in the WebSocket
-//! accept loop; tests drive the dispatcher directly to keep the test surface
-//! tight (no sockets in unit tests).
+//! Architecture: [`CdpState`] owns protocol presentation state while BrowserCore
+//! owns browser state. Direct dispatcher calls remain synchronous; the WebSocket
+//! loop polls BrowserCore while navigation-producing requests are pending so the
+//! same connection can stop them. Most tests drive the dispatcher directly, with a
+//! focused real-socket race test for asynchronous delivery.
 //!
 //! Phase 8 covers the contract surface; full DOM/inspector backing comes
 //! with the cascade (Phase 3 step 3) and host hooks (Phase 6).
@@ -24,6 +24,7 @@
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -35,8 +36,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio_tungstenite::tungstenite::Message;
 use vixen_api::{
     BrowserCommand, BrowserCommandResult, BrowserError, BrowserEvent, BrowsingContextConfig,
-    BrowsingContextId, BrowsingContextState, DocumentTextKind, KeyEventData, MouseEventData,
-    NavigationId, NavigationPhase, RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent,
+    BrowsingContextId, BrowsingContextState, CrossDocumentNavigationKind, DocumentId,
+    DocumentTextKind, FrameId, KeyEventData, MouseEventData, NavigationActionOutcome, NavigationId,
+    NavigationPhase, RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent,
     RuntimeConsoleValue, RuntimeContextId, RuntimeDialogEvent, RuntimeEffects, RuntimeNetworkEvent,
     RuntimePermissionGrant, ScriptValue,
 };
@@ -45,13 +47,17 @@ use vixen_engine::engine_error::codes;
 use vixen_engine::headers::{validate_header_name, validate_header_value};
 use vixen_engine::script::JsRuntime;
 
+use crate::browser_adapter::BrowserProfile;
+
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
 const DEFAULT_CAPTURE_VIEWPORT: (u32, u32) = (800, 600);
 const CDP_DOCUMENT_NODE_ID: usize = 1_000_000_000;
 const MAX_REMOTE_HANDLES: usize = 1_024;
 const MAX_PENDING_CORE_NAVIGATIONS: usize = 1_024;
+const MAX_PENDING_SOCKET_NAVIGATIONS: usize = 64;
 const NAVIGATION_WAIT_TIMEOUT: Duration = Duration::from_secs(35);
+const CORE_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
 /// CDP server entry point. Binds `127.0.0.1:{port}` and serves the
 /// WebSocket CDP protocol until the process is killed.
@@ -66,9 +72,19 @@ pub async fn serve(port: u16) -> std::io::Result<()> {
 /// through the same headless trust boundary as CLI page actions before clients
 /// connect, so early `Runtime.evaluate` DOM probes see the requested page.
 pub async fn serve_with_initial_url(port: u16, initial_url: Option<String>) -> std::io::Result<()> {
+    serve_with_initial_url_and_profile(port, initial_url, None).await
+}
+
+/// CDP server entry point with an optional persistent BrowserCore profile root.
+pub async fn serve_with_initial_url_and_profile(
+    port: u16,
+    initial_url: Option<String>,
+    profile_dir: Option<PathBuf>,
+) -> std::io::Result<()> {
     let addr: SocketAddr = ([127, 0, 0, 1], port).into();
     let listener = TcpListener::bind(addr).await?;
-    let mut initial_state = CdpState::new().map_err(std::io::Error::other)?;
+    let mut initial_state =
+        CdpState::new_with_profile(profile_dir.as_deref()).map_err(std::io::Error::other)?;
     if let Some(url) = initial_url
         && let Err(e) = initial_state.seed_initial_target(url)
     {
@@ -97,28 +113,94 @@ async fn handle_connection(
 ) -> Result<(), BoxError> {
     let ws = tokio_tungstenite::accept_async(stream).await?;
     let (mut write, mut read) = ws.split();
+    let mut pending_operations = VecDeque::new();
+    let mut event_poll = tokio::time::interval(CORE_EVENT_POLL_INTERVAL);
+    event_poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
-    while let Some(msg) = read.next().await {
-        let msg = msg?;
-        if msg.is_text() || msg.is_binary() {
-            let text = msg.into_text().unwrap_or_default();
-            // Borrow the state synchronously (no await while borrowed).
-            let resp = state.borrow_mut().handle_text_sync(&text);
-            for line in resp {
-                write.send(Message::text(line)).await?;
+    let result = async {
+        loop {
+            tokio::select! {
+                message = read.next() => {
+                    let Some(message) = message else {
+                        break;
+                    };
+                    let message = message?;
+                    if message.is_text() || message.is_binary() {
+                        let text = message.into_text().unwrap_or_default();
+                        let parsed = parse_cdp_request(&text);
+                        match parsed {
+                            Ok(request) if is_async_navigation_method(&request.method) => {
+                                let started = Instant::now();
+                                let result = state.borrow_mut().start_socket_operation_with_capacity(
+                                    &request,
+                                    pending_operations.len() >= MAX_PENDING_SOCKET_NAVIGATIONS,
+                                );
+                                match result {
+                                    Ok(Some(operation)) => pending_operations.push_back(PendingCdpOperation {
+                                        request,
+                                        started,
+                                        deadline: Instant::now() + NAVIGATION_WAIT_TIMEOUT,
+                                        operation,
+                                    }),
+                                    Ok(None) => {}
+                                    Err(outcome) => {
+                                        let lines = state
+                                            .borrow_mut()
+                                            .render_dispatch(&request, started, outcome);
+                                        for line in lines {
+                                            write.send(Message::text(line)).await?;
+                                        }
+                                    }
+                                }
+                            }
+                            Ok(request) => {
+                                let started = Instant::now();
+                                let outcome = state.borrow_mut().dispatch(&request);
+                                let lines = state
+                                    .borrow_mut()
+                                    .render_dispatch(&request, started, outcome);
+                                for line in lines {
+                                    write.send(Message::text(line)).await?;
+                                }
+                            }
+                            Err(line) => write.send(Message::text(line)).await?,
+                        }
+                    } else if message.is_close() {
+                        break;
+                    }
+                }
+                _ = event_poll.tick(), if !pending_operations.is_empty() => {}
             }
-        } else if msg.is_close() {
-            break;
+
+            let completed = state
+                .borrow_mut()
+                .poll_socket_operations(&mut pending_operations);
+            for lines in completed {
+                for line in lines {
+                    write.send(Message::text(line)).await?;
+                }
+            }
         }
+        Ok::<(), BoxError>(())
     }
-    Ok(())
+    .await;
+
+    let mut state = state.borrow_mut();
+    let _ = state.pump_core_events();
+    for mut pending in pending_operations {
+        let _ = state.adopt_active_socket_successor(&mut pending.operation);
+        state.cancel_and_consume_socket_operation(&pending.operation);
+    }
+    let _ = state.pump_core_events();
+    state.discard_pending_runtime_effects();
+    result
 }
 
 /// Protocol presentation state. BrowserCore exclusively owns pages, runtimes,
 /// histories, loading, and typed document/runtime generations.
 pub struct CdpState {
     browser: EngineBrowserHandle,
-    _profile: tempfile::TempDir,
+    _profile: BrowserProfile,
     next_session_id: u64,
     targets: Vec<Target>,
     attached_sessions: Vec<TargetSession>,
@@ -126,6 +208,8 @@ pub struct CdpState {
     active_presentation_context: Option<BrowsingContextId>,
     context_presentations: HashMap<BrowsingContextId, ContextPresentation>,
     pending_core_navigations: HashMap<NavigationId, PendingCoreNavigation>,
+    command_navigation_actions: Vec<NavigationActionOutcome>,
+    defer_navigation_notifications: bool,
     pending_effects: VecDeque<PendingRuntimeEffects>,
     runtime_enabled: bool,
     network_enabled: bool,
@@ -146,7 +230,6 @@ pub struct CdpState {
     new_document_scripts: Vec<NewDocumentScript>,
     runtime_bindings: Vec<String>,
     isolated_world_name: Option<String>,
-    pending_content_loader_id: Option<u64>,
     download_behavior: DownloadBehavior,
     permission_grants: Vec<PermissionGrant>,
     tracing: TraceState,
@@ -209,7 +292,6 @@ struct ContextPresentation {
     new_document_scripts: Vec<NewDocumentScript>,
     runtime_bindings: Vec<String>,
     isolated_world_name: Option<String>,
-    pending_content_loader_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -226,14 +308,61 @@ struct RemoteHandle {
 
 #[derive(Clone)]
 struct PendingRuntimeEffects {
+    context_id: BrowsingContextId,
+    frame_id: FrameId,
+    document_id: DocumentId,
     runtime_context_id: RuntimeContextId,
+    url: String,
     effects: RuntimeEffects,
 }
 
 struct PendingCoreNavigation {
     context_id: BrowsingContextId,
+    predecessor_navigation_id: Option<NavigationId>,
+    kind: CrossDocumentNavigationKind,
     committed: bool,
     terminal: Option<Result<(), String>>,
+    wire_claimed: bool,
+    abandoned: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum PendingPageMethod {
+    Navigate,
+    Reload,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StartedPageNavigation {
+    method: PendingPageMethod,
+    context_id: BrowsingContextId,
+    navigation_id: NavigationId,
+}
+
+struct StartedHistoryTraversal {
+    context_id: BrowsingContextId,
+    navigation_id: Option<NavigationId>,
+    before: BrowsingContextState,
+}
+
+struct PendingCdpOperation {
+    request: CdpRequest,
+    started: Instant,
+    deadline: Instant,
+    operation: StartedSocketOperation,
+}
+
+struct StartedSocketOperation {
+    context_id: BrowsingContextId,
+    navigation_actions: Vec<NavigationActionOutcome>,
+    completion: SocketCompletion,
+}
+
+enum SocketCompletion {
+    Page(StartedPageNavigation),
+    TargetCreate,
+    History { before: BrowsingContextState },
+    Dispatch(CdpDispatch),
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -265,6 +394,8 @@ struct RuntimeContextNotification<'a> {
     is_default: bool,
     context_type: &'a str,
     frame_id: &'a str,
+    origin: &'a str,
+    loader_id: u64,
     session_id: Option<&'a str>,
 }
 
@@ -300,17 +431,22 @@ enum MouseButton {
 
 impl CdpState {
     pub fn new() -> Result<Self, String> {
-        let profile = tempfile::Builder::new()
-            .prefix("vixen-cdp-")
-            .tempdir()
-            .map_err(|error| format!("create CDP profile: {error}"))?;
-        let config = BrowserConfig::new(profile.path().join("profile.redb"));
+        Self::new_with_profile(None)
+    }
+
+    pub fn with_profile_dir(profile_dir: &Path) -> Result<Self, String> {
+        Self::new_with_profile(Some(profile_dir))
+    }
+
+    fn new_with_profile(profile_dir: Option<&Path>) -> Result<Self, String> {
+        let profile = BrowserProfile::open(profile_dir, "vixen-cdp-", "CDP")?;
+        let config = BrowserConfig::new(profile.database_path());
         Self::with_config_and_profile(config, profile)
     }
 
     fn with_config_and_profile(
         config: BrowserConfig,
-        profile: tempfile::TempDir,
+        profile: BrowserProfile,
     ) -> Result<Self, String> {
         let browser = spawn_browser(config).map_err(|error| error.to_string())?;
         let mut state = Self {
@@ -323,6 +459,8 @@ impl CdpState {
             active_presentation_context: None,
             context_presentations: HashMap::new(),
             pending_core_navigations: HashMap::new(),
+            command_navigation_actions: Vec::new(),
+            defer_navigation_notifications: false,
             pending_effects: VecDeque::new(),
             runtime_enabled: false,
             network_enabled: false,
@@ -343,7 +481,6 @@ impl CdpState {
             new_document_scripts: Vec::new(),
             runtime_bindings: Vec::new(),
             isolated_world_name: None,
-            pending_content_loader_id: None,
             download_behavior: DownloadBehavior::default(),
             permission_grants: Vec::new(),
             tracing: TraceState::default(),
@@ -358,35 +495,32 @@ impl CdpState {
     /// is borrowed). Returns outgoing lines: exactly one response followed by
     /// zero or more notifications caused by that response.
     pub fn handle_text_sync(&mut self, raw: &str) -> Vec<String> {
-        let value: Value = match serde_json::from_str(raw) {
-            Ok(value) => value,
-            Err(e) => {
-                return vec![error_response(None, CdpError::parse(e.to_string()))];
-            }
-        };
-        let req: CdpRequest = match serde_json::from_value(value) {
+        let req = match parse_cdp_request(raw) {
             Ok(request) => request,
-            Err(error) => {
-                return vec![error_response(
-                    None,
-                    CdpError::new(-32600, error.to_string()),
-                )];
-            }
+            Err(line) => return vec![line],
         };
-        let id = req.id;
         let started = Instant::now();
         let outcome = self.dispatch(&req);
+        self.render_dispatch(&req, started, outcome)
+    }
+
+    fn render_dispatch(
+        &mut self,
+        req: &CdpRequest,
+        started: Instant,
+        outcome: CdpDispatch,
+    ) -> Vec<String> {
         let succeeded = outcome.response.is_ok();
         self.record_trace_event(&req.method, req.session_id.as_deref(), started, succeeded);
         let resp = match outcome.response {
             Ok(result) => CdpResponse {
-                id,
+                id: req.id,
                 session_id: req.session_id.clone(),
                 result: Some(result),
                 error: None,
             },
             Err(error) => CdpResponse {
-                id,
+                id: req.id,
                 session_id: req.session_id.clone(),
                 result: None,
                 error: Some(error),
@@ -399,7 +533,7 @@ impl CdpState {
         match serde_json::to_string(&resp) {
             Ok(s) => out.push(s),
             Err(e) => out.push(error_response(
-                Some(id),
+                Some(req.id),
                 CdpError::new(-32603, e.to_string()),
             )),
         }
@@ -409,25 +543,8 @@ impl CdpState {
 
     /// Pure dispatch on the method name.
     fn dispatch(&mut self, req: &CdpRequest) -> CdpDispatch {
-        if req
-            .session_id
-            .as_deref()
-            .is_some_and(|session_id| !self.is_known_session(session_id))
-        {
-            return CdpDispatch::error(
-                -32001,
-                format!(
-                    "{}: unknown or detached session `{}`",
-                    req.method,
-                    req.session_id.as_deref().unwrap_or_default()
-                ),
-            );
-        }
-        self.dispatch_context = self
-            .target_for_session(req.session_id.as_deref())
-            .map(|target| target.context_id);
-        if let Some(context_id) = self.dispatch_context {
-            self.load_presentation(context_id);
+        if let Err(outcome) = self.prepare_dispatch(req) {
+            return outcome;
         }
         let outcome = match req.method.as_str() {
             "Browser.getVersion" => CdpDispatch::ok(self.browser_get_version()),
@@ -551,6 +668,397 @@ impl CdpState {
         outcome
     }
 
+    fn prepare_dispatch(&mut self, req: &CdpRequest) -> Result<(), CdpDispatch> {
+        self.command_navigation_actions.clear();
+        if req
+            .session_id
+            .as_deref()
+            .is_some_and(|session_id| !self.is_known_session(session_id))
+        {
+            return Err(CdpDispatch::error(
+                -32001,
+                format!(
+                    "{}: unknown or detached session `{}`",
+                    req.method,
+                    req.session_id.as_deref().unwrap_or_default()
+                ),
+            ));
+        }
+        self.dispatch_context = self
+            .target_for_session(req.session_id.as_deref())
+            .map(|target| target.context_id);
+        if let Some(context_id) = self.dispatch_context {
+            self.load_presentation(context_id);
+        }
+        Ok(())
+    }
+
+    fn start_socket_operation(
+        &mut self,
+        req: &CdpRequest,
+    ) -> Result<Option<StartedSocketOperation>, CdpDispatch> {
+        let operation = match req.method.as_str() {
+            "Page.navigate" | "Page.reload" => {
+                self.prepare_dispatch(req)?;
+                let navigation = if req.method == "Page.navigate" {
+                    self.start_page_navigate(req)?
+                } else {
+                    self.start_page_reload(req)?
+                };
+                StartedSocketOperation {
+                    context_id: navigation.context_id,
+                    navigation_actions: vec![NavigationActionOutcome::CrossDocument {
+                        navigation_id: navigation.navigation_id,
+                        kind: CrossDocumentNavigationKind::Regular,
+                    }],
+                    completion: SocketCompletion::Page(navigation),
+                }
+            }
+            "Target.createTarget" => {
+                self.prepare_dispatch(req)?;
+                let (context_id, navigation_id) = self.start_target_create(req)?;
+                let Some(navigation_id) = navigation_id else {
+                    let dispatch = self.finish_target_create(req, context_id, Ok(false));
+                    self.store_active_presentation();
+                    return Err(dispatch);
+                };
+                StartedSocketOperation {
+                    context_id,
+                    navigation_actions: vec![NavigationActionOutcome::CrossDocument {
+                        navigation_id,
+                        kind: CrossDocumentNavigationKind::Regular,
+                    }],
+                    completion: SocketCompletion::TargetCreate,
+                }
+            }
+            "Page.navigateToHistoryEntry" => {
+                self.prepare_dispatch(req)?;
+                let traversal = self.start_history_traversal(req)?;
+                let Some(navigation_id) = traversal.navigation_id else {
+                    let dispatch = self.finish_history_traversal(req, traversal.before, Ok(false));
+                    self.store_active_presentation();
+                    return Err(dispatch);
+                };
+                StartedSocketOperation {
+                    context_id: traversal.context_id,
+                    navigation_actions: vec![NavigationActionOutcome::CrossDocument {
+                        navigation_id,
+                        kind: CrossDocumentNavigationKind::Regular,
+                    }],
+                    completion: SocketCompletion::History {
+                        before: traversal.before,
+                    },
+                }
+            }
+            _ => {
+                self.defer_navigation_notifications = true;
+                let mut dispatch = self.dispatch(req);
+                self.defer_navigation_notifications = false;
+                dispatch
+                    .notifications
+                    .append(&mut self.drain_side_effect_notifications(req));
+                let navigation_actions = std::mem::take(&mut self.command_navigation_actions);
+                let context_id = self.dispatch_context;
+                if let Some(context_id) = context_id {
+                    for action in &navigation_actions {
+                        if let NavigationActionOutcome::SameDocument { url } = action {
+                            dispatch
+                                .notifications
+                                .extend(self.same_document_notifications(
+                                    context_id,
+                                    url,
+                                    req.session_id.as_deref(),
+                                ));
+                        }
+                    }
+                }
+                let Some(navigation_id) = final_cross_document_id(&navigation_actions) else {
+                    return Err(dispatch);
+                };
+                let context_id = self
+                    .pending_core_navigations
+                    .get(&navigation_id)
+                    .map(|pending| pending.context_id)
+                    .or(self.dispatch_context)
+                    .ok_or_else(|| CdpDispatch::error(-32000, "navigation has no page target"))?;
+                StartedSocketOperation {
+                    context_id,
+                    navigation_actions,
+                    completion: SocketCompletion::Dispatch(dispatch),
+                }
+            }
+        };
+        for (navigation_id, kind) in cross_document_actions(&operation.navigation_actions) {
+            self.pending_core_navigations
+                .entry(navigation_id)
+                .or_insert(PendingCoreNavigation {
+                    context_id: operation.context_id,
+                    predecessor_navigation_id: None,
+                    kind,
+                    committed: false,
+                    terminal: None,
+                    wire_claimed: true,
+                    abandoned: false,
+                })
+                .wire_claimed = true;
+        }
+        self.prune_pending_core_navigations();
+        self.store_active_presentation();
+        Ok(Some(operation))
+    }
+
+    fn start_socket_operation_with_capacity(
+        &mut self,
+        req: &CdpRequest,
+        at_capacity: bool,
+    ) -> Result<Option<StartedSocketOperation>, CdpDispatch> {
+        let operation = self.start_socket_operation(req)?;
+        if at_capacity && let Some(operation) = operation {
+            self.cancel_socket_operation(&operation);
+            return Err(CdpDispatch::error(
+                -32000,
+                "too many pending navigation-producing requests",
+            ));
+        }
+        Ok(operation)
+    }
+
+    fn poll_socket_operations(
+        &mut self,
+        pending_operations: &mut VecDeque<PendingCdpOperation>,
+    ) -> Vec<Vec<String>> {
+        let pump_error = self.pump_core_events().err();
+        let now = Instant::now();
+        let mut completed = Vec::new();
+        for _ in 0..pending_operations.len() {
+            let mut pending = pending_operations
+                .pop_front()
+                .expect("pending operation length is stable");
+            let mut operation_error = self
+                .adopt_active_socket_successor(&mut pending.operation)
+                .err();
+            let mut navigation_ids = cross_document_ids(&pending.operation.navigation_actions);
+            if pump_error.is_none()
+                && operation_error.is_none()
+                && self.socket_navigation_ids_are_terminal(&navigation_ids)
+            {
+                operation_error = self
+                    .context_state(pending.operation.context_id)
+                    .and_then(|_| self.pump_core_events())
+                    .and_then(|_| self.adopt_active_socket_successor(&mut pending.operation))
+                    .err();
+                navigation_ids = cross_document_ids(&pending.operation.navigation_actions);
+            }
+            let outcome = if let Some(error) = pump_error.as_ref() {
+                self.cancel_and_consume_socket_operation(&pending.operation);
+                Some(Err(error.clone()))
+            } else if let Some(error) = operation_error {
+                self.cancel_and_consume_socket_operation(&pending.operation);
+                Some(Err(error))
+            } else if let Some((committed, terminal)) =
+                self.take_socket_operation_outcome(&navigation_ids)
+            {
+                Some(terminal.map(|()| committed))
+            } else if now >= pending.deadline {
+                self.cancel_and_consume_socket_operation(&pending.operation);
+                Some(Err(format!(
+                    "timed out waiting for navigation {} in context {}",
+                    navigation_ids.last().expect("non-empty navigation IDs"),
+                    pending.operation.context_id
+                )))
+            } else {
+                None
+            };
+
+            let Some(outcome) = outcome else {
+                pending_operations.push_back(pending);
+                continue;
+            };
+            if self
+                .context_presentations
+                .contains_key(&pending.operation.context_id)
+            {
+                self.dispatch_context = Some(pending.operation.context_id);
+                self.load_presentation(pending.operation.context_id);
+            }
+            let final_navigation_kind =
+                final_cross_document_kind(&pending.operation.navigation_actions)
+                    .unwrap_or(CrossDocumentNavigationKind::Regular);
+            let mut dispatch = match pending.operation.completion {
+                SocketCompletion::Page(navigation) => match navigation.method {
+                    PendingPageMethod::Navigate => {
+                        self.finish_page_navigate(&pending.request, navigation, outcome)
+                    }
+                    PendingPageMethod::Reload => {
+                        self.finish_page_reload(&pending.request, navigation.context_id, outcome)
+                    }
+                },
+                SocketCompletion::TargetCreate => self.finish_target_create(
+                    &pending.request,
+                    pending.operation.context_id,
+                    outcome,
+                ),
+                SocketCompletion::History { before } => {
+                    self.finish_history_traversal(&pending.request, before, outcome)
+                }
+                SocketCompletion::Dispatch(mut dispatch) => match outcome {
+                    Ok(committed) => match self.navigation_notifications_after_completion(
+                        pending.operation.context_id,
+                        &pending.request,
+                        committed,
+                        final_navigation_kind,
+                    ) {
+                        Ok(mut notifications) => {
+                            dispatch.notifications.append(&mut notifications);
+                            dispatch
+                        }
+                        Err(error) => {
+                            dispatch.response = Err(CdpError::new(-32603, error));
+                            dispatch
+                        }
+                    },
+                    Err(error) => {
+                        dispatch.response = Err(CdpError::new(-32603, error));
+                        dispatch
+                    }
+                },
+            };
+            dispatch
+                .notifications
+                .append(&mut self.drain_side_effect_notifications_for_context(
+                    pending.operation.context_id,
+                    &pending.request,
+                ));
+            self.store_active_presentation();
+            completed.push(self.render_dispatch(&pending.request, pending.started, dispatch));
+        }
+        completed
+    }
+
+    fn socket_navigation_ids_are_terminal(&self, navigation_ids: &[NavigationId]) -> bool {
+        !navigation_ids.is_empty()
+            && navigation_ids.iter().all(|navigation_id| {
+                self.pending_core_navigations
+                    .get(navigation_id)
+                    .is_some_and(|pending| pending.wire_claimed && pending.terminal.is_some())
+            })
+    }
+
+    fn abandon_navigation_ids(&mut self, navigation_ids: &[NavigationId]) {
+        for navigation_id in navigation_ids {
+            if let Some(pending) = self.pending_core_navigations.get_mut(navigation_id)
+                && pending.wire_claimed
+            {
+                pending.abandoned = true;
+            }
+        }
+    }
+
+    fn cancel_socket_operation(&mut self, operation: &StartedSocketOperation) {
+        self.cancel_and_consume_socket_operation(operation);
+    }
+
+    fn cancel_and_consume_socket_operation(&mut self, operation: &StartedSocketOperation) {
+        let _ = self.browser.dispatch(BrowserCommand::Stop {
+            context_id: operation.context_id,
+        });
+        let _ = self.pump_core_events();
+        let mut navigation_ids = cross_document_ids(&operation.navigation_actions);
+        while let Some(successor_navigation_id) = self
+            .pending_core_navigations
+            .iter()
+            .filter(|(_, pending)| {
+                pending.context_id == operation.context_id
+                    && pending
+                        .predecessor_navigation_id
+                        .is_some_and(|predecessor| navigation_ids.contains(&predecessor))
+                    && !pending.wire_claimed
+            })
+            .map(|(navigation_id, _)| *navigation_id)
+            .min()
+        {
+            self.pending_core_navigations
+                .get_mut(&successor_navigation_id)
+                .expect("successor exists")
+                .wire_claimed = true;
+            navigation_ids.push(successor_navigation_id);
+        }
+        for navigation_id in navigation_ids {
+            let terminal = self
+                .pending_core_navigations
+                .get(&navigation_id)
+                .is_some_and(|pending| pending.terminal.is_some());
+            if terminal {
+                self.pending_core_navigations.remove(&navigation_id);
+            } else {
+                self.abandon_navigation_ids(&[navigation_id]);
+            }
+        }
+        if matches!(&operation.completion, SocketCompletion::TargetCreate) {
+            self.remove_failed_target(operation.context_id);
+        }
+        self.prune_pending_core_navigations();
+    }
+
+    fn adopt_active_socket_successor(
+        &mut self,
+        operation: &mut StartedSocketOperation,
+    ) -> Result<(), String> {
+        loop {
+            let navigation_ids = cross_document_ids(&operation.navigation_actions);
+            if navigation_ids.iter().any(|navigation_id| {
+                self.pending_core_navigations
+                    .get(navigation_id)
+                    .is_none_or(|pending| pending.terminal.is_none())
+            }) {
+                return Ok(());
+            }
+            let Some(predecessor_navigation_id) = navigation_ids.last().copied() else {
+                return Ok(());
+            };
+            let Some(successor_navigation_id) = self
+                .pending_core_navigations
+                .iter()
+                .filter(|(_, pending)| {
+                    pending.context_id == operation.context_id
+                        && pending.predecessor_navigation_id == Some(predecessor_navigation_id)
+                })
+                .map(|(navigation_id, _)| *navigation_id)
+                .min()
+            else {
+                return Ok(());
+            };
+            if self.pending_core_navigations[&successor_navigation_id].wire_claimed {
+                return Ok(());
+            }
+            if navigation_ids.len() >= MAX_PENDING_CORE_NAVIGATIONS {
+                return Err("navigation successor limit exceeded".to_owned());
+            }
+            let Some(pending) = self
+                .pending_core_navigations
+                .get_mut(&successor_navigation_id)
+                .filter(|pending| !pending.wire_claimed)
+            else {
+                return Ok(());
+            };
+            pending.wire_claimed = true;
+            let kind = pending.kind;
+            let terminal = pending.terminal.is_some();
+            operation
+                .navigation_actions
+                .push(NavigationActionOutcome::CrossDocument {
+                    navigation_id: successor_navigation_id,
+                    kind,
+                });
+            if !terminal {
+                // A successor created while lifecycle work settles is released
+                // when BrowserCore handles its next command.
+                let _ = self.context_state(operation.context_id);
+                return Ok(());
+            }
+        }
+    }
+
     // --- Method handlers ------------------------------------------------
 
     fn target_for_session(&self, session_id: Option<&str>) -> Option<&Target> {
@@ -618,6 +1126,13 @@ impl CdpState {
                 .filter(|session| session.context_id == context_id)
                 .map(|session| Some(format!("sess-{}", session.session_id))),
         );
+        if let Some(requested_session) = requested_session
+            && !sessions
+                .iter()
+                .any(|session| session.as_deref() == Some(requested_session))
+        {
+            sessions.push(Some(requested_session.to_owned()));
+        }
         sessions
     }
 
@@ -648,7 +1163,6 @@ impl CdpState {
                 new_document_scripts: self.new_document_scripts.clone(),
                 runtime_bindings: self.runtime_bindings.clone(),
                 isolated_world_name: self.isolated_world_name.clone(),
-                pending_content_loader_id: self.pending_content_loader_id,
             },
         );
     }
@@ -680,7 +1194,6 @@ impl CdpState {
         self.new_document_scripts = presentation.new_document_scripts;
         self.runtime_bindings = presentation.runtime_bindings;
         self.isolated_world_name = presentation.isolated_world_name;
-        self.pending_content_loader_id = presentation.pending_content_loader_id;
         self.active_presentation_context = Some(context_id);
     }
 
@@ -791,17 +1304,19 @@ impl CdpState {
         }
     }
 
-    fn drain_core_events(&mut self, context_id: BrowsingContextId) -> (bool, Option<String>) {
+    fn drain_core_events(&mut self) {
+        let _ = self.pump_core_events();
+    }
+
+    fn pump_core_events(&mut self) -> Result<(), String> {
         loop {
             match self.browser.try_next_event() {
                 Ok(Some(event)) => self.record_core_event(event),
                 Ok(None) => break,
-                Err(error) => {
-                    return (false, Some(error.to_string()));
-                }
+                Err(error) => return Err(error.to_string()),
             }
         }
-        self.take_context_navigation_outcome(context_id)
+        Ok(())
     }
 
     fn wait_for_navigation(
@@ -831,6 +1346,28 @@ impl CdpState {
 
     fn record_core_event(&mut self, event: BrowserEvent) {
         match event {
+            BrowserEvent::NavigationRequested {
+                context_id,
+                navigation_id,
+                predecessor_navigation_id,
+                kind,
+                ..
+            } => {
+                let pending = self
+                    .pending_core_navigations
+                    .entry(navigation_id)
+                    .or_insert(PendingCoreNavigation {
+                        context_id,
+                        predecessor_navigation_id,
+                        kind,
+                        committed: false,
+                        terminal: None,
+                        wire_claimed: false,
+                        abandoned: false,
+                    });
+                pending.kind = kind;
+                pending.predecessor_navigation_id = predecessor_navigation_id;
+            }
             BrowserEvent::NavigationCommitted {
                 context_id,
                 navigation_id,
@@ -841,8 +1378,12 @@ impl CdpState {
                     .entry(navigation_id)
                     .or_insert(PendingCoreNavigation {
                         context_id,
+                        predecessor_navigation_id: None,
+                        kind: CrossDocumentNavigationKind::Regular,
                         committed: false,
                         terminal: None,
+                        wire_claimed: false,
+                        abandoned: false,
                     });
                 pending.committed = true;
             }
@@ -856,8 +1397,12 @@ impl CdpState {
                     .entry(navigation_id)
                     .or_insert(PendingCoreNavigation {
                         context_id,
+                        predecessor_navigation_id: None,
+                        kind: CrossDocumentNavigationKind::Regular,
                         committed: false,
                         terminal: None,
+                        wire_claimed: false,
+                        abandoned: false,
                     })
                     .terminal = Some(Ok(()));
             }
@@ -871,8 +1416,12 @@ impl CdpState {
                     .entry(navigation_id)
                     .or_insert(PendingCoreNavigation {
                         context_id,
+                        predecessor_navigation_id: None,
+                        kind: CrossDocumentNavigationKind::Regular,
                         committed: false,
                         terminal: None,
+                        wire_claimed: false,
+                        abandoned: false,
                     })
                     .terminal = Some(Err(error.to_string()));
             }
@@ -886,8 +1435,12 @@ impl CdpState {
                     .entry(navigation_id)
                     .or_insert(PendingCoreNavigation {
                         context_id,
+                        predecessor_navigation_id: None,
+                        kind: CrossDocumentNavigationKind::Regular,
                         committed: false,
                         terminal: None,
+                        wire_claimed: false,
+                        abandoned: false,
                     })
                     .terminal = Some(Err(format!(
                     "navigation {navigation_id} was cancelled: {reason:?}"
@@ -895,10 +1448,19 @@ impl CdpState {
             }
             BrowserEvent::RuntimeEffects {
                 context_id,
+                frame_id,
+                document_id,
                 runtime_context_id,
+                url,
                 effects,
-                ..
-            } => self.queue_runtime_effects_for_context(context_id, runtime_context_id, effects),
+            } => self.queue_runtime_effects_for_context(PendingRuntimeEffects {
+                context_id,
+                frame_id,
+                document_id,
+                runtime_context_id,
+                url,
+                effects,
+            }),
             _ => {}
         }
         self.prune_pending_core_navigations();
@@ -909,7 +1471,9 @@ impl CdpState {
             let Some(oldest_terminal) = self
                 .pending_core_navigations
                 .iter()
-                .filter(|(_, pending)| pending.terminal.is_some())
+                .filter(|(_, pending)| {
+                    pending.terminal.is_some() && (!pending.wire_claimed || pending.abandoned)
+                })
                 .map(|(navigation_id, _)| *navigation_id)
                 .min()
             else {
@@ -923,10 +1487,48 @@ impl CdpState {
         &mut self,
         navigation_id: NavigationId,
     ) -> Option<(bool, Result<(), String>)> {
-        self.pending_core_navigations
-            .get(&navigation_id)?
-            .terminal
-            .as_ref()?;
+        let pending = self.pending_core_navigations.get(&navigation_id)?;
+        if pending.wire_claimed {
+            return None;
+        }
+        pending.terminal.as_ref()?;
+        self.remove_navigation_outcome(navigation_id)
+    }
+
+    fn take_socket_navigation_outcome(
+        &mut self,
+        navigation_id: NavigationId,
+    ) -> Option<(bool, Result<(), String>)> {
+        let pending = self.pending_core_navigations.get(&navigation_id)?;
+        if !pending.wire_claimed {
+            return None;
+        }
+        pending.terminal.as_ref()?;
+        self.remove_navigation_outcome(navigation_id)
+    }
+
+    fn take_socket_operation_outcome(
+        &mut self,
+        navigation_ids: &[NavigationId],
+    ) -> Option<(bool, Result<(), String>)> {
+        let (&final_navigation_id, superseded) = navigation_ids.split_last()?;
+        if !navigation_ids.iter().all(|navigation_id| {
+            self.pending_core_navigations
+                .get(navigation_id)
+                .is_some_and(|pending| pending.wire_claimed && pending.terminal.is_some())
+        }) {
+            return None;
+        }
+        for navigation_id in superseded {
+            self.remove_navigation_outcome(*navigation_id);
+        }
+        self.take_socket_navigation_outcome(final_navigation_id)
+    }
+
+    fn remove_navigation_outcome(
+        &mut self,
+        navigation_id: NavigationId,
+    ) -> Option<(bool, Result<(), String>)> {
         let pending = self
             .pending_core_navigations
             .remove(&navigation_id)
@@ -937,29 +1539,6 @@ impl CdpState {
         ))
     }
 
-    fn take_context_navigation_outcome(
-        &mut self,
-        context_id: BrowsingContextId,
-    ) -> (bool, Option<String>) {
-        let navigation_ids = self
-            .pending_core_navigations
-            .iter()
-            .filter(|(_, pending)| pending.context_id == context_id && pending.terminal.is_some())
-            .map(|(navigation_id, _)| *navigation_id)
-            .collect::<Vec<_>>();
-        let mut committed = false;
-        let mut failure = None;
-        for navigation_id in navigation_ids {
-            if let Some((event_committed, terminal)) = self.take_navigation_outcome(navigation_id) {
-                committed |= event_committed;
-                if let Err(error) = terminal {
-                    failure = Some(error);
-                }
-            }
-        }
-        (committed, failure)
-    }
-
     fn queue_runtime_effects(
         &mut self,
         runtime_context_id: RuntimeContextId,
@@ -968,29 +1547,46 @@ impl CdpState {
         if effects.is_empty() {
             return;
         }
-        if let Some(pending) = self.pending_effects.back_mut()
-            && pending.runtime_context_id == runtime_context_id
-        {
-            pending.effects.extend(effects);
+        let Some(context_id) = self
+            .active_presentation_context
+            .or(self.dispatch_context)
+            .or_else(|| self.targets.first().map(|target| target.context_id))
+        else {
             return;
-        }
-        self.pending_effects.push_back(PendingRuntimeEffects {
+        };
+        let Ok(state) = self.context_state(context_id) else {
+            return;
+        };
+        self.queue_runtime_effects_for_context(PendingRuntimeEffects {
+            context_id: state.context_id,
+            frame_id: state.main_frame_id,
+            document_id: state.document_id,
             runtime_context_id,
+            url: state.url,
             effects,
         });
     }
 
-    fn queue_runtime_effects_for_context(
-        &mut self,
-        context_id: BrowsingContextId,
-        runtime_context_id: RuntimeContextId,
-        effects: RuntimeEffects,
-    ) {
-        if self.active_presentation_context == Some(context_id) {
-            self.queue_runtime_effects(runtime_context_id, effects);
+    fn queue_runtime_effects_for_context(&mut self, queued: PendingRuntimeEffects) {
+        if queued.effects.is_empty() {
             return;
         }
-        if effects.is_empty() {
+        let context_id = queued.context_id;
+        let same_generation = |pending: &PendingRuntimeEffects| {
+            pending.context_id == queued.context_id
+                && pending.frame_id == queued.frame_id
+                && pending.document_id == queued.document_id
+                && pending.runtime_context_id == queued.runtime_context_id
+                && pending.url == queued.url
+        };
+        if self.active_presentation_context == Some(context_id) {
+            if let Some(pending) = self.pending_effects.back_mut()
+                && same_generation(pending)
+            {
+                pending.effects.extend(queued.effects);
+            } else {
+                self.pending_effects.push_back(queued);
+            }
             return;
         }
         let pending = &mut self
@@ -999,14 +1595,18 @@ impl CdpState {
             .or_default()
             .pending_effects;
         if let Some(previous) = pending.back_mut()
-            && previous.runtime_context_id == runtime_context_id
+            && same_generation(previous)
         {
-            previous.effects.extend(effects);
+            previous.effects.extend(queued.effects);
         } else {
-            pending.push_back(PendingRuntimeEffects {
-                runtime_context_id,
-                effects,
-            });
+            pending.push_back(queued);
+        }
+    }
+
+    fn discard_pending_runtime_effects(&mut self) {
+        self.pending_effects.clear();
+        for presentation in self.context_presentations.values_mut() {
+            presentation.pending_effects.clear();
         }
     }
 
@@ -1280,36 +1880,62 @@ impl CdpState {
     }
 
     fn target_create(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let (context_id, navigation_id) = match self.start_target_create(req) {
+            Ok(started) => started,
+            Err(error) => return error,
+        };
+        let outcome = navigation_id
+            .map(|navigation_id| self.wait_for_navigation(context_id, navigation_id))
+            .unwrap_or(Ok(false));
+        self.finish_target_create(req, context_id, outcome)
+    }
+
+    fn start_target_create(
+        &mut self,
+        req: &CdpRequest,
+    ) -> Result<(BrowsingContextId, Option<NavigationId>), CdpDispatch> {
         let url = req
             .params
             .get("url")
             .and_then(Value::as_str)
             .unwrap_or("about:blank")
             .to_owned();
-        match self.push_loaded_target(url) {
-            Ok(context_id) => {
-                let target = self
-                    .targets
-                    .iter()
-                    .find(|target| target.context_id == context_id)
-                    .expect("created target is stored");
-                let session_id = target.session_id;
-                let state = match self.context_state(context_id) {
-                    Ok(state) => state,
-                    Err(error) => return CdpDispatch::error(-32603, error),
-                };
-                CdpDispatch::ok_with_pre_response_notifications(
-                    json!({ "targetId": cdp_target_id(context_id) }),
-                    vec![target_attached_notification(
-                        context_id,
-                        session_id,
-                        &state,
-                        req.session_id.as_deref(),
-                    )],
-                )
-            }
-            Err(e) => CdpDispatch::error(-32602, e),
+        self.push_target(url)
+            .map_err(|error| CdpDispatch::error(-32602, error))
+    }
+
+    fn finish_target_create(
+        &mut self,
+        req: &CdpRequest,
+        context_id: BrowsingContextId,
+        outcome: Result<bool, String>,
+    ) -> CdpDispatch {
+        if let Err(error) = outcome {
+            self.remove_failed_target(context_id);
+            return CdpDispatch::error(-32603, error);
         }
+        let target = self
+            .targets
+            .iter()
+            .find(|target| target.context_id == context_id)
+            .expect("created target is stored");
+        let session_id = target.session_id;
+        let state = match self.context_state(context_id) {
+            Ok(state) => state,
+            Err(error) => {
+                self.remove_failed_target(context_id);
+                return CdpDispatch::error(-32603, error);
+            }
+        };
+        CdpDispatch::ok_with_pre_response_notifications(
+            json!({ "targetId": cdp_target_id(context_id) }),
+            vec![target_attached_notification(
+                context_id,
+                session_id,
+                &state,
+                req.session_id.as_deref(),
+            )],
+        )
     }
 
     fn target_close(&mut self, req: &CdpRequest) -> CdpDispatch {
@@ -1330,7 +1956,7 @@ impl CdpState {
         {
             return CdpDispatch::error(-32603, error.to_string());
         }
-        self.drain_core_events(context_id);
+        self.drain_core_events();
         let target = self.targets.remove(index);
         self.context_presentations.remove(&context_id);
         if self.active_presentation_context == Some(context_id) {
@@ -1629,41 +2255,67 @@ impl CdpState {
     }
 
     fn page_navigate(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let navigation = match self.start_page_navigate(req) {
+            Ok(navigation) => navigation,
+            Err(outcome) => return outcome,
+        };
+        let outcome = self.wait_for_navigation(navigation.context_id, navigation.navigation_id);
+        self.finish_page_navigate(req, navigation, outcome)
+    }
+
+    fn start_page_navigate(
+        &mut self,
+        req: &CdpRequest,
+    ) -> Result<StartedPageNavigation, CdpDispatch> {
         let Some(url) = req.params.get("url").and_then(Value::as_str) else {
-            return CdpDispatch::error(-32602, "Page.navigate: missing `url`");
+            return Err(CdpDispatch::error(-32602, "Page.navigate: missing `url`"));
         };
         let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
-            return CdpDispatch::error(-32000, "Page.navigate: no page target");
+            return Err(CdpDispatch::error(-32000, "Page.navigate: no page target"));
         };
         if let Err(error) = self.configure_current_context() {
-            return CdpDispatch::error(-32603, error);
+            return Err(CdpDispatch::error(-32603, error));
         }
-        self.drain_core_events(context_id);
+        self.drain_core_events();
         let navigation_id = match self.browser.dispatch(BrowserCommand::Navigate {
             context_id,
             url: url.to_owned(),
         }) {
             Ok(BrowserCommandResult::NavigationAccepted { navigation_id }) => navigation_id,
             Ok(result) => {
-                return CdpDispatch::error(
+                return Err(CdpDispatch::error(
                     -32603,
                     format!("unexpected navigation result: {result:?}"),
-                );
+                ));
             }
-            Err(error) => return CdpDispatch::error(-32602, error.to_string()),
+            Err(error) => return Err(CdpDispatch::error(-32602, error.to_string())),
         };
-        if let Err(error) = self.wait_for_navigation(context_id, navigation_id) {
+        Ok(StartedPageNavigation {
+            method: PendingPageMethod::Navigate,
+            context_id,
+            navigation_id,
+        })
+    }
+
+    fn finish_page_navigate(
+        &mut self,
+        req: &CdpRequest,
+        navigation: StartedPageNavigation,
+        outcome: Result<bool, String>,
+    ) -> CdpDispatch {
+        if let Err(error) = outcome {
             return CdpDispatch::error(-32603, error);
         }
         self.reset_input_for_navigation();
-        let state = match self.context_state(context_id) {
+        let state = match self.context_state(navigation.context_id) {
             Ok(state) => state,
             Err(error) => return CdpDispatch::error(-32603, error),
         };
-        let mut notifications = self.current_page_load_notifications(req.session_id.as_deref());
+        let mut notifications =
+            self.current_page_load_notifications(navigation.context_id, req.session_id.as_deref());
         notifications.extend(self.drain_side_effect_notifications(req));
         CdpDispatch::ok_with_notifications(
-            json!({ "frameId": frame_id(&state), "loaderId": loader_id(&state), "navigationId": navigation_id.to_string() }),
+            json!({ "frameId": frame_id(&state), "loaderId": loader_id(&state), "navigationId": navigation.navigation_id.to_string() }),
             notifications,
         )
     }
@@ -1701,27 +2353,55 @@ impl CdpState {
     }
 
     fn page_reload(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let navigation = match self.start_page_reload(req) {
+            Ok(navigation) => navigation,
+            Err(outcome) => return outcome,
+        };
+        let outcome = self.wait_for_navigation(navigation.context_id, navigation.navigation_id);
+        self.finish_page_reload(req, navigation.context_id, outcome)
+    }
+
+    fn start_page_reload(
+        &mut self,
+        req: &CdpRequest,
+    ) -> Result<StartedPageNavigation, CdpDispatch> {
         let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
-            return CdpDispatch::error(-32000, "Page.reload: no page loaded");
+            return Err(CdpDispatch::error(-32000, "Page.reload: no page loaded"));
         };
         if let Err(error) = self.configure_current_context() {
-            return CdpDispatch::error(-32603, error);
+            return Err(CdpDispatch::error(-32603, error));
         }
-        self.drain_core_events(context_id);
+        self.drain_core_events();
         let navigation_id = match self.browser.dispatch(BrowserCommand::Reload { context_id }) {
             Ok(BrowserCommandResult::NavigationAccepted { navigation_id }) => navigation_id,
             Ok(result) => {
-                return CdpDispatch::error(-32603, format!("unexpected reload result: {result:?}"));
+                return Err(CdpDispatch::error(
+                    -32603,
+                    format!("unexpected reload result: {result:?}"),
+                ));
             }
-            Err(error) => return CdpDispatch::error(-32603, error.to_string()),
+            Err(error) => return Err(CdpDispatch::error(-32603, error.to_string())),
         };
-        if let Err(error) = self.wait_for_navigation(context_id, navigation_id) {
+        Ok(StartedPageNavigation {
+            method: PendingPageMethod::Reload,
+            context_id,
+            navigation_id,
+        })
+    }
+
+    fn finish_page_reload(
+        &mut self,
+        req: &CdpRequest,
+        context_id: BrowsingContextId,
+        outcome: Result<bool, String>,
+    ) -> CdpDispatch {
+        if let Err(error) = outcome {
             return CdpDispatch::error(-32603, error);
         }
         self.reset_input_for_navigation();
         CdpDispatch::ok_with_notifications(
             json!({}),
-            self.current_page_load_notifications(req.session_id.as_deref()),
+            self.current_page_load_notifications(context_id, req.session_id.as_deref()),
         )
     }
 
@@ -1780,17 +2460,35 @@ impl CdpState {
     }
 
     fn page_navigate_to_history_entry(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let traversal = match self.start_history_traversal(req) {
+            Ok(traversal) => traversal,
+            Err(error) => return error,
+        };
+        let outcome = traversal
+            .navigation_id
+            .map(|navigation_id| self.wait_for_navigation(traversal.context_id, navigation_id))
+            .unwrap_or(Ok(false));
+        self.finish_history_traversal(req, traversal.before, outcome)
+    }
+
+    fn start_history_traversal(
+        &mut self,
+        req: &CdpRequest,
+    ) -> Result<StartedHistoryTraversal, CdpDispatch> {
         let entry_id = match req.params.get("entryId").and_then(Value::as_u64) {
             Some(entry_id) if entry_id > 0 => entry_id as usize,
             _ => {
-                return CdpDispatch::error(
+                return Err(CdpDispatch::error(
                     -32602,
                     "Page.navigateToHistoryEntry: missing `entryId`",
-                );
+                ));
             }
         };
-        let Ok(context_id) = self.current_context() else {
-            return CdpDispatch::error(-32000, "Page.navigateToHistoryEntry: no page loaded");
+        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
+            return Err(CdpDispatch::error(
+                -32000,
+                "Page.navigateToHistoryEntry: no page loaded",
+            ));
         };
         let history = match self
             .browser
@@ -1798,24 +2496,79 @@ impl CdpState {
         {
             Ok(BrowserCommandResult::NavigationHistory(history)) => history,
             Ok(result) => {
-                return CdpDispatch::error(
+                return Err(CdpDispatch::error(
                     -32603,
                     format!("unexpected history result: {result:?}"),
-                );
+                ));
             }
-            Err(error) => return CdpDispatch::error(-32603, error.to_string()),
+            Err(error) => return Err(CdpDispatch::error(-32603, error.to_string())),
         };
         if entry_id > history.entries.len() {
-            return CdpDispatch::error(-32602, "Page.navigateToHistoryEntry: unknown `entryId`");
+            return Err(CdpDispatch::error(
+                -32602,
+                "Page.navigateToHistoryEntry: unknown `entryId`",
+            ));
         }
         let target_index = entry_id - 1;
         let delta = target_index as i32 - history.current_index as i32;
-        let mut notifications = Vec::new();
-        if let Err(err) =
-            self.apply_history_traversal(delta, req.session_id.as_deref(), &mut notifications)
-        {
-            return CdpDispatch::error(-32603, err);
+        let before = self
+            .context_state(context_id)
+            .map_err(|error| CdpDispatch::error(-32603, error))?;
+        if delta == 0 {
+            return Ok(StartedHistoryTraversal {
+                context_id,
+                navigation_id: None,
+                before,
+            });
         }
+        self.drain_core_events();
+        let navigation_id = match self
+            .browser
+            .dispatch(BrowserCommand::TraverseHistory { context_id, delta })
+        {
+            Ok(BrowserCommandResult::Accepted) => None,
+            Ok(BrowserCommandResult::NavigationAccepted { navigation_id }) => Some(navigation_id),
+            Ok(result) => {
+                return Err(CdpDispatch::error(
+                    -32603,
+                    format!("unexpected history-traversal result: {result:?}"),
+                ));
+            }
+            Err(error) => return Err(CdpDispatch::error(-32603, error.to_string())),
+        };
+        Ok(StartedHistoryTraversal {
+            context_id,
+            navigation_id,
+            before,
+        })
+    }
+
+    fn finish_history_traversal(
+        &mut self,
+        req: &CdpRequest,
+        before: BrowsingContextState,
+        outcome: Result<bool, String>,
+    ) -> CdpDispatch {
+        let committed = match outcome {
+            Ok(committed) => committed,
+            Err(error) => return CdpDispatch::error(-32603, error),
+        };
+        let after = match self.context_state(before.context_id) {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32603, error),
+        };
+        let notifications = if committed {
+            self.reset_input_for_navigation();
+            self.current_page_load_notifications(before.context_id, req.session_id.as_deref())
+        } else if after.url != before.url {
+            self.same_document_notifications(
+                before.context_id,
+                &after.url,
+                req.session_id.as_deref(),
+            )
+        } else {
+            Vec::new()
+        };
         CdpDispatch::ok_with_notifications(json!({}), notifications)
     }
 
@@ -1957,6 +2710,7 @@ impl CdpState {
             .and_then(Value::as_str)
             .unwrap_or("Vixen utility world")
             .to_owned();
+        let origin = origin_for_url(&state.url);
         self.isolated_world_name = Some(world_name.clone());
         let execution_context_id = utility_context_id(&state);
         let notifications = self.runtime_enabled.then(|| {
@@ -1967,6 +2721,8 @@ impl CdpState {
                 is_default: false,
                 context_type: "isolated",
                 frame_id: &state_frame_id,
+                origin: &origin,
+                loader_id: state.document_id.get(),
                 session_id: req.session_id.as_deref(),
             })
         });
@@ -2499,7 +3255,7 @@ impl CdpState {
         &mut self,
         event_type: &str,
         event: KeyEventData,
-    ) -> Result<(), String> {
+    ) -> Result<Vec<NavigationActionOutcome>, String> {
         let state = self.current_state()?;
         let runtime_context_id = state
             .runtime_context_id
@@ -2515,9 +3271,9 @@ impl CdpState {
             })
             .map_err(|error| error.to_string())?
         {
-            BrowserCommandResult::InputDispatched(effects) => {
-                self.queue_runtime_effects(runtime_context_id, effects);
-                Ok(())
+            BrowserCommandResult::InputDispatched(result) => {
+                self.queue_runtime_effects(runtime_context_id, result.effects);
+                Ok(result.navigation_actions)
             }
             result => Err(format!("unexpected key-input result: {result:?}")),
         }
@@ -2561,23 +3317,28 @@ impl CdpState {
         };
 
         let viewport = self.current_viewport();
-        let runtime_target_node_id = self.dom_node_id_at_point_from_runtime(x, y).ok().flatten();
         let state = match self.current_state() {
             Ok(state) => state,
             Err(error) => return CdpDispatch::error(-32000, error),
         };
-        let target_node_id = runtime_target_node_id.or_else(|| {
-            match self.browser.dispatch(BrowserCommand::HitTest {
-                context_id: state.context_id,
-                document_id: state.document_id,
-                viewport,
-                x,
-                y,
-            }) {
-                Ok(BrowserCommandResult::HitTest(target)) => target.map(|target| target.node_id),
-                _ => None,
-            }
-        });
+        let target_node_id = self
+            .dom_node_id_at_point_from_runtime(x, y)
+            .ok()
+            .flatten()
+            .or_else(|| {
+                match self.browser.dispatch(BrowserCommand::HitTest {
+                    context_id: state.context_id,
+                    document_id: state.document_id,
+                    viewport,
+                    x,
+                    y,
+                }) {
+                    Ok(BrowserCommandResult::HitTest(target)) => {
+                        target.map(|target| target.node_id)
+                    }
+                    _ => None,
+                }
+            });
         let mut dom_events = Vec::new();
         let mut next_mouse_down = self.last_mouse_down.clone();
         let mut next_mouse_over_node_id = self.last_mouse_over_node_id;
@@ -2694,6 +3455,7 @@ impl CdpState {
             }
         }
 
+        let mut navigation_actions = Vec::new();
         for dom_event in dom_events {
             let state = match self.current_state() {
                 Ok(state) => state,
@@ -2729,8 +3491,9 @@ impl CdpState {
                     delta_y,
                 },
             }) {
-                Ok(BrowserCommandResult::InputDispatched(effects)) => {
-                    self.queue_runtime_effects(runtime_context_id, effects);
+                Ok(BrowserCommandResult::InputDispatched(result)) => {
+                    self.queue_runtime_effects(runtime_context_id, result.effects);
+                    navigation_actions.extend(result.navigation_actions);
                 }
                 Ok(result) => {
                     return CdpDispatch::error(
@@ -2743,6 +3506,7 @@ impl CdpState {
         }
         self.last_mouse_down = next_mouse_down;
         self.last_mouse_over_node_id = next_mouse_over_node_id;
+        self.command_navigation_actions.extend(navigation_actions);
         let mut notifications = self.drain_side_effect_notifications(req);
         match self.drain_navigation_notifications(req) {
             Ok(mut navigation_notifications) => notifications.append(&mut navigation_notifications),
@@ -2803,7 +3567,7 @@ impl CdpState {
             self.last_key_down_text = None;
         }
 
-        if let Err(err) = self.dispatch_key_to_core(
+        let navigation_actions = match self.dispatch_key_to_core(
             event_type,
             KeyEventData {
                 key,
@@ -2826,8 +3590,10 @@ impl CdpState {
                     .unwrap_or(0),
             },
         ) {
-            return CdpDispatch::error(-32603, err);
-        }
+            Ok(navigation_actions) => navigation_actions,
+            Err(err) => return CdpDispatch::error(-32603, err),
+        };
+        self.command_navigation_actions.extend(navigation_actions);
 
         let mut notifications = self.drain_side_effect_notifications(req);
         match self.drain_navigation_notifications(req) {
@@ -2844,7 +3610,7 @@ impl CdpState {
         };
 
         self.last_key_down_text = None;
-        if let Err(err) = self.dispatch_key_to_core(
+        let navigation_actions = match self.dispatch_key_to_core(
             "char",
             KeyEventData {
                 key: String::new(),
@@ -2859,11 +3625,15 @@ impl CdpState {
                 location: 0,
             },
         ) {
-            return CdpDispatch::error(
-                -32603,
-                err.replace("Input.dispatchKeyEvent", "Input.insertText"),
-            );
-        }
+            Ok(navigation_actions) => navigation_actions,
+            Err(err) => {
+                return CdpDispatch::error(
+                    -32603,
+                    err.replace("Input.dispatchKeyEvent", "Input.insertText"),
+                );
+            }
+        };
+        self.command_navigation_actions.extend(navigation_actions);
 
         let mut notifications = self.drain_side_effect_notifications(req);
         match self.drain_navigation_notifications(req) {
@@ -3308,7 +4078,6 @@ impl CdpState {
         let runtime_context_id = state.runtime_context_id.ok_or_else(|| {
             BrowserError::new("browser.stale-runtime", "document has no active runtime")
         })?;
-        let before = state.clone();
         let result = match self
             .browser
             .dispatch(BrowserCommand::EvaluateForAutomation {
@@ -3319,6 +4088,8 @@ impl CdpState {
             })? {
             BrowserCommandResult::AutomationEvaluation(evaluation) => {
                 self.queue_runtime_effects(runtime_context_id, evaluation.effects);
+                self.command_navigation_actions
+                    .extend(evaluation.navigation_actions);
                 evaluation.value
             }
             result => {
@@ -3328,14 +4099,6 @@ impl CdpState {
                 ));
             }
         };
-        if let Ok(after) = self.context_state(context_id)
-            && (after.document_id != before.document_id || after.active_navigation_id.is_some())
-            && after.url == before.url
-            && after.history_length == before.history_length
-            && after.history_index == before.history_index
-        {
-            self.pending_content_loader_id = Some(before.document_id.get());
-        }
         Ok(result)
     }
 
@@ -3499,7 +4262,7 @@ impl CdpState {
     fn seed_initial_target(&mut self, url: String) -> Result<(), String> {
         let context_id = self.current_context()?;
         self.configure_context(context_id)?;
-        self.drain_core_events(context_id);
+        self.drain_core_events();
         let navigation_id = match self
             .browser
             .dispatch(BrowserCommand::Navigate { context_id, url })
@@ -3513,6 +4276,20 @@ impl CdpState {
     }
 
     fn push_loaded_target(&mut self, url: String) -> Result<BrowsingContextId, String> {
+        let (context_id, navigation_id) = self.push_target(url)?;
+        if let Some(navigation_id) = navigation_id
+            && let Err(error) = self.wait_for_navigation(context_id, navigation_id)
+        {
+            self.remove_failed_target(context_id);
+            return Err(error);
+        }
+        Ok(context_id)
+    }
+
+    fn push_target(
+        &mut self,
+        url: String,
+    ) -> Result<(BrowsingContextId, Option<NavigationId>), String> {
         let context_id = match self
             .browser
             .dispatch(BrowserCommand::CreateBrowsingContext)
@@ -3530,133 +4307,173 @@ impl CdpState {
             .insert(context_id, ContextPresentation::default());
         self.dispatch_context = Some(context_id);
         self.load_presentation(context_id);
-        self.configure_context(context_id)?;
-        self.drain_core_events(context_id);
+        if let Err(error) = self.configure_context(context_id) {
+            self.remove_failed_target(context_id);
+            return Err(error);
+        }
+        self.drain_core_events();
+        if url == "about:blank" {
+            return Ok((context_id, None));
+        }
         let navigation_id = match self
             .browser
             .dispatch(BrowserCommand::Navigate { context_id, url })
         {
             Ok(BrowserCommandResult::NavigationAccepted { navigation_id }) => navigation_id,
-            Ok(result) => return Err(format!("unexpected target navigation result: {result:?}")),
-            Err(error) => return Err(error.to_string()),
+            Ok(result) => {
+                let error = format!("unexpected target navigation result: {result:?}");
+                self.remove_failed_target(context_id);
+                return Err(error);
+            }
+            Err(error) => {
+                let error = error.to_string();
+                self.remove_failed_target(context_id);
+                return Err(error);
+            }
         };
-        if let Err(error) = self.wait_for_navigation(context_id, navigation_id) {
-            let _ = self
-                .browser
-                .dispatch(BrowserCommand::CloseBrowsingContext { context_id });
-            self.targets
-                .retain(|target| target.context_id != context_id);
-            return Err(error);
+        Ok((context_id, Some(navigation_id)))
+    }
+
+    fn remove_failed_target(&mut self, context_id: BrowsingContextId) {
+        let _ = self
+            .browser
+            .dispatch(BrowserCommand::CloseBrowsingContext { context_id });
+        let _ = self.pump_core_events();
+        self.targets
+            .retain(|target| target.context_id != context_id);
+        self.attached_sessions
+            .retain(|session| session.context_id != context_id);
+        self.context_presentations.remove(&context_id);
+        self.pending_core_navigations
+            .retain(|_, pending| pending.context_id != context_id);
+        self.command_navigation_actions
+            .retain(|action| match action {
+                NavigationActionOutcome::SameDocument { .. } => true,
+                NavigationActionOutcome::CrossDocument { navigation_id, .. } => {
+                    self.pending_core_navigations.contains_key(navigation_id)
+                }
+            });
+        self.dispatch_context = self
+            .dispatch_context
+            .filter(|dispatch_context| *dispatch_context != context_id)
+            .or_else(|| self.targets.first().map(|target| target.context_id));
+        self.active_presentation_context = self
+            .active_presentation_context
+            .filter(|active_context| *active_context != context_id);
+        if self.active_presentation_context.is_none()
+            && let Some(context_id) = self.dispatch_context
+        {
+            self.load_presentation(context_id);
         }
-        Ok(context_id)
     }
 
     fn drain_navigation_notifications(&mut self, req: &CdpRequest) -> Result<Vec<String>, String> {
-        let Some(context_id) = self.context_for_session(req.session_id.as_deref()) else {
+        if self.defer_navigation_notifications {
             return Ok(Vec::new());
-        };
-        let active_navigation_id = self.context_state(context_id)?.active_navigation_id;
-        let (committed, failure) = if let Some(navigation_id) = active_navigation_id {
-            (self.wait_for_navigation(context_id, navigation_id)?, None)
-        } else {
-            self.drain_core_events(context_id)
-        };
-        if let Some(error) = failure {
-            return Err(error);
         }
+        let navigation_actions = std::mem::take(&mut self.command_navigation_actions);
+        let context_id = self
+            .dispatch_context
+            .or_else(|| self.context_for_session(req.session_id.as_deref()))
+            .ok_or_else(|| "navigation has no page target".to_owned())?;
+        let mut notifications = Vec::new();
+        for action in &navigation_actions {
+            if let NavigationActionOutcome::SameDocument { url } = action {
+                notifications.extend(self.same_document_notifications(
+                    context_id,
+                    url,
+                    req.session_id.as_deref(),
+                ));
+            }
+        }
+        let navigation_ids = cross_document_ids(&navigation_actions);
+        let Some((&final_navigation_id, superseded)) = navigation_ids.split_last() else {
+            return Ok(notifications);
+        };
+        for navigation_id in superseded {
+            let _ = self.wait_for_navigation(context_id, *navigation_id);
+        }
+        let committed = self.wait_for_navigation(context_id, final_navigation_id)?;
+        notifications.extend(
+            self.navigation_notifications_after_completion(
+                context_id,
+                req,
+                committed,
+                final_cross_document_kind(&navigation_actions)
+                    .unwrap_or(CrossDocumentNavigationKind::Regular),
+            )?,
+        );
+        notifications.extend(self.drain_side_effect_notifications(req));
+        Ok(notifications)
+    }
+
+    fn navigation_notifications_after_completion(
+        &mut self,
+        context_id: BrowsingContextId,
+        req: &CdpRequest,
+        committed: bool,
+        kind: CrossDocumentNavigationKind,
+    ) -> Result<Vec<String>, String> {
         if committed {
             self.reset_input_for_navigation();
-            if let Some(loader_id) = self.pending_content_loader_id.take() {
-                Ok(self
-                    .current_content_replaced_notifications(req.session_id.as_deref(), loader_id))
+            if let CrossDocumentNavigationKind::ContentReplacement {
+                replaced_document_id,
+            } = kind
+            {
+                Ok(self.current_content_replaced_notifications(
+                    context_id,
+                    req.session_id.as_deref(),
+                    replaced_document_id.get(),
+                ))
             } else {
-                Ok(self.current_page_load_notifications(req.session_id.as_deref()))
+                Ok(self.current_page_load_notifications(context_id, req.session_id.as_deref()))
             }
         } else {
             Ok(Vec::new())
         }
     }
 
-    fn apply_history_traversal(
-        &mut self,
-        delta: i32,
-        session_id: Option<&str>,
-        notifications: &mut Vec<String>,
-    ) -> Result<(), String> {
-        if delta == 0 {
-            return Ok(());
-        }
-        let Some(context_id) = self.context_for_session(session_id) else {
-            return Err("history traversal has no page loaded".to_owned());
-        };
-        let before = self.context_state(context_id)?;
-        self.drain_core_events(context_id);
-        let navigation_id = match self
-            .browser
-            .dispatch(BrowserCommand::TraverseHistory { context_id, delta })
-        {
-            Ok(BrowserCommandResult::Accepted) => None,
-            Ok(BrowserCommandResult::NavigationAccepted { navigation_id }) => Some(navigation_id),
-            Ok(result) => return Err(format!("unexpected history-traversal result: {result:?}")),
-            Err(error) => return Err(error.to_string()),
-        };
-        let (committed, failure) = if let Some(navigation_id) = navigation_id {
-            (self.wait_for_navigation(context_id, navigation_id)?, None)
-        } else {
-            self.drain_core_events(context_id)
-        };
-        if let Some(error) = failure {
-            return Err(error);
-        }
-        let after = self.context_state(context_id)?;
-        if committed {
-            notifications.extend(self.current_page_load_notifications(session_id));
-        } else if after.url != before.url {
-            notifications.push(notification(
-                "Page.navigatedWithinDocument",
-                json!({ "frameId": frame_id(&after), "url": after.url }),
-                session_id,
-            ));
-        }
-        Ok(())
-    }
-
-    fn current_origin_for_session(&mut self, session_id: Option<&str>) -> String {
-        self.context_for_session(session_id)
-            .and_then(|context_id| self.context_state(context_id).ok())
-            .map(|state| origin_for_url(&state.url))
-            .unwrap_or_else(|| "://".to_owned())
-    }
-
-    fn current_frame_id_for_session(&mut self, session_id: Option<&str>) -> String {
-        self.context_for_session(session_id)
-            .and_then(|context_id| self.context_state(context_id).ok())
-            .map(|state| frame_id(&state))
-            .unwrap_or_else(|| "tab-0".to_owned())
-    }
-
-    fn current_loader_id_for_session(&mut self, session_id: Option<&str>) -> u64 {
-        self.context_for_session(session_id)
-            .and_then(|context_id| self.context_state(context_id).ok())
-            .map(|state| state.document_id.get())
-            .unwrap_or(0)
-    }
-
     fn runtime_main_context_created_notification(&mut self, session_id: Option<&str>) -> String {
-        let frame_id = self.current_frame_id_for_session(session_id);
-        let runtime_id = self
+        let state = self
             .context_for_session(session_id)
-            .and_then(|context_id| self.context_state(context_id).ok())
-            .and_then(|state| state.runtime_context_id)
-            .map(|runtime_id| runtime_id.get())
-            .unwrap_or(0);
+            .and_then(|context_id| self.context_state(context_id).ok());
+        match state {
+            Some(state) => {
+                self.runtime_main_context_created_notification_for_state(&state, session_id)
+            }
+            None => self.runtime_context_created_notification(RuntimeContextNotification {
+                id: 0,
+                name: "Vixen",
+                unique_prefix: "vixen-main-context",
+                is_default: true,
+                context_type: "default",
+                frame_id: "tab-0",
+                origin: "://",
+                loader_id: 0,
+                session_id,
+            }),
+        }
+    }
+
+    fn runtime_main_context_created_notification_for_state(
+        &mut self,
+        state: &BrowsingContextState,
+        session_id: Option<&str>,
+    ) -> String {
+        let frame_id = frame_id(state);
+        let origin = origin_for_url(&state.url);
         self.runtime_context_created_notification(RuntimeContextNotification {
-            id: runtime_id,
+            id: state
+                .runtime_context_id
+                .map(|runtime_id| runtime_id.get())
+                .unwrap_or(0),
             name: "Vixen",
             unique_prefix: "vixen-main-context",
             is_default: true,
             context_type: "default",
             frame_id: &frame_id,
+            origin: &origin,
+            loader_id: state.document_id.get(),
             session_id,
         })
     }
@@ -3670,9 +4487,9 @@ impl CdpState {
             json!({
                 "context": {
                     "id": context.id,
-                    "origin": self.current_origin_for_session(context.session_id),
+                    "origin": context.origin,
                     "name": context.name,
-                    "uniqueId": format!("{}-{}", context.unique_prefix, self.current_loader_id_for_session(context.session_id)),
+                    "uniqueId": format!("{}-{}", context.unique_prefix, context.loader_id),
                     "auxData": {
                         "isDefault": context.is_default,
                         "type": context.context_type,
@@ -3684,10 +4501,11 @@ impl CdpState {
         )
     }
 
-    fn current_page_load_notifications(&mut self, session_id: Option<&str>) -> Vec<String> {
-        let Some(context_id) = self.context_for_session(session_id) else {
-            return Vec::new();
-        };
+    fn current_page_load_notifications(
+        &mut self,
+        context_id: BrowsingContextId,
+        session_id: Option<&str>,
+    ) -> Vec<String> {
         let Ok(state) = self.context_state(context_id) else {
             return Vec::new();
         };
@@ -3699,18 +4517,38 @@ impl CdpState {
             .collect()
     }
 
+    fn same_document_notifications(
+        &mut self,
+        context_id: BrowsingContextId,
+        url: &str,
+        session_id: Option<&str>,
+    ) -> Vec<String> {
+        let Ok(state) = self.context_state(context_id) else {
+            return Vec::new();
+        };
+        self.notification_sessions(context_id, session_id)
+            .into_iter()
+            .map(|session_id| {
+                notification(
+                    "Page.navigatedWithinDocument",
+                    json!({ "frameId": frame_id(&state), "url": url }),
+                    session_id.as_deref(),
+                )
+            })
+            .collect()
+    }
+
     fn current_content_replaced_notifications(
         &mut self,
+        context_id: BrowsingContextId,
         session_id: Option<&str>,
         loader_id: u64,
     ) -> Vec<String> {
-        let Some(context_id) = self.context_for_session(session_id) else {
-            return Vec::new();
-        };
         let Ok(state) = self.context_state(context_id) else {
             return Vec::new();
         };
         let frame_id = frame_id(&state);
+        let origin = origin_for_url(&state.url);
         let timestamp = now_ms();
         self.notification_sessions(context_id, session_id)
             .into_iter()
@@ -3723,7 +4561,11 @@ impl CdpState {
                         json!({}),
                         session_id,
                     ));
-                    notifications.push(self.runtime_main_context_created_notification(session_id));
+                    notifications.push(
+                        self.runtime_main_context_created_notification_for_state(
+                            &state, session_id,
+                        ),
+                    );
                     if let Some(world_name) = self.isolated_world_name.clone() {
                         notifications.push(self.runtime_context_created_notification(
                             RuntimeContextNotification {
@@ -3733,6 +4575,8 @@ impl CdpState {
                                 is_default: false,
                                 context_type: "isolated",
                                 frame_id: &frame_id,
+                                origin: &origin,
+                                loader_id: state.document_id.get(),
                                 session_id,
                             },
                         ));
@@ -3783,6 +4627,7 @@ impl CdpState {
         session_id: Option<&str>,
     ) -> Vec<String> {
         let frame_id = frame_id(state);
+        let origin = origin_for_url(&state.url);
         let timestamp = now_ms();
         let mut notifications = Vec::new();
         if self.network_enabled {
@@ -3823,7 +4668,8 @@ impl CdpState {
             ));
         }
         if self.runtime_enabled {
-            notifications.push(self.runtime_main_context_created_notification(session_id));
+            notifications
+                .push(self.runtime_main_context_created_notification_for_state(state, session_id));
             if let Some(world_name) = self.isolated_world_name.clone() {
                 notifications.push(self.runtime_context_created_notification(
                     RuntimeContextNotification {
@@ -3833,6 +4679,8 @@ impl CdpState {
                         is_default: false,
                         context_type: "isolated",
                         frame_id: &frame_id,
+                        origin: &origin,
+                        loader_id: state.document_id.get(),
                         session_id,
                     },
                 ));
@@ -3875,97 +4723,90 @@ impl CdpState {
     }
 
     fn drain_side_effect_notifications(&mut self, req: &CdpRequest) -> Vec<String> {
-        let pending = std::mem::take(&mut self.pending_effects);
-        let mut console_events = Vec::new();
-        let mut dialog_events = Vec::new();
-        let mut binding_events = Vec::new();
-        let mut network_events = Vec::new();
-        for pending in pending {
-            let runtime_id = pending.runtime_context_id.get();
-            console_events.extend(
-                pending
-                    .effects
-                    .console
-                    .into_iter()
-                    .map(|event| (runtime_id, event)),
-            );
-            dialog_events.extend(pending.effects.dialogs);
-            binding_events.extend(
-                pending
-                    .effects
-                    .bindings
-                    .into_iter()
-                    .map(|event| (runtime_id, event)),
-            );
-            network_events.extend(pending.effects.network);
-        }
-
-        let session_id = req.session_id.as_deref();
-        let mut notifications = Vec::new();
-        if self.runtime_enabled {
-            notifications.extend(
-                console_events
-                    .into_iter()
-                    .map(|(runtime_id, event)| console_notification(event, runtime_id, session_id)),
-            );
-        }
-        notifications.extend(
-            dialog_events
-                .into_iter()
-                .map(|event| self.dialog_notification(event, session_id)),
-        );
-        if self.runtime_enabled {
-            notifications.extend(
-                binding_events
-                    .into_iter()
-                    .map(|(runtime_id, event)| binding_notification(event, runtime_id, session_id)),
-            );
-        }
-        if !self.network_enabled {
-            return notifications;
-        }
-        let session_id = req.session_id.as_deref();
-        let frame_id = self.current_frame_id_for_session(session_id);
-        let loader_id = self.current_loader_id_for_session(session_id);
-        let document_url = self
-            .context_for_session(session_id)
-            .and_then(|context_id| self.context_state(context_id).ok())
-            .map(|state| state.url)
-            .unwrap_or_else(|| "about:blank".to_owned());
-        let timestamp = now_ms();
-        notifications.extend(network_events.into_iter().flat_map(|event| {
-            network_fetch_notifications(
-                event,
-                &frame_id,
-                loader_id,
-                &document_url,
-                timestamp,
-                session_id,
-            )
-        }));
-        notifications
+        let context_id = self
+            .dispatch_context
+            .or_else(|| self.context_for_session(req.session_id.as_deref()));
+        self.drain_side_effect_notifications_for_optional_context(context_id, req)
     }
 
-    fn dialog_notification(
+    fn drain_side_effect_notifications_for_context(
         &mut self,
-        event: RuntimeDialogEvent,
-        session_id: Option<&str>,
-    ) -> String {
-        let state = self
-            .context_for_session(session_id)
-            .and_then(|context_id| self.context_state(context_id).ok());
-        notification(
-            "Page.javascriptDialogOpening",
-            json!({
-                "url": state.as_ref().map(|state| state.url.as_str()).unwrap_or("about:blank"),
-                "frameId": state.as_ref().map(frame_id).unwrap_or_else(|| "tab-0".to_owned()),
-                "message": event.message,
-                "type": event.kind,
-                "hasBrowserHandler": true,
-                "defaultPrompt": event.default_prompt,
-            }),
-            session_id,
-        )
+        context_id: BrowsingContextId,
+        req: &CdpRequest,
+    ) -> Vec<String> {
+        self.drain_side_effect_notifications_for_optional_context(Some(context_id), req)
+    }
+
+    fn drain_side_effect_notifications_for_optional_context(
+        &mut self,
+        context_id: Option<BrowsingContextId>,
+        req: &CdpRequest,
+    ) -> Vec<String> {
+        let mut notifications = Vec::new();
+        let mut retained = VecDeque::new();
+        while let Some(pending) = self.pending_effects.pop_front() {
+            if context_id != Some(pending.context_id) {
+                retained.push_back(pending);
+                continue;
+            }
+            let runtime_id = pending.runtime_context_id.get();
+            let frame_id = format!("tab-{}", pending.frame_id.get());
+            let loader_id = pending.document_id.get();
+            let timestamp = now_ms();
+            for session_id in
+                self.notification_sessions(pending.context_id, req.session_id.as_deref())
+            {
+                let session_id = session_id.as_deref();
+                if self.runtime_enabled {
+                    notifications.extend(
+                        pending
+                            .effects
+                            .console
+                            .iter()
+                            .cloned()
+                            .map(|event| console_notification(event, runtime_id, session_id)),
+                    );
+                    notifications.extend(pending.effects.exceptions.iter().map(|event| {
+                        exception_thrown_notification(
+                            &event.error.to_string(),
+                            event.error.code,
+                            session_id,
+                        )
+                    }));
+                }
+                notifications.extend(
+                    pending.effects.dialogs.iter().cloned().map(|event| {
+                        dialog_notification(event, &frame_id, &pending.url, session_id)
+                    }),
+                );
+                if self.runtime_enabled {
+                    notifications.extend(
+                        pending
+                            .effects
+                            .bindings
+                            .iter()
+                            .cloned()
+                            .map(|event| binding_notification(event, runtime_id, session_id)),
+                    );
+                }
+                if self.network_enabled {
+                    notifications.extend(pending.effects.network.iter().cloned().flat_map(
+                        |event| {
+                            network_fetch_notifications(
+                                event,
+                                &frame_id,
+                                loader_id,
+                                &pending.url,
+                                timestamp,
+                                session_id,
+                            )
+                        },
+                    ));
+                }
+            }
+        }
+        self.pending_effects = retained;
+        notifications
     }
 
     fn reset_input_for_navigation(&mut self) {
@@ -4018,11 +4859,9 @@ impl CdpState {
     pub fn with_runtime(rt: JsRuntime) -> Self {
         let network = rt.network_config();
         drop(rt);
-        let profile = tempfile::Builder::new()
-            .prefix("vixen-cdp-test-")
-            .tempdir()
+        let profile = BrowserProfile::open(None, "vixen-cdp-test-", "CDP test")
             .expect("create CDP test profile");
-        let mut config = BrowserConfig::new(profile.path().join("profile.redb"));
+        let mut config = BrowserConfig::new(profile.database_path());
         config.network = network;
         Self::with_config_and_profile(config, profile).expect("start CDP BrowserCore")
     }
@@ -4135,6 +4974,36 @@ fn is_supported_cdp_permission(permission: &str) -> bool {
 
 fn cdp_target_id(context_id: BrowsingContextId) -> String {
     format!("tab-{}", context_id.get())
+}
+
+fn cross_document_actions(
+    actions: &[NavigationActionOutcome],
+) -> impl Iterator<Item = (NavigationId, CrossDocumentNavigationKind)> + '_ {
+    actions.iter().filter_map(|action| match action {
+        NavigationActionOutcome::SameDocument { .. } => None,
+        NavigationActionOutcome::CrossDocument {
+            navigation_id,
+            kind,
+        } => Some((*navigation_id, *kind)),
+    })
+}
+
+fn cross_document_ids(actions: &[NavigationActionOutcome]) -> Vec<NavigationId> {
+    cross_document_actions(actions)
+        .map(|(navigation_id, _)| navigation_id)
+        .collect()
+}
+
+fn final_cross_document_id(actions: &[NavigationActionOutcome]) -> Option<NavigationId> {
+    cross_document_actions(actions)
+        .last()
+        .map(|(navigation_id, _)| navigation_id)
+}
+
+fn final_cross_document_kind(
+    actions: &[NavigationActionOutcome],
+) -> Option<CrossDocumentNavigationKind> {
+    cross_document_actions(actions).last().map(|(_, kind)| kind)
 }
 
 fn frame_id(state: &BrowsingContextState) -> String {
@@ -4626,6 +5495,40 @@ fn cdp_call_argument_expr(arg: &Value) -> String {
 // Wire types: CdpRequest / CdpResponse / CdpNotification
 // ---------------------------------------------------------------------------
 
+fn parse_cdp_request(raw: &str) -> Result<CdpRequest, String> {
+    let value: Value = serde_json::from_str(raw)
+        .map_err(|error| error_response(None, CdpError::parse(error.to_string())))?;
+    serde_json::from_value(value)
+        .map_err(|error| error_response(None, CdpError::new(-32600, error.to_string())))
+}
+
+fn is_async_navigation_method(method: &str) -> bool {
+    matches!(
+        method,
+        "Target.createTarget"
+            | "Page.navigate"
+            | "Page.reload"
+            | "Page.navigateToHistoryEntry"
+            | "DOM.describeNode"
+            | "DOM.resolveNode"
+            | "DOM.getAttributes"
+            | "DOM.getOuterHTML"
+            | "DOM.setAttributeValue"
+            | "DOM.removeAttribute"
+            | "DOM.getContentQuads"
+            | "DOM.getBoxModel"
+            | "Runtime.evaluate"
+            | "Runtime.callFunctionOn"
+            | "Runtime.getProperties"
+            | "Runtime.awaitPromise"
+            | "Runtime.releaseObject"
+            | "Runtime.releaseObjectGroup"
+            | "Input.dispatchMouseEvent"
+            | "Input.dispatchKeyEvent"
+            | "Input.insertText"
+    )
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct CdpRequest {
     id: u64,
@@ -4744,6 +5647,26 @@ fn binding_notification(
             "name": event.name,
             "payload": event.payload,
             "executionContextId": runtime_id,
+        }),
+        session_id,
+    )
+}
+
+fn dialog_notification(
+    event: RuntimeDialogEvent,
+    frame_id: &str,
+    url: &str,
+    session_id: Option<&str>,
+) -> String {
+    notification(
+        "Page.javascriptDialogOpening",
+        json!({
+            "url": url,
+            "frameId": frame_id,
+            "message": event.message,
+            "type": event.kind,
+            "hasBrowserHandler": true,
+            "defaultPrompt": event.default_prompt,
         }),
         session_id,
     )
@@ -5080,6 +6003,16 @@ fn now_ms() -> u64 {
 mod tests {
     use super::*;
 
+    #[test]
+    fn cdp_explicit_profile_creates_database() {
+        let parent = tempfile::tempdir().unwrap();
+        let profile_dir = parent.path().join("cdp-profile");
+
+        drop(CdpState::with_profile_dir(&profile_dir).unwrap());
+
+        assert!(profile_dir.join("profile.redb").is_file());
+    }
+
     fn dispatch_one(state: &mut CdpState, method: &str, params: Value) -> Value {
         let req = CdpRequest {
             id: 1,
@@ -5132,6 +6065,833 @@ mod tests {
             config,
             handle,
         )
+    }
+
+    struct GatedNavigationRequest {
+        path: String,
+        respond: std::sync::mpsc::SyncSender<String>,
+    }
+
+    fn spawn_gated_navigation_server(
+        host: &str,
+        requests: usize,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        tokio::sync::mpsc::UnboundedReceiver<GatedNavigationRequest>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_tx, request_rx) = tokio::sync::mpsc::unbounded_channel();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..requests {
+                let Ok((mut stream, _)) = listener.accept() else {
+                    return;
+                };
+                let mut request = [0_u8; 2048];
+                let read = stream.read(&mut request).unwrap_or(0);
+                let request = String::from_utf8_lossy(&request[..read]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/")
+                    .to_owned();
+                let (respond, response) = std::sync::mpsc::sync_channel(1);
+                if request_tx
+                    .send(GatedNavigationRequest { path, respond })
+                    .is_err()
+                {
+                    return;
+                }
+                let Ok(body) = response.recv_timeout(Duration::from_secs(10)) else {
+                    return;
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}", addr.port()),
+            config,
+            request_rx,
+            handle,
+        )
+    }
+
+    async fn receive_cdp_responses<S>(
+        socket: &mut tokio_tungstenite::WebSocketStream<S>,
+        expected_ids: &[u64],
+    ) -> (Vec<u64>, HashMap<u64, Value>)
+    where
+        S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    {
+        let mut order = Vec::new();
+        let mut responses = HashMap::new();
+        while responses.len() < expected_ids.len() {
+            let message = socket
+                .next()
+                .await
+                .expect("CDP socket response")
+                .expect("valid CDP socket message");
+            if !message.is_text() {
+                continue;
+            }
+            let value: Value = serde_json::from_str(message.to_text().unwrap()).unwrap();
+            let Some(id) = value.get("id").and_then(Value::as_u64) else {
+                continue;
+            };
+            if expected_ids.contains(&id) {
+                order.push(id);
+                responses.insert(id, value);
+            }
+        }
+        (order, responses)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn socket_navigation_adopts_author_successor_and_drains_destination_effects() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (origin, network, mut requests, server) =
+                    spawn_gated_navigation_server("vixen-cdp-successor.com", 2);
+                let runtime = JsRuntime::with_network_config(network).expect("JS runtime");
+                let state = Rc::new(RefCell::new(CdpState::with_runtime(runtime)));
+                {
+                    let mut state = state.borrow_mut();
+                    dispatch_one(&mut state, "Runtime.enable", json!({}));
+                    dispatch_one(&mut state, "Page.enable", json!({}));
+                    dispatch_one(&mut state, "Network.enable", json!({}));
+                    dispatch_one(
+                        &mut state,
+                        "Runtime.addBinding",
+                        json!({ "name": "destinationBinding" }),
+                    );
+                }
+
+                let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let server_state = Rc::clone(&state);
+                let connection = tokio::task::spawn_local(async move {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    handle_connection(stream, server_state).await.unwrap();
+                });
+                let (mut socket, _) =
+                    tokio_tungstenite::connect_async(format!("ws://{address}"))
+                        .await
+                        .unwrap();
+                socket
+                    .send(Message::text(
+                        json!({
+                            "id": 5,
+                            "method": "Page.navigate",
+                            "params": { "url": format!("{origin}/first") }
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+
+                let first = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+                    .await
+                    .expect("first navigation reached server")
+                    .expect("first navigation request");
+                assert_eq!(first.path, "/first");
+                first
+                    .respond
+                    .send(
+                        "<script>console.log('intermediate-effect'); fetch('data:text/plain,intermediate-network'); location.assign('/successor')</script>"
+                            .to_owned(),
+                    )
+                    .unwrap();
+                let successor = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+                    .await
+                    .expect("author successor reached server")
+                    .expect("author successor request");
+                assert_eq!(successor.path, "/successor");
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(100), socket.next())
+                        .await
+                        .is_err(),
+                    "initiating response completed before its active successor"
+                );
+                successor
+                    .respond
+                    .send(
+                        "<script>console.log('destination-effect'); destinationBinding('bound-effect'); alert('dialog-effect'); fetch('data:text/plain,network-effect'); throw new Error('exception-effect')</script>"
+                            .to_owned(),
+                    )
+                    .unwrap();
+
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut messages = Vec::new();
+                loop {
+                    let message = tokio::time::timeout(
+                        deadline.saturating_duration_since(Instant::now()),
+                        socket.next(),
+                    )
+                    .await
+                    .expect("navigation response and destination notifications")
+                    .expect("socket message")
+                    .expect("valid socket message");
+                    if !message.is_text() {
+                        continue;
+                    }
+                    messages.push(
+                        serde_json::from_str::<Value>(message.to_text().unwrap()).unwrap(),
+                    );
+                    let methods = messages
+                        .iter()
+                        .filter_map(|message| message["method"].as_str())
+                        .collect::<Vec<_>>();
+                    if messages.iter().any(|message| message["id"] == 5)
+                        && [
+                            "Runtime.consoleAPICalled",
+                            "Runtime.bindingCalled",
+                            "Page.javascriptDialogOpening",
+                            "Runtime.exceptionThrown",
+                            "Network.requestWillBeSent",
+                        ]
+                        .iter()
+                        .all(|expected| methods.contains(expected))
+                    {
+                        break;
+                    }
+                }
+                assert_eq!(messages[0]["id"], 5, "response must precede notifications");
+                assert!(messages.iter().any(|message| {
+                    message["method"] == "Runtime.consoleAPICalled"
+                        && message["params"]["args"][0]["value"] == "destination-effect"
+                }));
+                assert!(messages.iter().any(|message| {
+                    message["method"] == "Runtime.bindingCalled"
+                        && message["params"]["payload"] == "bound-effect"
+                }));
+                let final_state = state.borrow_mut().current_state().unwrap();
+                let intermediate_console = messages
+                    .iter()
+                    .find(|message| {
+                        message["method"] == "Runtime.consoleAPICalled"
+                            && message["params"]["args"][0]["value"] == "intermediate-effect"
+                    })
+                    .expect("intermediate destination console effect");
+                assert_ne!(
+                    intermediate_console["params"]["executionContextId"],
+                    final_state.runtime_context_id.unwrap().get()
+                );
+                let intermediate_network = messages
+                    .iter()
+                    .find(|message| {
+                        message["method"] == "Network.requestWillBeSent"
+                            && message["params"]["request"]["url"]
+                                == "data:text/plain,intermediate-network"
+                    })
+                    .expect("intermediate destination network effect");
+                assert_eq!(
+                    intermediate_network["params"]["documentURL"],
+                    format!("{origin}/first")
+                );
+                assert_ne!(
+                    intermediate_network["params"]["loaderId"],
+                    loader_id(&final_state)
+                );
+
+                socket.close(None).await.unwrap();
+                connection.await.unwrap();
+                drop(state);
+                server.join().unwrap();
+            })
+            .await;
+    }
+
+    #[test]
+    fn socket_operation_never_adopts_successor_claimed_by_another_wire_request() {
+        let mut state = CdpState::default();
+        let first_request = CdpRequest {
+            id: 1,
+            session_id: None,
+            method: "Page.navigate".to_owned(),
+            params: json!({ "url": "https://claimed.test/first" }),
+        };
+        let mut first = match state.start_socket_operation(&first_request) {
+            Ok(Some(operation)) => operation,
+            _ => panic!("first continuation did not start"),
+        };
+        let second_request = CdpRequest {
+            id: 2,
+            session_id: None,
+            method: "Page.navigate".to_owned(),
+            params: json!({ "url": "https://claimed.test/second" }),
+        };
+        let second = match state.start_socket_operation(&second_request) {
+            Ok(Some(operation)) => operation,
+            _ => panic!("second continuation did not start"),
+        };
+        state.pump_core_events().unwrap();
+        let first_navigation_id = final_cross_document_id(&first.navigation_actions).unwrap();
+        let second_navigation_id = final_cross_document_id(&second.navigation_actions).unwrap();
+        state
+            .pending_core_navigations
+            .get_mut(&second_navigation_id)
+            .unwrap()
+            .predecessor_navigation_id = Some(first_navigation_id);
+
+        state.adopt_active_socket_successor(&mut first).unwrap();
+        assert_eq!(cross_document_ids(&first.navigation_actions).len(), 1);
+        assert_eq!(cross_document_ids(&second.navigation_actions).len(), 1);
+
+        let mut operations = VecDeque::from([PendingCdpOperation {
+            request: first_request,
+            started: Instant::now(),
+            deadline: Instant::now() + Duration::from_secs(1),
+            operation: first,
+        }]);
+        assert_eq!(state.poll_socket_operations(&mut operations).len(), 1);
+        assert!(operations.is_empty());
+        assert!(state.pending_core_navigations[&second_navigation_id].wire_claimed);
+
+        state.cancel_socket_operation(&second);
+    }
+
+    #[test]
+    fn socket_operation_adopts_terminal_and_active_successor_chain_in_order() {
+        let mut state = CdpState::default();
+        let context_id = state.current_context().unwrap();
+        let first = NavigationId::new(100).unwrap();
+        let second = NavigationId::new(101).unwrap();
+        let third = NavigationId::new(102).unwrap();
+        for (navigation_id, predecessor_navigation_id, terminal, wire_claimed) in [
+            (first, None, Some(Ok(())), true),
+            (second, Some(first), Some(Ok(())), false),
+            (third, Some(second), None, false),
+        ] {
+            state.pending_core_navigations.insert(
+                navigation_id,
+                PendingCoreNavigation {
+                    context_id,
+                    predecessor_navigation_id,
+                    kind: CrossDocumentNavigationKind::Regular,
+                    committed: terminal.is_some(),
+                    terminal,
+                    wire_claimed,
+                    abandoned: false,
+                },
+            );
+        }
+        let mut operation = StartedSocketOperation {
+            context_id,
+            navigation_actions: vec![NavigationActionOutcome::CrossDocument {
+                navigation_id: first,
+                kind: CrossDocumentNavigationKind::Regular,
+            }],
+            completion: SocketCompletion::TargetCreate,
+        };
+
+        state.adopt_active_socket_successor(&mut operation).unwrap();
+
+        assert_eq!(
+            cross_document_ids(&operation.navigation_actions),
+            vec![first, second, third]
+        );
+        assert!(state.pending_core_navigations[&second].wire_claimed);
+        assert!(state.pending_core_navigations[&third].wire_claimed);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn expired_socket_operation_cancels_and_consumes_exact_terminal() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (origin, network, mut requests, server) =
+                    spawn_gated_navigation_server("vixen-cdp-timeout.com", 1);
+                let runtime = JsRuntime::with_network_config(network).expect("JS runtime");
+                let mut state = CdpState::with_runtime(runtime);
+                let context_id = state.current_context().unwrap();
+                let request = CdpRequest {
+                    id: 1,
+                    session_id: None,
+                    method: "Page.navigate".to_owned(),
+                    params: json!({ "url": format!("{origin}/slow") }),
+                };
+                let operation = match state.start_socket_operation(&request) {
+                    Ok(Some(operation)) => operation,
+                    _ => panic!("navigation continuation did not start"),
+                };
+                let navigation_id = final_cross_document_id(&operation.navigation_actions).unwrap();
+                let slow = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+                    .await
+                    .expect("navigation reached server")
+                    .expect("navigation request");
+                let mut pending = VecDeque::from([PendingCdpOperation {
+                    request,
+                    started: Instant::now(),
+                    deadline: Instant::now() - Duration::from_millis(1),
+                    operation,
+                }]);
+
+                let completed = state.poll_socket_operations(&mut pending);
+                assert_eq!(completed.len(), 1);
+                assert!(pending.is_empty());
+                assert!(!state.pending_core_navigations.contains_key(&navigation_id));
+                assert_eq!(
+                    state
+                        .context_state(context_id)
+                        .unwrap()
+                        .active_navigation_id,
+                    None
+                );
+                let _ = slow
+                    .respond
+                    .send("<!doctype html><title>Too late</title>".to_owned());
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                state.pump_core_events().unwrap();
+                assert_eq!(state.context_state(context_id).unwrap().url, "about:blank");
+                drop(state);
+                server.join().unwrap();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn disconnect_drops_pending_destination_and_cancellation_effects() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (origin, network, mut requests, server) =
+                    spawn_gated_navigation_server("vixen-cdp-disconnect-effects.com", 2);
+                let runtime = JsRuntime::with_network_config(network).expect("JS runtime");
+                let state = Rc::new(RefCell::new(CdpState::with_runtime(runtime)));
+                dispatch_one(&mut state.borrow_mut(), "Runtime.enable", json!({}));
+
+                let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let server_state = Rc::clone(&state);
+                let connection = tokio::task::spawn_local(async move {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    handle_connection(stream, server_state).await.unwrap();
+                });
+                let (mut socket, _) =
+                    tokio_tungstenite::connect_async(format!("ws://{address}"))
+                        .await
+                        .unwrap();
+                socket
+                    .send(Message::text(
+                        json!({
+                            "id": 1,
+                            "method": "Page.navigate",
+                            "params": { "url": format!("{origin}/first") }
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let first = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+                    .await
+                    .expect("first navigation reached server")
+                    .expect("first navigation request");
+                first
+                    .respond
+                    .send(
+                        "<script>console.log('disconnect-effect'); location.assign('/slow')</script>"
+                            .to_owned(),
+                    )
+                    .unwrap();
+                let slow = tokio::time::timeout(Duration::from_secs(5), requests.recv())
+                    .await
+                    .expect("successor reached server")
+                    .expect("successor request");
+
+                socket.close(None).await.unwrap();
+                connection.await.unwrap();
+                {
+                    let state = state.borrow();
+                    assert!(state.pending_effects.is_empty());
+                    assert!(state
+                        .context_presentations
+                        .values()
+                        .all(|presentation| presentation.pending_effects.is_empty()));
+                }
+                let _ = slow
+                    .respond
+                    .send("<!doctype html><title>Too late</title>".to_owned());
+                let lines = state.borrow_mut().handle_text_sync(
+                    &json!({
+                        "id": 2,
+                        "method": "Runtime.evaluate",
+                        "params": { "expression": "'clean'" }
+                    })
+                    .to_string(),
+                );
+                assert!(lines.iter().all(|line| !line.contains("disconnect-effect")));
+
+                drop(state);
+                server.join().unwrap();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn socket_navigation_and_reload_can_be_stopped_before_source_completion() {
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (origin, network, mut gated_requests, gated_server) =
+                    spawn_gated_navigation_server("vixen-cdp-stop.com", 3);
+                let runtime = JsRuntime::with_network_config(network).expect("JS runtime");
+                let state = Rc::new(RefCell::new(CdpState::with_runtime(runtime)));
+                let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let server_state = Rc::clone(&state);
+                let connection = tokio::task::spawn_local(async move {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    handle_connection(stream, server_state).await.unwrap();
+                });
+                let (mut socket, _) =
+                    tokio_tungstenite::connect_async(format!("ws://{address}"))
+                        .await
+                        .unwrap();
+
+                socket
+                    .send(Message::text(
+                        json!({ "id": 1, "method": "Page.navigate", "params": { "url": format!("{origin}/slow") } }).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let slow = tokio::time::timeout(Duration::from_secs(2), gated_requests.recv())
+                    .await
+                    .expect("slow navigation reached server")
+                    .expect("slow navigation request");
+                assert_eq!(slow.path, "/slow");
+                socket
+                    .send(Message::text(
+                        json!({ "id": 2, "method": "Page.stopLoading", "params": {} })
+                            .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let (order, responses) = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    receive_cdp_responses(&mut socket, &[1, 2]),
+                )
+                .await
+                .expect("stop and cancelled navigation responses");
+                assert_eq!(order, vec![2, 1]);
+                assert_eq!(responses[&2]["result"], json!({}));
+                assert!(
+                    responses[&1]["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("cancelled")
+                );
+                slow.respond
+                    .send("<!doctype html><title>Too late</title>".to_owned())
+                    .unwrap();
+
+                socket
+                    .send(Message::text(
+                        json!({ "id": 3, "method": "Page.navigate", "params": { "url": format!("{origin}/stable") } }).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let stable = tokio::time::timeout(Duration::from_secs(2), gated_requests.recv())
+                    .await
+                    .expect("stable navigation reached server")
+                    .expect("stable navigation request");
+                assert_eq!(stable.path, "/stable");
+                stable
+                    .respond
+                    .send("<!doctype html><title>Stable</title>".to_owned())
+                    .unwrap();
+                let (_, responses) = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    receive_cdp_responses(&mut socket, &[3]),
+                )
+                .await
+                .expect("stable navigation response");
+                assert_eq!(responses[&3]["result"]["frameId"], "tab-1");
+
+                socket
+                    .send(Message::text(
+                        json!({ "id": 4, "method": "Page.reload", "params": {} }).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let reload = tokio::time::timeout(Duration::from_secs(2), gated_requests.recv())
+                    .await
+                    .expect("reload reached server")
+                    .expect("reload request");
+                assert_eq!(reload.path, "/stable");
+                socket
+                    .send(Message::text(
+                        json!({ "id": 5, "method": "Page.stopLoading", "params": {} })
+                            .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let (order, responses) = tokio::time::timeout(
+                    Duration::from_secs(2),
+                    receive_cdp_responses(&mut socket, &[4, 5]),
+                )
+                .await
+                .expect("stop and cancelled reload responses");
+                assert_eq!(order, vec![5, 4]);
+                assert_eq!(responses[&5]["result"], json!({}));
+                assert!(
+                    responses[&4]["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("cancelled")
+                );
+                reload
+                    .respond
+                    .send("<!doctype html><title>Too late reload</title>".to_owned())
+                    .unwrap();
+
+                socket.close(None).await.unwrap();
+                connection.await.unwrap();
+                drop(state);
+                gated_server.join().unwrap();
+            })
+            .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn socket_history_and_runtime_navigation_can_be_stopped_without_poisoning_later_work() {
+        const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (origin, network, mut gated_requests, gated_server) =
+                    spawn_gated_navigation_server("vixen-cdp-actions.com", 7);
+                let runtime = JsRuntime::with_network_config(network).expect("JS runtime");
+                let state = Rc::new(RefCell::new(CdpState::with_runtime(runtime)));
+                let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let server_state = Rc::clone(&state);
+                let connection = tokio::task::spawn_local(async move {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    handle_connection(stream, server_state).await.unwrap();
+                });
+                let (mut socket, _) =
+                    tokio_tungstenite::connect_async(format!("ws://{address}"))
+                        .await
+                        .unwrap();
+
+                for (id, path, title) in [(10, "/one", "One"), (11, "/two", "Two")] {
+                    socket
+                        .send(Message::text(
+                            json!({ "id": id, "method": "Page.navigate", "params": { "url": format!("{origin}{path}") } }).to_string(),
+                        ))
+                        .await
+                        .unwrap();
+                    let request = tokio::time::timeout(TEST_TIMEOUT, gated_requests.recv())
+                        .await
+                        .expect("setup navigation reached server")
+                        .expect("setup navigation request");
+                    assert_eq!(request.path, path);
+                    request
+                        .respond
+                        .send(format!("<!doctype html><title>{title}</title>"))
+                        .unwrap();
+                    let (_, responses) = tokio::time::timeout(
+                        TEST_TIMEOUT,
+                        receive_cdp_responses(&mut socket, &[id]),
+                    )
+                    .await
+                    .expect("setup navigation response");
+                    assert!(responses[&id].get("error").is_none());
+                }
+
+                socket
+                    .send(Message::text(
+                        json!({ "id": 12, "method": "Page.getNavigationHistory", "params": {} })
+                            .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let (_, history_response) = receive_cdp_responses(&mut socket, &[12]).await;
+                let first_entry = history_response[&12]["result"]["entries"][0]["id"]
+                    .as_u64()
+                    .unwrap();
+
+                socket
+                    .send(Message::text(
+                        json!({ "id": 13, "method": "Page.navigateToHistoryEntry", "params": { "entryId": first_entry } }).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let history = tokio::time::timeout(TEST_TIMEOUT, gated_requests.recv())
+                    .await
+                    .expect("history navigation reached server")
+                    .expect("history navigation request");
+                assert_eq!(history.path, "/one");
+                socket
+                    .send(Message::text(
+                        json!({ "id": 14, "method": "Page.stopLoading", "params": {} })
+                            .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let (order, responses) = tokio::time::timeout(
+                    TEST_TIMEOUT,
+                    receive_cdp_responses(&mut socket, &[13, 14]),
+                )
+                .await
+                .expect("history stop responses");
+                assert_eq!(order, vec![14, 13]);
+                assert!(responses[&13]["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("cancelled"));
+                history
+                    .respond
+                    .send("<!doctype html><title>Late history</title>".to_owned())
+                    .unwrap();
+
+                socket
+                    .send(Message::text(
+                        json!({
+                            "id": 15,
+                            "method": "Runtime.evaluate",
+                            "params": { "expression": format!(
+                                "location.assign({:?}); location.assign({:?}); 'queued'",
+                                format!("{origin}/superseded"),
+                                format!("{origin}/runtime")
+                            ) }
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let runtime = tokio::time::timeout(TEST_TIMEOUT, gated_requests.recv())
+                    .await
+                    .expect("runtime navigation reached server")
+                    .expect("runtime navigation request");
+                assert_eq!(runtime.path, "/runtime");
+                socket
+                    .send(Message::text(
+                        json!({ "id": 16, "method": "Page.stopLoading", "params": {} })
+                            .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let (order, responses) = tokio::time::timeout(
+                    TEST_TIMEOUT,
+                    receive_cdp_responses(&mut socket, &[15, 16]),
+                )
+                .await
+                .expect("runtime stop responses");
+                assert_eq!(order, vec![16, 15]);
+                assert!(responses[&15]["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("cancelled"));
+                runtime
+                    .respond
+                    .send("<!doctype html><title>Late runtime</title>".to_owned())
+                    .unwrap();
+
+                socket
+                    .send(Message::text(
+                        json!({ "id": 17, "method": "Page.navigate", "params": { "url": format!("{origin}/stable") } }).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let stable = tokio::time::timeout(TEST_TIMEOUT, gated_requests.recv())
+                    .await
+                    .expect("later navigation reached server")
+                    .expect("later navigation request");
+                assert_eq!(stable.path, "/stable");
+                stable
+                    .respond
+                    .send("<!doctype html><title>Stable</title>".to_owned())
+                    .unwrap();
+                let (_, responses) = tokio::time::timeout(
+                    TEST_TIMEOUT,
+                    receive_cdp_responses(&mut socket, &[17]),
+                )
+                .await
+                .expect("later navigation response");
+                assert!(responses[&17].get("error").is_none());
+
+                socket
+                    .send(Message::text(
+                        json!({ "id": 18, "method": "Target.createTarget", "params": { "url": format!("{origin}/target") } }).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let target = tokio::time::timeout(TEST_TIMEOUT, gated_requests.recv())
+                    .await
+                    .expect("target navigation reached server")
+                    .expect("target navigation request");
+                assert_eq!(target.path, "/target");
+                socket
+                    .send(Message::text(
+                        json!({ "id": 19, "method": "Browser.getVersion", "params": {} })
+                            .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let (order, responses) = tokio::time::timeout(
+                    TEST_TIMEOUT,
+                    receive_cdp_responses(&mut socket, &[19]),
+                )
+                .await
+                .expect("request behind target creation response");
+                assert_eq!(order, vec![19]);
+                assert!(responses[&19]["result"]["product"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("Vixen/"));
+                target
+                    .respond
+                    .send("<!doctype html><title>Target</title>".to_owned())
+                    .unwrap();
+                let (_, responses) = tokio::time::timeout(
+                    TEST_TIMEOUT,
+                    receive_cdp_responses(&mut socket, &[18]),
+                )
+                .await
+                .expect("target creation response");
+                assert!(responses[&18]["result"]["targetId"]
+                    .as_str()
+                    .unwrap()
+                    .starts_with("tab-"));
+
+                let retained_targets = state.borrow().targets.len();
+                socket
+                    .send(Message::text(
+                        json!({ "id": 20, "method": "Target.createTarget", "params": { "url": format!("{origin}/abandoned-target") } }).to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let abandoned_target = tokio::time::timeout(TEST_TIMEOUT, gated_requests.recv())
+                    .await
+                    .expect("abandoned target navigation reached server")
+                    .expect("abandoned target request");
+                assert_eq!(abandoned_target.path, "/abandoned-target");
+                socket.close(None).await.unwrap();
+                connection.await.unwrap();
+                abandoned_target
+                    .respond
+                    .send("<!doctype html><title>Too late</title>".to_owned())
+                    .unwrap();
+                let state = state.borrow();
+                assert_eq!(state.targets.len(), retained_targets);
+                assert_eq!(state.context_presentations.len(), retained_targets);
+                assert!(state.attached_sessions.iter().all(|session| state
+                    .targets
+                    .iter()
+                    .any(|target| target.context_id == session.context_id)));
+                drop(state);
+                gated_server.join().unwrap();
+            })
+            .await;
     }
 
     /// All CDP dispatcher checks except runtime-backed `Runtime.evaluate`,
@@ -5415,6 +7175,58 @@ mod tests {
             context_sessions,
             std::collections::BTreeSet::from(["sess-1".to_owned(), "sess-2".to_owned()])
         );
+    }
+
+    #[test]
+    fn runtime_effects_notify_every_session_attached_to_the_target() {
+        let mut state = CdpState::default();
+        let attached = dispatch_one(
+            &mut state,
+            "Target.attachToTarget",
+            json!({ "targetId": "tab-1", "flatten": true }),
+        );
+        assert_eq!(attached["sessionId"], "sess-2");
+        for session_id in ["sess-1", "sess-2"] {
+            let enabled = CdpRequest {
+                id: 1,
+                session_id: Some(session_id.to_owned()),
+                method: "Runtime.enable".to_owned(),
+                params: json!({}),
+            };
+            state.dispatch(&enabled).response.expect("runtime enabled");
+        }
+        dispatch_one(
+            &mut state,
+            "Runtime.addBinding",
+            json!({ "name": "fanoutBinding" }),
+        );
+        let request = CdpRequest {
+            id: 2,
+            session_id: Some("sess-2".to_owned()),
+            method: "Runtime.evaluate".to_owned(),
+            params: json!({
+                "expression": "console.log('fanout-effect'); fanoutBinding('fanout-binding'); 'done'"
+            }),
+        };
+
+        let outcome = state.dispatch(&request);
+        assert_eq!(
+            outcome.response.expect("runtime response")["result"]["value"],
+            "done"
+        );
+        for method in ["Runtime.consoleAPICalled", "Runtime.bindingCalled"] {
+            let sessions = outcome
+                .notifications
+                .iter()
+                .map(|line| serde_json::from_str::<Value>(line).unwrap())
+                .filter(|event| event["method"] == method)
+                .map(|event| event["sessionId"].as_str().unwrap().to_owned())
+                .collect::<std::collections::BTreeSet<_>>();
+            assert_eq!(
+                sessions,
+                std::collections::BTreeSet::from(["sess-1".to_owned(), "sess-2".to_owned()])
+            );
+        }
     }
 
     #[test]
@@ -6089,6 +7901,7 @@ mod tests {
             "Runtime.addBinding",
             json!({ "name": "hostBinding" }),
         );
+        let runtime_context_id = s.current_state().unwrap().runtime_context_id.unwrap().get();
 
         let req = CdpRequest {
             id: 9,
@@ -6109,7 +7922,7 @@ mod tests {
         assert_eq!(binding["sessionId"], "sess-1");
         assert_eq!(binding["params"]["name"], "hostBinding");
         assert_eq!(binding["params"]["payload"], "payload");
-        assert_eq!(binding["params"]["executionContextId"], 2);
+        assert_eq!(binding["params"]["executionContextId"], runtime_context_id);
     }
 
     #[test]
@@ -6770,8 +8583,12 @@ mod tests {
                 NavigationId::new(raw).unwrap(),
                 PendingCoreNavigation {
                     context_id,
+                    predecessor_navigation_id: None,
+                    kind: CrossDocumentNavigationKind::Regular,
                     committed: true,
                     terminal: Some(Ok(())),
+                    wire_claimed: false,
+                    abandoned: false,
                 },
             );
         }
@@ -6785,5 +8602,308 @@ mod tests {
                 .pending_core_navigations
                 .contains_key(&NavigationId::new(1).unwrap())
         );
+    }
+
+    #[test]
+    fn abandoned_socket_navigation_remains_claimed_for_late_terminal_outcome() {
+        let mut state = CdpState::default();
+        let context_id = state.current_context().unwrap();
+        let navigation_id = NavigationId::new(99).unwrap();
+        state.pending_core_navigations.insert(
+            navigation_id,
+            PendingCoreNavigation {
+                context_id,
+                predecessor_navigation_id: None,
+                kind: CrossDocumentNavigationKind::Regular,
+                committed: false,
+                terminal: None,
+                wire_claimed: true,
+                abandoned: false,
+            },
+        );
+
+        state.abandon_navigation_ids(&[navigation_id]);
+        let tombstone = state.pending_core_navigations.get(&navigation_id).unwrap();
+        assert!(tombstone.wire_claimed);
+        assert!(tombstone.abandoned);
+
+        state.record_core_event(BrowserEvent::NavigationCancelled {
+            context_id,
+            frame_id: vixen_api::FrameId::new(1).unwrap(),
+            navigation_id,
+            request_id: None,
+            reason: vixen_api::NavigationCancellationReason::Stopped,
+        });
+        assert_eq!(state.take_navigation_outcome(navigation_id), None);
+        assert!(state.pending_core_navigations.contains_key(&navigation_id));
+    }
+
+    #[test]
+    fn pre_navigation_event_pump_preserves_unclaimed_terminal_outcomes() {
+        let mut state = CdpState::default();
+        let context_id = state.current_context().unwrap();
+        let navigation_id = NavigationId::new(100).unwrap();
+        state.pending_core_navigations.insert(
+            navigation_id,
+            PendingCoreNavigation {
+                context_id,
+                predecessor_navigation_id: None,
+                kind: CrossDocumentNavigationKind::Regular,
+                committed: true,
+                terminal: Some(Ok(())),
+                wire_claimed: false,
+                abandoned: false,
+            },
+        );
+
+        state.drain_core_events();
+
+        assert!(state.pending_core_navigations.contains_key(&navigation_id));
+        assert_eq!(
+            state.take_navigation_outcome(navigation_id),
+            Some((true, Ok(())))
+        );
+    }
+
+    #[test]
+    fn socket_capacity_only_rejects_commands_that_need_a_continuation() {
+        let mut state = CdpState::default();
+        let target_count = state.targets.len();
+
+        for (id, method, params) in [
+            (1, "Runtime.evaluate", json!({ "expression": "1 + 1" })),
+            (
+                2,
+                "Input.dispatchMouseEvent",
+                json!({ "type": "mouseMoved", "x": 10_000, "y": 10_000 }),
+            ),
+            (
+                3,
+                "Runtime.evaluate",
+                json!({ "expression": "history.pushState({}, '', '/same')" }),
+            ),
+            (4, "Target.createTarget", json!({ "url": "about:blank" })),
+        ] {
+            let request = CdpRequest {
+                id,
+                session_id: None,
+                method: method.to_owned(),
+                params,
+            };
+            let immediate = match state.start_socket_operation_with_capacity(&request, true) {
+                Err(dispatch) => dispatch,
+                Ok(_) => panic!("immediate dispatch was incorrectly deferred"),
+            };
+            assert!(
+                immediate.response.is_ok(),
+                "{method} was rejected at capacity"
+            );
+        }
+        assert_eq!(state.targets.len(), target_count + 1);
+
+        let request = CdpRequest {
+            id: 5,
+            session_id: None,
+            method: "Runtime.evaluate".to_owned(),
+            params: json!({ "expression": "location.assign('https://capacity.test/'); 'queued'" }),
+        };
+        let rejected = match state.start_socket_operation_with_capacity(&request, true) {
+            Err(dispatch) => dispatch,
+            Ok(_) => panic!("continuation was accepted at capacity"),
+        };
+        assert!(rejected.response.is_err());
+        assert!(
+            state
+                .pending_core_navigations
+                .values()
+                .all(|pending| !pending.wire_claimed)
+        );
+    }
+
+    #[test]
+    fn failed_target_creation_removes_all_allocated_presentation_state() {
+        let mut state = CdpState::default();
+        let targets = state.targets.len();
+        let presentations = state.context_presentations.len();
+        let request = CdpRequest {
+            id: 1,
+            session_id: None,
+            method: "Target.createTarget".to_owned(),
+            params: json!({ "url": "http://[" }),
+        };
+        let dispatch = state.dispatch(&request);
+        assert!(dispatch.response.is_err());
+        assert_eq!(state.targets.len(), targets);
+        assert_eq!(state.context_presentations.len(), presentations);
+        assert!(
+            state
+                .targets
+                .iter()
+                .all(|target| state.context_presentations.contains_key(&target.context_id))
+        );
+        assert!(state.attached_sessions.iter().all(|session| {
+            state
+                .targets
+                .iter()
+                .any(|target| target.context_id == session.context_id)
+        }));
+    }
+
+    #[test]
+    fn deferred_navigation_failure_keeps_response_ordered_runtime_notifications() {
+        let mut state = CdpState::default();
+        dispatch_one(&mut state, "Runtime.enable", json!({}));
+        let request = CdpRequest {
+            id: 90,
+            session_id: None,
+            method: "Runtime.evaluate".to_owned(),
+            params: json!({
+                "expression": "console.log('kept-before-failure'); location.assign('file:///vixen-does-not-exist'); 'queued'"
+            }),
+        };
+        let operation = match state.start_socket_operation(&request) {
+            Ok(Some(operation)) => operation,
+            Ok(None) => panic!("cross-document operation did not create a continuation"),
+            Err(_) => panic!("cross-document operation failed to start"),
+        };
+        let mut pending = VecDeque::from([PendingCdpOperation {
+            request,
+            started: Instant::now(),
+            deadline: Instant::now() + Duration::from_secs(10),
+            operation,
+        }]);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let lines = loop {
+            let mut completed = state.poll_socket_operations(&mut pending);
+            if let Some(lines) = completed.pop() {
+                break lines;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "navigation failure did not complete"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        let response: Value = serde_json::from_str(&lines[0]).unwrap();
+        assert!(response.get("error").is_some());
+        let console_index = lines
+            .iter()
+            .position(|line| line.contains("kept-before-failure"))
+            .expect("console notification survives failure");
+        assert!(
+            console_index > 0,
+            "response must precede console notification"
+        );
+    }
+
+    #[test]
+    fn runtime_get_properties_proxy_navigation_is_socket_asynchronous() {
+        let mut state = CdpState::default();
+        let object = dispatch_one(
+            &mut state,
+            "Runtime.evaluate",
+            json!({
+                "expression": "new Proxy({}, { ownKeys() { location.assign('https://properties.test/'); return []; } })"
+            }),
+        );
+        let object_id = object["result"]["objectId"].as_str().unwrap();
+        let request = CdpRequest {
+            id: 2,
+            session_id: None,
+            method: "Runtime.getProperties".to_owned(),
+            params: json!({ "objectId": object_id, "ownProperties": true }),
+        };
+        assert!(is_async_navigation_method("Runtime.getProperties"));
+        let operation = match state.start_socket_operation(&request) {
+            Ok(Some(operation)) => operation,
+            Ok(None) => panic!("Proxy trap did not create a navigation continuation"),
+            Err(dispatch) => panic!(
+                "Runtime.getProperties failed to start: {:?}",
+                dispatch.response
+            ),
+        };
+        let navigation_ids = cross_document_ids(&operation.navigation_actions);
+        assert_eq!(navigation_ids.len(), 2);
+        assert!(navigation_ids[0] < navigation_ids[1]);
+        state.cancel_socket_operation(&operation);
+    }
+
+    #[test]
+    fn deferred_completion_uses_captured_context_after_session_detach() {
+        let mut state = CdpState::default();
+        let created = dispatch_one(
+            &mut state,
+            "Target.createTarget",
+            json!({ "url": "about:blank" }),
+        );
+        let target_id = created["targetId"].as_str().unwrap();
+        let attached = dispatch_one(
+            &mut state,
+            "Target.attachToTarget",
+            json!({ "targetId": target_id, "flatten": true }),
+        );
+        let detached_session = attached["sessionId"].as_str().unwrap().to_owned();
+        let context_id = state.targets.last().unwrap().context_id;
+        let expected_frame_id = frame_id(&state.context_state(context_id).unwrap());
+        dispatch_one(
+            &mut state,
+            "Target.detachFromTarget",
+            json!({ "sessionId": detached_session }),
+        );
+
+        state.load_presentation(context_id);
+        let request = CdpRequest {
+            id: 8,
+            session_id: Some(detached_session),
+            method: "Runtime.evaluate".to_owned(),
+            params: json!({}),
+        };
+        let notifications = state
+            .navigation_notifications_after_completion(
+                context_id,
+                &request,
+                true,
+                CrossDocumentNavigationKind::Regular,
+            )
+            .unwrap();
+        let frame_navigated = notifications
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|line| line["method"] == "Page.frameNavigated")
+            .expect("captured target navigation notification");
+        assert_eq!(frame_navigated["params"]["frame"]["id"], expected_frame_id);
+
+        state.runtime_enabled = true;
+        let runtime_context_id = state
+            .context_state(context_id)
+            .unwrap()
+            .runtime_context_id
+            .unwrap();
+        state.queue_runtime_effects(
+            runtime_context_id,
+            RuntimeEffects {
+                console: vec![RuntimeConsoleEvent {
+                    kind: "log".to_owned(),
+                    args: vec![RuntimeConsoleArg {
+                        type_name: "string".to_owned(),
+                        subtype: None,
+                        value: Some(RuntimeConsoleValue::String("captured-effect".to_owned())),
+                        unserializable_value: None,
+                        description: "captured-effect".to_owned(),
+                    }],
+                }],
+                ..RuntimeEffects::default()
+            },
+        );
+        let effects = state.drain_side_effect_notifications_for_context(context_id, &request);
+        let consoles = effects
+            .iter()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .filter(|line| line["method"] == "Runtime.consoleAPICalled")
+            .collect::<Vec<_>>();
+        assert!(consoles.iter().any(|console| {
+            console["sessionId"] == request.session_id.as_deref().unwrap()
+                && console["params"]["executionContextId"] == runtime_context_id.get()
+        }));
     }
 }

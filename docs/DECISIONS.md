@@ -187,7 +187,8 @@ promises.
 
 **Consequences.**
 
-- `just size-fp` is the source of truth for current binary-size budgets.
+- `just size-fp` is the source of truth for current structured artifact
+  measurements; budgets require the acceptance policy in `docs/BASELINES.md`.
 - Distribution guidance should discuss `deno_core`/V8 artifacts and cache
   behavior, not removed runtime dependencies.
 
@@ -795,11 +796,16 @@ not an engine-plug-in abstraction.
   integration tests for ownership, partitioning, event ordering, cancellation,
   stale completions, and frontend parity.
 
-**Implementation status (2026-07-10).** The A1 migration is complete: shell,
+**Implementation status (2026-07-11).** The A1 migration is complete: shell,
 headless, CDP, and WPT route contexts through BrowserCore, and the architecture
 gate forbids their former direct leaf composition. The first A2 slice runs source
 loads on a bounded external Tokio runtime and returns generation-tagged results;
 stop/supersede abort active transport and forced late completions are rejected
-before cookie/profile/history/document/runtime mutation. Parser, page-script, and
-discovered-resource jobs remain synchronous on the owner thread and require the
-next cooperative-cancellation slice.
+before cookie/profile/history/document/runtime mutation. HTML parsing now advances
+in bounded owner-thread quanta with generation checks; stop, reload, and history
+traversal during parse reject stale parser work before commit. Configured and
+parser-discovered scripts advance one item at a time, followed by separate
+lifecycle quanta; stop/supersede suppresses remaining work, and committed author
+exceptions are runtime effects rather than navigation failures. Runtime creation,
+individual V8 evaluations, promise pumping, and external/discovered-resource jobs
+remain synchronous and require the next cooperative-cancellation slice.

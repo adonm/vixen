@@ -1,0 +1,67 @@
+{
+  "schema": "vixen.headless-scenario-suite",
+  "version": 1,
+  "name": "headless-local",
+  "description": "Hermetic measurement controls over committed local fixtures; not an external-site compatibility suite.",
+  "scenarios": [
+    {
+      "id": "startup-version",
+      "description": "Process startup and clap version path.",
+      "args": ["--version"],
+      "validation": {
+        "stdoutIncludes": ["vixen-headless "]
+      }
+    },
+    {
+      "id": "navigation-runtime",
+      "description": "Local file navigation and production Runtime.evaluate path.",
+      "fixture": "fixtures/realworld/app-shell.html",
+      "args": [
+        "--url",
+        "{fixtureUrl}",
+        "--eval",
+        "document.title + ':' + document.querySelectorAll('li').length"
+      ],
+      "validation": {
+        "stdoutEquals": "Vixen app shell control:3"
+      }
+    },
+    {
+      "id": "layout-dump",
+      "description": "Production layout-tree projection over a committed layout fixture.",
+      "fixture": "fixtures/layout/normal-flow.html",
+      "args": ["--url", "{fixtureUrl}", "--viewport", "800x600", "--dump-layout-tree"],
+      "validation": {
+        "stdoutIncludes": ["# layout-tree", "id=outer", "id=borderbox"]
+      }
+    },
+    {
+      "id": "paint-stats-display-list",
+      "description": "Production display-list and paint-stat projections from one load.",
+      "fixture": "fixtures/paint/display-list.html",
+      "args": [
+        "--url",
+        "{fixtureUrl}",
+        "--viewport",
+        "800x600",
+        "--dump-display-list",
+        "--paint-stats"
+      ],
+      "validation": {
+        "stdoutIncludes": ["# display-list", "# paint-stats", "text-runs="]
+      }
+    },
+    {
+      "id": "screenshot",
+      "description": "Production surfaceless screenshot path with a temporary PNG output.",
+      "fixture": "fixtures/paint/display-list.html",
+      "args": ["--url", "{fixtureUrl}", "--viewport", "320x240", "--screenshot", "{output}"],
+      "validation": {},
+      "output": {
+        "extension": ".png",
+        "minBytes": 64,
+        "magicHex": "89504e470d0a1a0a"
+      }
+    }
+  ]
+}

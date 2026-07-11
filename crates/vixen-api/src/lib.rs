@@ -19,13 +19,14 @@ mod ids;
 
 pub use browser::{
     AutomationEvaluation, BrowserCommand, BrowserCommandResult, BrowserError, BrowserEvent,
-    BrowserHandle, BrowsingContextConfig, BrowsingContextState, DiagnosticScope, DocumentTextKind,
-    FocusEventInfo, FocusProjection, FormEntryInfo, FormEntryValueInfo, FormSubmissionInfo,
-    KeyEventData, MouseEventData, NavigationCancellationReason, NavigationHistoryEntry,
+    BrowserHandle, BrowsingContextConfig, BrowsingContextState, CrossDocumentNavigationKind,
+    DiagnosticScope, DocumentTextKind, EvaluationResult, FocusEventInfo, FocusProjection,
+    FormEntryInfo, FormEntryValueInfo, FormSubmissionInfo, InputDispatchResult, KeyEventData,
+    MouseEventData, NavigationActionOutcome, NavigationCancellationReason, NavigationHistoryEntry,
     NavigationHistorySnapshot, NavigationPhase, ProfileDataSelection, ProfileSessionState,
     RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue,
-    RuntimeDialogEvent, RuntimeEffects, RuntimeNetworkEvent, RuntimePermissionGrant, ScriptValue,
-    error_codes as browser_error_codes,
+    RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent, RuntimeNetworkEvent,
+    RuntimePermissionGrant, ScriptValue, error_codes as browser_error_codes,
 };
 pub use ids::{
     BrowserId, BrowsingContextId, DocumentId, DownloadId, FrameId, InvalidId, NavigationId,

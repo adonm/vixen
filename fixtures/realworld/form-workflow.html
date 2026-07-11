@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vixen form workflow control</title>
+  <style>
+    body { margin: 0; background: #f3f6f4; color: #183028; font-family: sans-serif; }
+    main { width: 560px; max-width: 90%; margin: 24px auto; }
+    form { padding: 20px; border: 1px solid #8ca49a; background: white; }
+    label { display: block; margin: 12px 0 4px; }
+    input, select, textarea, button { font: inherit; }
+    input, select, textarea { width: 100%; }
+    button { margin-top: 16px; padding: 8px 16px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Request access</h1>
+    <p>This is a controlled local form shape, not an external service.</p>
+    <form id="access" action="form-workflow.html" method="get">
+      <label for="name">Name</label>
+      <input id="name" name="name" value="Ada" required>
+      <label for="role">Role</label>
+      <select id="role" name="role"><option>Reader</option><option>Editor</option></select>
+      <label for="note">Note</label>
+      <textarea id="note" name="note">Deterministic form control</textarea>
+      <button type="submit">Continue</button>
+    </form>
+  </main>
+</body>
+</html>

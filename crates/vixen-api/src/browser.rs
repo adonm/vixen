@@ -179,9 +179,9 @@ pub enum BrowserCommandResult {
     NavigationAccepted { navigation_id: NavigationId },
     BrowsingContextState(BrowsingContextState),
     NavigationHistory(NavigationHistorySnapshot),
-    Evaluation(ScriptValue),
+    Evaluation(EvaluationResult),
     AutomationEvaluation(AutomationEvaluation),
-    InputDispatched(RuntimeEffects),
+    InputDispatched(InputDispatchResult),
     Snapshot(crate::PageSnapshot),
     SelectorMatches(Vec<crate::ElementInfo>),
     ComputedStyle(Vec<(String, String)>),
@@ -216,6 +216,40 @@ pub struct RuntimePermissionGrant {
 pub struct AutomationEvaluation {
     pub value: ScriptValue,
     pub effects: RuntimeEffects,
+    /// Exact action order, including same-document changes interleaved with
+    /// cross-document navigations that may already have been superseded.
+    pub navigation_actions: Vec<NavigationActionOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EvaluationResult {
+    pub value: ScriptValue,
+    pub navigation_actions: Vec<NavigationActionOutcome>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct InputDispatchResult {
+    pub effects: RuntimeEffects,
+    pub navigation_actions: Vec<NavigationActionOutcome>,
+}
+
+/// Ordered host outcome of one script-created navigation/history action.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NavigationActionOutcome {
+    SameDocument {
+        url: String,
+    },
+    CrossDocument {
+        navigation_id: NavigationId,
+        kind: CrossDocumentNavigationKind,
+    },
+}
+
+/// Presentation semantics attached to an exact cross-document navigation ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CrossDocumentNavigationKind {
+    Regular,
+    ContentReplacement { replaced_document_id: DocumentId },
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -224,6 +258,7 @@ pub struct RuntimeEffects {
     pub dialogs: Vec<RuntimeDialogEvent>,
     pub bindings: Vec<RuntimeBindingEvent>,
     pub network: Vec<RuntimeNetworkEvent>,
+    pub exceptions: Vec<RuntimeExceptionEvent>,
 }
 
 impl RuntimeEffects {
@@ -232,6 +267,7 @@ impl RuntimeEffects {
             && self.dialogs.is_empty()
             && self.bindings.is_empty()
             && self.network.is_empty()
+            && self.exceptions.is_empty()
     }
 
     pub fn extend(&mut self, mut other: Self) {
@@ -239,7 +275,14 @@ impl RuntimeEffects {
         self.dialogs.append(&mut other.dialogs);
         self.bindings.append(&mut other.bindings);
         self.network.append(&mut other.network);
+        self.exceptions.append(&mut other.exceptions);
     }
+}
+
+/// A script exception produced by a committed runtime generation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeExceptionEvent {
+    pub error: BrowserError,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -516,6 +559,13 @@ pub enum NavigationPhase {
     Cancelled,
 }
 
+impl NavigationPhase {
+    /// Whether this phase is the single terminal outcome for a navigation.
+    pub const fn is_terminal(self) -> bool {
+        matches!(self, Self::Settled | Self::Failed | Self::Cancelled)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavigationCancellationReason {
     Stopped,
@@ -554,6 +604,8 @@ pub enum BrowserEvent {
         context_id: BrowsingContextId,
         frame_id: FrameId,
         navigation_id: NavigationId,
+        predecessor_navigation_id: Option<NavigationId>,
+        kind: CrossDocumentNavigationKind,
         url: String,
     },
     NavigationStarted {
@@ -608,8 +660,10 @@ pub enum BrowserEvent {
     },
     RuntimeEffects {
         context_id: BrowsingContextId,
+        frame_id: FrameId,
         document_id: DocumentId,
         runtime_context_id: RuntimeContextId,
+        url: String,
         effects: RuntimeEffects,
     },
     DomContentLoaded {
@@ -731,6 +785,20 @@ mod tests {
     }
 
     #[test]
+    fn runtime_effects_retain_script_exceptions() {
+        let mut effects = RuntimeEffects::default();
+        effects.extend(RuntimeEffects {
+            exceptions: vec![RuntimeExceptionEvent {
+                error: BrowserError::new("script.eval", "author script failed"),
+            }],
+            ..RuntimeEffects::default()
+        });
+
+        assert!(!effects.is_empty());
+        assert_eq!(effects.exceptions[0].error.code, "script.eval");
+    }
+
+    #[test]
     fn script_value_display_matches_runtime_scalar_formatting() {
         assert_eq!(ScriptValue::Int32(3).to_display(), "3");
         assert_eq!(ScriptValue::Number(2.5).to_display(), "2.5");
@@ -751,5 +819,14 @@ mod tests {
         assert!(ProfileDataSelection::all().session);
         assert!(!ProfileDataSelection::browsing_data().session);
         assert!(ProfileDataSelection::browsing_data().cookies);
+    }
+
+    #[test]
+    fn navigation_terminal_phases_are_explicit() {
+        assert!(NavigationPhase::Settled.is_terminal());
+        assert!(NavigationPhase::Failed.is_terminal());
+        assert!(NavigationPhase::Cancelled.is_terminal());
+        assert!(!NavigationPhase::Load.is_terminal());
+        assert!(!NavigationPhase::Commit.is_terminal());
     }
 }

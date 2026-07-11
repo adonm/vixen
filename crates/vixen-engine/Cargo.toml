@@ -15,7 +15,7 @@ vixen-net = { path = "../vixen-net" }
 vixen-store = { path = "../vixen-store" }
 deno_core = "0.406.0"
 thiserror = "2"
-tokio = { version = "1", features = ["fs", "net", "rt-multi-thread", "sync", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "net", "rt-multi-thread", "sync", "time"] }
 html5ever = "0.39"
 markup5ever = "0.39"
 markup5ever_rcdom = "0.39"

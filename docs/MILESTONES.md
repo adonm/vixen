@@ -11,7 +11,7 @@ which layer today?”
 | Command | Current evidence |
 |---------|------------------|
 | `just gate-alpha` | formatting, clippy, host workspace checks, generated WebIDL/runtime seams, BrowserCore ownership tests, BrowserCore-backed committed fixture runner, and stable crate-boundary allowlist |
-| `just gate-architecture` | leaf-crate dependency rules for `vixen-api`, `vixen-net`, `vixen-store`, and `vixen-wpt`; frontend direct-composition debt remains documented until ADR-017 migration |
+| `just gate-architecture` | leaf-crate dependency rules plus frontend rules that forbid the former shell/headless direct composition; production frontends may use only `vixen-api` and `vixen-engine` |
 | `just gate-smoke` | reviewer baseline: formatting, clippy, host checks, and all host-runnable tests |
 | `just gate-push` | hk pre-push integration point: alpha, phase-6 runtime, smoke, and diff checks |
 | `just gate-webidl` | generated WebIDL constructor/prototype coverage plus headless/CDP runtime-host integration |
@@ -22,14 +22,16 @@ which layer today?”
 | `just gate-phase4` | Vixen layout-tree/line/fragment behavior and layout fixtures |
 | `just gate-phase5` | display-list/WebRender screenshot and visual fixture path |
 | `just gate-phase6` | engine host-family tests, WebIDL, headless runtime, and CDP runtime integration |
-| `just gate-alpha6-cdp` | external Playwright/CDP smoke over BrowserCore targets, including ordered lifecycle, DOM/input, network, permissions, tracing, and stable errors |
-| `just test-browser-core` | ADR-017 production owner/thread/typed-generation proof with two independent contexts, shared profile localStorage, isolated runtime/sessionStorage/history, asynchronous source loading, ordered phases, redirect event ordering, stop/supersede/reload/history race late-completion rejection, bounded event lag, headless adapter coverage, and GTK-free multi-context shell routing |
+| `just gate-alpha6-cdp` | external Playwright/CDP smoke plus dispatcher/socket tests over BrowserCore targets, including ordered lifecycle, one-pump same-connection cancellation for page/history/runtime navigation, non-blocking target creation, committed author-exception reporting, DOM/input, network, permissions, tracing, and stable errors |
+| `just test-browser-core` | ADR-017 production owner/thread/typed-generation proof with two independent contexts, shared profile localStorage/cookies, isolated runtime/sessionStorage/history, asynchronous source loading, bounded cooperative HTML parsing and per-item script/lifecycle work, deadline-bounded V8/promise execution with reusable-isolate and author-timeout continuation proof, generation-cancellable external classic-script I/O with pre-hop CSP/mixed-content policy, status/nosniff checks, delta-safe profile cookie persistence, and stale cookie/document/runtime rejection, ordered phases, one generation-checked terminalization boundary, live redirect delivery before a gated final response, latest-request stop and stale-progress rejection, source/parser/script/lifecycle stale-work rejection, author-exception separation, bounded event lag, headless adapter coverage, and GTK-free multi-context shell routing |
 | `just compat-report` | current BrowserCore-backed committed fixture/profile counts and per-source/category output |
 | `just fuzz-security` | URL, CSP, cookie, and HTML parser fuzz targets at the configured run count |
 | `just audit` | `cargo audit` plus `cargo deny check` |
 | `just flatpak-build` | supported GNOME SDK/Flatpak GUI build path |
-| `just size-fp` | measured Flatpak GUI and release headless artifact sizes; measurement only until baselines become accepted budgets |
-| `just baseline-headless` | measured release headless startup + first-navigation + eval latency on a committed DOM fixture; measurement only until baselines become accepted budgets |
+| `just size-headless` / `just size-fp` | structured logical/allocated size, file count, and SHA-256 for headless and optional Flatpak payload/bundle; GNOME runtime excluded |
+| `just baseline-headless` / `just baseline-headless-json` | per-scenario latency and Linux process-memory measurements for committed startup, navigation/runtime, layout, paint, and screenshot controls |
+| `just baseline-profile-growth` | opaque temporary profile growth at init/repeated/unique/storage checkpoints with localStorage reopen proof |
+| `just baseline-beta` | hermetic local headless scenarios, profile growth, and headless artifact size; measurement-only and outside `gate-push` |
 
 ## Evidence rules
 
@@ -54,6 +56,8 @@ which layer today?”
   headless, and GTK-free shell adapters through the production command/event
   handle).
 - Release requirements: [`ACCEPTANCE.md`](ACCEPTANCE.md).
+- Measurement methods, report schemas, acceptance policy, and current gaps:
+  [`BASELINES.md`](BASELINES.md).
 
 When a gate and its description diverge, fix this table in the same change as the
 recipe. Do not copy already-landed feature inventories back into the roadmap.

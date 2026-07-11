@@ -21,7 +21,7 @@ use crate::display_list::{
     BackgroundAttachment, BackgroundBox, Color, DisplayListBuilder, DrawItem, PaintCommand,
     PaintStats, Rect, TextRun, dump_paint_commands, dump_paint_stats,
 };
-use crate::doc::{Document, InlineScript, ParseError};
+use crate::doc::{Document, DocumentParser, ParseError};
 use crate::history::{HistoryEntry, SessionHistory};
 use crate::layout_tree::{
     LayoutFragment, LayoutFragmentKind, LayoutTree, build_layout_tree, dump_layout_tree,
@@ -47,6 +47,15 @@ pub struct Page {
     selection: Option<PageSelection>,
 }
 
+/// Incremental page construction retained on BrowserCore's owner thread.
+pub(crate) struct PageParser {
+    url: String,
+    html: String,
+    offset: usize,
+    document: Option<DocumentParser>,
+    csp: ContentSecurityPolicy,
+}
+
 /// Errors produced while constructing a [`Page`].
 #[derive(Debug, thiserror::Error)]
 pub enum PageError {
@@ -59,20 +68,11 @@ impl Page {
     /// by the caller for now (`vixen-headless` reads `file://`; the future
     /// network path will call into `vixen-net` before this boundary).
     pub fn from_html(url: impl Into<String>, html: &str) -> Result<Self, PageError> {
-        let url = url.into();
-        let document = Document::parse(html)?;
-        let author_stylesheet = AuthorStylesheet::from_blocks(&document.style_blocks());
-        let history = initial_session_history(&url);
-        Ok(Self {
-            url,
-            document,
-            history,
-            csp: ContentSecurityPolicy::new(),
-            author_stylesheet,
-            diagnostics: Vec::new(),
-            focused_element_node_id: None,
-            selection: None,
-        })
+        Self::from_document(
+            url.into(),
+            Document::parse(html)?,
+            ContentSecurityPolicy::new(),
+        )
     }
 
     /// Build a page from already-loaded HTML plus response headers. Enforcing
@@ -86,9 +86,15 @@ impl Page {
     where
         I: IntoIterator<Item = (&'a str, &'a str)>,
     {
-        let url = url.into();
-        let document = Document::parse(html)?;
         let csp = ContentSecurityPolicy::from_headers(headers);
+        Self::from_document(url.into(), Document::parse(html)?, csp)
+    }
+
+    fn from_document(
+        url: String,
+        document: Document,
+        csp: ContentSecurityPolicy,
+    ) -> Result<Self, PageError> {
         let author_stylesheet = AuthorStylesheet::from_blocks(&document.style_blocks());
         let history = initial_session_history(&url);
         Ok(Self {
@@ -228,18 +234,6 @@ impl Page {
         &self.csp
     }
 
-    /// Inline classic scripts in document order. Full page-script execution also
-    /// handles external classic scripts through the JS/runtime boundary.
-    pub fn inline_classic_scripts(&self) -> Vec<InlineScript> {
-        self.document.inline_classic_scripts()
-    }
-
-    /// True when the page contains at least one inline or external classic
-    /// script that should cross the script execution boundary.
-    pub fn has_classic_scripts(&self) -> bool {
-        self.document.has_classic_scripts()
-    }
-
     /// DOM tree dump (`vixen-headless --dump-dom`).
     pub fn dump_dom(&self) -> String {
         self.document.dump()
@@ -255,16 +249,6 @@ impl Page {
     /// without special-casing at the trust boundary.
     pub fn find_text_count(&self, query: &str, case_sensitive: bool) -> u32 {
         count_text_matches(&self.text_content(), query, case_sensitive)
-    }
-
-    /// Legacy compatibility hook for old smoke harnesses.
-    ///
-    /// Browser-visible evaluation now runs through [`crate::script::JsRuntime`]
-    /// host objects. Keep this method as a fail-closed shim for callers that
-    /// still probe it, but do not add new Page string projections here.
-    pub fn evaluate_dom_expression(&self, expr: &str) -> Option<Result<String, String>> {
-        let _ = expr;
-        None
     }
 
     pub(crate) fn document_base_uri(&self) -> String {
@@ -401,6 +385,58 @@ impl Page {
     /// Diagnostics accumulated by pipeline stages.
     pub fn diagnostics(&self) -> Vec<EngineDiagnostic> {
         self.diagnostics.clone()
+    }
+}
+
+impl PageParser {
+    pub(crate) fn with_headers<'a, I>(url: String, html: String, headers: I) -> Self
+    where
+        I: IntoIterator<Item = (&'a str, &'a str)>,
+    {
+        Self {
+            url,
+            html,
+            offset: 0,
+            document: Some(DocumentParser::new()),
+            csp: ContentSecurityPolicy::from_headers(headers),
+        }
+    }
+
+    /// Process at most `max_bytes` of source and return the completed page.
+    pub(crate) fn advance(&mut self, max_bytes: usize) -> Result<Option<Page>, PageError> {
+        assert!(max_bytes > 0, "page parser work budget must be non-zero");
+        if self.offset < self.html.len() {
+            let mut end = self.offset.saturating_add(max_bytes).min(self.html.len());
+            while end > self.offset && !self.html.is_char_boundary(end) {
+                end -= 1;
+            }
+            if end == self.offset {
+                end = self.html[self.offset..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(next, _)| self.offset + next)
+                    .unwrap_or(self.html.len());
+            }
+            self.document
+                .as_mut()
+                .expect("incomplete page parser has a document parser")
+                .process(&self.html[self.offset..end]);
+            self.offset = end;
+            if self.offset < self.html.len() {
+                return Ok(None);
+            }
+        }
+
+        let document = self
+            .document
+            .take()
+            .expect("completed page parser is advanced only once")
+            .finish()?;
+        Ok(Some(Page::from_document(
+            self.url.clone(),
+            document,
+            self.csp.clone(),
+        )?))
     }
 }
 
@@ -545,6 +581,22 @@ mod tests {
     }
 
     #[test]
+    fn page_parser_advances_on_utf8_boundaries() {
+        let html = "<!doctype html><title>Chunked</title><main>fox \u{1f98a}</main>".to_owned();
+        let mut parser =
+            PageParser::with_headers("https://example.test/".to_owned(), html, std::iter::empty());
+        let page = loop {
+            if let Some(page) = parser.advance(3).unwrap() {
+                break page;
+            }
+        };
+
+        assert_eq!(page.url(), "https://example.test/");
+        assert_eq!(page.document().title().as_deref(), Some("Chunked"));
+        assert_eq!(page.text_content(), "fox \u{1f98a}");
+    }
+
+    #[test]
     fn page_text_content_excludes_head_and_title() {
         let page = Page::from_html(
             "file:///fixture.html",
@@ -601,465 +653,6 @@ mod tests {
 
         assert_eq!(narrow[0].bbox.unwrap().2, 200.0);
         assert_eq!(wide[0].bbox.unwrap().2, 400.0);
-    }
-
-    #[test]
-    fn page_does_not_project_document_runtime_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<html><head><base href='https://example.com/app/page'><title>T</title></head><body><p class='x'>one</p><p>two</p></body></html>",
-        )
-        .unwrap();
-
-        for expr in [
-            "document.title",
-            "document.documentURI",
-            "document.baseURI",
-            "document.hasFocus()",
-            "document.querySelectorAll('p').length",
-            "document.querySelectorAll('p >').length",
-            "document.querySelectorAll(').length",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-        assert_eq!(page.evaluate_dom_expression("1+2"), None);
-    }
-
-    #[test]
-    fn page_does_not_project_computed_style_runtime_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<style>p { color: red; margin-left: 4px; } #copy { color: blue; font-size: 20px !important; --Token: A:B; }</style><p id='copy' style='font-size: 18px; margin-left: 10px'>Text</p>",
-        )
-        .unwrap();
-
-        for expr in [
-            "getComputedStyle(document.querySelector('#copy')).color",
-            "getComputedStyle(document.querySelector('#copy')).fontSize",
-            "window.getComputedStyle(document.querySelector('#copy')).getPropertyValue('margin-left')",
-            "getComputedStyle(document.querySelector('#copy')).getPropertyValue('--Token')",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_cssom_runtime_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<style>#box { width: 40px; height: 20px; }</style><main><div id='box'>Box</div></main>",
-        )
-        .unwrap();
-
-        for expr in [
-            "CSS.supports('display', 'grid')",
-            "CSS.supports('(unknown-prop: yes)')",
-            "document.styleSheets.length",
-            "document.styleSheets[0].cssRules.length",
-            "document.styleSheets[0].disabled",
-            "document.styleSheets[0].href === null",
-            "document.styleSheets[0].ownerNode.tagName",
-            "document.styleSheets[0].cssRules[0].selectorText",
-            "document.styleSheets[0].cssRules[0].style.length",
-            "document.styleSheets[0].cssRules[0].style.getPropertyValue('width')",
-            "document.styleSheets[0].cssRules[0].style[1]",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_dom_geometry_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<style>#box { width: 40px; height: 20px; }</style><main><div id='box'>Box</div></main>",
-        )
-        .unwrap();
-
-        for expr in [
-            "document.querySelector('#box').getBoundingClientRect().x",
-            "document.querySelector('#box').getBoundingClientRect().width",
-            "document.querySelector('#box').getBoundingClientRect().right",
-            "document.querySelector('#box').getClientRects().length",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_geometry_constructor_values() {
-        let page = Page::from_html("file:///fixture.html", "<main>geometry</main>").unwrap();
-
-        for expr in [
-            "new DOMPoint(1,2,3,4).z",
-            "DOMPoint.fromPoint({x:5,y:6}).w",
-            "new DOMRect(10,20,-5,7).left",
-            "DOMRect.fromRect({x:1,y:2,width:3,height:4}).bottom",
-            "DOMQuad.fromRect({x:1,y:2,width:3,height:4}).p3.x",
-            "DOMQuad.fromRect({x:1,y:2,width:3,height:4}).getBounds().height",
-            "new DOMMatrix().is2D",
-            "new DOMMatrix([1,0,0,1,5,6]).e",
-            "new DOMMatrix().translate(10,20).transformPoint(new DOMPoint(1,2)).y",
-            "new DOMMatrix().scale(2,3).transformPoint(new DOMPoint(5,5)).x",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_dom_query_member_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<main id='root'><p id='lead' class='note primary' data-role='intro'>Lead <b id='bold'>Beta</b></p><section id='empty'></section><form id='form'></form></main>",
-        )
-        .unwrap();
-
-        for expr in [
-            "document.documentElement.tagName",
-            "document.body.tagName",
-            "document.activeElement.tagName",
-            "document.forms.length",
-            "document.getElementsByTagName('p').length",
-            "document.getElementsByClassName('note').length",
-            "document.querySelector('#lead').id",
-            "document.querySelector('#lead').className",
-            "document.querySelector('#lead').tagName",
-            "document.querySelector('#lead').nodeName",
-            "document.querySelector('#lead').localName",
-            "document.querySelector('#lead').nodeType",
-            "document.querySelector('#lead').isConnected",
-            "document.querySelector('#lead').ownerDocument === document",
-            "document.querySelector('#lead').textContent",
-            "document.querySelector('#root').children.length",
-            "document.querySelector('#root').firstElementChild.id",
-            "document.querySelector('#root').lastElementChild.id",
-            "document.querySelector('#bold').parentElement.id",
-            "document.querySelector('#empty').previousElementSibling.id",
-            "document.querySelector('#empty').nextElementSibling.id",
-            "document.querySelector('#form').method",
-            "document.querySelector('#lead').getAttribute('data-role')",
-            "document.querySelector('#lead').hasAttribute('hidden')",
-            "document.querySelector('#lead').matches('p.note')",
-            "document.querySelector('#bold').closest('main').id",
-            "document.querySelector('#lead').closest('p.note') !== null",
-            "document.querySelector('#bold').closest('.missing') === null",
-            "document.querySelector('.missing') === null",
-            "document.getElementById('empty').tagName",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_form_reflected_property_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<form id='f' method='POST' enctype='multipart/form-data' action='/submit'>\
-                <label id='l' for='email'>Email</label>\
-                <input id='email' name='email' required placeholder='you@example.test' value='a@example.test'>\
-                <input id='agree' type='checkbox' checked disabled>\
-                <textarea id='bio' readonly>bio</textarea>\
-                <select id='roles' multiple><option id='admin' selected>Admin</option></select>\
-                <button id='save'>Save</button>\
-             </form>",
-        )
-        .unwrap();
-
-        for expr in [
-            "document.querySelector('#f').method",
-            "document.querySelector('#f').enctype",
-            "document.querySelector('#f').action",
-            "document.querySelector('#l').htmlFor",
-            "document.querySelector('#email').type",
-            "document.querySelector('#email').name",
-            "document.querySelector('#email').value",
-            "document.querySelector('#email').required",
-            "document.querySelector('#agree').checked",
-            "document.querySelector('#agree').disabled",
-            "document.querySelector('#bio').readOnly",
-            "document.querySelector('#roles').multiple",
-            "document.querySelector('#admin').selected",
-            "document.querySelector('#save').type",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_form_data_runtime_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<form id='contact'>\
-               <input name='name' value='Ada'>\
-               <input name='skip' value='no' disabled>\
-               <textarea name='body'>Hello, world!</textarea>\
-               <select name='urgency'><option value='low'>Low</option><option value='normal' selected>Normal</option></select>\
-               <input type='checkbox' name='newsletter' value='yes' checked>\
-               <input type='radio' name='format' value='html' checked>\
-               <input type='radio' name='format' value='text'>\
-             </form>\
-             <form id='upload'><input type='file' name='attachment'></form>",
-        )
-        .unwrap();
-
-        for expr in [
-            "new FormData(document.querySelector('#contact')).get('name')",
-            "new FormData(document.querySelector('#contact')).get('body')",
-            "new FormData(document.querySelector('#contact')).get('urgency')",
-            "new FormData(document.querySelector('#contact')).getAll('format').length",
-            "new FormData(document.querySelector('#contact')).has('skip')",
-            "new FormData(document.querySelector('#contact')).get('missing') === null",
-            "new FormData(document.querySelector('#contact')).entries().next().value[0]",
-            "new FormData(document.querySelector('#contact')).entries().next().value[1]",
-            "new FormData(document.querySelector('#contact')).keys().next().value",
-            "new FormData(document.querySelector('#contact')).values().next().value",
-            "new FormData(document.getElementById('upload')).get('attachment').type",
-            "new FormData(document.getElementById('upload')).get('attachment').size",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_token_list_or_dataset_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<html><head><link id='theme' rel='stylesheet alternate'></head>\
-             <body><div id='dupes' class='a b a c b' data-user-id='42' data-api-base='/v1'>x</div></body></html>",
-        )
-        .unwrap();
-
-        for expr in [
-            "document.querySelector('#dupes').classList.length",
-            "document.querySelector('#dupes').classList.item(1)",
-            "document.querySelector('#dupes').classList.contains('a')",
-            "document.querySelector('#theme').relList.contains('alternate')",
-            "document.querySelector('#dupes').dataset.userId",
-            "document.querySelector('#dupes').dataset['apiBase']",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_range_selection_runtime_values() {
-        let page = Page::from_html(
-            "file:///fixture.html#initial",
-            "<main><p>history and selection smoke</p></main>",
-        )
-        .unwrap();
-
-        for expr in [
-            "document.createRange().collapsed",
-            "document.createRange().startOffset",
-            "document.createRange().endOffset",
-            "document.createRange().toString()",
-            "window.getSelection().rangeCount",
-            "document.getSelection().isCollapsed",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_traversal_mutation_or_clone_runtime_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<main><div id='walk-root'><article id='art-1'><h2 id='heading'>Heading</h2><p id='para-1'>first</p><p id='para-2'>second</p></article><aside id='aside-1'><span id='aside-span'>aside</span></aside></div></main>",
-        )
-        .unwrap();
-
-        for expr in [
-            "structuredClone('hello')",
-            "structuredClone([1,2,3]).length",
-            "structuredClone({greeting:'hello'}).greeting",
-            "structuredClone(new Date(42)).getTime()",
-            "structuredClone(new Map([['answer', 42]])).get('answer')",
-            "structuredClone(new Map([['answer', 42]])).entries().next().value[0]",
-            "structuredClone(new Set(['alpha','beta'])).has('beta')",
-            "structuredClone(new TypeError('boom')).name",
-            "structuredClone(new TypeError('boom')).message",
-            "new MutationObserver(() => {}).takeRecords().length",
-            "new MutationObserver(() => {}).disconnect()",
-            "document.createTreeWalker(document.getElementById('walk-root'), NodeFilter.SHOW_ELEMENT).root.id",
-            "document.createTreeWalker(document.getElementById('walk-root'), NodeFilter.SHOW_ELEMENT).firstChild().id",
-            "document.createTreeWalker(document.getElementById('walk-root'), NodeFilter.SHOW_ELEMENT).lastChild().id",
-            "document.createNodeIterator(document.getElementById('walk-root'), NodeFilter.SHOW_ELEMENT).nextNode().id",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_fetch_body_runtime_values() {
-        let page = Page::from_html("file:///fixture.html", "<p>x</p>").unwrap();
-
-        for expr in [
-            "new Headers([['X-Test','a']]).get('x-test')",
-            "new Blob(['Hi'], { type: 'TEXT/PLAIN' }).size",
-            "new File(['hello'], 'note.txt', { type: 'text/plain' }).name",
-            "new Response('Created', { status: 201 }).status",
-            "Response.json({ok:true}, { status: 201 }).status",
-            "Response.error().status",
-            "Response.redirect('https://example.com/target', 302).ok",
-            "new Request('https://example.com/api').method",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_abort_and_url_runtime_values() {
-        let page = Page::from_html("file:///fixture.html", "<p>x</p>").unwrap();
-
-        for expr in [
-            "new AbortController().signal.aborted",
-            "AbortSignal.timeout(0).aborted",
-            "AbortSignal.any([AbortSignal.timeout(0)]).aborted",
-            "new URLPattern({ pathname: '/posts/:id' }).test({ pathname: '/posts/42' })",
-            "new URLPattern({ pathname: '/posts/:id' }).exec({ pathname: '/posts/42' }).pathname.groups.id",
-            "new URLPattern({ pathname: '/assets/*' }).exec({ pathname: '/assets/img/logo.png' }).pathname.groups['*']",
-            "URL.canParse('/other', 'https://example.com/app/page')",
-            "URL.canParse('://bad')",
-            "URL.canParse('data:text/plain,Hello')",
-            "new URL('data:text/plain,Hello').protocol",
-            "new URL('data:text/plain,Hello').origin",
-            "new URL('data:text/plain,Hello').pathname",
-            "new URL('https://example.com:8443/path?q=1#frag').origin",
-            "new URL('https://example.com/path?q=1&tag=web&tag=engine').toString()",
-            "new URL('https://example.com/path?q=1&tag=web&tag=engine').searchParams.size",
-            "new URL('https://example.com/path?q=1&tag=web&tag=engine').searchParams.has('tag')",
-            "new URL('https://example.com/path?q=1&tag=web&tag=engine').searchParams.getAll('tag')[1]",
-            "new URL('/other', 'https://example.com/app/page').href",
-            "new URL('https://example.com/path?q=1#frag').searchParams.get('q')",
-            "new URLSearchParams('?q=rust+lang&tag=web&tag=engine').get('q')",
-            "new URLSearchParams('tag=web&tag=engine').getAll('tag').length",
-            "new URLSearchParams('a=1&b=2').has('b')",
-            "new URLSearchParams('space=a b').toString()",
-            "new URLSearchParams([['q','rust lang'], ['tag','web'], ['tag','engine']]).toString()",
-            "new URLSearchParams([['q','rust lang'], ['tag','web']]).entries().next().value[0]",
-            "new URLSearchParams([['q','rust lang'], ['tag','web']]).entries().next().value[1]",
-            "new URLSearchParams([['q','rust lang'], ['tag','web']]).keys().next().value",
-            "new URLSearchParams([['q','rust lang'], ['tag','web']]).values().next().value",
-            "new URLSearchParams('tag=web').has('tag', 'web')",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_perf_media_navigator_runtime_values() {
-        let page = Page::from_html("file:///fixture.html", "<p>x</p>").unwrap();
-
-        for expr in [
-            "typeof performance.now()",
-            "performance.now() >= 0",
-            "performance.timeOrigin + performance.now() >= performance.timeOrigin",
-            "matchMedia('(min-width: 800px)').matches",
-            "window.matchMedia('print').matches",
-            "navigator.onLine",
-            "window.navigator.cookieEnabled",
-            "navigator.languages[0]",
-            "navigator.userAgent.includes('Vixen')",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_document_viewport_or_event_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<html><head><meta id='charset' charset='utf-8'><meta id='referrer' name='referrer' content='strict-origin'><title>T</title></head>\
-             <body><iframe id='frame' sandbox='allow-scripts allow-forms'></iframe><button id='btn'>go</button></body></html>",
-        )
-        .unwrap();
-
-        for expr in [
-            "document.readyState",
-            "document.compatMode",
-            "window.innerWidth",
-            "window.innerHeight",
-            "devicePixelRatio",
-            "screen.width",
-            "visualViewport.scale",
-            "document.defaultView === window",
-            "document.scrollingElement.tagName",
-            "document.characterSet",
-            "document.querySelector('#referrer').content",
-            "document.querySelector('#charset').charset",
-            "document.querySelector('#frame').sandbox.contains('allow-forms')",
-            "document.querySelector('#btn').dispatchEvent(new Event('click'))",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_event_constructor_values() {
-        let page = Page::from_html("file:///fixture.html", "<p>x</p>").unwrap();
-
-        for expr in [
-            "new Event('ready', {bubbles:true}).bubbles",
-            "new Event('message').target === null",
-            "new Event('message').composedPath().length",
-            "new CustomEvent('ready', {detail:'ok'}).detail",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_text_codec_base64_or_domparser_values() {
-        let page = Page::from_html("file:///fixture.html", "<p>x</p>").unwrap();
-
-        for expr in [
-            "new TextEncoder().encoding",
-            "new TextEncoder().encode('é').length",
-            "new TextEncoder().encodeInto('aé', new Uint8Array(3)).written",
-            "new TextDecoder().decode([65,13,10,66])",
-            "new TextDecoder('UTF-8', { fatal: true }).fatal",
-            "btoa('Vixen')",
-            "atob('Vml4ZW4=')",
-            "new DOMParser().parseFromString(\"<main><p id='parsed'>Parsed</p></main>\", 'text/html').querySelector('#parsed').textContent",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_html_serialization_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<main id='root'><h1 id='title'>DOM <span>Basic</span></h1><p id='outro'>Closing text.</p></main>",
-        )
-        .unwrap();
-
-        for expr in [
-            "document.querySelector('#title').innerHTML",
-            "document.querySelector('#outro').outerHTML",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
-    }
-
-    #[test]
-    fn page_does_not_project_responsive_image_current_src_values() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<img id='widths' src='small.jpg' srcset='small.jpg 480w, medium.jpg 800w, large.jpg 1200w' sizes='100vw'>\
-             <img id='density' srcset='one.png 1x, two.png 2x'>\
-             <img id='fallback' src='fallback.jpg'>",
-        )
-        .unwrap();
-
-        for expr in [
-            "document.querySelector('#widths').currentSrc",
-            "document.querySelector('#density').currentSrc",
-            "document.querySelector('#fallback').currentSrc",
-        ] {
-            assert_eq!(page.evaluate_dom_expression(expr), None, "{expr}");
-        }
     }
 
     #[test]

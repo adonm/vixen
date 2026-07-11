@@ -1037,6 +1037,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
   let historyState = parseHistoryState(data.historyStateJson);
   let historyScrollRestoration = data.historyScrollRestoration === 'manual' ? 'manual' : 'auto';
   const navigationActions = [];
+  const maxNavigationActions = 64;
 
   function parseHistoryState(value) {
     if (value === null || value === undefined) return null;
@@ -1066,7 +1067,11 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   function queueNavigationAction(action) {
-    navigationActions.push(action);
+    if (navigationActions.length < maxNavigationActions) {
+      navigationActions.push(action);
+    } else if (navigationActions.length === maxNavigationActions) {
+      navigationActions.push({ type: 'overflow' });
+    }
   }
 
   function unwrapDomOp(result) {

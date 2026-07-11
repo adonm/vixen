@@ -142,8 +142,8 @@ book-serve *ARGS:
 gate-alpha: fmt-check clippy check-all-host gate-webidl gate-architecture test-browser-core
     cargo test -p vixen-headless --test wpt_runner
 
-# Stable crate-boundary allowlist. Shell/headless direct-composition exceptions
-# remain documented until the authoritative engine lifecycle replaces them.
+# Stable crate-boundary allowlist. This also bans the former shell/headless
+# direct composition of network, store, and WPT implementation crates.
 gate-architecture:
     python3 scripts/check-vixen-deps.py
 
@@ -248,26 +248,37 @@ fuzz-security: _fuzz-tools-present
 # Backward-compatible name retained for older notes/scripts.
 fuzz-init: fuzz-security
 
-# --- Size (docs/ACCEPTANCE.md "Binary size gates") ---------------------------
-# Build and measure the real Flatpak GUI plus the headless release binary.
-# Budgets remain measurement-only until docs/ACCEPTANCE.md publishes baselines.
+# --- Measurement (docs/BASELINES.md) -----------------------------------------
+# Build and measure the exported Flatpak /app payload plus headless release
+# binary. The separately supplied GNOME runtime is not included. Measurement
+# only until docs/ACCEPTANCE.md publishes accepted baselines and budgets.
 size-fp: flatpak-build build-release
-    @set -eu; \
-        gui="build-aux/_build/files/bin/vixen"; \
-        headless="target/release/vixen-headless"; \
-        test -x "$gui" || { echo "missing $gui" >&2; exit 1; }; \
-        test -x "$headless" || { echo "missing $headless" >&2; exit 1; }; \
-        gui_bytes=$(stat -c '%s' "$gui"); \
-        headless_bytes=$(stat -c '%s' "$headless"); \
-        printf '%s %s bytes\n' "$gui" "$gui_bytes"; \
-        printf '%s %s bytes\n' "$headless" "$headless_bytes"
+    node scripts/artifact-size.mjs --headless target/release/vixen-headless --flatpak-payload build-aux/_build/files --flatpak-bundle build-aux/vixen.flatpak
 
-# Measurement-only until docs/ACCEPTANCE.md publishes accepted regressions.
-baseline-headless: build-release
-    node scripts/headless-baseline.mjs --binary target/release/vixen-headless --fixture fixtures/dom/basic.html
+# Hermetic local scenarios. Example: `just baseline-headless 9 2`.
+baseline-headless runs="5" warmups="1": build-release
+    node scripts/headless-baseline.mjs --binary target/release/vixen-headless --suite fixtures/performance/headless-local.json --runs {{runs}} --warmups {{warmups}}
+
+# Same scenarios as JSON for an accepted-report candidate.
+baseline-headless-json runs="5" warmups="1": build-release
+    node scripts/headless-baseline.mjs --binary target/release/vixen-headless --suite fixtures/performance/headless-local.json --runs {{runs}} --warmups {{warmups}} --json
+
+# Temporary explicit profile; N controls repeated and unique visits (1-50).
+baseline-profile-growth runs="5": build-release
+    node scripts/profile-growth-baseline.mjs --binary target/release/vixen-headless --runs {{runs}}
+
+# Headless-only structured artifact accounting; no Flatpak build required.
+size-headless: build-release
+    node scripts/artifact-size.mjs --headless target/release/vixen-headless
+
+# Hermetic beta measurement foundation; intentionally not part of gate-push.
+baseline-beta runs="5" warmups="1": build-release
+    node scripts/headless-baseline.mjs --binary target/release/vixen-headless --suite fixtures/performance/headless-local.json --runs {{runs}} --warmups {{warmups}}
+    node scripts/profile-growth-baseline.mjs --binary target/release/vixen-headless --runs {{runs}}
+    node scripts/artifact-size.mjs --headless target/release/vixen-headless
 
 build-release:
-    cargo build --release -p vixen-headless --bin vixen-headless
+    cargo build --locked --release -p vixen-headless --bin vixen-headless
 
 # --- Run ---------------------------------------------------------------------
 # Launch the GUI. Needs the GNOME SDK; the supported path is the flatpak

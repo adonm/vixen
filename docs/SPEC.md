@@ -34,6 +34,7 @@ vixen-headless --url <URL> [options]
   --url <URL>                 Load a URL (required).
   --screenshot <file.png>     Save a PNG screenshot.
   --viewport <WxH>            Viewport size (default 800x600).
+  --profile-dir <DIR>         Persist profile state under DIR.
   --extract-text              Print visible text content.
   --extract-selector <css>    Print JSON snapshots for matching elements.
   --eval <js>                 Execute JS, print result.
@@ -51,6 +52,10 @@ vixen-headless --url <URL> [options]
   --list-fonts                List system fonts and exit.
   --memory-stats              Print memory statistics.
 ```
+
+Without `--profile-dir`, each invocation owns and removes an isolated temporary
+profile. With it, BrowserCore stores profile data in `<DIR>/profile.redb`; this
+also applies to `--cdp`.
 
 `--gpu` is removed: every render path uses WebRender against a GPU
 context (GLArea for GUI, EGL surfaceless for headless). Headless

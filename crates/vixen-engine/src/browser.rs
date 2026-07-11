@@ -3,9 +3,10 @@
 //! This is the first production owner selected by ADR-017. All `Page`, V8,
 //! history, and context-registry mutation runs on one dedicated thread. The
 //! main-document source loader runs off-thread with generation-tagged results;
-//! parsing, runtime creation, and commit remain on the dedicated owner thread.
+//! parsing advances cooperatively while DOM/runtime creation and commit remain
+//! on the dedicated owner thread.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -16,22 +17,30 @@ use std::time::Duration;
 use vixen_api::{
     AutomationEvaluation, BrowserCommand, BrowserCommandResult, BrowserError, BrowserEvent,
     BrowserHandle, BrowserId, BrowsingContextConfig, BrowsingContextId, BrowsingContextState,
-    DocumentId, DocumentTextKind, FocusEventInfo, FocusProjection, FormEntryInfo,
-    FormEntryValueInfo, FormSubmissionInfo, FrameId, KeyEventData, MouseEventData,
+    CrossDocumentNavigationKind, DocumentId, DocumentTextKind, EvaluationResult, FocusEventInfo,
+    FocusProjection, FormEntryInfo, FormEntryValueInfo, FormSubmissionInfo, FrameId,
+    InputDispatchResult, KeyEventData, MouseEventData, NavigationActionOutcome,
     NavigationCancellationReason, NavigationHistoryEntry, NavigationHistorySnapshot, NavigationId,
     NavigationPhase, ProfileDataSelection, ProfileId, ProfileSessionState, RequestId,
     RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue,
-    RuntimeContextId, RuntimeDialogEvent, RuntimeEffects, RuntimeNetworkEvent, ScriptValue,
-    browser_error_codes,
+    RuntimeContextId, RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent,
+    RuntimeNetworkEvent, ScriptValue, browser_error_codes,
 };
-use vixen_net::{CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent};
+use vixen_net::{
+    CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent, RedirectMode,
+    TextRequest, TextResponse,
+};
 use vixen_store::{ClearDataSelection, SessionRecord, Store};
 
 use crate::data_url::parse_data_url;
 use crate::display_list::PaintCommand;
 use crate::history::{HistoryEntry, SessionHistory};
-use crate::page::Page;
-use crate::script::{JsConsoleValue, JsNavigationAction, JsNetworkEvent, JsRuntime, JsValue};
+use crate::page::{Page, PageParser};
+use crate::script::{
+    ExternalPageScript, JsConsoleValue, JsNavigationAction, JsNetworkEvent, JsRuntime, JsValue,
+    PageScriptRunner, PreparedPageScript, merge_profile_cookies, persist_profile_cookies,
+    script_response_allowed,
+};
 
 const DEFAULT_MAX_CONTEXTS: usize = 128;
 const DEFAULT_COMMAND_CAPACITY: usize = 256;
@@ -41,6 +50,8 @@ const MAX_SELECTOR_BYTES: usize = 64 * 1024;
 const MAX_URL_BYTES: usize = 16 * 1024;
 const MAX_VIEWPORT_DIMENSION: u32 = 16_384;
 const MAX_RUNTIME_SLOTS: usize = 512;
+const PARSER_WORK_BYTES: usize = 64 * 1024;
+const MAX_NAVIGATION_ACTIONS_PER_COMMAND: usize = 64;
 
 static NEXT_PROFILE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_BROWSER_ID: AtomicU64 = AtomicU64::new(1);
@@ -210,40 +221,21 @@ pub fn spawn_browser(config: BrowserConfig) -> Result<EngineBrowserHandle, Brows
                     return;
                 }
             };
-            while let Ok(message) = command_rx.recv() {
-                match message {
-                    CoreMessage::Dispatch { command, reply } => {
-                        let _ = reply.send(core.dispatch(command));
-                        core.start_pending_loads();
-                    }
-                    CoreMessage::CapturePaint {
-                        context_id,
-                        document_id,
-                        viewport,
-                        reply,
-                    } => {
-                        let _ = reply.send(core.capture_paint_snapshot(
-                            context_id,
-                            document_id,
-                            viewport,
-                        ));
-                    }
-                    CoreMessage::NavigateHtml {
-                        context_id,
-                        url,
-                        html,
-                        reply,
-                    } => {
-                        let _ = reply.send(core.navigate_html(context_id, url, html));
-                        core.start_pending_loads();
-                    }
-                    CoreMessage::SourceLoaded(completion) => {
-                        core.complete_navigation(completion);
-                        core.start_pending_loads();
-                    }
-                    CoreMessage::Shutdown => {
-                        core.shutdown();
-                        break;
+            'owner: while let Ok(message) = command_rx.recv() {
+                if handle_core_message(&mut core, message) {
+                    break;
+                }
+                loop {
+                    core.advance_navigation_work();
+                    match command_rx.try_recv() {
+                        Ok(message) => {
+                            if handle_core_message(&mut core, message) {
+                                break 'owner;
+                            }
+                        }
+                        Err(mpsc::TryRecvError::Empty) if core.has_navigation_work() => {}
+                        Err(mpsc::TryRecvError::Empty) => break,
+                        Err(mpsc::TryRecvError::Disconnected) => break 'owner,
                     }
                 }
             }
@@ -293,8 +285,51 @@ enum CoreMessage {
         html: String,
         reply: mpsc::SyncSender<Result<BrowserCommandResult, BrowserError>>,
     },
+    SourceLoadProgress(SourceLoadProgress),
     SourceLoaded(SourceLoadCompletion),
+    ExternalScriptLoaded(ExternalScriptLoadCompletion),
     Shutdown,
+}
+
+fn handle_core_message(core: &mut BrowserCore, message: CoreMessage) -> bool {
+    match message {
+        CoreMessage::Dispatch { command, reply } => {
+            let _ = reply.send(core.dispatch(command));
+            core.start_pending_loads();
+        }
+        CoreMessage::CapturePaint {
+            context_id,
+            document_id,
+            viewport,
+            reply,
+        } => {
+            let _ = reply.send(core.capture_paint_snapshot(context_id, document_id, viewport));
+        }
+        CoreMessage::NavigateHtml {
+            context_id,
+            url,
+            html,
+            reply,
+        } => {
+            let _ = reply.send(core.navigate_html(context_id, url, html));
+            core.start_pending_loads();
+        }
+        CoreMessage::SourceLoaded(completion) => {
+            core.complete_navigation(completion);
+            core.start_pending_loads();
+        }
+        CoreMessage::SourceLoadProgress(progress) => {
+            core.progress_navigation(progress);
+        }
+        CoreMessage::ExternalScriptLoaded(completion) => {
+            core.complete_external_script(completion);
+        }
+        CoreMessage::Shutdown => {
+            core.shutdown();
+            return true;
+        }
+    }
+    false
 }
 
 struct EventChannel {
@@ -383,6 +418,7 @@ struct BrowserCore {
     cookies: CookieJar,
     network_runtime: Option<tokio::runtime::Runtime>,
     pending_load_starts: Vec<tokio::sync::oneshot::Sender<()>>,
+    pending_navigation_work: VecDeque<(BrowsingContextId, NavigationId)>,
     document_overrides: BTreeMap<String, String>,
     // Makes accidental movement of the DOM/V8 owner across threads impossible.
     _local_only: PhantomData<Rc<()>>,
@@ -407,8 +443,79 @@ struct ActiveNavigation {
     navigation_id: NavigationId,
     request_id: RequestId,
     history_update: HistoryUpdate,
+    work: Option<NavigationWork>,
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
     load_task: Option<tokio::task::AbortHandle>,
+    pending_script: Option<PendingExternalScript>,
+}
+
+enum PreparedNavigationAction {
+    CrossDocument {
+        url: String,
+        injected_html: Option<String>,
+        history_update: HistoryUpdate,
+        kind: CrossDocumentNavigationKind,
+    },
+    SameDocument {
+        history: SessionHistory,
+        url: String,
+    },
+}
+
+enum NavigationWork {
+    Parsing(Box<PageParser>),
+    Scripts(NavigationScriptWork),
+    Lifecycle {
+        stage: LifecycleStage,
+        actions: Vec<JsNavigationAction>,
+    },
+}
+
+struct NavigationScriptWork {
+    preload_scripts: VecDeque<String>,
+    new_document_scripts: VecDeque<String>,
+    author_scripts: Option<PageScriptRunner>,
+    bypass_csp: bool,
+    actions: Vec<JsNavigationAction>,
+}
+
+enum NavigationScriptStep {
+    Host(String),
+    Author(PreparedPageScript),
+    Complete,
+}
+
+struct PendingExternalScript {
+    key: ExternalScriptLoadKey,
+    request: ExternalPageScript,
+    work: NavigationScriptWork,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ExternalScriptLoadKey {
+    context_id: BrowsingContextId,
+    navigation_id: NavigationId,
+    document_id: DocumentId,
+    runtime_context_id: RuntimeContextId,
+    request_id: RequestId,
+}
+
+#[derive(Clone, Copy)]
+enum LifecycleStage {
+    DomContentLoaded,
+    Load,
+    Settle,
+}
+
+enum NavigationTerminal {
+    Settled,
+    Failed {
+        request_id: Option<RequestId>,
+        error: BrowserError,
+    },
+    Cancelled {
+        reason: NavigationCancellationReason,
+    },
 }
 
 #[derive(Default)]
@@ -489,7 +596,12 @@ struct LoadedSource {
     final_url: String,
     html: String,
     headers: Vec<(String, String)>,
-    events: Vec<NetworkEvent>,
+}
+
+struct SourceLoadProgress {
+    context_id: BrowsingContextId,
+    navigation_id: NavigationId,
+    event: NetworkEvent,
 }
 
 struct SourceLoadCompletion {
@@ -502,6 +614,30 @@ struct SourceLoadCompletion {
 struct SourceLoadInput {
     url: String,
     injected_html: Option<String>,
+}
+
+struct ExternalScriptLoadCompletion {
+    key: ExternalScriptLoadKey,
+    result: Result<LoadedExternalScript, ExternalScriptLoadFailure>,
+    cookie_delta: CookieJarDelta,
+}
+
+enum LoadedExternalScript {
+    File {
+        final_url: url::Url,
+        source: String,
+    },
+    Http {
+        response: TextResponse,
+        requested_urls: Vec<url::Url>,
+    },
+}
+
+struct ExternalScriptLoadFailure {
+    error: BrowserError,
+    url: String,
+    events: Vec<NetworkEvent>,
+    blocked_reason: &'static str,
 }
 
 impl Drop for BrowserCore {
@@ -574,6 +710,7 @@ impl BrowserCore {
             cookies: CookieJar::default(),
             network_runtime: Some(network_runtime),
             pending_load_starts: Vec::new(),
+            pending_navigation_work: VecDeque::new(),
             document_overrides: config.document_overrides,
             _local_only: PhantomData,
         })
@@ -918,7 +1055,14 @@ impl BrowserCore {
                 "injected document exceeds the browser body limit",
             ));
         }
-        self.begin_navigation(context_id, url, Some(html), history_update)
+        self.begin_navigation(
+            context_id,
+            url,
+            Some(html),
+            history_update,
+            CrossDocumentNavigationKind::Regular,
+            None,
+        )
     }
 
     fn create_context(&mut self) -> Result<BrowserCommandResult, BrowserError> {
@@ -976,29 +1120,23 @@ impl BrowserCore {
         context_id: BrowsingContextId,
     ) -> Result<BrowserCommandResult, BrowserError> {
         self.ensure_context(context_id)?;
-        let mut context = self.contexts.remove(&context_id).expect("context checked");
-        self.runtime_slots[context.runtime_slot].active = false;
-        if let Some(mut navigation) = context.active_navigation.take() {
-            if let Some(cancel) = navigation.cancel.take() {
-                let _ = cancel.send(());
-            }
-            if let Some(load_task) = navigation.load_task.take() {
-                load_task.abort();
-            }
-            self.emit_phase(
+        if let Some(navigation_id) = self
+            .context(context_id)?
+            .active_navigation
+            .as_ref()
+            .map(|navigation| navigation.navigation_id)
+        {
+            self.finish_navigation(
                 context_id,
-                context.frame_id,
-                navigation.navigation_id,
-                NavigationPhase::Cancelled,
-            );
-            self.emit(BrowserEvent::NavigationCancelled {
-                context_id,
-                frame_id: context.frame_id,
-                navigation_id: navigation.navigation_id,
-                request_id: Some(navigation.request_id),
-                reason: NavigationCancellationReason::ContextClosed,
-            });
+                navigation_id,
+                NavigationTerminal::Cancelled {
+                    reason: NavigationCancellationReason::ContextClosed,
+                },
+                false,
+            )?;
         }
+        let context = self.contexts.remove(&context_id).expect("context checked");
+        self.runtime_slots[context.runtime_slot].active = false;
         self.emit(BrowserEvent::RuntimeContextDestroyed {
             context_id,
             frame_id: context.frame_id,
@@ -1029,7 +1167,14 @@ impl BrowserCore {
         url: String,
         history_update: HistoryUpdate,
     ) -> Result<BrowserCommandResult, BrowserError> {
-        self.begin_navigation(context_id, url, None, history_update)
+        self.begin_navigation(
+            context_id,
+            url,
+            None,
+            history_update,
+            CrossDocumentNavigationKind::Regular,
+            None,
+        )
     }
 
     fn begin_navigation(
@@ -1038,6 +1183,8 @@ impl BrowserCore {
         url: String,
         injected_html: Option<String>,
         history_update: HistoryUpdate,
+        kind: CrossDocumentNavigationKind,
+        predecessor_navigation_id: Option<NavigationId>,
     ) -> Result<BrowserCommandResult, BrowserError> {
         self.ensure_context(context_id)?;
         if url.len() > MAX_URL_BYTES {
@@ -1056,13 +1203,17 @@ impl BrowserCore {
             navigation_id,
             request_id: initial_request_id,
             history_update,
+            work: None,
             cancel: Some(cancel),
             load_task: None,
+            pending_script: None,
         });
         self.emit(BrowserEvent::NavigationRequested {
             context_id,
             frame_id,
             navigation_id,
+            predecessor_navigation_id,
+            kind,
             url: url.clone(),
         });
         self.emit_phase(context_id, frame_id, navigation_id, NavigationPhase::Intent);
@@ -1091,6 +1242,7 @@ impl BrowserCore {
         let baseline = self.cookies.snapshots();
         let mut worker_jar = CookieJar::from_snapshots(baseline.clone());
         let mut network = self.network.clone();
+        let max_body_bytes = self.network_config.max_body_bytes;
         let command_tx = self.command_tx.clone();
         let load_task = self
             .network_runtime
@@ -1102,7 +1254,15 @@ impl BrowserCore {
                 }
                 let result = tokio::select! {
                     _ = cancel_rx => return,
-                    result = load_source(&mut network, &mut worker_jar, input) => result,
+                    result = load_source(&mut network, &mut worker_jar, input, max_body_bytes, |event| {
+                        let _ = command_tx.send(CoreMessage::SourceLoadProgress(
+                            SourceLoadProgress {
+                                context_id,
+                                navigation_id,
+                                event: event.clone(),
+                            },
+                        ));
+                    }) => result,
                 };
                 let cookie_delta = worker_jar.delta_from_snapshots(&baseline);
                 let _ = command_tx.send(CoreMessage::SourceLoaded(SourceLoadCompletion {
@@ -1138,78 +1298,129 @@ impl BrowserCore {
             return;
         }
         let frame_id = context.frame_id;
-        let initial_request_id = active.request_id;
-        let history_update = active.history_update.clone();
+        let request_id = active.request_id;
+        let active = self
+            .context_mut(context_id)
+            .expect("completion context was checked")
+            .active_navigation
+            .as_mut()
+            .expect("completion navigation was checked");
+        active.cancel.take();
+        active.load_task.take();
         self.cookies.apply_delta(cookie_delta);
         let loaded = match result {
             Ok(loaded) => loaded,
             Err(error) => {
-                self.fail_navigation(
-                    context_id,
-                    frame_id,
-                    navigation_id,
-                    Some(initial_request_id),
-                    error,
-                );
+                self.fail_navigation(context_id, navigation_id, Some(request_id), error);
                 return;
             }
         };
-        let mut request_id = initial_request_id;
-        for event in &loaded.events {
-            if let NetworkEvent::Redirect { from, to, status } = event {
-                let next_request_id = match self.ids.request() {
-                    Ok(request_id) => request_id,
-                    Err(error) => {
-                        self.fail_navigation(
-                            context_id,
-                            frame_id,
-                            navigation_id,
-                            Some(request_id),
-                            error,
-                        );
-                        return;
-                    }
-                };
-                self.emit(BrowserEvent::NavigationRedirected {
-                    context_id,
-                    frame_id,
-                    navigation_id,
-                    request_id,
-                    next_request_id,
-                    from_url: from.clone(),
-                    to_url: to.clone(),
-                    status: *status,
-                });
-                request_id = next_request_id;
-            }
-        }
         self.emit_phase(
             context_id,
             frame_id,
             navigation_id,
             NavigationPhase::Response,
         );
-
-        let mut page = match Page::from_html_with_headers(
-            loaded.final_url.clone(),
-            &loaded.html,
+        self.emit_phase(context_id, frame_id, navigation_id, NavigationPhase::Commit);
+        let parser = PageParser::with_headers(
+            loaded.final_url,
+            loaded.html,
             loaded
                 .headers
                 .iter()
                 .map(|(name, value)| (name.as_str(), value.as_str())),
-        ) {
-            Ok(page) => page,
-            Err(error) => {
-                self.fail_navigation(
+        );
+        self.context_mut(context_id)
+            .expect("active navigation context exists")
+            .active_navigation
+            .as_mut()
+            .expect("active navigation exists")
+            .work = Some(NavigationWork::Parsing(Box::new(parser)));
+        self.emit_phase(context_id, frame_id, navigation_id, NavigationPhase::Parse);
+        self.pending_navigation_work
+            .push_back((context_id, navigation_id));
+    }
+
+    fn has_navigation_work(&self) -> bool {
+        !self.pending_navigation_work.is_empty()
+    }
+
+    fn advance_navigation_work(&mut self) -> bool {
+        let Some((context_id, navigation_id)) = self.pending_navigation_work.pop_front() else {
+            return false;
+        };
+        let Some((work, request_id)) = self
+            .contexts
+            .get_mut(&context_id)
+            .and_then(|context| context.active_navigation.as_mut())
+            .filter(|active| active.navigation_id == navigation_id)
+            .and_then(|active| active.work.take().map(|work| (work, active.request_id)))
+        else {
+            return true;
+        };
+
+        match work {
+            NavigationWork::Parsing(mut parser) => match parser.advance(PARSER_WORK_BYTES) {
+                Ok(Some(page)) => self.commit_parsed_navigation(context_id, navigation_id, page),
+                Ok(None) => self.restore_navigation_work(
                     context_id,
-                    frame_id,
+                    navigation_id,
+                    NavigationWork::Parsing(parser),
+                ),
+                Err(error) => self.fail_navigation(
+                    context_id,
                     navigation_id,
                     Some(request_id),
                     BrowserError::new(browser_error_codes::NAVIGATION_LOAD, error.to_string()),
-                );
-                return;
+                ),
+            },
+            NavigationWork::Scripts(scripts) => {
+                self.advance_script_work(context_id, navigation_id, scripts)
             }
+            NavigationWork::Lifecycle { stage, actions } => {
+                self.advance_lifecycle(context_id, navigation_id, stage, actions)
+            }
+        }
+        true
+    }
+
+    fn restore_navigation_work(
+        &mut self,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+        work: NavigationWork,
+    ) {
+        let is_current = self
+            .contexts
+            .get_mut(&context_id)
+            .and_then(|context| context.active_navigation.as_mut())
+            .filter(|active| active.navigation_id == navigation_id && active.work.is_none());
+        if let Some(active) = is_current {
+            active.work = Some(work);
+            self.pending_navigation_work
+                .push_back((context_id, navigation_id));
+        }
+    }
+
+    fn commit_parsed_navigation(
+        &mut self,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+        mut page: Page,
+    ) {
+        let Ok(context) = self.context(context_id) else {
+            return;
         };
+        let Some(active) = context.active_navigation.as_ref() else {
+            return;
+        };
+        if active.navigation_id != navigation_id {
+            return;
+        }
+        let frame_id = context.frame_id;
+        let request_id = active.request_id;
+        let history_update = active.history_update.clone();
+        let final_url = page.url().to_owned();
 
         let (mut history, history_disposition) = match history_update {
             HistoryUpdate::Push => {
@@ -1235,7 +1446,7 @@ impl BrowserCore {
                 HistoryDisposition::Replace,
             ),
             HistoryUpdate::Preserve(history) => {
-                let disposition = if history.url() == Some(loaded.final_url.as_str()) {
+                let disposition = if history.url() == Some(final_url.as_str()) {
                     HistoryDisposition::Keep
                 } else {
                     HistoryDisposition::Replace
@@ -1245,10 +1456,10 @@ impl BrowserCore {
         };
         match history_disposition {
             HistoryDisposition::Push => {
-                history.push(HistoryEntry::navigation(loaded.final_url.clone()));
+                history.push(HistoryEntry::navigation(final_url.clone()));
             }
             HistoryDisposition::Replace => {
-                history.replace(HistoryEntry::navigation(loaded.final_url.clone()));
+                history.replace(HistoryEntry::navigation(final_url.clone()));
             }
             HistoryDisposition::Keep => {}
         }
@@ -1257,14 +1468,14 @@ impl BrowserCore {
         let document_id = match self.ids.document() {
             Ok(document_id) => document_id,
             Err(error) => {
-                self.fail_navigation(context_id, frame_id, navigation_id, Some(request_id), error);
+                self.fail_navigation(context_id, navigation_id, Some(request_id), error);
                 return;
             }
         };
         let runtime_context_id = match self.ids.runtime() {
             Ok(runtime_context_id) => runtime_context_id,
             Err(error) => {
-                self.fail_navigation(context_id, frame_id, navigation_id, Some(request_id), error);
+                self.fail_navigation(context_id, navigation_id, Some(request_id), error);
                 return;
             }
         };
@@ -1282,7 +1493,6 @@ impl BrowserCore {
         if self.runtime_slots.len() >= MAX_RUNTIME_SLOTS {
             self.fail_navigation(
                 context_id,
-                frame_id,
                 navigation_id,
                 Some(request_id),
                 BrowserError::new(
@@ -1302,7 +1512,6 @@ impl BrowserCore {
             Err(error) => {
                 self.fail_navigation(
                     context_id,
-                    frame_id,
                     navigation_id,
                     Some(request_id),
                     engine_error(error),
@@ -1311,8 +1520,8 @@ impl BrowserCore {
             }
         };
         apply_runtime_config(&mut runtime, &context_config);
-        if let Err(error) = self.record_visit_url(&loaded.final_url) {
-            self.fail_navigation(context_id, frame_id, navigation_id, Some(request_id), error);
+        if let Err(error) = self.record_visit_url(&final_url) {
+            self.fail_navigation(context_id, navigation_id, Some(request_id), error);
             return;
         }
         let runtime_slot = self.runtime_slots.len();
@@ -1321,7 +1530,13 @@ impl BrowserCore {
             active: true,
         });
         self.runtime_slots[old_runtime_slot].active = false;
-        self.emit_phase(context_id, frame_id, navigation_id, NavigationPhase::Commit);
+        let script_work = NavigationScriptWork {
+            preload_scripts: context_config.preload_scripts.into(),
+            new_document_scripts: context_config.new_document_scripts.into(),
+            author_scripts: None,
+            bypass_csp: context_config.bypass_csp,
+            actions: Vec::new(),
+        };
         self.emit(BrowserEvent::RuntimeContextDestroyed {
             context_id,
             frame_id,
@@ -1342,6 +1557,11 @@ impl BrowserCore {
             context.document_id = document_id;
             context.runtime_context_id = runtime_context_id;
             context.runtime_slot = runtime_slot;
+            context
+                .active_navigation
+                .as_mut()
+                .expect("active navigation exists")
+                .work = Some(NavigationWork::Scripts(script_work));
         }
         self.emit(BrowserEvent::NavigationCommitted {
             context_id,
@@ -1350,7 +1570,7 @@ impl BrowserCore {
             request_id: Some(request_id),
             document_id,
             runtime_context_id: Some(runtime_context_id),
-            url: loaded.final_url,
+            url: final_url,
         });
         self.emit(BrowserEvent::RuntimeContextCreated {
             context_id,
@@ -1358,89 +1578,597 @@ impl BrowserCore {
             document_id,
             runtime_context_id,
         });
-        self.emit_phase(context_id, frame_id, navigation_id, NavigationPhase::Parse);
         self.emit_phase(
             context_id,
             frame_id,
             navigation_id,
             NavigationPhase::ScriptsAndSubresources,
         );
-        let script_result = {
+        self.pending_navigation_work
+            .push_back((context_id, navigation_id));
+    }
+
+    fn advance_script_work(
+        &mut self,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+        mut work: NavigationScriptWork,
+    ) {
+        let Ok(context) = self.context(context_id) else {
+            return;
+        };
+        let Some(active) = context.active_navigation.as_ref() else {
+            return;
+        };
+        if active.navigation_id != navigation_id {
+            return;
+        }
+        let document_id = context.document_id;
+        let runtime_context_id = context.runtime_context_id;
+        let runtime_slot = context.runtime_slot;
+        let frame_id = context.frame_id;
+        let document_url = context.page.url().to_owned();
+        let host_source = work
+            .preload_scripts
+            .pop_front()
+            .or_else(|| work.new_document_scripts.pop_front());
+
+        let step = if let Some(source) = host_source {
+            NavigationScriptStep::Host(source)
+        } else {
+            let context = self.context(context_id).expect("context checked");
+            let author_scripts = work
+                .author_scripts
+                .get_or_insert_with(|| PageScriptRunner::new(&context.page, work.bypass_csp));
+            match author_scripts.prepare_next(&context.page) {
+                Some(item) => NavigationScriptStep::Author(item),
+                None => NavigationScriptStep::Complete,
+            }
+        };
+
+        let step = match step {
+            NavigationScriptStep::Author(PreparedPageScript::External(request)) => {
+                let mut baseline = self.cookies.snapshots();
+                match self.runtime_slots[runtime_slot]
+                    .runtime
+                    .network_cookie_snapshots()
+                {
+                    Ok(snapshots) => baseline.extend(snapshots),
+                    Err(error) => {
+                        let effects = RuntimeEffects {
+                            exceptions: vec![RuntimeExceptionEvent {
+                                error: script_error(error),
+                            }],
+                            ..RuntimeEffects::default()
+                        };
+                        self.emit(BrowserEvent::RuntimeEffects {
+                            context_id,
+                            frame_id,
+                            document_id,
+                            runtime_context_id,
+                            url: document_url.clone(),
+                            effects,
+                        });
+                        self.restore_navigation_work(
+                            context_id,
+                            navigation_id,
+                            NavigationWork::Scripts(work),
+                        );
+                        return;
+                    }
+                }
+                let request_id = match self.ids.request() {
+                    Ok(request_id) => request_id,
+                    Err(error) => {
+                        let effects = RuntimeEffects {
+                            exceptions: vec![RuntimeExceptionEvent { error }],
+                            ..RuntimeEffects::default()
+                        };
+                        self.emit(BrowserEvent::RuntimeEffects {
+                            context_id,
+                            frame_id,
+                            document_id,
+                            runtime_context_id,
+                            url: document_url.clone(),
+                            effects,
+                        });
+                        self.restore_navigation_work(
+                            context_id,
+                            navigation_id,
+                            NavigationWork::Scripts(work),
+                        );
+                        return;
+                    }
+                };
+                self.start_external_script_load(
+                    ExternalScriptLoadKey {
+                        context_id,
+                        navigation_id,
+                        document_id,
+                        runtime_context_id,
+                        request_id,
+                    },
+                    request,
+                    work,
+                    baseline,
+                );
+                return;
+            }
+            step => step,
+        };
+
+        let (item_result, effects_result, actions_result) = {
             let (contexts, runtime_slots) = (&mut self.contexts, &mut self.runtime_slots);
             let context = contexts.get_mut(&context_id).expect("context checked");
             runtime_slots[runtime_slot]
                 .runtime
                 .with_entered_isolate(|runtime| {
-                    for source in &context.config.preload_scripts {
-                        runtime.evaluate_with_page_mut(source, &mut context.page)?;
-                    }
-                    for source in &context.config.new_document_scripts {
-                        runtime.evaluate_with_page_mut(source, &mut context.page)?;
-                    }
-                    runtime.execute_page_scripts_with_csp_bypass(
-                        &mut context.page,
-                        context.config.bypass_csp,
-                    )?;
-                    let effects = drain_runtime_effects(runtime)?;
-                    let actions = runtime.drain_navigation_actions()?;
-                    Ok::<_, crate::engine_error::EngineError>((effects, actions))
+                    let item_result = match step {
+                        NavigationScriptStep::Host(source)
+                        | NavigationScriptStep::Author(PreparedPageScript::Inline(source)) => Some(
+                            runtime
+                                .evaluate_with_page_mut(&source, &mut context.page)
+                                .map(|_| ()),
+                        ),
+                        NavigationScriptStep::Author(PreparedPageScript::Skip) => Some(Ok(())),
+                        NavigationScriptStep::Complete => None,
+                        NavigationScriptStep::Author(PreparedPageScript::External(_)) => {
+                            unreachable!("external scripts start before entering the isolate")
+                        }
+                    };
+                    let effects = drain_runtime_effects(runtime);
+                    let actions = runtime.drain_navigation_actions();
+                    (item_result, effects, actions)
                 })
         };
-        let (effects, actions) = match script_result {
-            Ok(result) => result,
-            Err(error) => {
-                self.fail_navigation(
-                    context_id,
-                    frame_id,
-                    navigation_id,
-                    Some(request_id),
-                    engine_error(error),
-                );
-                return;
-            }
-        };
+
+        let mut effects = RuntimeEffects::default();
+        let advanced_item = item_result.is_some();
+        if let Some(Err(error)) = item_result {
+            effects.exceptions.push(RuntimeExceptionEvent {
+                error: script_error(error),
+            });
+        }
+        match effects_result {
+            Ok(item_effects) => effects.extend(item_effects),
+            Err(error) => effects.exceptions.push(RuntimeExceptionEvent {
+                error: script_error(error),
+            }),
+        }
+        match actions_result {
+            Ok(actions) => append_navigation_actions_bounded(&mut work.actions, actions),
+            Err(error) => effects.exceptions.push(RuntimeExceptionEvent {
+                error: script_error(error),
+            }),
+        }
+
+        let is_current = self
+            .context(context_id)
+            .ok()
+            .and_then(|context| context.active_navigation.as_ref())
+            .is_some_and(|active| active.navigation_id == navigation_id);
+        if !is_current {
+            return;
+        }
         if !effects.is_empty() {
             self.emit(BrowserEvent::RuntimeEffects {
                 context_id,
+                frame_id,
                 document_id,
                 runtime_context_id,
+                url: document_url,
                 effects,
             });
         }
-        self.emit_phase(
-            context_id,
-            frame_id,
-            navigation_id,
-            NavigationPhase::DomContentLoaded,
+
+        let next = if advanced_item {
+            NavigationWork::Scripts(work)
+        } else {
+            NavigationWork::Lifecycle {
+                stage: LifecycleStage::DomContentLoaded,
+                actions: work.actions,
+            }
+        };
+        self.restore_navigation_work(context_id, navigation_id, next);
+    }
+
+    fn start_external_script_load(
+        &mut self,
+        key: ExternalScriptLoadKey,
+        request: ExternalPageScript,
+        work: NavigationScriptWork,
+        baseline: Vec<vixen_net::CookieSnapshot>,
+    ) {
+        let mut worker_jar = CookieJar::from_snapshots(baseline.clone());
+        let mut network = self.network.clone();
+        let max_body_bytes = self.network_config.max_body_bytes;
+        let max_redirects = self.network_config.max_redirects;
+        let worker_request = request.clone();
+        let store = Arc::clone(&self.store);
+        let command_tx = self.command_tx.clone();
+        let (cancel, cancel_rx) = tokio::sync::oneshot::channel();
+
+        {
+            let active = self
+                .context_mut(key.context_id)
+                .expect("external script context was checked")
+                .active_navigation
+                .as_mut()
+                .expect("external script navigation was checked");
+            active.cancel = Some(cancel);
+            active.pending_script = Some(PendingExternalScript { key, request, work });
+        }
+
+        let task = self
+            .network_runtime
+            .as_ref()
+            .expect("source runtime is available")
+            .spawn(async move {
+                let mut profile_baseline = baseline.clone();
+                let result = tokio::select! {
+                    _ = cancel_rx => return,
+                    result = load_external_script(
+                        &mut network,
+                        &mut worker_jar,
+                        ExternalScriptLoadInput {
+                            store: &store,
+                            profile_baseline: &mut profile_baseline,
+                            request: worker_request,
+                            max_body_bytes,
+                            max_redirects,
+                        },
+                    ) => result,
+                };
+                let cookie_delta = worker_jar.delta_from_snapshots(&profile_baseline);
+                let _ = command_tx.send(CoreMessage::ExternalScriptLoaded(
+                    ExternalScriptLoadCompletion {
+                        key,
+                        result,
+                        cookie_delta,
+                    },
+                ));
+            });
+        self.context_mut(key.context_id)
+            .expect("external script context was checked")
+            .active_navigation
+            .as_mut()
+            .expect("external script navigation was checked")
+            .load_task = Some(task.abort_handle());
+    }
+
+    fn complete_external_script(&mut self, completion: ExternalScriptLoadCompletion) {
+        let ExternalScriptLoadCompletion {
+            key,
+            result,
+            cookie_delta,
+        } = completion;
+        let Some(context) = self.contexts.get(&key.context_id) else {
+            return;
+        };
+        if context.document_id != key.document_id
+            || context.runtime_context_id != key.runtime_context_id
+        {
+            return;
+        }
+        let runtime_slot = context.runtime_slot;
+        let frame_id = context.frame_id;
+        let document_url = context.page.url().to_owned();
+        let Some(active) = context.active_navigation.as_ref() else {
+            return;
+        };
+        if active.navigation_id != key.navigation_id
+            || active
+                .pending_script
+                .as_ref()
+                .is_none_or(|pending| pending.key != key)
+        {
+            return;
+        }
+
+        let mut pending = {
+            let active = self
+                .context_mut(key.context_id)
+                .expect("external script context was checked")
+                .active_navigation
+                .as_mut()
+                .expect("external script navigation was checked");
+            active.cancel.take();
+            active.load_task.take();
+            active
+                .pending_script
+                .take()
+                .expect("external script request was checked")
+        };
+        let request_url = pending.request.url().to_string();
+        let mut effects = RuntimeEffects {
+            network: external_script_network_events(key.request_id, &request_url, &result),
+            ..RuntimeEffects::default()
+        };
+        let (source, blocked, requested_urls) = match result {
+            Ok(LoadedExternalScript::File { final_url, source }) => {
+                if pending.request.allows_url(&final_url) {
+                    (Some(source), None, Vec::new())
+                } else {
+                    (None, Some((final_url.to_string(), "csp")), Vec::new())
+                }
+            }
+            Ok(LoadedExternalScript::Http {
+                response,
+                requested_urls,
+            }) => {
+                let final_url = url::Url::parse(&response.final_url).ok();
+                if final_url
+                    .as_ref()
+                    .is_none_or(|final_url| !pending.request.allows_url(final_url))
+                {
+                    (None, Some((response.final_url, "csp")), requested_urls)
+                } else if !script_response_allowed(&response) {
+                    (
+                        None,
+                        Some((response.final_url, "response-policy")),
+                        requested_urls,
+                    )
+                } else {
+                    (Some(response.body), None, requested_urls)
+                }
+            }
+            Err(_) => (None, None, Vec::new()),
+        };
+        if let Some((url, blocked_reason)) = blocked {
+            effects.network.push(RuntimeNetworkEvent::Failure {
+                request_id: key.request_id.to_string(),
+                url,
+                error_text: "external script blocked".to_owned(),
+                blocked_reason: Some(blocked_reason.to_owned()),
+            });
+        }
+
+        let Some(source) = source else {
+            if !effects.is_empty() {
+                self.emit(BrowserEvent::RuntimeEffects {
+                    context_id: key.context_id,
+                    frame_id,
+                    document_id: key.document_id,
+                    runtime_context_id: key.runtime_context_id,
+                    url: document_url.clone(),
+                    effects,
+                });
+            }
+            self.restore_navigation_work(
+                key.context_id,
+                key.navigation_id,
+                NavigationWork::Scripts(pending.work),
+            );
+            return;
+        };
+        if let Err(error) = persist_profile_cookies(&self.store, &requested_urls, &cookie_delta) {
+            effects.exceptions.push(RuntimeExceptionEvent {
+                error: script_error(error),
+            });
+            self.emit(BrowserEvent::RuntimeEffects {
+                context_id: key.context_id,
+                frame_id,
+                document_id: key.document_id,
+                runtime_context_id: key.runtime_context_id,
+                url: document_url.clone(),
+                effects,
+            });
+            self.restore_navigation_work(
+                key.context_id,
+                key.navigation_id,
+                NavigationWork::Scripts(pending.work),
+            );
+            return;
+        }
+        if let Err(error) = self.runtime_slots[runtime_slot]
+            .runtime
+            .apply_network_cookie_delta(cookie_delta.clone())
+        {
+            effects.exceptions.push(RuntimeExceptionEvent {
+                error: script_error(error),
+            });
+            self.emit(BrowserEvent::RuntimeEffects {
+                context_id: key.context_id,
+                frame_id,
+                document_id: key.document_id,
+                runtime_context_id: key.runtime_context_id,
+                url: document_url.clone(),
+                effects,
+            });
+            self.restore_navigation_work(
+                key.context_id,
+                key.navigation_id,
+                NavigationWork::Scripts(pending.work),
+            );
+            return;
+        }
+        self.cookies.apply_delta(cookie_delta);
+
+        let (item_result, effects_result, actions_result) = {
+            let (contexts, runtime_slots) = (&mut self.contexts, &mut self.runtime_slots);
+            let context = contexts
+                .get_mut(&key.context_id)
+                .expect("external script context was checked");
+            runtime_slots[runtime_slot]
+                .runtime
+                .with_entered_isolate(|runtime| {
+                    let item_result = runtime
+                        .evaluate_with_page_mut(&source, &mut context.page)
+                        .map(|_| ());
+                    let effects = drain_runtime_effects(runtime);
+                    let actions = runtime.drain_navigation_actions();
+                    (item_result, effects, actions)
+                })
+        };
+
+        if let Err(error) = item_result {
+            effects.exceptions.push(RuntimeExceptionEvent {
+                error: script_error(error),
+            });
+        }
+        match effects_result {
+            Ok(item_effects) => effects.extend(item_effects),
+            Err(error) => effects.exceptions.push(RuntimeExceptionEvent {
+                error: script_error(error),
+            }),
+        }
+        match actions_result {
+            Ok(actions) => append_navigation_actions_bounded(&mut pending.work.actions, actions),
+            Err(error) => effects.exceptions.push(RuntimeExceptionEvent {
+                error: script_error(error),
+            }),
+        }
+
+        let is_current = self.contexts.get(&key.context_id).is_some_and(|context| {
+            context.document_id == key.document_id
+                && context.runtime_context_id == key.runtime_context_id
+                && context
+                    .active_navigation
+                    .as_ref()
+                    .is_some_and(|active| active.navigation_id == key.navigation_id)
+        });
+        if !is_current {
+            return;
+        }
+        if !effects.is_empty() {
+            self.emit(BrowserEvent::RuntimeEffects {
+                context_id: key.context_id,
+                frame_id,
+                document_id: key.document_id,
+                runtime_context_id: key.runtime_context_id,
+                url: document_url,
+                effects,
+            });
+        }
+        self.restore_navigation_work(
+            key.context_id,
+            key.navigation_id,
+            NavigationWork::Scripts(pending.work),
         );
-        self.emit(BrowserEvent::DomContentLoaded {
+    }
+
+    fn advance_lifecycle(
+        &mut self,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+        stage: LifecycleStage,
+        actions: Vec<JsNavigationAction>,
+    ) {
+        let Ok(context) = self.context(context_id) else {
+            return;
+        };
+        let Some(active) = context.active_navigation.as_ref() else {
+            return;
+        };
+        if active.navigation_id != navigation_id {
+            return;
+        }
+        let frame_id = context.frame_id;
+        let document_id = context.document_id;
+
+        match stage {
+            LifecycleStage::DomContentLoaded => {
+                self.emit_phase(
+                    context_id,
+                    frame_id,
+                    navigation_id,
+                    NavigationPhase::DomContentLoaded,
+                );
+                self.emit(BrowserEvent::DomContentLoaded {
+                    context_id,
+                    frame_id,
+                    navigation_id,
+                    document_id,
+                });
+                self.restore_navigation_work(
+                    context_id,
+                    navigation_id,
+                    NavigationWork::Lifecycle {
+                        stage: LifecycleStage::Load,
+                        actions,
+                    },
+                );
+            }
+            LifecycleStage::Load => {
+                self.emit_phase(context_id, frame_id, navigation_id, NavigationPhase::Load);
+                self.emit(BrowserEvent::DocumentLoadCompleted {
+                    context_id,
+                    frame_id,
+                    navigation_id,
+                    document_id,
+                });
+                self.restore_navigation_work(
+                    context_id,
+                    navigation_id,
+                    NavigationWork::Lifecycle {
+                        stage: LifecycleStage::Settle,
+                        actions,
+                    },
+                );
+            }
+            LifecycleStage::Settle => {
+                if matches!(
+                    self.finish_navigation(
+                        context_id,
+                        navigation_id,
+                        NavigationTerminal::Settled,
+                        true,
+                    ),
+                    Ok(true)
+                ) {
+                    let _ = self.apply_navigation_actions(context_id, actions, Some(navigation_id));
+                }
+            }
+        }
+    }
+
+    fn progress_navigation(&mut self, progress: SourceLoadProgress) {
+        let SourceLoadProgress {
             context_id,
-            frame_id,
             navigation_id,
-            document_id,
-        });
-        self.emit_phase(context_id, frame_id, navigation_id, NavigationPhase::Load);
-        self.emit(BrowserEvent::DocumentLoadCompleted {
-            context_id,
-            frame_id,
-            navigation_id,
-            document_id,
-        });
+            event,
+        } = progress;
+        let Ok(context) = self.context(context_id) else {
+            return;
+        };
+        let Some(active) = context.active_navigation.as_ref() else {
+            return;
+        };
+        if active.navigation_id != navigation_id {
+            return;
+        }
+
+        // NavigationStarted and the Response phase already expose one request
+        // and response boundary. Network RequestStart/Response progress is
+        // intentionally ignored here rather than duplicating those events.
+        let NetworkEvent::Redirect { from, to, status } = event else {
+            return;
+        };
+        let frame_id = context.frame_id;
+        let request_id = active.request_id;
+        let next_request_id = match self.ids.request() {
+            Ok(request_id) => request_id,
+            Err(error) => {
+                self.fail_navigation(context_id, navigation_id, Some(request_id), error);
+                return;
+            }
+        };
         self.context_mut(context_id)
-            .expect("active navigation context exists")
-            .active_navigation = None;
-        self.emit_phase(
+            .expect("progress context was checked")
+            .active_navigation
+            .as_mut()
+            .expect("progress navigation was checked")
+            .request_id = next_request_id;
+        self.emit(BrowserEvent::NavigationRedirected {
             context_id,
             frame_id,
             navigation_id,
-            NavigationPhase::Settled,
-        );
-        self.emit(BrowserEvent::BrowsingContextStateChanged {
-            state: self
-                .context_state(context_id)
-                .expect("active navigation context exists"),
+            request_id,
+            next_request_id,
+            from_url: from,
+            to_url: to,
+            status,
         });
-        let _ = self.apply_navigation_actions(context_id, actions);
     }
 
     fn stop(
@@ -1457,35 +2185,20 @@ impl BrowserCore {
         reason: NavigationCancellationReason,
         emit_state: bool,
     ) -> Result<bool, BrowserError> {
-        let context = self.context_mut(context_id)?;
-        let Some(mut navigation) = context.active_navigation.take() else {
+        let Some(navigation_id) = self
+            .context(context_id)?
+            .active_navigation
+            .as_ref()
+            .map(|navigation| navigation.navigation_id)
+        else {
             return Ok(false);
         };
-        let frame_id = context.frame_id;
-        if let Some(cancel) = navigation.cancel.take() {
-            let _ = cancel.send(());
-        }
-        if let Some(load_task) = navigation.load_task.take() {
-            load_task.abort();
-        }
-        self.emit_phase(
+        self.finish_navigation(
             context_id,
-            frame_id,
-            navigation.navigation_id,
-            NavigationPhase::Cancelled,
-        );
-        self.emit(BrowserEvent::NavigationCancelled {
-            context_id,
-            frame_id,
-            navigation_id: navigation.navigation_id,
-            request_id: Some(navigation.request_id),
-            reason,
-        });
-        if emit_state {
-            self.emit(BrowserEvent::BrowsingContextStateChanged {
-                state: self.context_state(context_id)?,
-            });
-        }
+            navigation_id,
+            NavigationTerminal::Cancelled { reason },
+            emit_state,
+        )?;
         Ok(true)
     }
 
@@ -1523,7 +2236,10 @@ impl BrowserCore {
     ) -> Result<BrowserCommandResult, BrowserError> {
         let evaluation =
             self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
-        Ok(BrowserCommandResult::Evaluation(evaluation.value))
+        Ok(BrowserCommandResult::Evaluation(EvaluationResult {
+            value: evaluation.value,
+            navigation_actions: evaluation.navigation_actions,
+        }))
     }
 
     fn evaluate_for_automation(
@@ -1568,21 +2284,34 @@ impl BrowserCore {
         let runtime_slot = context.runtime_slot;
         let (contexts, runtime_slots) = (&mut self.contexts, &mut self.runtime_slots);
         let context = contexts.get_mut(&context_id).expect("context checked");
-        let (value, effects, actions) = runtime_slots[runtime_slot]
+        let evaluation = runtime_slots[runtime_slot]
             .runtime
             .with_entered_isolate(|runtime| {
-                let value = runtime.evaluate_with_page_mut(&source, &mut context.page)?;
-                let effects = drain_runtime_effects(runtime)?;
-                let actions = runtime.drain_navigation_actions()?;
-                Ok::<_, crate::engine_error::EngineError>((value, effects, actions))
-            })
-            .map_err(script_error)?;
+                let value = match runtime.evaluate_with_page_mut(&source, &mut context.page) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        discard_runtime_outputs(runtime);
+                        return Err(error);
+                    }
+                };
+                let effects = drain_runtime_effects(runtime);
+                let actions = runtime.drain_navigation_actions();
+                match (effects, actions) {
+                    (Ok(effects), Ok(actions)) => Ok((value, effects, actions)),
+                    (Err(error), _) | (_, Err(error)) => {
+                        discard_runtime_outputs(runtime);
+                        Err(error)
+                    }
+                }
+            });
+        let (value, effects, actions) = evaluation.map_err(script_error)?;
         let state = context_state(context_id, context);
         self.emit(BrowserEvent::BrowsingContextStateChanged { state });
-        self.apply_navigation_actions(context_id, actions)?;
+        let navigation_actions = self.apply_navigation_actions(context_id, actions, None)?;
         Ok(AutomationEvaluation {
             value: script_value(value),
             effects,
+            navigation_actions,
         })
     }
 
@@ -1630,7 +2359,10 @@ impl BrowserCore {
         );
         let evaluation =
             self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
-        Ok(BrowserCommandResult::InputDispatched(evaluation.effects))
+        Ok(BrowserCommandResult::InputDispatched(InputDispatchResult {
+            effects: evaluation.effects,
+            navigation_actions: evaluation.navigation_actions,
+        }))
     }
 
     fn dispatch_key_event(
@@ -1661,41 +2393,114 @@ impl BrowserCore {
         );
         let evaluation =
             self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
-        Ok(BrowserCommandResult::InputDispatched(evaluation.effects))
+        Ok(BrowserCommandResult::InputDispatched(InputDispatchResult {
+            effects: evaluation.effects,
+            navigation_actions: evaluation.navigation_actions,
+        }))
     }
 
     fn apply_navigation_actions(
         &mut self,
         context_id: BrowsingContextId,
         actions: Vec<JsNavigationAction>,
-    ) -> Result<(), BrowserError> {
+        mut predecessor_navigation_id: Option<NavigationId>,
+    ) -> Result<Vec<NavigationActionOutcome>, BrowserError> {
+        if actions.len() > MAX_NAVIGATION_ACTIONS_PER_COMMAND
+            || actions
+                .iter()
+                .any(|action| matches!(action, JsNavigationAction::Overflow))
+        {
+            return Err(BrowserError::new(
+                browser_error_codes::INVALID_ARGUMENT,
+                format!(
+                    "command produced more than {MAX_NAVIGATION_ACTIONS_PER_COMMAND} navigation actions"
+                ),
+            ));
+        }
+        let prepared = self.prepare_navigation_actions(context_id, actions)?;
+        let mut outcomes = Vec::with_capacity(prepared.len());
+        for action in prepared {
+            match action {
+                PreparedNavigationAction::CrossDocument {
+                    url,
+                    injected_html,
+                    history_update,
+                    kind,
+                } => {
+                    let result = self.begin_navigation(
+                        context_id,
+                        url,
+                        injected_html,
+                        history_update,
+                        kind,
+                        predecessor_navigation_id,
+                    )?;
+                    let navigation_id = navigation_id_from_result(result)?;
+                    outcomes.push(NavigationActionOutcome::CrossDocument {
+                        navigation_id,
+                        kind,
+                    });
+                    predecessor_navigation_id = Some(navigation_id);
+                }
+                PreparedNavigationAction::SameDocument { history, url } => {
+                    let runtime_slot = self.context(context_id)?.runtime_slot;
+                    self.context_mut(context_id)?
+                        .page
+                        .set_session_history(history);
+                    let (contexts, slots) = (&self.contexts, &mut self.runtime_slots);
+                    let page = &contexts.get(&context_id).expect("context checked").page;
+                    slots[runtime_slot].runtime.sync_page_realm_key(page);
+                    self.emit(BrowserEvent::BrowsingContextStateChanged {
+                        state: self.context_state(context_id)?,
+                    });
+                    outcomes.push(NavigationActionOutcome::SameDocument { url });
+                }
+            }
+        }
+        Ok(outcomes)
+    }
+
+    fn prepare_navigation_actions(
+        &self,
+        context_id: BrowsingContextId,
+        actions: Vec<JsNavigationAction>,
+    ) -> Result<Vec<PreparedNavigationAction>, BrowserError> {
+        let context = self.context(context_id)?;
+        let mut simulated_history = context.page.session_history().clone();
+        let mut prepared = Vec::with_capacity(actions.len());
         for action in actions {
             match action {
                 JsNavigationAction::Navigate { url, replace } => {
-                    self.navigate(
-                        context_id,
+                    validate_navigation_url(&url)?;
+                    prepared.push(PreparedNavigationAction::CrossDocument {
                         url,
-                        if replace {
+                        injected_html: None,
+                        history_update: if replace {
                             HistoryUpdate::Replace
                         } else {
                             HistoryUpdate::Push
                         },
-                    )?;
+                        kind: CrossDocumentNavigationKind::Regular,
+                    });
                 }
                 JsNavigationAction::SetContent { html } => {
-                    let (url, history) = {
-                        let context = self.context(context_id)?;
-                        (
-                            context.page.url().to_owned(),
-                            context.page.session_history().clone(),
-                        )
-                    };
-                    self.navigate_injected(
-                        context_id,
-                        url,
-                        html,
-                        HistoryUpdate::Preserve(history),
-                    )?;
+                    if html.len() > self.network_config.max_body_bytes as usize {
+                        return Err(BrowserError::new(
+                            browser_error_codes::INVALID_ARGUMENT,
+                            "injected document exceeds the browser body limit",
+                        ));
+                    }
+                    prepared.push(PreparedNavigationAction::CrossDocument {
+                        url: simulated_history
+                            .url()
+                            .unwrap_or_else(|| context.page.url())
+                            .to_owned(),
+                        injected_html: Some(html),
+                        history_update: HistoryUpdate::Preserve(simulated_history.clone()),
+                        kind: CrossDocumentNavigationKind::ContentReplacement {
+                            replaced_document_id: context.document_id,
+                        },
+                    });
                 }
                 JsNavigationAction::FormSubmit {
                     form_id,
@@ -1705,7 +2510,6 @@ impl BrowserCore {
                     method,
                     ..
                 } => {
-                    let context = self.context(context_id)?;
                     let submission = if form_node_id != 0 {
                         match context
                             .page
@@ -1763,73 +2567,63 @@ impl BrowserCore {
                         } else {
                             target
                         };
-                        self.navigate(context_id, target, HistoryUpdate::Push)?;
+                        validate_navigation_url(&target)?;
+                        prepared.push(PreparedNavigationAction::CrossDocument {
+                            url: target,
+                            injected_html: None,
+                            history_update: HistoryUpdate::Push,
+                            kind: CrossDocumentNavigationKind::Regular,
+                        });
                     }
                 }
                 JsNavigationAction::HistoryPush {
                     url,
                     state_json,
                     title,
-                } => self.apply_history_state(context_id, url, state_json, title, false)?,
+                } => {
+                    prepare_history_state(&mut simulated_history, url, state_json, title, false)?;
+                    prepared.push(PreparedNavigationAction::SameDocument {
+                        url: simulated_history.url().unwrap_or_default().to_owned(),
+                        history: simulated_history.clone(),
+                    });
+                }
                 JsNavigationAction::HistoryReplace {
                     url,
                     state_json,
                     title,
-                } => self.apply_history_state(context_id, url, state_json, title, true)?,
+                } => {
+                    prepare_history_state(&mut simulated_history, url, state_json, title, true)?;
+                    prepared.push(PreparedNavigationAction::SameDocument {
+                        url: simulated_history.url().unwrap_or_default().to_owned(),
+                        history: simulated_history.clone(),
+                    });
+                }
                 JsNavigationAction::HistoryTraverse { delta } => {
-                    let context = self.context(context_id)?;
-                    let mut history = context.page.session_history().clone();
+                    let mut history = simulated_history.clone();
+                    let previous_index = history.index();
                     let Some(entry) = history.go(delta).cloned() else {
                         continue;
                     };
                     if entry.state.is_some() {
-                        let runtime_slot = context.runtime_slot;
-                        self.context_mut(context_id)?
-                            .page
-                            .set_session_history(history);
-                        let (contexts, slots) = (&self.contexts, &mut self.runtime_slots);
-                        let page = &contexts.get(&context_id).expect("context checked").page;
-                        slots[runtime_slot].runtime.sync_page_realm_key(page);
+                        if history.index() != previous_index {
+                            let url = entry.url;
+                            simulated_history = history.clone();
+                            prepared.push(PreparedNavigationAction::SameDocument { history, url });
+                        }
                     } else {
-                        self.navigate(context_id, entry.url, HistoryUpdate::Preserve(history))?;
+                        validate_navigation_url(&entry.url)?;
+                        prepared.push(PreparedNavigationAction::CrossDocument {
+                            url: entry.url,
+                            injected_html: None,
+                            history_update: HistoryUpdate::Preserve(history),
+                            kind: CrossDocumentNavigationKind::Regular,
+                        });
                     }
                 }
+                JsNavigationAction::Overflow => unreachable!("overflow is rejected before prepare"),
             }
         }
-        Ok(())
-    }
-
-    fn apply_history_state(
-        &mut self,
-        context_id: BrowsingContextId,
-        url: String,
-        state_json: String,
-        title: String,
-        replace: bool,
-    ) -> Result<(), BrowserError> {
-        let context = self.context(context_id)?;
-        ensure_same_origin_history_url(context.page.url(), &url)?;
-        let runtime_slot = context.runtime_slot;
-        let mut history = context.page.session_history().clone();
-        let mut entry = HistoryEntry::push_state(url, state_json.into_bytes());
-        if !title.is_empty() {
-            entry.title = Some(title);
-        }
-        if replace {
-            history.replace(entry);
-        } else {
-            history.push(entry);
-        }
-        self.context_mut(context_id)?
-            .page
-            .set_session_history(history);
-        let (contexts, slots) = (&self.contexts, &mut self.runtime_slots);
-        let page = &contexts.get(&context_id).expect("context checked").page;
-        slots[runtime_slot].runtime.sync_page_realm_key(page);
-        self.emit(BrowserEvent::BrowsingContextStateChanged {
-            state: self.context_state(context_id)?,
-        });
-        Ok(())
+        Ok(prepared)
     }
 
     fn record_visit_url(&self, url: &str) -> Result<(), BrowserError> {
@@ -1854,33 +2648,114 @@ impl BrowserCore {
     fn fail_navigation(
         &mut self,
         context_id: BrowsingContextId,
-        frame_id: FrameId,
         navigation_id: NavigationId,
         request_id: Option<RequestId>,
         error: BrowserError,
     ) {
-        let is_current = self
-            .context(context_id)
-            .ok()
-            .and_then(|context| context.active_navigation.as_ref())
-            .is_some_and(|active| active.navigation_id == navigation_id);
-        if !is_current {
-            return;
-        }
-        if let Ok(context) = self.context_mut(context_id) {
-            context.active_navigation = None;
-        }
-        self.emit_phase(context_id, frame_id, navigation_id, NavigationPhase::Failed);
-        self.emit(BrowserEvent::NavigationFailed {
+        let _ = self.finish_navigation(
             context_id,
-            frame_id,
             navigation_id,
-            request_id,
-            error,
-        });
-        if let Ok(state) = self.context_state(context_id) {
-            self.emit(BrowserEvent::BrowsingContextStateChanged { state });
+            NavigationTerminal::Failed { request_id, error },
+            true,
+        );
+    }
+
+    fn finish_navigation(
+        &mut self,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+        terminal: NavigationTerminal,
+        emit_state: bool,
+    ) -> Result<bool, BrowserError> {
+        let context = self.context_mut(context_id)?;
+        let Some(active) = context.active_navigation.as_ref() else {
+            return Ok(false);
+        };
+        if active.navigation_id != navigation_id {
+            return Ok(false);
         }
+
+        let mut active = context
+            .active_navigation
+            .take()
+            .expect("matching navigation is active");
+        let frame_id = context.frame_id;
+        let document_id = context.document_id;
+        let runtime_context_id = context.runtime_context_id;
+        let document_url = context.page.url().to_owned();
+        let active_request_id = active.request_id;
+        if matches!(&terminal, NavigationTerminal::Cancelled { .. }) {
+            let canceled_script = active.pending_script.as_ref().map(|pending| {
+                let request_id = pending.key.request_id.to_string();
+                let url = pending.request.url().to_string();
+                vec![
+                    RuntimeNetworkEvent::Request {
+                        request_id: request_id.clone(),
+                        url: url.clone(),
+                        method: Method::Get.as_str().to_owned(),
+                    },
+                    RuntimeNetworkEvent::Failure {
+                        request_id,
+                        url,
+                        error_text: "external script load canceled".to_owned(),
+                        blocked_reason: Some("canceled".to_owned()),
+                    },
+                ]
+            });
+            if let Some(cancel) = active.cancel.take() {
+                let _ = cancel.send(());
+            }
+            if let Some(load_task) = active.load_task.take() {
+                load_task.abort();
+            }
+            if let Some(network) = canceled_script {
+                self.emit(BrowserEvent::RuntimeEffects {
+                    context_id,
+                    frame_id,
+                    document_id,
+                    runtime_context_id,
+                    url: document_url,
+                    effects: RuntimeEffects {
+                        network,
+                        ..RuntimeEffects::default()
+                    },
+                });
+            }
+        }
+
+        let phase = match &terminal {
+            NavigationTerminal::Settled => NavigationPhase::Settled,
+            NavigationTerminal::Failed { .. } => NavigationPhase::Failed,
+            NavigationTerminal::Cancelled { .. } => NavigationPhase::Cancelled,
+        };
+        self.emit_phase(context_id, frame_id, navigation_id, phase);
+        match terminal {
+            NavigationTerminal::Settled => {}
+            NavigationTerminal::Failed { request_id, error } => {
+                self.emit(BrowserEvent::NavigationFailed {
+                    context_id,
+                    frame_id,
+                    navigation_id,
+                    request_id,
+                    error,
+                });
+            }
+            NavigationTerminal::Cancelled { reason } => {
+                self.emit(BrowserEvent::NavigationCancelled {
+                    context_id,
+                    frame_id,
+                    navigation_id,
+                    request_id: Some(active_request_id),
+                    reason,
+                });
+            }
+        }
+        if emit_state {
+            self.emit(BrowserEvent::BrowsingContextStateChanged {
+                state: self.context_state(context_id)?,
+            });
+        }
+        Ok(true)
     }
 
     fn emit_phase(
@@ -2015,10 +2890,44 @@ fn context_state(context_id: BrowsingContextId, context: &BrowsingContext) -> Br
     }
 }
 
+enum BoundedFileReadError {
+    Inspect(std::io::Error),
+    TooLarge,
+    Open(std::io::Error),
+    Read(std::io::Error),
+}
+
+async fn read_bounded_file(
+    path: &std::path::Path,
+    max_body_bytes: u64,
+) -> Result<Vec<u8>, BoundedFileReadError> {
+    let metadata = tokio::fs::metadata(path)
+        .await
+        .map_err(BoundedFileReadError::Inspect)?;
+    if metadata.len() > max_body_bytes {
+        return Err(BoundedFileReadError::TooLarge);
+    }
+    let file = tokio::fs::File::open(path)
+        .await
+        .map_err(BoundedFileReadError::Open)?;
+    let capacity = usize::try_from(metadata.len().min(max_body_bytes)).unwrap_or(0);
+    let mut bytes = Vec::with_capacity(capacity);
+    let mut bounded = tokio::io::AsyncReadExt::take(file, max_body_bytes.saturating_add(1));
+    tokio::io::AsyncReadExt::read_to_end(&mut bounded, &mut bytes)
+        .await
+        .map_err(BoundedFileReadError::Read)?;
+    if (bytes.len() as u64) > max_body_bytes {
+        return Err(BoundedFileReadError::TooLarge);
+    }
+    Ok(bytes)
+}
+
 async fn load_source(
     network: &mut Network,
     cookies: &mut CookieJar,
     input: SourceLoadInput,
+    max_body_bytes: u64,
+    mut on_progress: impl FnMut(&NetworkEvent),
 ) -> Result<LoadedSource, BrowserError> {
     let SourceLoadInput { url, injected_html } = input;
     if let Some(html) = injected_html {
@@ -2026,7 +2935,6 @@ async fn load_source(
             final_url: url,
             html,
             headers: Vec::new(),
-            events: Vec::new(),
         });
     }
     let parsed = url::Url::parse(&url).map_err(|error| {
@@ -2040,13 +2948,11 @@ async fn load_source(
             final_url: parsed.to_string(),
             html: "<!doctype html><title></title>".to_owned(),
             headers: Vec::new(),
-            events: Vec::new(),
         }),
         "about" if parsed.path() == "vixen" => Ok(LoadedSource {
             final_url: parsed.to_string(),
             html: "<!doctype html><title>Vixen</title><h1>Vixen</h1>".to_owned(),
             headers: Vec::new(),
-            events: Vec::new(),
         }),
         "data" => {
             let data = parse_data_url(&url).map_err(|error| {
@@ -2056,7 +2962,6 @@ async fn load_source(
                 final_url: parsed.to_string(),
                 html: String::from_utf8_lossy(&data.data).into_owned(),
                 headers: vec![("content-type".to_owned(), data.mime_type.essence())],
-                events: Vec::new(),
             })
         }
         "file" => {
@@ -2069,22 +2974,53 @@ async fn load_source(
                     "file URL has no local path",
                 )
             })?;
-            let html = tokio::fs::read_to_string(&path).await.map_err(|error| {
+            let bytes =
+                read_bounded_file(&path, max_body_bytes)
+                    .await
+                    .map_err(|error| match error {
+                        BoundedFileReadError::TooLarge => BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!(
+                                "navigation file body exceeds {max_body_bytes} bytes at {}",
+                                path.display()
+                            ),
+                        ),
+                        BoundedFileReadError::Inspect(error)
+                        | BoundedFileReadError::Open(error)
+                        | BoundedFileReadError::Read(error) => BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!("failed to read {}: {error}", path.display()),
+                        ),
+                    })?;
+            let html = String::from_utf8(bytes).map_err(|_| {
                 BrowserError::new(
                     browser_error_codes::NAVIGATION_LOAD,
-                    format!("failed to read {}: {error}", path.display()),
+                    format!(
+                        "failed to read {}: stream did not contain valid UTF-8",
+                        path.display()
+                    ),
                 )
             })?;
             Ok(LoadedSource {
                 final_url: parsed.to_string(),
                 html,
                 headers: Vec::new(),
-                events: Vec::new(),
             })
         }
         "http" | "https" => {
             let response = network
-                .get_text_with_cookies(cookies, &parsed, false, Method::Get)
+                .get_text_with_cookies_request_with_progress(
+                    cookies,
+                    TextRequest {
+                        url: parsed,
+                        cross_site: false,
+                        method: Method::Get,
+                        redirect_mode: RedirectMode::Follow,
+                        headers: Vec::new(),
+                        body: None,
+                    },
+                    &mut on_progress,
+                )
                 .await
                 .map_err(|error| {
                     BrowserError::new(
@@ -2096,7 +3032,6 @@ async fn load_source(
                 final_url: response.final_url,
                 html: response.body,
                 headers: response.headers.into_iter().collect(),
-                events: response.events,
             })
         }
         scheme => Err(BrowserError::new(
@@ -2104,6 +3039,256 @@ async fn load_source(
             format!("unsupported navigation URL scheme: {scheme}"),
         )),
     }
+}
+
+struct ExternalScriptLoadInput<'a> {
+    store: &'a Store,
+    profile_baseline: &'a mut Vec<vixen_net::CookieSnapshot>,
+    request: ExternalPageScript,
+    max_body_bytes: u64,
+    max_redirects: usize,
+}
+
+async fn load_external_script(
+    network: &mut Network,
+    cookies: &mut CookieJar,
+    input: ExternalScriptLoadInput<'_>,
+) -> Result<LoadedExternalScript, ExternalScriptLoadFailure> {
+    let ExternalScriptLoadInput {
+        store,
+        profile_baseline,
+        request,
+        max_body_bytes,
+        max_redirects,
+    } = input;
+    let url = request.url().clone();
+    match url.scheme() {
+        "file" => {
+            let mut path_url = url.clone();
+            path_url.set_query(None);
+            path_url.set_fragment(None);
+            let path = path_url
+                .to_file_path()
+                .map_err(|_| ExternalScriptLoadFailure {
+                    error: BrowserError::new(
+                        browser_error_codes::INVALID_ARGUMENT,
+                        "external script file URL has no local path",
+                    ),
+                    url: url.to_string(),
+                    events: Vec::new(),
+                    blocked_reason: "load",
+                })?;
+            let bytes = read_bounded_file(&path, max_body_bytes)
+                .await
+                .map_err(|error| {
+                    let error = match error {
+                        BoundedFileReadError::Inspect(error) => BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!(
+                                "failed to inspect external script {}: {error}",
+                                path.display()
+                            ),
+                        ),
+                        BoundedFileReadError::TooLarge => BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!(
+                                "external script body exceeds {max_body_bytes} bytes at {}",
+                                path.display()
+                            ),
+                        ),
+                        BoundedFileReadError::Open(error) => BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!("failed to open external script {}: {error}", path.display()),
+                        ),
+                        BoundedFileReadError::Read(error) => BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!("failed to read external script {}: {error}", path.display()),
+                        ),
+                    };
+                    ExternalScriptLoadFailure {
+                        error,
+                        url: url.to_string(),
+                        events: Vec::new(),
+                        blocked_reason: "load",
+                    }
+                })?;
+            Ok(LoadedExternalScript::File {
+                final_url: url,
+                source: String::from_utf8_lossy(&bytes).into_owned(),
+            })
+        }
+        "http" | "https" => {
+            let mut current = url;
+            let mut redirects = 0_u32;
+            let mut visited = HashSet::new();
+            let mut events = Vec::new();
+            let mut requested_urls = Vec::new();
+            loop {
+                if let Some(blocked_reason) = request.blocked_reason(&current) {
+                    return Err(ExternalScriptLoadFailure {
+                        error: BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!("external script blocked by {blocked_reason}: {current}"),
+                        ),
+                        url: current.to_string(),
+                        events,
+                        blocked_reason,
+                    });
+                }
+                visited.insert(current.to_string());
+                merge_profile_cookies(store, &current, cookies, profile_baseline).map_err(
+                    |error| ExternalScriptLoadFailure {
+                        error: script_error(error),
+                        url: current.to_string(),
+                        events: events.clone(),
+                        blocked_reason: "load",
+                    },
+                )?;
+                requested_urls.push(current.clone());
+                let mut hop_events = Vec::new();
+                let response = network
+                    .get_text_with_cookies_request_with_progress(
+                        cookies,
+                        TextRequest {
+                            url: current.clone(),
+                            cross_site: request.is_cross_site(&current),
+                            method: Method::Get,
+                            redirect_mode: RedirectMode::Manual,
+                            headers: Vec::new(),
+                            body: None,
+                        },
+                        |event| hop_events.push(event.clone()),
+                    )
+                    .await;
+                let mut response = match response {
+                    Ok(response) => response,
+                    Err(error) => {
+                        events.extend(hop_events);
+                        return Err(ExternalScriptLoadFailure {
+                            error: BrowserError::new(
+                                browser_error_codes::NAVIGATION_LOAD,
+                                format!("external script fetch failed: {error}"),
+                            ),
+                            url: current.to_string(),
+                            events,
+                            blocked_reason: "load",
+                        });
+                    }
+                };
+                events.append(&mut response.events);
+
+                if !is_followable_redirect(response.status) {
+                    response.events = events;
+                    response.redirects = redirects;
+                    return Ok(LoadedExternalScript::Http {
+                        response,
+                        requested_urls,
+                    });
+                }
+                if redirects as usize >= max_redirects {
+                    return Err(ExternalScriptLoadFailure {
+                        error: BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!(
+                                "external script fetch failed: too many redirects (>{max_redirects}) fetching {current}"
+                            ),
+                        ),
+                        url: current.to_string(),
+                        events,
+                        blocked_reason: "load",
+                    });
+                }
+                let location = response.header("location").ok_or_else(|| {
+                    ExternalScriptLoadFailure {
+                        error: BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!(
+                                "external script fetch failed: invalid redirect target from {current}"
+                            ),
+                        ),
+                        url: current.to_string(),
+                        events: events.clone(),
+                        blocked_reason: "load",
+                    }
+                })?;
+                let next = current.join(location).map_err(|_| ExternalScriptLoadFailure {
+                    error: BrowserError::new(
+                        browser_error_codes::NAVIGATION_LOAD,
+                        format!(
+                            "external script fetch failed: invalid redirect target from {current}"
+                        ),
+                    ),
+                    url: current.to_string(),
+                    events: events.clone(),
+                    blocked_reason: "load",
+                })?;
+                if visited.contains(&next.to_string()) {
+                    return Err(ExternalScriptLoadFailure {
+                        error: BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!(
+                                "external script fetch failed: redirect loop detected at {next}"
+                            ),
+                        ),
+                        url: next.to_string(),
+                        events,
+                        blocked_reason: "load",
+                    });
+                }
+                if let Err(error) = vixen_net::validate_http_url(&next) {
+                    return Err(ExternalScriptLoadFailure {
+                        error: BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!(
+                                "external script fetch failed: URL rejected by policy: {error}"
+                            ),
+                        ),
+                        url: next.to_string(),
+                        events,
+                        blocked_reason: "load",
+                    });
+                }
+                if matches!(
+                    events.last(),
+                    Some(NetworkEvent::Response { url, status })
+                        if url == current.as_str() && *status == response.status
+                ) {
+                    events.pop();
+                }
+                events.push(NetworkEvent::Redirect {
+                    from: current.to_string(),
+                    to: next.to_string(),
+                    status: response.status,
+                });
+                if let Some(blocked_reason) = request.blocked_reason(&next) {
+                    return Err(ExternalScriptLoadFailure {
+                        error: BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!("external script blocked by {blocked_reason}: {next}"),
+                        ),
+                        url: next.to_string(),
+                        events,
+                        blocked_reason,
+                    });
+                }
+                redirects += 1;
+                current = next;
+            }
+        }
+        scheme => Err(ExternalScriptLoadFailure {
+            error: BrowserError::new(
+                browser_error_codes::INVALID_ARGUMENT,
+                format!("unsupported external script URL scheme: {scheme}"),
+            ),
+            url: url.to_string(),
+            events: Vec::new(),
+            blocked_reason: "load",
+        }),
+    }
+}
+
+fn is_followable_redirect(status: u16) -> bool {
+    matches!(status, 301 | 302 | 303 | 307 | 308)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2144,6 +3329,16 @@ fn command_send_error<T>(error: mpsc::TrySendError<T>) -> BrowserError {
         mpsc::TrySendError::Disconnected(_) => {
             BrowserError::new(browser_error_codes::CLOSED, "browser core is closed")
         }
+    }
+}
+
+fn navigation_id_from_result(result: BrowserCommandResult) -> Result<NavigationId, BrowserError> {
+    match result {
+        BrowserCommandResult::NavigationAccepted { navigation_id } => Ok(navigation_id),
+        result => Err(BrowserError::new(
+            browser_error_codes::CLOSED,
+            format!("unexpected navigation result: {result:?}"),
+        )),
     }
 }
 
@@ -2241,6 +3436,88 @@ fn apply_runtime_config(runtime: &mut JsRuntime, config: &BrowsingContextConfig)
     }
 }
 
+fn external_script_network_events(
+    request_id: RequestId,
+    request_url: &str,
+    result: &Result<LoadedExternalScript, ExternalScriptLoadFailure>,
+) -> Vec<RuntimeNetworkEvent> {
+    let request_id = request_id.to_string();
+    match result {
+        Ok(LoadedExternalScript::File { final_url, .. }) => vec![
+            RuntimeNetworkEvent::Request {
+                request_id: request_id.clone(),
+                url: request_url.to_owned(),
+                method: Method::Get.as_str().to_owned(),
+            },
+            RuntimeNetworkEvent::Response {
+                request_id,
+                url: final_url.to_string(),
+                status: 200,
+            },
+        ],
+        Ok(LoadedExternalScript::Http { response, .. }) => response
+            .events
+            .iter()
+            .map(|event| match event {
+                NetworkEvent::RequestStart { url, method } => RuntimeNetworkEvent::Request {
+                    request_id: request_id.clone(),
+                    url: url.clone(),
+                    method: method.as_str().to_owned(),
+                },
+                NetworkEvent::Redirect { from, to, status } => RuntimeNetworkEvent::Redirect {
+                    request_id: request_id.clone(),
+                    from: from.clone(),
+                    to: to.clone(),
+                    status: *status,
+                },
+                NetworkEvent::Response { url, status } => RuntimeNetworkEvent::Response {
+                    request_id: request_id.clone(),
+                    url: url.clone(),
+                    status: *status,
+                },
+            })
+            .collect(),
+        Err(failure) => {
+            let mut events: Vec<_> = failure
+                .events
+                .iter()
+                .map(|event| match event {
+                    NetworkEvent::RequestStart { url, method } => RuntimeNetworkEvent::Request {
+                        request_id: request_id.clone(),
+                        url: url.clone(),
+                        method: method.as_str().to_owned(),
+                    },
+                    NetworkEvent::Redirect { from, to, status } => RuntimeNetworkEvent::Redirect {
+                        request_id: request_id.clone(),
+                        from: from.clone(),
+                        to: to.clone(),
+                        status: *status,
+                    },
+                    NetworkEvent::Response { url, status } => RuntimeNetworkEvent::Response {
+                        request_id: request_id.clone(),
+                        url: url.clone(),
+                        status: *status,
+                    },
+                })
+                .collect();
+            if events.is_empty() {
+                events.push(RuntimeNetworkEvent::Request {
+                    request_id: request_id.clone(),
+                    url: request_url.to_owned(),
+                    method: Method::Get.as_str().to_owned(),
+                });
+            }
+            events.push(RuntimeNetworkEvent::Failure {
+                request_id,
+                url: failure.url.clone(),
+                error_text: failure.error.to_string(),
+                blocked_reason: Some(failure.blocked_reason.to_owned()),
+            });
+            events
+        }
+    }
+}
+
 fn drain_runtime_effects(
     runtime: &mut JsRuntime,
 ) -> Result<RuntimeEffects, crate::engine_error::EngineError> {
@@ -2335,7 +3612,27 @@ fn drain_runtime_effects(
         dialogs,
         bindings,
         network,
+        exceptions: Vec::new(),
     })
+}
+
+fn discard_runtime_outputs(runtime: &mut JsRuntime) {
+    let _ = runtime.drain_console_events();
+    let _ = runtime.drain_dialog_events();
+    let _ = runtime.drain_binding_events();
+    let _ = runtime.drain_network_events();
+    let _ = runtime.drain_navigation_actions();
+}
+
+fn append_navigation_actions_bounded(
+    queued: &mut Vec<JsNavigationAction>,
+    actions: Vec<JsNavigationAction>,
+) {
+    if queued.len() > MAX_NAVIGATION_ACTIONS_PER_COMMAND {
+        return;
+    }
+    let remaining = MAX_NAVIGATION_ACTIONS_PER_COMMAND + 1 - queued.len();
+    queued.extend(actions.into_iter().take(remaining));
 }
 
 fn json_string(value: &str) -> Result<String, BrowserError> {
@@ -2364,6 +3661,38 @@ fn append_form_query(action: &str, body: &[u8]) -> Result<String, BrowserError> 
     };
     url.set_query(Some(&query));
     Ok(url.to_string())
+}
+
+fn validate_navigation_url(url: &str) -> Result<(), BrowserError> {
+    if url.len() > MAX_URL_BYTES {
+        Err(BrowserError::new(
+            browser_error_codes::INVALID_ARGUMENT,
+            "navigation URL exceeds the browser limit",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn prepare_history_state(
+    history: &mut SessionHistory,
+    url: String,
+    state_json: String,
+    title: String,
+    replace: bool,
+) -> Result<(), BrowserError> {
+    validate_navigation_url(&url)?;
+    ensure_same_origin_history_url(history.url().unwrap_or("about:blank"), &url)?;
+    let mut entry = HistoryEntry::push_state(url, state_json.into_bytes());
+    if !title.is_empty() {
+        entry.title = Some(title);
+    }
+    if replace {
+        history.replace(entry);
+    } else {
+        history.push(entry);
+    }
+    Ok(())
 }
 
 fn ensure_same_origin_history_url(current: &str, next: &str) -> Result<(), BrowserError> {
@@ -2425,6 +3754,10 @@ mod tests {
         config.document_overrides.insert(
             "https://same.test/next".to_owned(),
             "<!doctype html><title>Next</title><main id='page'>Next</main>".to_owned(),
+        );
+        config.document_overrides.insert(
+            "https://same.test/input".to_owned(),
+            "<!doctype html><button id='same'>Same</button><a id='go' href='https://same.test/b'>Go</a>".to_owned(),
         );
         config
     }
@@ -2560,6 +3893,185 @@ mod tests {
         events
     }
 
+    fn direct_core() -> (
+        BrowserCore,
+        Arc<EventChannel>,
+        mpsc::Receiver<CoreMessage>,
+        PathBuf,
+    ) {
+        let config = test_config();
+        let profile_path = config.profile_path.clone();
+        let events = Arc::new(EventChannel::new(config.event_capacity));
+        let (command_tx, command_rx) = mpsc::sync_channel(config.command_capacity);
+        let core = BrowserCore::new(config, Arc::clone(&events), command_tx).unwrap();
+        (core, events, command_rx, profile_path)
+    }
+
+    fn direct_create(core: &mut BrowserCore) -> BrowsingContextId {
+        match core.create_context().unwrap() {
+            BrowserCommandResult::BrowsingContextCreated { context_id } => context_id,
+            other => panic!("unexpected create result: {other:?}"),
+        }
+    }
+
+    fn direct_begin_navigation(
+        core: &mut BrowserCore,
+        context_id: BrowsingContextId,
+        url: &str,
+    ) -> NavigationId {
+        match core
+            .navigate(context_id, url.to_owned(), HistoryUpdate::Push)
+            .unwrap()
+        {
+            BrowserCommandResult::NavigationAccepted { navigation_id } => navigation_id,
+            other => panic!("unexpected navigation result: {other:?}"),
+        }
+    }
+
+    fn direct_complete_source(
+        core: &mut BrowserCore,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+        url: &str,
+        html: String,
+    ) {
+        let baseline = Vec::new();
+        let worker_jar = CookieJar::from_snapshots(baseline.clone());
+        core.complete_navigation(SourceLoadCompletion {
+            context_id,
+            navigation_id,
+            result: Ok(LoadedSource {
+                final_url: url.to_owned(),
+                html,
+                headers: Vec::new(),
+            }),
+            cookie_delta: worker_jar.delta_from_snapshots(&baseline),
+        });
+    }
+
+    fn direct_drive_navigation(
+        core: &mut BrowserCore,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+    ) {
+        while core
+            .context(context_id)
+            .unwrap()
+            .active_navigation
+            .as_ref()
+            .is_some_and(|active| active.navigation_id == navigation_id)
+        {
+            assert!(core.advance_navigation_work(), "navigation work stalled");
+        }
+        core.start_pending_loads();
+    }
+
+    fn direct_navigate(
+        core: &mut BrowserCore,
+        context_id: BrowsingContextId,
+        url: &str,
+        html: &str,
+    ) -> NavigationId {
+        let navigation_id = direct_begin_navigation(core, context_id, url);
+        direct_complete_source(core, context_id, navigation_id, url, html.to_owned());
+        direct_drive_navigation(core, context_id, navigation_id);
+        navigation_id
+    }
+
+    fn drain_direct_events(events: &EventChannel) -> Vec<BrowserEvent> {
+        let mut observed = Vec::new();
+        while let Some(event) = events.pop(None).unwrap() {
+            observed.push(event);
+        }
+        observed
+    }
+
+    fn large_parser_document(title: &str) -> String {
+        format!(
+            "<!doctype html><title>{title}</title><main>{}</main>",
+            "parser work ".repeat(PARSER_WORK_BYTES / 4)
+        )
+    }
+
+    fn assert_parser_is_pending(
+        core: &BrowserCore,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+    ) {
+        assert!(
+            core.context(context_id)
+                .unwrap()
+                .active_navigation
+                .as_ref()
+                .is_some_and(|active| {
+                    active.navigation_id == navigation_id
+                        && matches!(active.work.as_ref(), Some(NavigationWork::Parsing(_)))
+                })
+        );
+    }
+
+    fn direct_drive_to_scripts(
+        core: &mut BrowserCore,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+    ) {
+        loop {
+            let work = core
+                .context(context_id)
+                .unwrap()
+                .active_navigation
+                .as_ref()
+                .filter(|active| active.navigation_id == navigation_id)
+                .and_then(|active| active.work.as_ref());
+            match work {
+                Some(NavigationWork::Scripts(_)) => return,
+                Some(NavigationWork::Parsing(_)) => assert!(core.advance_navigation_work()),
+                _ => panic!("navigation did not reach script work"),
+            }
+        }
+    }
+
+    fn direct_eval(
+        core: &mut BrowserCore,
+        context_id: BrowsingContextId,
+        source: &str,
+    ) -> ScriptValue {
+        let state = core.context_state(context_id).unwrap();
+        match core
+            .dispatch(BrowserCommand::Evaluate {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                source: source.to_owned(),
+            })
+            .unwrap()
+        {
+            BrowserCommandResult::Evaluation(evaluation) => evaluation.value,
+            other => panic!("unexpected eval result: {other:?}"),
+        }
+    }
+
+    fn assert_no_lifecycle_success(events: &[BrowserEvent], navigation_id: NavigationId) {
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::DomContentLoaded { navigation_id: event_navigation_id, .. }
+                | BrowserEvent::DocumentLoadCompleted { navigation_id: event_navigation_id, .. }
+                | BrowserEvent::NavigationFailed { navigation_id: event_navigation_id, .. }
+                if *event_navigation_id == navigation_id
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationPhaseChanged {
+                navigation_id: event_navigation_id,
+                phase: NavigationPhase::DomContentLoaded
+                    | NavigationPhase::Load
+                    | NavigationPhase::Settled
+                    | NavigationPhase::Failed,
+                ..
+            } if *event_navigation_id == navigation_id
+        )));
+    }
+
     fn inject_late_source_completion(
         handle: &EngineBrowserHandle,
         context_id: BrowsingContextId,
@@ -2567,26 +4079,6 @@ mod tests {
         url: String,
         title: &str,
         set_cookie: Option<&str>,
-    ) {
-        inject_late_source_completion_with_events(
-            handle,
-            context_id,
-            navigation_id,
-            url,
-            title,
-            set_cookie,
-            Vec::new(),
-        );
-    }
-
-    fn inject_late_source_completion_with_events(
-        handle: &EngineBrowserHandle,
-        context_id: BrowsingContextId,
-        navigation_id: NavigationId,
-        url: String,
-        title: &str,
-        set_cookie: Option<&str>,
-        events: Vec<NetworkEvent>,
     ) {
         let baseline = Vec::new();
         let mut worker_jar = CookieJar::from_snapshots(baseline.clone());
@@ -2604,9 +4096,24 @@ mod tests {
                     final_url: url,
                     html: format!("<!doctype html><title>{title}</title>"),
                     headers: Vec::new(),
-                    events,
                 }),
                 cookie_delta: worker_jar.delta_from_snapshots(&baseline),
+            }))
+            .unwrap();
+    }
+
+    fn inject_source_progress(
+        handle: &EngineBrowserHandle,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+        event: NetworkEvent,
+    ) {
+        handle
+            .commands
+            .send(CoreMessage::SourceLoadProgress(SourceLoadProgress {
+                context_id,
+                navigation_id,
+                event,
             }))
             .unwrap();
     }
@@ -2720,6 +4227,40 @@ mod tests {
         )
     }
 
+    fn redirect_response_with_cookie(location: &str, cookie: &str) -> String {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nSet-Cookie: {cookie}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    }
+
+    fn script_response(source: &str, set_cookie: Option<&str>) -> String {
+        let cookie = set_cookie
+            .map(|value| format!("Set-Cookie: {value}\r\n"))
+            .unwrap_or_default();
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\n{cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{source}",
+            source.len()
+        )
+    }
+
+    fn loaded_script_response(final_url: &str, source: &str) -> LoadedExternalScript {
+        LoadedExternalScript::Http {
+            response: TextResponse {
+                body: source.to_owned(),
+                headers: BTreeMap::from([(
+                    "content-type".to_owned(),
+                    "text/javascript".to_owned(),
+                )]),
+                status: 200,
+                final_url: final_url.to_owned(),
+                set_cookie: Vec::new(),
+                redirects: 0,
+                events: Vec::new(),
+            },
+            requested_urls: vec![url::Url::parse(final_url).unwrap()],
+        }
+    }
+
     fn assert_navigation_cancelled(
         events: &[BrowserEvent],
         navigation_id: NavigationId,
@@ -2741,6 +4282,7 @@ mod tests {
                 ..
             } if *event_navigation_id == navigation_id
         )));
+        assert_exactly_one_terminal_phase(events, navigation_id);
     }
 
     fn assert_no_terminal_success(events: &[BrowserEvent], navigation_id: NavigationId) {
@@ -2776,6 +4318,17 @@ mod tests {
             .collect()
     }
 
+    fn assert_exactly_one_terminal_phase(events: &[BrowserEvent], navigation_id: NavigationId) {
+        assert_eq!(
+            phases_for(events, navigation_id)
+                .into_iter()
+                .filter(|phase| phase.is_terminal())
+                .count(),
+            1,
+            "navigation {navigation_id} must have exactly one terminal phase"
+        );
+    }
+
     fn state(
         handle: &mut EngineBrowserHandle,
         context_id: BrowsingContextId,
@@ -2803,9 +4356,229 @@ mod tests {
             })
             .unwrap()
         {
-            BrowserCommandResult::Evaluation(value) => value,
+            BrowserCommandResult::Evaluation(evaluation) => evaluation.value,
             other => panic!("unexpected eval result: {other:?}"),
         }
+    }
+
+    #[test]
+    fn runtime_and_input_results_report_exact_navigation_ids() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/a");
+        let current = state(&mut handle, context_id);
+
+        let navigation_actions = match handle
+            .dispatch(BrowserCommand::EvaluateForAutomation {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                source: "location.assign('https://same.test/b'); location.assign('https://same.test/next'); 'queued'".to_owned(),
+            })
+            .unwrap()
+        {
+            BrowserCommandResult::AutomationEvaluation(evaluation) => evaluation.navigation_actions,
+            other => panic!("unexpected automation evaluation result: {other:?}"),
+        };
+        let navigation_ids = navigation_actions
+            .iter()
+            .filter_map(|action| match action {
+                NavigationActionOutcome::CrossDocument { navigation_id, .. } => {
+                    Some(*navigation_id)
+                }
+                NavigationActionOutcome::SameDocument { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(navigation_ids.len(), 2);
+        assert!(navigation_ids[0] < navigation_ids[1]);
+        handle
+            .dispatch(BrowserCommand::Stop { context_id })
+            .unwrap();
+
+        navigate(&mut handle, context_id, "https://same.test/input");
+        let current = state(&mut handle, context_id);
+        let same_document = match handle
+            .dispatch(BrowserCommand::EvaluateForAutomation {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                source: "history.pushState({ step: 1 }, '', '/input-state'); document.querySelector('#same').addEventListener('click', () => history.replaceState({ step: 2 }, '', '/input-click')); 'same'".to_owned(),
+            })
+            .unwrap()
+        {
+            BrowserCommandResult::AutomationEvaluation(evaluation) => evaluation,
+            other => panic!("unexpected automation evaluation result: {other:?}"),
+        };
+        assert!(matches!(
+            same_document.navigation_actions.as_slice(),
+            [NavigationActionOutcome::SameDocument { url }] if url == "https://same.test/input-state"
+        ));
+
+        let same_node_id = match handle
+            .dispatch(BrowserCommand::QuerySelectorAll {
+                context_id,
+                document_id: current.document_id,
+                selector: "#same".to_owned(),
+                viewport: (800, 600),
+            })
+            .unwrap()
+        {
+            BrowserCommandResult::SelectorMatches(matches) => matches[0].node_id,
+            other => panic!("unexpected selector result: {other:?}"),
+        };
+        let same_input = match handle
+            .dispatch(BrowserCommand::DispatchMouseEvent {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                node_id: same_node_id,
+                event_type: "click".to_owned(),
+                event: MouseEventData {
+                    x: 1.0,
+                    y: 1.0,
+                    button: 0,
+                    buttons: 0,
+                    detail: 1,
+                    related_node_id: None,
+                    bubbles: true,
+                    ctrl_key: false,
+                    shift_key: false,
+                    alt_key: false,
+                    meta_key: false,
+                    delta_x: 0.0,
+                    delta_y: 0.0,
+                },
+            })
+            .unwrap()
+        {
+            BrowserCommandResult::InputDispatched(result) => result,
+            other => panic!("unexpected input result: {other:?}"),
+        };
+        assert!(matches!(
+            same_input.navigation_actions.as_slice(),
+            [NavigationActionOutcome::SameDocument { url }] if url == "https://same.test/input-click"
+        ));
+
+        let node_id = match handle
+            .dispatch(BrowserCommand::QuerySelectorAll {
+                context_id,
+                document_id: current.document_id,
+                selector: "#go".to_owned(),
+                viewport: (800, 600),
+            })
+            .unwrap()
+        {
+            BrowserCommandResult::SelectorMatches(matches) => matches[0].node_id,
+            other => panic!("unexpected selector result: {other:?}"),
+        };
+        let input_navigation_ids = match handle
+            .dispatch(BrowserCommand::DispatchMouseEvent {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                node_id,
+                event_type: "click".to_owned(),
+                event: MouseEventData {
+                    x: 1.0,
+                    y: 1.0,
+                    button: 0,
+                    buttons: 0,
+                    detail: 1,
+                    related_node_id: None,
+                    bubbles: true,
+                    ctrl_key: false,
+                    shift_key: false,
+                    alt_key: false,
+                    meta_key: false,
+                    delta_x: 0.0,
+                    delta_y: 0.0,
+                },
+            })
+            .unwrap()
+        {
+            BrowserCommandResult::InputDispatched(result) => result
+                .navigation_actions
+                .into_iter()
+                .filter_map(|action| match action {
+                    NavigationActionOutcome::CrossDocument { navigation_id, .. } => {
+                        Some(navigation_id)
+                    }
+                    NavigationActionOutcome::SameDocument { .. } => None,
+                })
+                .collect::<Vec<_>>(),
+            other => panic!("unexpected input result: {other:?}"),
+        };
+        assert_eq!(input_navigation_ids.len(), 1);
+        assert!(input_navigation_ids[0] > navigation_ids[1]);
+    }
+
+    #[test]
+    fn failed_and_oversized_evaluations_drain_actions_without_allocating_navigation_ids() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        let first_navigation_id =
+            dispatch_navigation(&mut handle, context_id, "https://same.test/a");
+        wait_for_navigation(&mut handle, context_id, first_navigation_id).unwrap();
+        let current = state(&mut handle, context_id);
+
+        let error = handle
+            .dispatch(BrowserCommand::EvaluateForAutomation {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                source: "location.assign('https://same.test/b'); throw new Error('boom')"
+                    .to_owned(),
+            })
+            .unwrap_err();
+        assert_eq!(error.code, crate::engine_error::codes::SCRIPT_EVAL);
+
+        let oversized_source = (0..=MAX_NAVIGATION_ACTIONS_PER_COMMAND)
+            .map(|_| "location.assign('https://same.test/b')")
+            .collect::<Vec<_>>()
+            .join(";");
+        let error = handle
+            .dispatch(BrowserCommand::EvaluateForAutomation {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                source: oversized_source,
+            })
+            .unwrap_err();
+        assert_eq!(error.code, browser_error_codes::INVALID_ARGUMENT);
+        assert!(error.message.contains("more than 64 navigation actions"));
+
+        let invalid_late_action = format!(
+            "location.assign('https://same.test/b'); history.pushState(null, '', '/{}')",
+            "x".repeat(MAX_URL_BYTES)
+        );
+        let error = handle
+            .dispatch(BrowserCommand::EvaluateForAutomation {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                source: invalid_late_action,
+            })
+            .unwrap_err();
+        assert_eq!(error.code, browser_error_codes::INVALID_ARGUMENT);
+        assert_eq!(state(&mut handle, context_id).url, current.url);
+
+        let result = handle
+            .dispatch(BrowserCommand::EvaluateForAutomation {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                source: "'clean'".to_owned(),
+            })
+            .unwrap();
+        let BrowserCommandResult::AutomationEvaluation(evaluation) = result else {
+            panic!("unexpected clean evaluation result: {result:?}");
+        };
+        assert!(evaluation.navigation_actions.is_empty());
+
+        let next_navigation_id =
+            dispatch_navigation(&mut handle, context_id, "https://same.test/next");
+        assert_eq!(next_navigation_id.get(), first_navigation_id.get() + 1);
+        wait_for_navigation(&mut handle, context_id, next_navigation_id).unwrap();
     }
 
     #[test]
@@ -2956,8 +4729,347 @@ mod tests {
                 NavigationPhase::Settled,
             ]
         );
+        let parse_event = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    BrowserEvent::NavigationPhaseChanged {
+                        navigation_id: event_navigation_id,
+                        phase: NavigationPhase::Parse,
+                        ..
+                    } if *event_navigation_id == navigation_id
+                )
+            })
+            .expect("parse phase event");
+        let committed_event = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    BrowserEvent::NavigationCommitted {
+                        navigation_id: event_navigation_id,
+                        ..
+                    } if *event_navigation_id == navigation_id
+                )
+            })
+            .expect("navigation committed event");
+        let scripts_event = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    BrowserEvent::NavigationPhaseChanged {
+                        navigation_id: event_navigation_id,
+                        phase: NavigationPhase::ScriptsAndSubresources,
+                        ..
+                    } if *event_navigation_id == navigation_id
+                )
+            })
+            .expect("scripts phase event");
+        assert!(parse_event < committed_event);
+        assert!(committed_event < scripts_event);
+        assert_exactly_one_terminal_phase(&events, navigation_id);
 
         drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn oversized_file_navigation_fails_without_committing() {
+        let serial = NEXT_TEST_PROFILE.fetch_add(1, Ordering::Relaxed);
+        let file_path = std::env::temp_dir().join(format!(
+            "vixen-oversized-navigation-{}-{serial}.html",
+            std::process::id()
+        ));
+        std::fs::write(&file_path, "x".repeat(64)).unwrap();
+        let file_url = url::Url::from_file_path(&file_path).unwrap().to_string();
+        let mut config = test_config();
+        config.network.max_body_bytes = 32;
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+        let initial = state(&mut handle, context_id);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &file_url);
+        let error = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap_err();
+        let after = state(&mut handle, context_id);
+
+        assert_eq!(error.code, browser_error_codes::NAVIGATION_LOAD);
+        assert!(error.message.contains("exceeds 32 bytes"));
+        assert_eq!(after.document_id, initial.document_id);
+        assert_eq!(after.runtime_context_id, initial.runtime_context_id);
+        assert_eq!(after.url, initial.url);
+        assert_eq!(after.active_navigation_id, None);
+
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+        let _ = std::fs::remove_file(file_path);
+    }
+
+    #[test]
+    fn stop_during_parse_cancels_without_commit() {
+        let (mut core, events, command_rx, profile_path) = direct_core();
+        let context_id = direct_create(&mut core);
+        let initial = core.context_state(context_id).unwrap();
+        let initial_history = core
+            .context(context_id)
+            .unwrap()
+            .page
+            .session_history()
+            .clone();
+        drain_direct_events(&events);
+
+        let navigation_id =
+            direct_begin_navigation(&mut core, context_id, "https://same.test/parser-stop");
+        direct_complete_source(
+            &mut core,
+            context_id,
+            navigation_id,
+            "https://same.test/parser-stop",
+            large_parser_document("Parser stop"),
+        );
+        assert!(core.advance_navigation_work());
+        assert_parser_is_pending(&core, context_id, navigation_id);
+
+        assert_eq!(
+            core.stop(context_id).unwrap(),
+            BrowserCommandResult::Accepted
+        );
+        assert!(core.advance_navigation_work());
+        let events = drain_direct_events(&events);
+        let stopped = core.context_state(context_id).unwrap();
+
+        assert_eq!(
+            phases_for(&events, navigation_id),
+            vec![
+                NavigationPhase::Intent,
+                NavigationPhase::Policy,
+                NavigationPhase::Request,
+                NavigationPhase::Response,
+                NavigationPhase::Commit,
+                NavigationPhase::Parse,
+                NavigationPhase::Cancelled,
+            ]
+        );
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Stopped,
+        );
+        assert_no_terminal_success(&events, navigation_id);
+        assert_eq!(stopped.document_id, initial.document_id);
+        assert_eq!(stopped.runtime_context_id, initial.runtime_context_id);
+        assert_eq!(
+            core.context(context_id).unwrap().page.session_history(),
+            &initial_history
+        );
+
+        core.start_pending_loads();
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn reload_during_parse_supersedes_parser_and_preserves_history() {
+        let (mut core, events, command_rx, profile_path) = direct_core();
+        let context_id = direct_create(&mut core);
+        direct_navigate(
+            &mut core,
+            context_id,
+            "https://same.test/a",
+            "<!doctype html><title>A</title><main>A</main>",
+        );
+        let stable = core.context_state(context_id).unwrap();
+        let stable_history = core
+            .context(context_id)
+            .unwrap()
+            .page
+            .session_history()
+            .clone();
+        drain_direct_events(&events);
+
+        let parser_navigation =
+            direct_begin_navigation(&mut core, context_id, "https://same.test/parser-reload");
+        direct_complete_source(
+            &mut core,
+            context_id,
+            parser_navigation,
+            "https://same.test/parser-reload",
+            large_parser_document("Parser reload"),
+        );
+        assert!(core.advance_navigation_work());
+        assert_parser_is_pending(&core, context_id, parser_navigation);
+
+        let reload_navigation = match core
+            .dispatch(BrowserCommand::Reload { context_id })
+            .unwrap()
+        {
+            BrowserCommandResult::NavigationAccepted { navigation_id } => navigation_id,
+            other => panic!("unexpected reload result: {other:?}"),
+        };
+        direct_complete_source(
+            &mut core,
+            context_id,
+            reload_navigation,
+            "https://same.test/a",
+            "<!doctype html><title>A</title><main>A</main>".to_owned(),
+        );
+        direct_drive_navigation(&mut core, context_id, reload_navigation);
+        let events = drain_direct_events(&events);
+        let reloaded = core.context_state(context_id).unwrap();
+
+        assert_eq!(
+            phases_for(&events, parser_navigation),
+            vec![
+                NavigationPhase::Intent,
+                NavigationPhase::Policy,
+                NavigationPhase::Request,
+                NavigationPhase::Response,
+                NavigationPhase::Commit,
+                NavigationPhase::Parse,
+                NavigationPhase::Cancelled,
+            ]
+        );
+        assert_navigation_cancelled(
+            &events,
+            parser_navigation,
+            NavigationCancellationReason::Superseded,
+        );
+        assert_no_terminal_success(&events, parser_navigation);
+        assert_eq!(
+            phases_for(&events, reload_navigation),
+            vec![
+                NavigationPhase::Intent,
+                NavigationPhase::Policy,
+                NavigationPhase::Request,
+                NavigationPhase::Response,
+                NavigationPhase::Commit,
+                NavigationPhase::Parse,
+                NavigationPhase::ScriptsAndSubresources,
+                NavigationPhase::DomContentLoaded,
+                NavigationPhase::Load,
+                NavigationPhase::Settled,
+            ]
+        );
+        assert_exactly_one_terminal_phase(&events, reload_navigation);
+        assert_ne!(reloaded.document_id, stable.document_id);
+        assert_ne!(reloaded.runtime_context_id, stable.runtime_context_id);
+        assert_eq!(reloaded.url, "https://same.test/a");
+        assert_eq!(reloaded.title.as_deref(), Some("A"));
+        assert_eq!(
+            core.context(context_id).unwrap().page.session_history(),
+            &stable_history
+        );
+
+        core.start_pending_loads();
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn history_traversal_during_parse_supersedes_parser() {
+        let (mut core, events, command_rx, profile_path) = direct_core();
+        let context_id = direct_create(&mut core);
+        direct_navigate(
+            &mut core,
+            context_id,
+            "https://same.test/a",
+            "<!doctype html><title>A</title><main>A</main>",
+        );
+        direct_navigate(
+            &mut core,
+            context_id,
+            "https://same.test/b",
+            "<!doctype html><title>B</title><main>B</main>",
+        );
+        let before = core.context_state(context_id).unwrap();
+        assert_eq!(before.history_length, 2);
+        assert_eq!(before.history_index, 1);
+        drain_direct_events(&events);
+
+        let parser_navigation =
+            direct_begin_navigation(&mut core, context_id, "https://same.test/parser-history");
+        direct_complete_source(
+            &mut core,
+            context_id,
+            parser_navigation,
+            "https://same.test/parser-history",
+            large_parser_document("Parser history"),
+        );
+        assert!(core.advance_navigation_work());
+        assert_parser_is_pending(&core, context_id, parser_navigation);
+
+        let history_navigation = match core
+            .dispatch(BrowserCommand::TraverseHistory {
+                context_id,
+                delta: -1,
+            })
+            .unwrap()
+        {
+            BrowserCommandResult::NavigationAccepted { navigation_id } => navigation_id,
+            other => panic!("unexpected history traversal result: {other:?}"),
+        };
+        direct_complete_source(
+            &mut core,
+            context_id,
+            history_navigation,
+            "https://same.test/a",
+            "<!doctype html><title>A</title><main>A</main>".to_owned(),
+        );
+        direct_drive_navigation(&mut core, context_id, history_navigation);
+        let events = drain_direct_events(&events);
+        let traversed = core.context_state(context_id).unwrap();
+        let traversed_history = core.context(context_id).unwrap().page.session_history();
+
+        assert_eq!(
+            phases_for(&events, parser_navigation),
+            vec![
+                NavigationPhase::Intent,
+                NavigationPhase::Policy,
+                NavigationPhase::Request,
+                NavigationPhase::Response,
+                NavigationPhase::Commit,
+                NavigationPhase::Parse,
+                NavigationPhase::Cancelled,
+            ]
+        );
+        assert_navigation_cancelled(
+            &events,
+            parser_navigation,
+            NavigationCancellationReason::Superseded,
+        );
+        assert_no_terminal_success(&events, parser_navigation);
+        assert_eq!(
+            phases_for(&events, history_navigation),
+            vec![
+                NavigationPhase::Intent,
+                NavigationPhase::Policy,
+                NavigationPhase::Request,
+                NavigationPhase::Response,
+                NavigationPhase::Commit,
+                NavigationPhase::Parse,
+                NavigationPhase::ScriptsAndSubresources,
+                NavigationPhase::DomContentLoaded,
+                NavigationPhase::Load,
+                NavigationPhase::Settled,
+            ]
+        );
+        assert_exactly_one_terminal_phase(&events, history_navigation);
+        assert_eq!(traversed.url, "https://same.test/a");
+        assert_eq!(traversed.title.as_deref(), Some("A"));
+        assert_eq!(traversed.history_length, 2);
+        assert_eq!(traversed.history_index, 0);
+        assert!(traversed.can_go_forward);
+        assert_eq!(traversed_history.entries()[0].url, "https://same.test/a");
+        assert_eq!(traversed_history.entries()[1].url, "https://same.test/b");
+
+        core.start_pending_loads();
+        drop(core);
+        drop(command_rx);
         let _ = std::fs::remove_file(profile_path);
     }
 
@@ -2987,6 +5099,41 @@ mod tests {
 
         let request_final = server.request();
         assert_eq!(request_final.path, "/final");
+        let mut events = Vec::new();
+        let redirect = loop {
+            let event = handle
+                .wait_next_event(Duration::from_secs(10))
+                .unwrap()
+                .expect("redirect event before final response");
+            let redirected = matches!(
+                &event,
+                BrowserEvent::NavigationRedirected {
+                    navigation_id: event_navigation_id,
+                    from_url,
+                    to_url,
+                    status: 302,
+                    ..
+                } if *event_navigation_id == navigation_id
+                    && from_url == &redirect_url
+                    && to_url == &final_url
+            );
+            events.push(event.clone());
+            if redirected {
+                break event;
+            }
+        };
+        assert!(matches!(
+            redirect,
+            BrowserEvent::NavigationRedirected { .. }
+        ));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationPhaseChanged {
+                navigation_id: event_navigation_id,
+                phase: NavigationPhase::Response,
+                ..
+            } if *event_navigation_id == navigation_id
+        )));
         request_final
             .respond
             .send("<!doctype html><title>Redirected</title><main>final</main>".to_owned())
@@ -2996,7 +5143,7 @@ mod tests {
             .recv_timeout(Duration::from_secs(10))
             .expect("final response watchdog");
 
-        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        events.extend(wait_for_navigation(&mut handle, context_id, navigation_id).unwrap());
         let state = state(&mut handle, context_id);
         assert_eq!(state.url, final_url);
         assert_eq!(state.title.as_deref(), Some("Redirected"));
@@ -3038,6 +5185,19 @@ mod tests {
             .expect("response phase event");
         assert!(redirect_index < phase_event_index);
         assert_eq!(response_index, 3);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    BrowserEvent::NavigationRedirected {
+                        navigation_id: event_navigation_id,
+                        ..
+                    } if *event_navigation_id == navigation_id
+                ))
+                .count(),
+            1
+        );
 
         server.join();
         drop(handle);
@@ -3078,6 +5238,27 @@ mod tests {
         let committed = state(&mut handle, context_id);
         assert_eq!(committed.title.as_deref(), Some("B"));
         assert_eq!(committed.active_navigation_id, None);
+
+        inject_source_progress(
+            &handle,
+            context_id,
+            navigation_a,
+            NetworkEvent::Redirect {
+                from: server.url("/a"),
+                to: server.url("/stale-redirect"),
+                status: 302,
+            },
+        );
+        let after_stale_progress = state(&mut handle, context_id);
+        events.extend(drain_events(&mut handle));
+        assert_eq!(after_stale_progress.document_id, committed.document_id);
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationRedirected {
+                navigation_id: event_navigation_id,
+                ..
+            } if *event_navigation_id == navigation_a
+        )));
 
         request_a
             .respond
@@ -3323,6 +5504,1315 @@ mod tests {
     }
 
     #[test]
+    fn configured_and_author_scripts_advance_in_order() {
+        let (mut core, events, command_rx, profile_path) = direct_core();
+        let context_id = direct_create(&mut core);
+        let mut config = core.context(context_id).unwrap().config.clone();
+        config.preload_scripts = vec!["document.title = 'preload'".to_owned()];
+        config.new_document_scripts = vec!["document.title += ':new-document'".to_owned()];
+        core.configure_context(context_id, config).unwrap();
+        drain_direct_events(&events);
+
+        let navigation_id =
+            direct_begin_navigation(&mut core, context_id, "https://same.test/script-order");
+        direct_complete_source(
+            &mut core,
+            context_id,
+            navigation_id,
+            "https://same.test/script-order",
+            "<!doctype html><title>initial</title><script>document.title += ':author'</script>"
+                .to_owned(),
+        );
+        direct_drive_to_scripts(&mut core, context_id, navigation_id);
+
+        assert!(core.advance_navigation_work());
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("preload")
+        );
+        assert!(core.advance_navigation_work());
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("preload:new-document")
+        );
+        assert!(core.advance_navigation_work());
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("preload:new-document:author")
+        );
+        assert!(core.advance_navigation_work());
+        assert!(!drain_direct_events(&events).iter().any(|event| matches!(
+            event,
+            BrowserEvent::DomContentLoaded { navigation_id: event_navigation_id, .. }
+                if *event_navigation_id == navigation_id
+        )));
+
+        direct_drive_navigation(&mut core, context_id, navigation_id);
+        let events = drain_direct_events(&events);
+        assert_eq!(
+            phases_for(&events, navigation_id),
+            vec![
+                NavigationPhase::DomContentLoaded,
+                NavigationPhase::Load,
+                NavigationPhase::Settled,
+            ]
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn gated_external_script_executes_in_order_and_navigation_settles() {
+        let server = GatedHttpServer::start(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = "http://same.test/gated-script-success";
+        config.document_overrides.insert(
+            page_url.to_owned(),
+            format!(
+                "<!doctype html><title>initial</title><script>globalThis.order = 'before'</script><script src='{}'></script><script>globalThis.order += ':after'</script>",
+                server.url("/ordered.js")
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/ordered.js");
+        let pending = state(&mut handle, context_id);
+        assert_eq!(pending.active_navigation_id, Some(navigation_id));
+        assert_eq!(pending.title.as_deref(), Some("initial"));
+
+        request
+            .respond
+            .send(script_response(
+                "globalThis.order += ':external'; document.title = 'external'",
+                None,
+            ))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("external script response watchdog");
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        let settled = state(&mut handle, context_id);
+
+        assert_eq!(settled.title.as_deref(), Some("external"));
+        assert_eq!(
+            eval(&mut handle, &settled, "order"),
+            ScriptValue::String("before:external:after".to_owned())
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn active_mixed_content_script_is_blocked_before_io() {
+        let server = GatedHttpServer::start(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = "https://same.test/mixed-script";
+        config.document_overrides.insert(
+            page_url.to_owned(),
+            format!(
+                "<!doctype html><title>secure</title><script src='{}'></script>",
+                server.url("/mixed.js")
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        let settled = state(&mut handle, context_id);
+        assert_eq!(settled.title.as_deref(), Some("secure"));
+        assert_eq!(
+            eval(&mut handle, &settled, "typeof mixedScriptRan"),
+            ScriptValue::String("undefined".to_owned())
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        let probe_navigation = dispatch_navigation(&mut handle, context_id, &server.url("/probe"));
+        let probe = server.request();
+        assert_eq!(probe.path, "/probe");
+        probe
+            .respond
+            .send("<!doctype html><title>Probe</title>".to_owned())
+            .unwrap();
+        probe
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("mixed-content probe watchdog");
+        wait_for_navigation(&mut handle, context_id, probe_navigation).unwrap();
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn external_script_shares_and_persists_profile_cookies() {
+        let server = GatedHttpServer::start(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let seed_url = server.url("/cookie-seed");
+        let script_url = server.url("/cookie-page");
+        let read_url = server.url("/cookie-read");
+        config.document_overrides.insert(
+            seed_url.clone(),
+            "<!doctype html><title>seed</title>".to_owned(),
+        );
+        config.document_overrides.insert(
+            script_url.clone(),
+            "<!doctype html><title>cookies</title><script src='/cookie.js'></script>".to_owned(),
+        );
+        config.document_overrides.insert(
+            read_url.clone(),
+            "<!doctype html><title>read</title>".to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let seed_context = create(&mut handle);
+        let script_context = create(&mut handle);
+        drain_events(&mut handle);
+        navigate(&mut handle, seed_context, &seed_url);
+        let seed_state = state(&mut handle, seed_context);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &seed_state,
+                "document.cookie = 'profile_cookie=from-other-context; Path=/; SameSite=Strict'; true"
+            ),
+            ScriptValue::Bool(true)
+        );
+
+        let navigation_id = dispatch_navigation(&mut handle, script_context, &script_url);
+        let request = server.request();
+        assert_eq!(request.path, "/cookie.js");
+        assert!(
+            request
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("profile_cookie=from-other-context")
+        );
+        request
+            .respond
+            .send(script_response(
+                "globalThis.cookieSeenDuringExternal = document.cookie",
+                Some("accepted_cookie=survives; Path=/"),
+            ))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("cookie-sharing external script watchdog");
+        let events = wait_for_navigation(&mut handle, script_context, navigation_id).unwrap();
+        let settled = state(&mut handle, script_context);
+
+        assert_eq!(
+            eval(
+                &mut handle,
+                &settled,
+                "cookieSeenDuringExternal.includes('accepted_cookie=survives')"
+            ),
+            ScriptValue::Bool(true)
+        );
+        assert_eq!(
+            eval(
+                &mut handle,
+                &settled,
+                "document.cookie.includes('accepted_cookie=survives')"
+            ),
+            ScriptValue::Bool(true)
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        let read_context = create(&mut handle);
+        navigate(&mut handle, read_context, &read_url);
+        let read_state = state(&mut handle, read_context);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &read_state,
+                "document.cookie.includes('accepted_cookie=survives')"
+            ),
+            ScriptValue::Bool(true)
+        );
+
+        server.join();
+        drop(handle);
+
+        let mut reopened_config = BrowserConfig::new(profile_path.clone());
+        reopened_config.document_overrides.insert(
+            read_url.clone(),
+            "<!doctype html><title>reopened</title>".to_owned(),
+        );
+        let mut reopened = spawn_browser(reopened_config).unwrap();
+        let reopened_context = create(&mut reopened);
+        navigate(&mut reopened, reopened_context, &read_url);
+        let reopened_state = state(&mut reopened, reopened_context);
+        assert_eq!(
+            eval(
+                &mut reopened,
+                &reopened_state,
+                "document.cookie.includes('accepted_cookie=survives')"
+            ),
+            ScriptValue::Bool(true)
+        );
+        drop(reopened);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn profile_cookie_persistence_merges_stale_worker_deltas() {
+        let (core, _events, command_rx, profile_path) = direct_core();
+        let url = url::Url::parse("http://profile-cookie-vixen.com/script.js").unwrap();
+        let baseline = Vec::new();
+        let mut first = CookieJar::from_snapshots(baseline.clone());
+        first.set_cookie("first=one; Path=/", &url, true).unwrap();
+        let mut second = CookieJar::from_snapshots(baseline.clone());
+        second.set_cookie("second=two; Path=/", &url, true).unwrap();
+
+        persist_profile_cookies(
+            &core.store,
+            std::slice::from_ref(&url),
+            &first.delta_from_snapshots(&baseline),
+        )
+        .unwrap();
+        persist_profile_cookies(
+            &core.store,
+            std::slice::from_ref(&url),
+            &second.delta_from_snapshots(&baseline),
+        )
+        .unwrap();
+
+        let mut merged = CookieJar::default();
+        let mut profile_baseline = Vec::new();
+        merge_profile_cookies(&core.store, &url, &mut merged, &mut profile_baseline).unwrap();
+        let cookies = merged.cookies_for(&url, false, Method::Get);
+        assert!(cookies.contains("first=one"));
+        assert!(cookies.contains("second=two"));
+
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn profile_cookie_merge_prefers_store_then_worker_changes() {
+        let (core, _events, command_rx, profile_path) = direct_core();
+        let url = url::Url::parse("http://profile-cookie-vixen.com/script.js").unwrap();
+        let mut memory = CookieJar::default();
+        memory
+            .set_cookie("version=stale-memory; Path=/", &url, true)
+            .unwrap();
+        let memory_baseline = memory.snapshots();
+        let mut worker = CookieJar::from_snapshots(memory_baseline.clone());
+        let mut profile_baseline = memory_baseline.clone();
+        let empty = Vec::new();
+        let mut store_update = CookieJar::default();
+        store_update
+            .set_cookie("version=fresh-store; Path=/", &url, true)
+            .unwrap();
+        persist_profile_cookies(
+            &core.store,
+            std::slice::from_ref(&url),
+            &store_update.delta_from_snapshots(&empty),
+        )
+        .unwrap();
+
+        merge_profile_cookies(&core.store, &url, &mut worker, &mut profile_baseline).unwrap();
+        assert_eq!(
+            worker.cookies_for(&url, false, Method::Get),
+            "version=fresh-store"
+        );
+
+        worker
+            .set_cookie("version=redirect-worker; Path=/", &url, true)
+            .unwrap();
+        let current_store = store_update.snapshots();
+        store_update
+            .set_cookie("version=newer-store; Path=/", &url, true)
+            .unwrap();
+        persist_profile_cookies(
+            &core.store,
+            std::slice::from_ref(&url),
+            &store_update.delta_from_snapshots(&current_store),
+        )
+        .unwrap();
+        merge_profile_cookies(&core.store, &url, &mut worker, &mut profile_baseline).unwrap();
+        assert_eq!(
+            worker.cookies_for(&url, false, Method::Get),
+            "version=redirect-worker"
+        );
+
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn cross_origin_redirect_persists_prior_origin_cookie_deletion() {
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let redirect_host = "redirect-cookie-vixen.com";
+        config
+            .network
+            .dns_overrides
+            .push((redirect_host.to_owned(), vec![server.address]));
+        let seed_url = server.url("/delete-seed");
+        let page_url = server.url("/delete-page");
+        let read_url = server.url("/delete-read");
+        let final_url = format!("http://{redirect_host}:{}/final.js", server.address.port());
+        config.document_overrides.insert(
+            seed_url.clone(),
+            "<!doctype html><title>seed</title>".to_owned(),
+        );
+        config.document_overrides.insert(
+            page_url.clone(),
+            "<!doctype html><title>delete</title><script src='/delete.js'></script>".to_owned(),
+        );
+        config.document_overrides.insert(
+            read_url.clone(),
+            "<!doctype html><title>read</title>".to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let seed_context = create(&mut handle);
+        let script_context = create(&mut handle);
+        drain_events(&mut handle);
+        navigate(&mut handle, seed_context, &seed_url);
+        let seed_state = state(&mut handle, seed_context);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &seed_state,
+                "document.cookie = 'doomed=stored; Path=/'; true"
+            ),
+            ScriptValue::Bool(true)
+        );
+
+        let navigation_id = dispatch_navigation(&mut handle, script_context, &page_url);
+        let first = server.request();
+        assert_eq!(first.path, "/delete.js");
+        assert!(
+            first
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("doomed=stored")
+        );
+        first
+            .respond
+            .send(redirect_response_with_cookie(
+                &final_url,
+                "doomed=; Max-Age=0; Path=/",
+            ))
+            .unwrap();
+        first
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("cookie deletion redirect watchdog");
+        let final_request = server.request();
+        assert_eq!(final_request.path, "/final.js");
+        final_request
+            .respond
+            .send(script_response("document.title = 'accepted'", None))
+            .unwrap();
+        final_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("cookie deletion final response watchdog");
+        wait_for_navigation(&mut handle, script_context, navigation_id).unwrap();
+
+        let read_context = create(&mut handle);
+        navigate(&mut handle, read_context, &read_url);
+        let read_state = state(&mut handle, read_context);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &read_state,
+                "document.cookie.includes('doomed=stored')"
+            ),
+            ScriptValue::Bool(false)
+        );
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn redirected_external_script_rechecks_final_url_against_csp() {
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = "http://same.test/redirected-script-csp";
+        let allowed_url = server.url("/allowed.js");
+        let blocked_url = server.url("/blocked.js");
+        config.document_overrides.insert(
+            page_url.to_owned(),
+            format!(
+                "<!doctype html><title>initial</title><meta http-equiv='Content-Security-Policy' content='script-src {allowed_url}'><script src='{allowed_url}'></script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let initial = server.request();
+        assert_eq!(initial.path, "/allowed.js");
+        initial
+            .respond
+            .send(redirect_response_with_cookie(
+                &blocked_url,
+                "blocked_redirect=1",
+            ))
+            .unwrap();
+        initial
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("external script redirect watchdog");
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        let settled = state(&mut handle, context_id);
+
+        assert_eq!(settled.title.as_deref(), Some("initial"));
+        assert_eq!(
+            eval(&mut handle, &settled, "typeof redirectedScriptRan"),
+            ScriptValue::String("undefined".to_owned())
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        let probe_navigation = dispatch_navigation(&mut handle, context_id, &server.url("/probe"));
+        let probe = server.request();
+        assert_eq!(probe.path, "/probe");
+        assert!(
+            !probe
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("blocked_redirect=1")
+        );
+        probe
+            .respond
+            .send("<!doctype html><title>Probe</title>".to_owned())
+            .unwrap();
+        probe
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("redirect CSP cookie probe watchdog");
+        wait_for_navigation(&mut handle, context_id, probe_navigation).unwrap();
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn stop_cancels_pending_external_script_and_rejects_late_response() {
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = "http://same.test/gated-script-stop";
+        config.document_overrides.insert(
+            page_url.to_owned(),
+            format!(
+                "<!doctype html><title>committed</title><script src='{}'></script>",
+                server.url("/stopped.js")
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/stopped.js");
+        assert_eq!(
+            state(&mut handle, context_id).active_navigation_id,
+            Some(navigation_id)
+        );
+        assert_eq!(
+            handle
+                .dispatch(BrowserCommand::Stop { context_id })
+                .unwrap(),
+            BrowserCommandResult::Accepted
+        );
+        let mut events = drain_events(&mut handle);
+
+        request
+            .respond
+            .send(script_response(
+                "globalThis.stoppedExternal = true",
+                Some("late_script=stop"),
+            ))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("late external script response watchdog");
+        let stopped = state(&mut handle, context_id);
+        assert_eq!(stopped.active_navigation_id, None);
+        assert_eq!(
+            eval(&mut handle, &stopped, "typeof stoppedExternal"),
+            ScriptValue::String("undefined".to_owned())
+        );
+
+        let probe_navigation = dispatch_navigation(&mut handle, context_id, &server.url("/probe"));
+        let probe = server.request();
+        assert_eq!(probe.path, "/probe");
+        assert!(
+            !probe
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("late_script=stop")
+        );
+        probe
+            .respond
+            .send("<!doctype html><title>Probe</title>".to_owned())
+            .unwrap();
+        probe
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("probe response watchdog");
+        events.extend(wait_for_navigation(&mut handle, context_id, probe_navigation).unwrap());
+
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Stopped,
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if matches!(effects.network.as_slice(), [
+                    RuntimeNetworkEvent::Request {
+                        request_id,
+                        url,
+                        method,
+                    },
+                    RuntimeNetworkEvent::Failure {
+                        request_id: failure_request_id,
+                        url: failure_url,
+                        blocked_reason: Some(reason),
+                        ..
+                    }
+                ] if request_id == failure_request_id
+                    && url == failure_url
+                    && url.ends_with("/stopped.js")
+                    && method == "GET"
+                    && reason == "canceled")
+        )));
+        assert_no_lifecycle_success(&events, navigation_id);
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn supersede_cancels_pending_external_script_and_rejects_late_response() {
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = "http://same.test/gated-script-supersede";
+        config.document_overrides.insert(
+            page_url.to_owned(),
+            format!(
+                "<!doctype html><title>old</title><script src='{}'></script>",
+                server.url("/superseded.js")
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/superseded.js");
+        let replacement = dispatch_navigation(&mut handle, context_id, "https://same.test/b");
+        let mut events = wait_for_navigation(&mut handle, context_id, replacement).unwrap();
+
+        request
+            .respond
+            .send(script_response(
+                "localStorage.setItem('supersededExternal', 'ran')",
+                Some("late_script=supersede"),
+            ))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("superseded external script response watchdog");
+        let replacement_state = state(&mut handle, context_id);
+        assert_eq!(replacement_state.title.as_deref(), Some("B"));
+        assert_eq!(
+            eval(
+                &mut handle,
+                &replacement_state,
+                "localStorage.getItem('supersededExternal')"
+            ),
+            ScriptValue::Null
+        );
+
+        let probe_navigation = dispatch_navigation(&mut handle, context_id, &server.url("/probe"));
+        let probe = server.request();
+        assert_eq!(probe.path, "/probe");
+        assert!(
+            !probe
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("late_script=supersede")
+        );
+        probe
+            .respond
+            .send("<!doctype html><title>Probe</title>".to_owned())
+            .unwrap();
+        probe
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("probe response watchdog");
+        events.extend(wait_for_navigation(&mut handle, context_id, probe_navigation).unwrap());
+
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Superseded,
+        );
+        assert_no_lifecycle_success(&events, navigation_id);
+        assert_exactly_one_terminal_phase(&events, replacement);
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn external_script_completion_rejects_stale_document_and_runtime() {
+        let server = GatedHttpServer::start(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let profile_path = config.profile_path.clone();
+        let events = Arc::new(EventChannel::new(config.event_capacity));
+        let (command_tx, command_rx) = mpsc::sync_channel(config.command_capacity);
+        let mut core = BrowserCore::new(config, Arc::clone(&events), command_tx).unwrap();
+        let context_id = direct_create(&mut core);
+        drain_direct_events(&events);
+        let script_url = server.url("/stale.js");
+        let page_url = "http://same.test/stale-script-completion";
+        let navigation_id = direct_begin_navigation(&mut core, context_id, page_url);
+        direct_complete_source(
+            &mut core,
+            context_id,
+            navigation_id,
+            page_url,
+            format!("<!doctype html><title>pending</title><script src='{script_url}'></script>"),
+        );
+        direct_drive_to_scripts(&mut core, context_id, navigation_id);
+        assert!(core.advance_navigation_work());
+        let request = server.request();
+        assert_eq!(request.path, "/stale.js");
+
+        let key = core
+            .context(context_id)
+            .unwrap()
+            .active_navigation
+            .as_ref()
+            .unwrap()
+            .pending_script
+            .as_ref()
+            .unwrap()
+            .key;
+        let baseline = core.cookies.snapshots();
+        let mut stale_jar = CookieJar::from_snapshots(baseline.clone());
+        stale_jar
+            .set_cookie(
+                "stale_completion=1",
+                &url::Url::parse(&script_url).unwrap(),
+                true,
+            )
+            .unwrap();
+        let stale_delta = stale_jar.delta_from_snapshots(&baseline);
+        let stale_document_id = DocumentId::new(key.document_id.get() + 1).unwrap();
+        core.complete_external_script(ExternalScriptLoadCompletion {
+            key: ExternalScriptLoadKey {
+                document_id: stale_document_id,
+                ..key
+            },
+            result: Ok(loaded_script_response(
+                &script_url,
+                "document.title = 'stale-document'",
+            )),
+            cookie_delta: stale_delta.clone(),
+        });
+        let stale_runtime_id = RuntimeContextId::new(key.runtime_context_id.get() + 1).unwrap();
+        core.complete_external_script(ExternalScriptLoadCompletion {
+            key: ExternalScriptLoadKey {
+                runtime_context_id: stale_runtime_id,
+                ..key
+            },
+            result: Ok(loaded_script_response(
+                &script_url,
+                "document.title = 'stale-runtime'",
+            )),
+            cookie_delta: stale_delta,
+        });
+
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("pending")
+        );
+        assert!(
+            core.context(context_id)
+                .unwrap()
+                .active_navigation
+                .as_ref()
+                .unwrap()
+                .pending_script
+                .is_some()
+        );
+        assert!(
+            !core
+                .cookies
+                .cookies_for(&url::Url::parse(&script_url).unwrap(), false, Method::Get)
+                .contains("stale_completion=1")
+        );
+
+        core.complete_external_script(ExternalScriptLoadCompletion {
+            key,
+            result: Ok(loaded_script_response(
+                &script_url,
+                "document.title = 'valid'",
+            )),
+            cookie_delta: CookieJarDelta::default(),
+        });
+        direct_drive_navigation(&mut core, context_id, navigation_id);
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("valid")
+        );
+        assert_exactly_one_terminal_phase(&drain_direct_events(&events), navigation_id);
+
+        request
+            .respond
+            .send(script_response("document.title = 'network-late'", None))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("stale completion network response watchdog");
+        server.join();
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn stopped_navigation_rejects_injected_external_script_completion() {
+        let server = GatedHttpServer::start(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let profile_path = config.profile_path.clone();
+        let events = Arc::new(EventChannel::new(config.event_capacity));
+        let (command_tx, command_rx) = mpsc::sync_channel(config.command_capacity);
+        let mut core = BrowserCore::new(config, Arc::clone(&events), command_tx).unwrap();
+        let context_id = direct_create(&mut core);
+        drain_direct_events(&events);
+        let script_url = server.url("/stopped-completion.js");
+        let page_url = "http://same.test/stopped-script-completion";
+        let navigation_id = direct_begin_navigation(&mut core, context_id, page_url);
+        direct_complete_source(
+            &mut core,
+            context_id,
+            navigation_id,
+            page_url,
+            format!("<!doctype html><title>pending</title><script src='{script_url}'></script>"),
+        );
+        direct_drive_to_scripts(&mut core, context_id, navigation_id);
+        assert!(core.advance_navigation_work());
+        let request = server.request();
+        let key = core
+            .context(context_id)
+            .unwrap()
+            .active_navigation
+            .as_ref()
+            .unwrap()
+            .pending_script
+            .as_ref()
+            .unwrap()
+            .key;
+        let baseline = core.cookies.snapshots();
+        let mut stale_jar = CookieJar::from_snapshots(baseline.clone());
+        stale_jar
+            .set_cookie(
+                "stopped_completion=1",
+                &url::Url::parse(&script_url).unwrap(),
+                true,
+            )
+            .unwrap();
+
+        core.stop(context_id).unwrap();
+        drain_direct_events(&events);
+        core.complete_external_script(ExternalScriptLoadCompletion {
+            key,
+            result: Ok(loaded_script_response(
+                &script_url,
+                "document.title = 'obsolete'",
+            )),
+            cookie_delta: stale_jar.delta_from_snapshots(&baseline),
+        });
+
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("pending")
+        );
+        assert!(
+            !core
+                .cookies
+                .cookies_for(&url::Url::parse(&script_url).unwrap(), false, Method::Get)
+                .contains("stopped_completion=1")
+        );
+        assert!(
+            !drain_direct_events(&events)
+                .iter()
+                .any(|event| matches!(event, BrowserEvent::RuntimeEffects { .. }))
+        );
+
+        request
+            .respond
+            .send(script_response("document.title = 'network-obsolete'", None))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("stopped completion network response watchdog");
+        server.join();
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn superseded_navigation_rejects_injected_external_script_completion() {
+        let server = GatedHttpServer::start(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let profile_path = config.profile_path.clone();
+        let events = Arc::new(EventChannel::new(config.event_capacity));
+        let (command_tx, command_rx) = mpsc::sync_channel(config.command_capacity);
+        let mut core = BrowserCore::new(config, Arc::clone(&events), command_tx).unwrap();
+        let context_id = direct_create(&mut core);
+        drain_direct_events(&events);
+        let script_url = server.url("/superseded-completion.js");
+        let page_url = "http://same.test/superseded-script-completion";
+        let navigation_id = direct_begin_navigation(&mut core, context_id, page_url);
+        direct_complete_source(
+            &mut core,
+            context_id,
+            navigation_id,
+            page_url,
+            format!("<!doctype html><title>old</title><script src='{script_url}'></script>"),
+        );
+        direct_drive_to_scripts(&mut core, context_id, navigation_id);
+        assert!(core.advance_navigation_work());
+        let request = server.request();
+        let key = core
+            .context(context_id)
+            .unwrap()
+            .active_navigation
+            .as_ref()
+            .unwrap()
+            .pending_script
+            .as_ref()
+            .unwrap()
+            .key;
+        let baseline = core.cookies.snapshots();
+        let mut stale_jar = CookieJar::from_snapshots(baseline.clone());
+        stale_jar
+            .set_cookie(
+                "superseded_completion=1",
+                &url::Url::parse(&script_url).unwrap(),
+                true,
+            )
+            .unwrap();
+
+        let replacement =
+            direct_begin_navigation(&mut core, context_id, "https://same.test/replacement");
+        assert_eq!(
+            core.context(context_id).unwrap().document_id,
+            key.document_id
+        );
+        assert_eq!(
+            core.context(context_id).unwrap().runtime_context_id,
+            key.runtime_context_id
+        );
+        drain_direct_events(&events);
+        core.complete_external_script(ExternalScriptLoadCompletion {
+            key,
+            result: Ok(loaded_script_response(
+                &script_url,
+                "document.title = 'obsolete'",
+            )),
+            cookie_delta: stale_jar.delta_from_snapshots(&baseline),
+        });
+
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("old")
+        );
+        assert!(
+            !core
+                .cookies
+                .cookies_for(&url::Url::parse(&script_url).unwrap(), false, Method::Get)
+                .contains("superseded_completion=1")
+        );
+        assert!(drain_direct_events(&events).is_empty());
+
+        direct_complete_source(
+            &mut core,
+            context_id,
+            replacement,
+            "https://same.test/replacement",
+            "<!doctype html><title>Replacement</title>".to_owned(),
+        );
+        direct_drive_navigation(&mut core, context_id, replacement);
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("Replacement")
+        );
+
+        request
+            .respond
+            .send(script_response("document.title = 'network-obsolete'", None))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("superseded completion network response watchdog");
+        server.join();
+        core.start_pending_loads();
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn new_document_mutation_changes_later_author_script_discovery() {
+        let (mut core, events, command_rx, profile_path) = direct_core();
+        let context_id = direct_create(&mut core);
+        let mut config = core.context(context_id).unwrap().config.clone();
+        config.new_document_scripts = vec![
+            "document.getElementById('author').textContent = \"document.title = 'rewritten'\""
+                .to_owned(),
+        ];
+        core.configure_context(context_id, config).unwrap();
+        drain_direct_events(&events);
+
+        let navigation_id = direct_navigate(
+            &mut core,
+            context_id,
+            "https://same.test/rewrite-author",
+            "<!doctype html><title>initial</title><script id='author'>document.title = 'original'</script>",
+        );
+        let events = drain_direct_events(&events);
+        let state = core.context_state(context_id).unwrap();
+
+        assert_eq!(state.title.as_deref(), Some("rewritten"));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationFailed { navigation_id: event_navigation_id, .. }
+                if *event_navigation_id == navigation_id
+        )));
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn stop_between_author_scripts_preserves_completed_mutation() {
+        let (mut core, events, command_rx, profile_path) = direct_core();
+        let context_id = direct_create(&mut core);
+        drain_direct_events(&events);
+        let navigation_id =
+            direct_begin_navigation(&mut core, context_id, "https://same.test/script-stop");
+        direct_complete_source(
+            &mut core,
+            context_id,
+            navigation_id,
+            "https://same.test/script-stop",
+            "<!doctype html><title>initial</title><script>document.title = 'first'</script><script>document.title = 'second'</script>".to_owned(),
+        );
+        direct_drive_to_scripts(&mut core, context_id, navigation_id);
+        assert!(core.advance_navigation_work());
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("first")
+        );
+
+        core.stop(context_id).unwrap();
+        assert!(core.advance_navigation_work());
+        let events = drain_direct_events(&events);
+        let stopped = core.context_state(context_id).unwrap();
+
+        assert_eq!(stopped.title.as_deref(), Some("first"));
+        assert_eq!(
+            phases_for(&events, navigation_id),
+            vec![
+                NavigationPhase::Intent,
+                NavigationPhase::Policy,
+                NavigationPhase::Request,
+                NavigationPhase::Response,
+                NavigationPhase::Commit,
+                NavigationPhase::Parse,
+                NavigationPhase::ScriptsAndSubresources,
+                NavigationPhase::Cancelled,
+            ]
+        );
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Stopped,
+        );
+        assert_no_lifecycle_success(&events, navigation_id);
+
+        core.start_pending_loads();
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn supersede_between_author_scripts_suppresses_unstarted_item() {
+        let (mut core, events, command_rx, profile_path) = direct_core();
+        let context_id = direct_create(&mut core);
+        drain_direct_events(&events);
+        let navigation_id =
+            direct_begin_navigation(&mut core, context_id, "https://same.test/script-supersede");
+        direct_complete_source(
+            &mut core,
+            context_id,
+            navigation_id,
+            "https://same.test/script-supersede",
+            "<!doctype html><script>localStorage.setItem('completed', 'yes')</script><script>localStorage.setItem('unstarted', 'no')</script>".to_owned(),
+        );
+        direct_drive_to_scripts(&mut core, context_id, navigation_id);
+        assert!(core.advance_navigation_work());
+
+        let replacement =
+            direct_begin_navigation(&mut core, context_id, "https://same.test/replacement");
+        direct_complete_source(
+            &mut core,
+            context_id,
+            replacement,
+            "https://same.test/replacement",
+            "<!doctype html><title>Replacement</title>".to_owned(),
+        );
+        direct_drive_navigation(&mut core, context_id, replacement);
+        let events = drain_direct_events(&events);
+
+        assert_eq!(
+            direct_eval(
+                &mut core,
+                context_id,
+                "`${localStorage.getItem('completed')}:${localStorage.getItem('unstarted')}`",
+            ),
+            ScriptValue::String("yes:null".to_owned())
+        );
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Superseded,
+        );
+        assert_no_lifecycle_success(&events, navigation_id);
+        assert_exactly_one_terminal_phase(&events, replacement);
+
+        core.start_pending_loads();
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn author_exception_is_runtime_effect_and_later_script_runs() {
+        let (mut core, events, command_rx, profile_path) = direct_core();
+        let context_id = direct_create(&mut core);
+        drain_direct_events(&events);
+        let navigation_id = direct_navigate(
+            &mut core,
+            context_id,
+            "https://same.test/script-error",
+            "<!doctype html><title>initial</title><script>throw new Error('author boom')</script><script>document.title = 'after-error'</script>",
+        );
+        let events = drain_direct_events(&events);
+        let state = core.context_state(context_id).unwrap();
+        let exceptions = events
+            .iter()
+            .filter_map(|event| match event {
+                BrowserEvent::RuntimeEffects {
+                    context_id: event_context_id,
+                    document_id,
+                    runtime_context_id,
+                    effects,
+                    ..
+                } if *event_context_id == context_id
+                    && *document_id == state.document_id
+                    && Some(*runtime_context_id) == state.runtime_context_id =>
+                {
+                    Some(effects.exceptions.as_slice())
+                }
+                _ => None,
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+
+        assert_eq!(state.title.as_deref(), Some("after-error"));
+        assert_eq!(exceptions.len(), 1);
+        assert_eq!(
+            exceptions[0].error.code,
+            crate::engine_error::codes::SCRIPT_EVAL
+        );
+        assert!(exceptions[0].error.message.contains("author boom"));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationFailed { navigation_id: event_navigation_id, .. }
+                if *event_navigation_id == navigation_id
+        )));
+        assert_eq!(
+            phases_for(&events, navigation_id),
+            vec![
+                NavigationPhase::Intent,
+                NavigationPhase::Policy,
+                NavigationPhase::Request,
+                NavigationPhase::Response,
+                NavigationPhase::Commit,
+                NavigationPhase::Parse,
+                NavigationPhase::ScriptsAndSubresources,
+                NavigationPhase::DomContentLoaded,
+                NavigationPhase::Load,
+                NavigationPhase::Settled,
+            ]
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn author_timeout_is_runtime_effect_and_later_script_runs() {
+        let (mut core, events, command_rx, profile_path) = direct_core();
+        let context_id = direct_create(&mut core);
+        drain_direct_events(&events);
+        let navigation_id = direct_navigate(
+            &mut core,
+            context_id,
+            "https://same.test/script-timeout",
+            "<!doctype html><title>initial</title><script>for (;;) {}</script><script>document.title = 'after-timeout'</script>",
+        );
+        let events = drain_direct_events(&events);
+        let state = core.context_state(context_id).unwrap();
+
+        assert_eq!(state.title.as_deref(), Some("after-timeout"));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.exceptions.iter().any(|exception| {
+                    exception.error.code == crate::engine_error::codes::SCRIPT_TIMEOUT
+                })
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationFailed { navigation_id: event_navigation_id, .. }
+                if *event_navigation_id == navigation_id
+        )));
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn stop_after_dom_content_loaded_suppresses_load_and_settle() {
+        let (mut core, events, command_rx, profile_path) = direct_core();
+        let context_id = direct_create(&mut core);
+        drain_direct_events(&events);
+        let navigation_id =
+            direct_begin_navigation(&mut core, context_id, "https://same.test/lifecycle-stop");
+        direct_complete_source(
+            &mut core,
+            context_id,
+            navigation_id,
+            "https://same.test/lifecycle-stop",
+            "<!doctype html><title>Lifecycle</title>".to_owned(),
+        );
+        direct_drive_to_scripts(&mut core, context_id, navigation_id);
+        assert!(core.advance_navigation_work());
+        assert!(core.advance_navigation_work());
+
+        core.stop(context_id).unwrap();
+        assert!(core.advance_navigation_work());
+        let events = drain_direct_events(&events);
+
+        assert_eq!(
+            phases_for(&events, navigation_id),
+            vec![
+                NavigationPhase::Intent,
+                NavigationPhase::Policy,
+                NavigationPhase::Request,
+                NavigationPhase::Response,
+                NavigationPhase::Commit,
+                NavigationPhase::Parse,
+                NavigationPhase::ScriptsAndSubresources,
+                NavigationPhase::DomContentLoaded,
+                NavigationPhase::Cancelled,
+            ]
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::DomContentLoaded { navigation_id: event_navigation_id, .. }
+                if *event_navigation_id == navigation_id
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::DocumentLoadCompleted { navigation_id: event_navigation_id, .. }
+                if *event_navigation_id == navigation_id
+        )));
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Stopped,
+        );
+
+        core.start_pending_loads();
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
     fn redirect_stop_rejects_late_redirect_completion() {
         let server = GatedHttpServer::start(3);
         let mut config = test_config();
@@ -3350,6 +6840,25 @@ mod tests {
 
         let final_request = server.request();
         assert_eq!(final_request.path, "/redirect-final");
+        let mut events = Vec::new();
+        let latest_request_id = loop {
+            let event = handle
+                .wait_next_event(Duration::from_secs(10))
+                .unwrap()
+                .expect("redirect event before stop");
+            let next_request_id = match &event {
+                BrowserEvent::NavigationRedirected {
+                    navigation_id: event_navigation_id,
+                    next_request_id,
+                    ..
+                } if *event_navigation_id == navigation_id => Some(*next_request_id),
+                _ => None,
+            };
+            events.push(event);
+            if let Some(next_request_id) = next_request_id {
+                break next_request_id;
+            }
+        };
         assert_eq!(
             state(&mut handle, context_id).active_navigation_id,
             Some(navigation_id)
@@ -3360,7 +6869,7 @@ mod tests {
                 .unwrap(),
             BrowserCommandResult::Accepted
         );
-        let mut events = drain_events(&mut handle);
+        events.extend(drain_events(&mut handle));
 
         final_request
             .respond
@@ -3370,18 +6879,13 @@ mod tests {
             .completed
             .recv_timeout(Duration::from_secs(10))
             .expect("late redirected final response watchdog");
-        inject_late_source_completion_with_events(
+        inject_late_source_completion(
             &handle,
             context_id,
             navigation_id,
             final_url.clone(),
             "Injected stale redirect",
             Some("source=redirect-final"),
-            vec![NetworkEvent::Redirect {
-                from: redirect_url,
-                to: final_url,
-                status: 302,
-            }],
         );
         events.extend(drain_events(&mut handle));
         let after_late = state(&mut handle, context_id);
@@ -3414,12 +6918,27 @@ mod tests {
             NavigationCancellationReason::Stopped,
         );
         assert_no_terminal_success(&events, navigation_id);
-        assert!(!events.iter().any(|event| matches!(
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    BrowserEvent::NavigationRedirected {
+                        navigation_id: event_navigation_id,
+                        ..
+                    } if *event_navigation_id == navigation_id
+                ))
+                .count(),
+            1
+        );
+        assert!(events.iter().any(|event| matches!(
             event,
-            BrowserEvent::NavigationRedirected {
+            BrowserEvent::NavigationCancelled {
                 navigation_id: event_navigation_id,
+                request_id: Some(request_id),
+                reason: NavigationCancellationReason::Stopped,
                 ..
-            } if *event_navigation_id == navigation_id
+            } if *event_navigation_id == navigation_id && *request_id == latest_request_id
         )));
 
         server.join();

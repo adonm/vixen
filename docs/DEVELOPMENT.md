@@ -115,11 +115,10 @@ Alpha speed is acceptable only while these budgets stay visible:
 - Prefer boring data flow over framework gravity: DTOs in `vixen-api`, lifecycle
   and pipeline state in the engine-owned browser/context/document graph, and
   browser-facing adapters in headless/CDP/shell.
-- Avoid duplicate parsers/matchers. If a Page string projection and a JS host
-  object both need behavior, extract or call the same Rust
-  module.
-- Remove obsolete string-smoke shims as host objects replace them. Do not leave
-  two authoritative paths for the same supported expression.
+- Avoid duplicate parsers/matchers. Runtime host objects and BrowserCore/Page
+  operations must extract or call the same Rust implementation.
+- Do not reintroduce string-expression shims. Retire transitional runtime/
+  document snapshots as live resources replace them.
 - Keep `COMPAT.md` honest: partial support is fine, overclaiming is not.
 
 ## Alpha definition of done

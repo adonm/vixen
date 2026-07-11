@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Enforce the stable leaf-crate dependency boundaries."""
+"""Enforce stable leaf-crate and frontend dependency boundaries."""
 
 import json
 import subprocess

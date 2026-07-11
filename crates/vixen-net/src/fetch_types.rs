@@ -45,7 +45,8 @@ pub struct TextRequest {
     pub body: Option<Vec<u8>>,
 }
 
-/// Stable network lifecycle events emitted for a completed text fetch.
+/// Stable network lifecycle events emitted during a bounded text fetch and
+/// retained by a completed response.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NetworkEvent {
     RequestStart {

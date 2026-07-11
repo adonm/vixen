@@ -71,16 +71,24 @@ profile-session state. CDP has one core context/runtime generation per target,
 with bounded generation-scoped remote handles.
 
 The largest remaining delivery risk has moved from frontend ownership
-duplication to the live document lifecycle. Parser/script/resource work still
-runs synchronously on the core owner after source loading, and compatibility
-projections still coexist with the live page/runtime. Adding broad API shape
-before converging those paths would preserve plausible but disconnected state.
+duplication to the live document lifecycle. HTML parsing, configured/author
+script items, and terminal lifecycle stages now yield cooperatively on the core
+owner. Individual V8 execution and promise pumping have a bounded deadline with
+isolate recovery, but navigation cancellation cannot yet interrupt them before
+that deadline, native host ops and non-script discovered-resource fetches remain
+synchronous, and compatibility projections still coexist with the live page/
+runtime. Parser-discovered external classic scripts now use generation-cancellable
+worker I/O rather than blocking the owner. Adding broad API shape before
+converging those paths would preserve plausible but disconnected state.
 
 Other material gaps remain:
 
-- main-document source loading is asynchronous, cancellable, and generation
-  checked, but parser, script, and discovered-resource work is still synchronous
-  and not cooperatively interruptible;
+- main-document source loading is asynchronous; HTML parsing, configured/author
+  script items, and DOMContentLoaded/load/settle stages are generation-checked
+  owner-thread quanta. Runtime construction and native host calls are not yet
+  interruptible; individual V8 jobs are deadline-bounded but not navigation-
+  cancellation-aware. External classic-script file/HTTP reads are cancellable
+  worker tasks; other discovered-resource fetches remain synchronous or absent;
 - DOM/runtime snapshots and compatibility projections still coexist with live
   page state;
 - layout uses deterministic text metrics and narrow block/inline/flex/grid
@@ -115,7 +123,9 @@ Other material gaps remain:
    request an explicit style/layout update or return a stable stale-state error;
    they may not maintain automation-only DOM or layout state.
 8. **Measure, then budget.** Binary size, memory, startup, navigation, frame time,
-   and profile growth get reproducible baselines before hard thresholds. Do not
+   and profile growth get reproducible baselines before hard thresholds. The
+   local headless/process-memory/profile/artifact foundation is now checked in;
+   representative host and live workloads still precede budgets. Do not
    preserve fictional limits from an obsolete dependency graph.
 9. **Real-site failures become reductions.** A screenshot starts triage. A local
    fixture, pinned WPT case, or explicitly tracked unreduced failure prevents
@@ -127,7 +137,7 @@ Alpha freezes an architecture capable of carrying the full goal. Complete these
 in order; later work may proceed in parallel only when it does not create a new
 state owner.
 
-Progress as of 2026-07-10: A1 is routed through the dependency-free typed
+Progress as of 2026-07-11: A1 is routed through the dependency-free typed
 `vixen-api` command/event seam and one `vixen-engine::browser::BrowserCore`.
 BrowserCore owns one engine thread, profile Store/network/cookies, bounded
 context/runtime registries, history, evaluation, inspection, and paint inputs.
@@ -140,30 +150,59 @@ The first A2 slices are also landed: dispatch acknowledges navigation before
 source completion; a bounded Tokio loader performs cancellable HTTP/file reads;
 each completion carries its context/navigation generation; current-generation
 cookie deltas merge at the core boundary; successful navigations emit the ordered
-phase sequence; redirects surface typed request ids before response/commit; and
-deterministic navigate/navigate, navigate/stop, redirect/stop, reload/active-load,
-and history/active-load races prove late source results cannot commit, append
-history, overwrite cookies, or emit terminal success. Parser/runtime construction
-and post-commit script/resource work remain on the owner thread and are the next
-A2 boundary.
+phase sequence; live network progress surfaces redirects with fresh typed request
+ids while the final response is still pending, without completion-time replay;
+HTML parsing advances in bounded UTF-8-safe quanta with commands checked between
+quanta; and deterministic navigate/navigate, navigate/stop, redirect/stop,
+reload/active-load, history/active-load, stop/parse, reload/parse, and
+history/parse races prove stale work cannot commit, append history, overwrite
+cookies, or emit terminal success. One core terminalization
+boundary now atomically takes the matching generation and emits exactly one
+settled, failed, or cancelled phase across success, stop, supersede, close, and
+shutdown paths. Runtime construction and post-commit script/resource work remain
+on the owner thread. Individual V8 execution, promise pumping, microtask
+checkpoints, and runtime-effect drains now share a five-second production
+deadline; V8 termination is cancelled after the stack unwinds so the isolate is
+reusable, author timeouts surface as `script.timeout`, later scripts continue,
+and the committed navigation still settles. Configured and parser-discovered
+scripts now advance one item per generation-checked quantum, followed by separate
+DOMContentLoaded, load, and settle quanta. External classic scripts resolve and
+pass CSP and active-mixed-content policy before every initial/redirect-hop request,
+load on the bounded core worker runtime, and check final status/`nosniff` before
+cookie merge or execution. They carry exact context/navigation/document/runtime/
+request generations. Accepted cookie deltas merge into the core, current runtime,
+and current profile-store partitions without replacing concurrent unrelated
+cookies; other contexts and profile reopen observe them. Stop, supersede, close,
+and shutdown abort pending script loads and emit bounded request/failure effects;
+stale completions cannot execute, persist cookies, or resume lifecycle work. Main-
+document and script `file:` reads also enforce the configured body limit before
+and during allocation. Stop or supersede preserves completed script mutations while
+suppressing unstarted items and later success lifecycle events. Author exceptions
+surface as runtime effects, allow later independent scripts to run, and do not
+turn a committed document into a failed navigation. Navigation-triggered runtime
+interruption, synchronous native host calls, and non-script resource loading
+remain the next A2 boundary.
 
-### A1. Engine-owned profile, browser, and browsing contexts
+The obsolete fail-closed `Page` string-expression path and headless test-only
+classifiers are deleted; all evaluation adapters use `BrowserCore`/`JsRuntime`.
+Runtime/document snapshots still need convergence with the live page state.
 
-- Implement one production browser core in `vixen-engine` and expose it through
-  an evolved `vixen-api` command/event seam.
+### A1. Engine-owned profile, browser, and browsing contexts — landed
+
+- One production browser core in `vixen-engine` is exposed through the typed
+  `vixen-api` command/event seam.
 - One profile service owns the store, cookies, cache, permissions, HSTS,
   downloads, clear-data policy, and host configuration. One browser service owns
   the tab/context registry. Each context owns its active document, runtime,
   session history, viewport/input state, and navigation controller.
-- Give tab/context, document, frame, navigation, request, runtime-context, and
-  download records stable typed ids. Include those ids in diagnostics/events so
+- Tab/context, document, frame, navigation, request, runtime-context, and download
+  records have stable typed ids. Those ids appear in diagnostics/events so
   stale work and cross-target routing are testable.
-- Run the non-`Send` DOM and V8 state on one engine-owned local executor. Shell
+- Non-`Send` DOM and V8 state runs on one engine-owned thread. Shell
   and protocol I/O may use workers, but engine ownership must not be split across
   per-frontend state machines.
-- Replace shell/headless direct orchestration with thin adapters. Direct
-  `vixen-net`/`vixen-store` use outside the engine is migration debt, not an
-  extension point.
+- Shell/headless are thin adapters. The architecture gate forbids their former
+  direct `vixen-net`/`vixen-store` composition.
 
 **Proof:** a production `Engine`/browser-core implementation, two tabs sharing
 profile state but not session state, GUI/headless/CDP navigation through the same
@@ -190,16 +229,37 @@ CDP lifecycle traces; no stale commit after cancellation.
 
 **Current proof:** navigate/navigate, navigate/stop, redirect/stop, reload during
 an active load, and history traversal during an active load use gated transport
-plus forced late completions; successful navigation phase order and redirect event
-ordering are asserted; shell/headless/WPT/CDP wait for matching typed terminal
-events; the external Playwright smoke covers navigation, history, reload, and
-ordered opt-in lifecycle notifications plus `document.write`/`setContent`.
-Parser/runtime cooperative cancellation and asynchronous CDP event delivery remain.
+plus forced late completions; a gated redirect is observed before its final
+response is released, stop reports the latest redirect request id, and stale
+redirect progress is generation-rejected without duplicate replay; terminal
+outcomes pass through one generation-checked core boundary; HTML parsing yields
+between bounded quanta, and stop, reload, and history traversal during parse
+reject stale parser work without commit; shell/headless/WPT/CDP wait for matching
+typed terminal events; the external Playwright smoke covers navigation, history,
+reload, and ordered opt-in lifecycle notifications plus `document.write`/
+`setContent`. One CDP socket event pump now owns continuations for navigate/reload,
+target creation, cross-document history traversal, and runtime/input-triggered
+navigation. BrowserCore returns the exact ordered navigation ids created by
+evaluation/input actions, so the adapter consumes superseded generations and
+allows same-connection stop races without a second event consumer. Abandoned
+wire operations retain bounded claimed outcomes so late completion cannot poison
+a later request. Configured initial-URL readiness remains a deliberate pre-connect
+wait; the default `about:blank` target no longer performs a redundant navigation.
+Configured/author scripts and lifecycle completion also yield between items;
+author exceptions produce `Runtime.exceptionThrown` while navigation continues
+to settlement. Infinite V8 execution is deadline-terminated with reusable-isolate
+proof, unresolved promises fail closed, and author timeouts allow later scripts
+and navigation settlement. Gated external-script tests prove in-order execution,
+same-owner stop/supersede responsiveness, pre-request redirect-CSP and active-
+mixed-content checks, profile-wide cookie sharing/persistence, bounded file reads,
+and rejection of late source/cookie/document/runtime completions.
+Navigation-aware V8 interruption, synchronous native host calls, and non-script
+resource loading remain.
 
 ### A3. Live document/runtime integration
 
-- Replace remaining snapshots and string-expression projections with live
-  page-backed Node/Element/Document, CSSOM, events, focus, selection, forms,
+- Replace remaining runtime/document snapshots with live page-backed
+  Node/Element/Document, CSSOM, events, focus, selection, forms,
   history, storage, and geometry resources.
 - Execute parser-discovered classic/module scripts in document order with an
   event loop and microtask checkpoints tied to the document lifecycle.
@@ -389,19 +449,30 @@ After v1, prioritize these programs by measured site impact:
 ## Immediate execution order
 
 The first three convergence batches are complete. The source-loading and core
-race-proof parts of the fourth are complete, and the first measurement-only
-headless latency command exists. The next coherent batches are:
+race-proof parts of the fourth are complete. The immediate local measurement
+batch is also complete: checked-in commands now cover hermetic headless latency
+and Linux process memory, opaque profile growth with reopen persistence, and
+structured headless/Flatpak artifact accounting. The next coherent batches are:
 
-1. Finish A2 across redirects, parser/runtime jobs, history/reload races, and
-   asynchronous CDP lifecycle delivery; preserve exactly one terminal outcome.
+1. Finish A2 by making the landed runtime deadline navigation-cancellable and by
+   moving synchronous native host calls plus remaining discovered-resource
+   loading off the owner; preserve exactly one terminal outcome. External classic-
+   script loading is already generation-cancellable.
+   The asynchronous CDP socket path now covers target creation, cross-document
+   history, and runtime/input-triggered navigation without adding another event
+   consumer; configured initial-URL loading intentionally settles before sockets
+   are accepted.
 2. Move parser-discovered scripts and supported DOM mutations onto the live
-   document/runtime, deleting replaced snapshot/string shims.
+   document/runtime. Evaluation adapters already use `BrowserCore`/`JsRuntime`;
+   runtime/document snapshot convergence remains.
 3. Land font discovery/shaping/fallback and image subresource decode as the first
    broad rendering verticals, then widen layout by failing imported ref tests.
 4. Build the HTTP download lifecycle and shell/CDP events over profile-owned
    downloads.
-5. Broaden the first headless latency measurement into real-site, Linux-host,
-   performance, memory, profile-growth, and size baselines that gate beta work.
+5. Reproduce the completed local measurement foundation on declared Linux GUI/
+   Flatpak hosts, then add named external-site corridor, frame-time, JS-heap, and
+   transfer-throughput reports. Accept budgets only through the documented report
+   policy; the local controls are not complete real-site evidence.
 
 ## Working rule
 

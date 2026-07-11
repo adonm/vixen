@@ -17,10 +17,9 @@
 #                 vixen-net   vixen-store
 #
 # `vixen-headless` is a CLI/CDP composition root over vixen-api + vixen-engine
-# (and a dev-dependency on vixen-wpt). The current shell and headless direct
-# composition edges are explicit migration exceptions until BrowserCore lands;
-# `just gate-architecture` enforces the stable leaf boundaries today and will
-# tighten as ADR-017 removes those exceptions.
+# (and a dev-dependency on vixen-wpt). Shell and headless route through
+# BrowserCore; `just gate-architecture` enforces both stable leaf boundaries and
+# the frontend ban on direct leaf-crate composition.
 
 [workspace]
 resolver = "2"

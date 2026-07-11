@@ -10,6 +10,7 @@
 - [Milestones](MILESTONES.md)
 - [Acceptance](ACCEPTANCE.md)
 - [Compatibility](COMPAT.md)
+- [Measurement Baselines](BASELINES.md)
 
 # Architecture and specs
 

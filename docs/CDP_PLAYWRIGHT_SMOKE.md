@@ -74,9 +74,10 @@ scopes, detached-session rejection, stable protocol error data, and the bounded
 
 Current limits are intentional: one main frame per independently scripted target,
 PNG screenshots only, Chromium JSON tracing only (not Playwright context trace
-archives), synchronous per-request lifecycle waiting (therefore idle-only
-protocol stop-loading acknowledgement), and full-viewport mouse hit testing.
-BrowserCore itself has active source cancellation and stale-completion race tests;
-CDP needs an asynchronous event pump before the same connection can race
-`Page.navigate` with `Page.stopLoading`. Add methods only when this smoke shows a
-real automation gap.
+archives), and full-viewport mouse hit testing. The WebSocket path has one
+BrowserCore event pump and keeps reading while navigation-producing requests are
+pending. Gated real-socket tests prove same-connection `Page.stopLoading`
+cancellation for page, history, and multi-action runtime navigations, clean later
+work after cancellation, and unrelated command handling during target creation.
+Configured initial-URL loading intentionally settles before socket acceptance.
+Add methods only when this smoke shows a real automation gap.

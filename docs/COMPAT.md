@@ -172,12 +172,22 @@ metadata only, not expressions, request headers, form values, or page text.
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,
 generation-checked, and directly cancellable; deterministic stop/supersede,
-redirect/stop, reload, and history-traversal race tests force late completions and
-prove no stale document/history/cookie commit or terminal success event. CDP
-currently waits synchronously for each matching terminal event, so active
-`Page.stopLoading` cannot yet race a `Page.navigate` on the same protocol
-connection. There is still no HTTP download manager or Playwright context-tracing
-archive implementation.
+redirect/stop, reload, history-traversal, and parser-stage race tests force stale
+work and prove no stale document/history/cookie commit or terminal success event.
+The CDP WebSocket path uses one event pump while navigation-producing requests are
+pending. `Page.navigate`, `Page.reload`, `Target.createTarget`, cross-document
+history traversal, and runtime/input-triggered navigation therefore leave the
+same connection available for `Page.stopLoading` or unrelated commands. Exact
+ordered BrowserCore navigation ids correlate multi-action evaluations, and claimed
+abandonment records prevent late outcomes from affecting later requests. Gated
+socket tests cover navigate/reload, history, multi-action runtime navigation, and
+non-blocking target creation. Configured initial-URL loading still settles before
+socket acceptance by design. Configured and parser-discovered scripts yield
+between items; a committed author exception emits
+`Runtime.exceptionThrown`, later independent scripts continue, and normal load
+settlement follows. Individual V8 jobs and external-script fetches remain
+noninterruptible. There is still no HTTP download manager or Playwright
+context-tracing archive implementation.
 
 ---
 

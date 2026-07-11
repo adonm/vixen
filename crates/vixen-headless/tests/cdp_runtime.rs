@@ -702,6 +702,55 @@ fn runtime_evaluate_surface() {
 }
 
 #[test]
+fn author_script_exception_notifies_runtime_and_navigation_settles() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("author-exception.html");
+    std::fs::write(
+        &path,
+        "<!doctype html><title>initial</title><script>throw new Error('author boom')</script><script>document.title = 'after-error'</script>",
+    )
+    .unwrap();
+    let url = format!("file://{}", path.display());
+    let rt = JsRuntime::new().expect("JS init");
+    let mut state = CdpState::with_runtime(rt);
+    dispatch_one(&mut state, "Runtime.enable", json!({}));
+    dispatch_one(&mut state, "Page.enable", json!({}));
+
+    let lines = dispatch_lines(&mut state, "Page.navigate", json!({ "url": url }));
+    assert!(
+        lines[0].get("error").is_none(),
+        "navigation failed: {}",
+        lines[0]
+    );
+    let exception = lines
+        .iter()
+        .find(|line| line["method"] == "Runtime.exceptionThrown")
+        .expect("author exception notification");
+    assert_eq!(
+        exception["params"]["exceptionDetails"]["code"],
+        codes::SCRIPT_EVAL
+    );
+    assert!(
+        exception["params"]["exceptionDetails"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("author boom")
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["method"] == "Page.loadEventFired")
+    );
+
+    let title = dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "document.title" }),
+    );
+    assert_eq!(title["result"]["value"], "after-error");
+}
+
+#[test]
 fn network_extra_http_headers_apply_to_runtime_fetch() {
     let (url, network_config, server) = spawn_header_echo_server("vixen-cdp-headers.com");
     let rt = JsRuntime::with_network_config(network_config).expect("JS init");
@@ -835,12 +884,25 @@ fn runtime_navigation_history_and_form_actions_update_page() {
     );
     assert_eq!(v["result"]["value"], "One");
 
-    let v = dispatch_one(
+    let same_document_lines = dispatch_lines(
         &mut s,
         "Runtime.evaluate",
         json!({ "expression": "history.pushState({ ok: 7 }, '', 'state.html'); history.length + ':' + history.state.ok + ':' + location.href.endsWith('/state.html')" }),
     );
-    assert_eq!(v["result"]["value"], "2:7:true");
+    assert_eq!(
+        same_document_lines[0]["result"]["result"]["value"],
+        "2:7:true"
+    );
+    let within_document = same_document_lines
+        .iter()
+        .find(|line| line["method"] == "Page.navigatedWithinDocument")
+        .expect("same-document runtime notification");
+    assert!(
+        within_document["params"]["url"]
+            .as_str()
+            .unwrap()
+            .ends_with("/state.html")
+    );
     let targets = dispatch_one(&mut s, "Target.getTargets", json!({}));
     assert!(
         targets["targetInfos"][0]["url"]
@@ -852,8 +914,19 @@ fn runtime_navigation_history_and_form_actions_update_page() {
     dispatch_one(
         &mut s,
         "Runtime.evaluate",
-        json!({ "expression": "const q = document.querySelector('input[name=q]'); q.focus(); q.select(); 'focused'" }),
+        json!({ "expression": "const q = document.querySelector('input[name=q]'); q.focus(); q.select(); q.addEventListener('keyup', () => history.replaceState({ input: true }, '', 'input-state.html'), { once: true }); 'focused'" }),
     );
+    let same_document_input = dispatch_lines(
+        &mut s,
+        "Input.dispatchKeyEvent",
+        json!({ "type": "keyUp", "key": "Shift", "code": "ShiftLeft" }),
+    );
+    assert!(same_document_input.iter().any(|line| {
+        line["method"] == "Page.navigatedWithinDocument"
+            && line["params"]["url"]
+                .as_str()
+                .is_some_and(|url| url.ends_with("/input-state.html"))
+    }));
     for ch in ["f", "e", "r", "r", "i", "s"] {
         dispatch_one(
             &mut s,
@@ -901,6 +974,81 @@ fn runtime_navigation_history_and_form_actions_update_page() {
         json!({ "expression": "document.title" }),
     );
     assert_eq!(v["result"]["value"], "Two");
+}
+
+#[test]
+fn ordered_same_document_actions_and_content_replacement_keep_typed_presentation() {
+    let dir = tempfile::tempdir().unwrap();
+    let one = dir.path().join("one.html");
+    let two = dir.path().join("two.html");
+    std::fs::write(&one, "<title>One</title>").unwrap();
+    std::fs::write(&two, "<title>Two</title>").unwrap();
+
+    let mut state = CdpState::default();
+    dispatch_one(&mut state, "Runtime.enable", json!({}));
+    dispatch_one(&mut state, "Page.enable", json!({}));
+    dispatch_one(&mut state, "Network.enable", json!({}));
+    dispatch_one(
+        &mut state,
+        "Page.navigate",
+        json!({ "url": format!("file://{}", one.display()) }),
+    );
+
+    let lines = dispatch_lines(
+        &mut state,
+        "Runtime.evaluate",
+        json!({
+            "expression": "history.pushState({ step: 1 }, '', 'state-a.html'); history.replaceState({ step: 2 }, '', 'state-b.html'); location.assign('two.html'); 'queued'"
+        }),
+    );
+    let within_urls = lines
+        .iter()
+        .filter(|line| line["method"] == "Page.navigatedWithinDocument")
+        .map(|line| line["params"]["url"].as_str().unwrap().to_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(within_urls.len(), 2);
+    assert!(within_urls[0].ends_with("/state-a.html"));
+    assert!(within_urls[1].ends_with("/state-b.html"));
+    let final_navigation = lines
+        .iter()
+        .position(|line| line["method"] == "Page.frameNavigated")
+        .expect("location.assign emits a regular frame navigation");
+    assert!(
+        lines[..final_navigation]
+            .iter()
+            .filter(|line| line["method"] == "Page.navigatedWithinDocument")
+            .count()
+            == 2
+    );
+    assert!(
+        lines
+            .iter()
+            .any(|line| line["method"] == "Network.requestWillBeSent")
+    );
+
+    let replacement = dispatch_lines(
+        &mut state,
+        "Runtime.evaluate",
+        json!({
+            "expression": "document.open(); document.write('<title>Replacement</title><main>new</main>'); document.close(); 'replaced'"
+        }),
+    );
+    assert_eq!(replacement[0]["result"]["result"]["value"], "replaced");
+    assert!(
+        replacement
+            .iter()
+            .any(|line| line["method"] == "Page.loadEventFired")
+    );
+    assert!(
+        !replacement
+            .iter()
+            .any(|line| line["method"] == "Page.frameNavigated")
+    );
+    assert!(
+        !replacement
+            .iter()
+            .any(|line| line["method"] == "Network.requestWillBeSent")
+    );
 }
 
 #[test]

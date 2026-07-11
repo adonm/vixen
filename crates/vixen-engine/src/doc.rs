@@ -23,6 +23,11 @@ pub struct Document {
     pub(crate) dom: RcDom,
 }
 
+/// Incremental owner-thread HTML parser used by BrowserCore navigation work.
+pub(crate) struct DocumentParser {
+    parser: html5ever::Parser<RcDom>,
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ParseError {
     #[error("HTML parse error: {0}")]
@@ -62,10 +67,9 @@ pub enum DocumentScriptItem {
 impl Document {
     /// Parse an HTML string.
     pub fn parse(html: &str) -> Result<Self, ParseError> {
-        // `parse_document(...).one(...)` is infallible (the parser recovers
-        // from any input); `ParseError` is reserved for future strict modes.
-        let dom = parse_document(RcDom::default(), Default::default()).one(html);
-        Ok(Self { dom })
+        let mut parser = DocumentParser::new();
+        parser.process(html);
+        parser.finish()
     }
 
     /// The document `<title>` text, if any.
@@ -426,6 +430,26 @@ impl Document {
     }
 }
 
+impl DocumentParser {
+    pub(crate) fn new() -> Self {
+        Self {
+            parser: parse_document(RcDom::default(), Default::default()),
+        }
+    }
+
+    pub(crate) fn process(&mut self, html: &str) {
+        self.parser.process(StrTendril::from(html));
+    }
+
+    pub(crate) fn finish(self) -> Result<Document, ParseError> {
+        // html5ever recovers from arbitrary HTML input. ParseError remains the
+        // stable boundary for future strict parser modes.
+        Ok(Document {
+            dom: self.parser.finish(),
+        })
+    }
+}
+
 fn normalize_html_attribute_name(name: &str) -> Result<String, String> {
     let name = name.trim();
     if name.is_empty() {
@@ -681,6 +705,22 @@ mod tests {
         assert!(!text.contains("c"));
         // Elements: html, head, title, body, p, b, p = 7.
         assert_eq!(doc.element_count(), 7);
+    }
+
+    #[test]
+    fn incremental_parser_preserves_tokens_across_chunks() {
+        let mut parser = DocumentParser::new();
+        for chunk in [
+            "<!doctype html><tit",
+            "le>Incremental</title><main>caf",
+            "e\u{301}</main>",
+        ] {
+            parser.process(chunk);
+        }
+        let doc = parser.finish().unwrap();
+
+        assert_eq!(doc.title().as_deref(), Some("Incremental"));
+        assert_eq!(doc.body_text_content(), "cafe\u{301}");
     }
 
     #[test]

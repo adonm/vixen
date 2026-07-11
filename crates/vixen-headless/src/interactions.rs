@@ -11,7 +11,7 @@ use crate::{Cli, browser_adapter::BrowserSession, parse_viewport};
 /// bindings; this path validates targets and exposes the event/submission data
 /// the eventual hooks consume.
 pub(crate) fn run(url: &str, cli: &Cli) -> ExitCode {
-    let mut session = match BrowserSession::load(url) {
+    let mut session = match BrowserSession::load(url, cli.profile_dir.as_deref()) {
         Ok(session) => session,
         Err(e) => {
             eprintln!("error: {e}");

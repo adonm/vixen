@@ -172,7 +172,7 @@ impl HarnessEngine for PageHarnessEngine {
                 .ok_or_else(|| "WPT context has no runtime".to_owned())?,
             source: expr.to_owned(),
         })? {
-            BrowserCommandResult::Evaluation(value) => Ok(value.to_display()),
+            BrowserCommandResult::Evaluation(evaluation) => Ok(evaluation.value.to_display()),
             result => Err(format!("unexpected evaluation result: {result:?}")),
         }
     }
@@ -297,7 +297,6 @@ fn wait_for_navigation(
     navigation_id: NavigationId,
 ) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(35);
-    let mut committed = false;
     loop {
         let Some(event) = handle
             .wait_next_event(deadline.saturating_duration_since(Instant::now()))
@@ -306,13 +305,6 @@ fn wait_for_navigation(
             return Err(format!("timed out waiting for navigation {navigation_id}"));
         };
         match event {
-            BrowserEvent::NavigationCommitted {
-                context_id: event_context_id,
-                navigation_id: event_navigation_id,
-                ..
-            } if event_context_id == context_id && event_navigation_id == navigation_id => {
-                committed = true;
-            }
             BrowserEvent::NavigationPhaseChanged {
                 context_id: event_context_id,
                 navigation_id: event_navigation_id,
@@ -327,9 +319,6 @@ fn wait_for_navigation(
                 error,
                 ..
             } if event_context_id == context_id && event_navigation_id == navigation_id => {
-                if committed {
-                    return Ok(());
-                }
                 return Err(error.to_string());
             }
             BrowserEvent::NavigationCancelled {

@@ -123,8 +123,8 @@ and reference material, plus:
   `#![forbid(unsafe_code)]` and Rust-unit-tested.
 - **Phase 6 prep** — pure form-constraint validation in `vixen-engine::forms`
   (email/URL formats, step arithmetic, range/length flags) ready for the
-  script-layer host hooks and now projected through `Page::evaluate_dom_expression`
-  for `ValidityState` / `checkValidity()` smoke checks;
+  script-layer host hooks and exposed through the `deno_core` DOM host-object
+  seam for `ValidityState` / `checkValidity()` smoke checks;
   `vixen-engine::form_submission` (the three WHATWG HTML § 4.10.21 encoders:
   `application/x-www-form-urlencoded`, `multipart/form-data`, `text/plain`,
   now also feeding the Page-backed `FormData` entry-list + iterator smoke seam
@@ -147,11 +147,13 @@ and reference material, plus:
   client/offset/scroll metrics, `getBoxQuads()`, and Range rectangles,
   Geometry Interfaces value constructors
   (`DOMPoint`/`DOMRect`/`DOMQuad`/`DOMMatrix`), `DOMParser`, and `atob` / `btoa`
-  are also projected through `Page::evaluate_dom_expression`,
-  while the first focused document/query/element evals (`document.title`, simple
+  are exposed through `deno_core` runtime host objects and value bootstraps.
+  Focused document/query/element evals (`document.title`, simple
   `querySelector`/`getElementById`, `querySelectorAll().length`) plus read-only
-  `classList`/`relList`/`sandbox` and `dataset` property reads now run through a
-  `deno_core` `document` snapshot host-object seam. `JsRuntime` now owns a
+  `classList`/`relList`/`sandbox` and `dataset` property reads use the
+  transitional Page-backed document snapshot. Every evaluation adapter routes
+  through BrowserCore and `JsRuntime`; there is no string-expression fallback.
+  `JsRuntime` owns a
   persistent realm, so sequential evals retain globals, storage, and pending
   promise/event-loop state until switching between non-page and page realms or
   navigating to a new page snapshot; the next JS-runtime milestone widens these
@@ -341,13 +343,14 @@ and reference material, plus:
   browser-shaped performance/security probes, screenshots,
   viewport/media emulation, basic mouse/keyboard input, browser-context
   permission overrides, bounded Chromium JSON tracing through `IO` streams,
-  and stable machine-readable protocol errors.
+  same-connection stop races for pending navigate/reload requests, and stable
+  machine-readable protocol errors.
 - **Browser shell/profile slice** — the GTK shell now resolves production
-  app-ID profile paths on startup, restores tab URLs plus the active tab from
-  `vixen-store::SessionRecord`, and persists bounded restore state as tabs are
-  added, closed, selected, or finish loading. GTK-free profile helpers also route
-  explicit clear-data selections through the same app-ID scoped store while
-  preserving or clearing session restore per `ClearDataSelection`.
+  app-ID profile paths on startup and routes bounded session restore/save and
+  explicit clear-data selections through BrowserCore profile-session commands
+  backed by the engine-owned store. Restore state is persisted as tabs are added,
+  closed, selected, or finish loading, and clear-data policy explicitly preserves
+  or removes that state.
 
 Future delivery order lives in [`docs/ROADMAP.md`](docs/ROADMAP.md); `PLAN.md`
 retains the historical phase runbook.
@@ -375,6 +378,14 @@ just test                # alias: test-host
 just smoke               # fmt-check + clippy + check + tests
 ```
 
+Headless runs use isolated temporary profiles by default. Pass
+`--profile-dir <DIR>` to persist BrowserCore state in `<DIR>/profile.redb`,
+including for `--cdp`:
+
+```sh
+cargo run -p vixen-headless -- --url https://example.com --profile-dir .tmp/vixen-profile --eval 'document.title'
+```
+
 Common recipes:
 
 | Recipe | Use |
@@ -387,9 +398,18 @@ Common recipes:
 | `just gate-push` | Long pre-push gate invoked by hk |
 | `just webidl` / `just gate-webidl` | Generated WebIDL/runtime host seam coverage |
 | `just audit` | `cargo audit` + `cargo deny check` |
-| `just baseline-headless` | Measure release headless startup + first navigation + eval path |
+| `just baseline-headless` / `just baseline-headless-json` | Measure the hermetic local headless scenario suite |
+| `just baseline-profile-growth` | Measure temporary profile growth and storage persistence across reopen |
+| `just size-headless` / `just size-fp` | Report structured headless or Flatpak payload artifact sizes |
+| `just baseline-beta` | Run the local headless, profile-growth, and headless-size measurement batch |
 | `just flatpak-update-sdk` / `just flatpak-build` | Manage and build against the GNOME SDK container |
 | `just flatpak-install-local` / `just flatpak-run` | Install/run the locally exported Flatpak for GUI smoke |
+
+These commands complete the local latency, Linux process-memory, profile-growth,
+headless-path, and artifact-size measurement foundation. They are measurement-
+only: real external-site coverage, the GUI/Flatpak host matrix, frame time, JS
+heap, and transfer throughput remain future baselines. See
+[`docs/BASELINES.md`](docs/BASELINES.md).
 
 `mise bootstrap` and recipes run from a mise-active shell use
 `CARGO_HOME=<workspace>/.cargo`, so the Cargo registry cache and installed dev
@@ -438,6 +458,7 @@ MSRV is 1.88 (let-chains); the developer toolchain is pinned in
 | [`docs/PLAN.md`](docs/PLAN.md)              | **How to build it.** Phased execution runbook with phase gates. |
 | [`docs/REFERENCES.md`](docs/REFERENCES.md)  | **Where to look for truth.** Pinned reference trees + how to consult each. |
 | [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)  | **When it's done.** Release gates per capability. |
+| [`docs/BASELINES.md`](docs/BASELINES.md)    | **How it is measured.** Local latency, memory, profile-growth, and artifact reports. |
 | [`docs/guidance/`](docs/guidance)           | **How to do specific tasks.** e.g. the GNOME SDK via flatpak-builder containers. |
 | `LICENSE`                                   | Apache 2.0 (lands at Phase 0). |
 

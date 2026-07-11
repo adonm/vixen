@@ -1,5 +1,6 @@
 //! Thin typed adapter over the engine-owned browser core.
 
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use vixen_api::{
@@ -11,23 +12,58 @@ use vixen_engine::browser::{BrowserConfig, EngineBrowserHandle, PaintSnapshot, s
 
 const NAVIGATION_WAIT_TIMEOUT: Duration = Duration::from_secs(35);
 
-/// One ephemeral-profile browser context for a headless CLI action.
+/// Owns an ephemeral profile or names a persistent profile without owning it.
+pub(crate) enum BrowserProfile {
+    Ephemeral(tempfile::TempDir),
+    Persistent(PathBuf),
+}
+
+impl BrowserProfile {
+    pub(crate) fn open(
+        profile_dir: Option<&Path>,
+        temporary_prefix: &str,
+        description: &str,
+    ) -> Result<Self, String> {
+        match profile_dir {
+            Some(root) => {
+                std::fs::create_dir_all(root).map_err(|error| {
+                    format!(
+                        "create {description} profile directory {}: {error}",
+                        root.display()
+                    )
+                })?;
+                Ok(Self::Persistent(root.to_path_buf()))
+            }
+            None => tempfile::Builder::new()
+                .prefix(temporary_prefix)
+                .tempdir()
+                .map(Self::Ephemeral)
+                .map_err(|error| format!("create temporary {description} profile: {error}")),
+        }
+    }
+
+    pub(crate) fn database_path(&self) -> PathBuf {
+        match self {
+            Self::Ephemeral(root) => root.path().join("profile.redb"),
+            Self::Persistent(root) => root.join("profile.redb"),
+        }
+    }
+}
+
+/// One browser context for a headless CLI action.
 ///
 /// The handle is declared before the temporary profile so the engine thread and
 /// open store are dropped before the profile directory is removed.
 pub(crate) struct BrowserSession {
     handle: EngineBrowserHandle,
     context_id: BrowsingContextId,
-    _profile: tempfile::TempDir,
+    _profile: BrowserProfile,
 }
 
 impl BrowserSession {
-    pub(crate) fn load(url: &str) -> Result<Self, String> {
-        let profile = tempfile::Builder::new()
-            .prefix("vixen-headless-")
-            .tempdir()
-            .map_err(|error| format!("create temporary browser profile: {error}"))?;
-        let mut handle = spawn_browser(BrowserConfig::new(profile.path().join("profile.redb")))
+    pub(crate) fn load(url: &str, profile_dir: Option<&Path>) -> Result<Self, String> {
+        let profile = BrowserProfile::open(profile_dir, "vixen-headless-", "browser")?;
+        let mut handle = spawn_browser(BrowserConfig::new(profile.database_path()))
             .map_err(|error| error.to_string())?;
         let context_id = match handle
             .dispatch(BrowserCommand::CreateBrowsingContext)
@@ -60,7 +96,7 @@ impl BrowserSession {
             })
             .map_err(|error| error.to_string())?
         {
-            BrowserCommandResult::Evaluation(value) => Ok(value),
+            BrowserCommandResult::Evaluation(evaluation) => Ok(evaluation.value),
             result => Err(format!("unexpected evaluation result: {result:?}")),
         }
     }
@@ -278,7 +314,7 @@ mod tests {
         let url = url::Url::from_file_path(fixture.path())
             .unwrap()
             .to_string();
-        let mut session = BrowserSession::load(&url).unwrap();
+        let mut session = BrowserSession::load(&url, None).unwrap();
 
         assert_eq!(
             session
@@ -318,7 +354,7 @@ mod tests {
             .unwrap()
             .to_string();
 
-        let error = match BrowserSession::load(&url) {
+        let error = match BrowserSession::load(&url, None) {
             Ok(_) => panic!("missing fixture unexpectedly loaded"),
             Err(error) => error,
         };
@@ -330,6 +366,69 @@ mod tests {
         assert!(
             error.contains("failed to read"),
             "unexpected error: {error}"
+        );
+    }
+
+    fn storage_fixture() -> (tempfile::TempDir, String) {
+        let fixture_dir = tempfile::tempdir().unwrap();
+        let fixture = fixture_dir.path().join("storage.html");
+        std::fs::write(&fixture, "<!doctype html><title>Storage</title>").unwrap();
+        let url = url::Url::from_file_path(fixture).unwrap().to_string();
+        (fixture_dir, url)
+    }
+
+    #[test]
+    fn explicit_profile_creates_database() {
+        let (_fixture_dir, url) = storage_fixture();
+        let parent = tempfile::tempdir().unwrap();
+        let profile_dir = parent.path().join("persistent-profile");
+
+        drop(BrowserSession::load(&url, Some(&profile_dir)).unwrap());
+
+        assert!(profile_dir.join("profile.redb").is_file());
+    }
+
+    #[test]
+    fn explicit_profile_local_storage_survives_reopen() {
+        let (_fixture_dir, url) = storage_fixture();
+        let parent = tempfile::tempdir().unwrap();
+        let profile_dir = parent.path().join("persistent-profile");
+        {
+            let mut first = BrowserSession::load(&url, Some(&profile_dir)).unwrap();
+            assert_eq!(
+                first
+                    .evaluate("localStorage.setItem('profile-state', 'saved'); 'saved'")
+                    .unwrap(),
+                ScriptValue::String("saved".to_owned())
+            );
+        }
+
+        let mut second = BrowserSession::load(&url, Some(&profile_dir)).unwrap();
+        assert_eq!(
+            second
+                .evaluate("localStorage.getItem('profile-state')")
+                .unwrap(),
+            ScriptValue::String("saved".to_owned())
+        );
+    }
+
+    #[test]
+    fn default_profiles_isolate_local_storage() {
+        let (_fixture_dir, url) = storage_fixture();
+        let mut first = BrowserSession::load(&url, None).unwrap();
+        assert_eq!(
+            first
+                .evaluate("localStorage.setItem('profile-state', 'first'); 'first'")
+                .unwrap(),
+            ScriptValue::String("first".to_owned())
+        );
+
+        let mut second = BrowserSession::load(&url, None).unwrap();
+        assert_eq!(
+            second
+                .evaluate("localStorage.getItem('profile-state')")
+                .unwrap(),
+            ScriptValue::Null
         );
     }
 }

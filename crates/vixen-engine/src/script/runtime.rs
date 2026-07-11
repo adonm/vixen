@@ -2,6 +2,15 @@
 
 #![forbid(unsafe_code)]
 
+use std::future::Future;
+use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
+use std::task::{Context, Poll, Waker};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use deno_core::futures::future::{Either, select};
 use deno_core::v8;
 use deno_core::{JsRuntime as DenoJsRuntime, PollEventLoopOptions, RuntimeOptions};
 use vixen_net::NetworkConfig;
@@ -10,6 +19,11 @@ use crate::engine_error::{EngineError, codes};
 use crate::page::Page;
 
 use super::{JsValue, cssom, dom, encoding, webapi, webidl};
+
+#[cfg(not(test))]
+const SCRIPT_EXECUTION_TIMEOUT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const SCRIPT_EXECUTION_TIMEOUT: Duration = Duration::from_millis(250);
 
 pub(super) struct DenoRuntimeInit {
     pub(super) runtime: DenoJsRuntime,
@@ -66,22 +80,193 @@ pub(super) fn new_deno_runtime(
     })
 }
 
-pub(super) fn resolve_value(
+pub(super) fn execute_script(
     runtime: &mut DenoJsRuntime,
-    global: v8::Global<v8::Value>,
+    name: &'static str,
+    source: String,
 ) -> Result<v8::Global<v8::Value>, EngineError> {
+    let deadline = RuntimeDeadline::start(runtime, SCRIPT_EXECUTION_TIMEOUT);
+    let global = match runtime.execute_script(name, source) {
+        Ok(global) => global,
+        Err(error) => {
+            return Err(deadline
+                .finish(runtime)
+                .then(timeout_error)
+                .unwrap_or_else(|| {
+                    EngineError::script(
+                        codes::SCRIPT_EVAL,
+                        format!("script evaluation raised an exception: {error}"),
+                    )
+                }));
+        }
+    };
+
     let resolve = runtime.resolve(global);
-    let value = deno_core::futures::executor::block_on(
-        runtime.with_event_loop_promise(resolve, PollEventLoopOptions::default()),
-    )
-    .map_err(|error| {
-        EngineError::script(
-            codes::SCRIPT_EVAL,
-            format!("script evaluation raised an exception: {error}"),
-        )
-    })?;
+    let outcome = {
+        let event_loop =
+            Box::pin(runtime.with_event_loop_promise(resolve, PollEventLoopOptions::default()));
+        let timeout = Box::pin(DeadlineFuture {
+            state: deadline.state.clone(),
+        });
+        match deno_core::futures::executor::block_on(select(event_loop, timeout)) {
+            Either::Left((result, timeout)) => {
+                drop(timeout);
+                Some(result)
+            }
+            Either::Right(((), event_loop)) => {
+                drop(event_loop);
+                None
+            }
+        }
+    };
+
+    let Some(outcome) = outcome else {
+        let _ = deadline.finish(runtime);
+        return Err(timeout_error());
+    };
+    let value = match outcome {
+        Ok(value) => value,
+        Err(error) => {
+            return Err(deadline
+                .finish(runtime)
+                .then(timeout_error)
+                .unwrap_or_else(|| {
+                    EngineError::script(
+                        codes::SCRIPT_EVAL,
+                        format!("script evaluation raised an exception: {error}"),
+                    )
+                }));
+        }
+    };
     runtime.v8_isolate().perform_microtask_checkpoint();
+    if deadline.finish(runtime) {
+        return Err(timeout_error());
+    }
     Ok(value)
+}
+
+pub(super) fn execute_script_immediate(
+    runtime: &mut DenoJsRuntime,
+    name: &'static str,
+    source: String,
+) -> Result<v8::Global<v8::Value>, EngineError> {
+    let deadline = RuntimeDeadline::start(runtime, SCRIPT_EXECUTION_TIMEOUT);
+    let value = match runtime.execute_script(name, source) {
+        Ok(value) => value,
+        Err(error) => {
+            return Err(deadline
+                .finish(runtime)
+                .then(timeout_error)
+                .unwrap_or_else(|| {
+                    EngineError::script(
+                        codes::SCRIPT_EVAL,
+                        format!("script evaluation raised an exception: {error}"),
+                    )
+                }));
+        }
+    };
+    if deadline.finish(runtime) {
+        return Err(timeout_error());
+    }
+    Ok(value)
+}
+
+fn timeout_error() -> EngineError {
+    EngineError::script(
+        codes::SCRIPT_TIMEOUT,
+        "script execution exceeded the bounded runtime deadline",
+    )
+}
+
+struct RuntimeDeadline {
+    state: Arc<DeadlineState>,
+    watchdog: JoinHandle<()>,
+}
+
+struct DeadlineState {
+    complete: AtomicBool,
+    timed_out: AtomicBool,
+    wait_lock: Mutex<()>,
+    wait: Condvar,
+    waker: Mutex<Option<Waker>>,
+}
+
+impl RuntimeDeadline {
+    fn start(runtime: &mut DenoJsRuntime, timeout: Duration) -> Self {
+        let state = Arc::new(DeadlineState {
+            complete: AtomicBool::new(false),
+            timed_out: AtomicBool::new(false),
+            wait_lock: Mutex::new(()),
+            wait: Condvar::new(),
+            waker: Mutex::new(None),
+        });
+        let watchdog_state = state.clone();
+        let isolate = runtime.v8_isolate().thread_safe_handle();
+        let watchdog = std::thread::spawn(move || {
+            let guard = watchdog_state
+                .wait_lock
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let (_guard, result) = watchdog_state
+                .wait
+                .wait_timeout_while(guard, timeout, |_| {
+                    !watchdog_state.complete.load(Ordering::Acquire)
+                })
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if result.timed_out() && !watchdog_state.complete.load(Ordering::Acquire) {
+                watchdog_state.timed_out.store(true, Ordering::Release);
+                let _ = isolate.terminate_execution();
+                if let Some(waker) = watchdog_state
+                    .waker
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner())
+                    .take()
+                {
+                    waker.wake();
+                }
+            }
+        });
+        Self { state, watchdog }
+    }
+
+    fn finish(self, runtime: &mut DenoJsRuntime) -> bool {
+        let guard = self
+            .state
+            .wait_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.state.complete.store(true, Ordering::Release);
+        self.state.wait.notify_all();
+        drop(guard);
+        let _ = self.watchdog.join();
+        let timed_out = self.state.timed_out.load(Ordering::Acquire);
+        if timed_out {
+            let _ = runtime.v8_isolate().cancel_terminate_execution();
+        }
+        timed_out
+    }
+}
+
+struct DeadlineFuture {
+    state: Arc<DeadlineState>,
+}
+
+impl Future for DeadlineFuture {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let mut waker = self
+            .state
+            .waker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if self.state.timed_out.load(Ordering::Acquire) {
+            Poll::Ready(())
+        } else {
+            *waker = Some(cx.waker().clone());
+            Poll::Pending
+        }
+    }
 }
 
 pub(super) fn js_value_from_global(

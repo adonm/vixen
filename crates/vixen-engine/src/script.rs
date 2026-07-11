@@ -13,7 +13,10 @@
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use crate::doc::{DocumentScriptItem, ExternalScript};
+#[cfg(test)]
+use std::io::Read;
+
+use crate::doc::DocumentScriptItem;
 use crate::engine_error::{EngineError, codes};
 use crate::mime::MimeType;
 use crate::page::Page;
@@ -41,6 +44,63 @@ pub struct JsRuntime {
     runtime: Option<deno_core::JsRuntime>,
     dom_mutations: Option<dom::DomMutationSink>,
     realm_key: RealmKey,
+}
+
+/// Persistent parser-discovered script state advanced one item at a time.
+pub(crate) struct PageScriptRunner {
+    items: std::vec::IntoIter<DocumentScriptItem>,
+    csp: vixen_net::csp::ContentSecurityPolicy,
+    origin: vixen_net::Origin,
+    bypass_csp: bool,
+}
+
+pub(crate) enum PreparedPageScript {
+    Skip,
+    Inline(String),
+    External(ExternalPageScript),
+}
+
+#[derive(Clone)]
+pub(crate) struct ExternalPageScript {
+    url: url::Url,
+    csp: Option<vixen_net::csp::ContentSecurityPolicy>,
+    origin: vixen_net::Origin,
+    nonce: Option<String>,
+    context_trustworthy: bool,
+}
+
+impl ExternalPageScript {
+    pub(crate) fn url(&self) -> &url::Url {
+        &self.url
+    }
+
+    pub(crate) fn allows_url(&self, url: &url::Url) -> bool {
+        self.blocked_reason(url).is_none()
+    }
+
+    pub(crate) fn blocked_reason(&self, url: &url::Url) -> Option<&'static str> {
+        if self.csp.as_ref().is_some_and(|csp| {
+            !csp.allows_external_script(&self.origin, url, self.nonce.as_deref())
+        }) {
+            return Some("csp");
+        }
+        if matches!(
+            vixen_net::classify_mixed_content(
+                self.context_trustworthy,
+                url,
+                vixen_net::ResourceType::Script,
+                false,
+            ),
+            vixen_net::MixedContentVerdict::Block
+        ) {
+            return Some("mixed-content");
+        }
+        None
+    }
+
+    pub(crate) fn is_cross_site(&self, url: &url::Url) -> bool {
+        !vixen_net::is_same_site(&self.origin, &vixen_net::Origin::from_url(url))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -162,6 +222,7 @@ pub enum JsNavigationAction {
     HistoryTraverse {
         delta: i32,
     },
+    Overflow,
 }
 
 impl JsValue {
@@ -397,6 +458,23 @@ impl JsRuntime {
         self.runtime_network_state.clear(cookies, fetch_cache);
     }
 
+    pub(crate) fn network_cookie_snapshots(
+        &self,
+    ) -> Result<Vec<vixen_net::CookieSnapshot>, EngineError> {
+        self.runtime_network_state
+            .cookie_snapshots()
+            .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))
+    }
+
+    pub(crate) fn apply_network_cookie_delta(
+        &self,
+        delta: vixen_net::CookieJarDelta,
+    ) -> Result<(), EngineError> {
+        self.runtime_network_state
+            .apply_cookie_delta(delta)
+            .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))
+    }
+
     /// Execute classic page scripts in document order, using the persistent
     /// page realm for `page`.
     ///
@@ -406,6 +484,7 @@ impl JsRuntime {
     /// HTTP(S) fetches cross `vixen-net` URL policy, and `nosniff` is enforced
     /// before execution. Blocked/failed subresources are skipped; JavaScript
     /// exceptions still surface as [`codes::SCRIPT_EVAL`] errors.
+    #[cfg(test)]
     pub fn execute_page_scripts(&mut self, page: &mut Page) -> Result<usize, EngineError> {
         self.execute_page_scripts_with_csp_bypass(page, false)
     }
@@ -416,58 +495,25 @@ impl JsRuntime {
     /// remains fail-closed. CDP `Page.setBypassCSP` uses this method for the
     /// DevTools/automation trust boundary where the inspector has explicitly
     /// opted into disabling script-src checks for subsequent navigations.
+    #[cfg(test)]
     pub fn execute_page_scripts_with_csp_bypass(
         &mut self,
         page: &mut Page,
         bypass_csp: bool,
     ) -> Result<usize, EngineError> {
-        let items = page.document().script_execution_items();
-        if !items.iter().any(|item| {
-            matches!(
-                item,
-                DocumentScriptItem::InlineClassicScript(_)
-                    | DocumentScriptItem::ExternalClassicScript(_)
-            )
-        }) {
-            return Ok(0);
-        }
-
-        let mut csp = page.csp().clone();
-        let origin = page_origin(page);
+        let mut runner = PageScriptRunner::new(page, bypass_csp);
         let mut executed = 0;
-        for item in items {
-            match item {
-                DocumentScriptItem::CspMeta(policy) => {
-                    if !bypass_csp {
-                        csp.add_header(&policy);
-                    }
+        while let Some(item) = runner.prepare_next(page) {
+            let source = match item {
+                PreparedPageScript::Skip => None,
+                PreparedPageScript::Inline(source) => Some(source),
+                PreparedPageScript::External(request) => {
+                    load_external_page_script(&self.network_config, &request)?
                 }
-                DocumentScriptItem::InlineClassicScript(script) => {
-                    match evaluate_inline_page_script(
-                        self,
-                        if bypass_csp { None } else { Some(&csp) },
-                        &origin,
-                        page,
-                        &script.source,
-                        script.nonce.as_deref(),
-                    ) {
-                        Ok(_) => executed += 1,
-                        Err(err) if err.code() == codes::SCRIPT_CSP_BLOCKED => {}
-                        Err(err) => return Err(err),
-                    }
-                }
-                DocumentScriptItem::ExternalClassicScript(script) => {
-                    if let Some(source) = load_external_page_script(
-                        &self.network_config,
-                        if bypass_csp { None } else { Some(&csp) },
-                        &origin,
-                        page,
-                        &script,
-                    )? {
-                        self.evaluate_with_page_mut(&source, page)?;
-                        executed += 1;
-                    }
-                }
+            };
+            if let Some(source) = source {
+                self.evaluate_with_page_mut(&source, page)?;
+                executed += 1;
             }
         }
         Ok(executed)
@@ -491,15 +537,11 @@ impl JsRuntime {
         let Some(runtime) = self.runtime.as_mut() else {
             return Ok(Vec::new());
         };
-        let result = runtime
-            .execute_script(
-                "vixen-console-drain.js",
-                "JSON.stringify(globalThis.__vixenDrainConsoleEvents ? globalThis.__vixenDrainConsoleEvents() : [])".to_owned(),
-            )
-            .map_err(|_| {
-                EngineError::script(codes::SCRIPT_EVAL, "failed to drain console events")
-            })?;
-        let result = runtime::resolve_value(runtime, result)?;
+        let result = runtime::execute_script_immediate(
+            runtime,
+            "vixen-console-drain.js",
+            "JSON.stringify(globalThis.__vixenDrainConsoleEvents ? globalThis.__vixenDrainConsoleEvents() : [])".to_owned(),
+        )?;
         match runtime::js_value_from_global(runtime, result)? {
             JsValue::String(json) => parse_console_events(&json),
             _ => Ok(Vec::new()),
@@ -512,15 +554,11 @@ impl JsRuntime {
         let Some(runtime) = self.runtime.as_mut() else {
             return Ok(Vec::new());
         };
-        let result = runtime
-            .execute_script(
-                "vixen-dialog-drain.js",
-                "JSON.stringify(globalThis.__vixenDrainDialogEvents ? globalThis.__vixenDrainDialogEvents() : [])".to_owned(),
-            )
-            .map_err(|_| {
-                EngineError::script(codes::SCRIPT_EVAL, "failed to drain dialog events")
-            })?;
-        let result = runtime::resolve_value(runtime, result)?;
+        let result = runtime::execute_script_immediate(
+            runtime,
+            "vixen-dialog-drain.js",
+            "JSON.stringify(globalThis.__vixenDrainDialogEvents ? globalThis.__vixenDrainDialogEvents() : [])".to_owned(),
+        )?;
         match runtime::js_value_from_global(runtime, result)? {
             JsValue::String(json) => parse_dialog_events(&json),
             _ => Ok(Vec::new()),
@@ -532,15 +570,11 @@ impl JsRuntime {
         let Some(runtime) = self.runtime.as_mut() else {
             return Ok(Vec::new());
         };
-        let result = runtime
-            .execute_script(
-                "vixen-binding-drain.js",
-                "JSON.stringify(globalThis.__vixenDrainBindingEvents ? globalThis.__vixenDrainBindingEvents() : [])".to_owned(),
-            )
-            .map_err(|_| {
-                EngineError::script(codes::SCRIPT_EVAL, "failed to drain binding events")
-            })?;
-        let result = runtime::resolve_value(runtime, result)?;
+        let result = runtime::execute_script_immediate(
+            runtime,
+            "vixen-binding-drain.js",
+            "JSON.stringify(globalThis.__vixenDrainBindingEvents ? globalThis.__vixenDrainBindingEvents() : [])".to_owned(),
+        )?;
         match runtime::js_value_from_global(runtime, result)? {
             JsValue::String(json) => parse_binding_events(&json),
             _ => Ok(Vec::new()),
@@ -552,15 +586,11 @@ impl JsRuntime {
         let Some(runtime) = self.runtime.as_mut() else {
             return Ok(Vec::new());
         };
-        let result = runtime
-            .execute_script(
-                "vixen-network-drain.js",
-                "JSON.stringify(globalThis.__vixenDrainNetworkEvents ? globalThis.__vixenDrainNetworkEvents() : [])".to_owned(),
-            )
-            .map_err(|_| {
-                EngineError::script(codes::SCRIPT_EVAL, "failed to drain network events")
-            })?;
-        let result = runtime::resolve_value(runtime, result)?;
+        let result = runtime::execute_script_immediate(
+            runtime,
+            "vixen-network-drain.js",
+            "JSON.stringify(globalThis.__vixenDrainNetworkEvents ? globalThis.__vixenDrainNetworkEvents() : [])".to_owned(),
+        )?;
         match runtime::js_value_from_global(runtime, result)? {
             JsValue::String(json) => parse_network_events(&json),
             _ => Ok(Vec::new()),
@@ -574,15 +604,11 @@ impl JsRuntime {
         let Some(runtime) = self.runtime.as_mut() else {
             return Ok(Vec::new());
         };
-        let result = runtime
-            .execute_script(
-                "vixen-navigation-drain.js",
-                "JSON.stringify(globalThis.__vixenDrainNavigationActions ? globalThis.__vixenDrainNavigationActions() : [])".to_owned(),
-            )
-            .map_err(|_| {
-                EngineError::script(codes::SCRIPT_EVAL, "failed to drain navigation actions")
-            })?;
-        let result = runtime::resolve_value(runtime, result)?;
+        let result = runtime::execute_script_immediate(
+            runtime,
+            "vixen-navigation-drain.js",
+            "JSON.stringify(globalThis.__vixenDrainNavigationActions ? globalThis.__vixenDrainNavigationActions() : [])".to_owned(),
+        )?;
         match runtime::js_value_from_global(runtime, result)? {
             JsValue::String(json) => parse_navigation_actions(&json),
             _ => Ok(Vec::new()),
@@ -605,15 +631,7 @@ impl JsRuntime {
         self.ensure_realm(page)?;
 
         let runtime = self.runtime.as_mut().expect("realm initialised");
-        let result = runtime
-            .execute_script("inline.js", src.to_owned())
-            .map_err(|error| {
-                EngineError::script(
-                    codes::SCRIPT_EVAL,
-                    format!("script evaluation raised an exception: {error}"),
-                )
-            })?;
-        let result = runtime::resolve_value(runtime, result)?;
+        let result = runtime::execute_script(runtime, "inline.js", src.to_owned())?;
         runtime::js_value_from_global(runtime, result)
     }
 
@@ -720,6 +738,64 @@ impl JsRuntime {
         }
         self.realm_key = RealmKey::Page(page_realm_key(page));
         Ok(())
+    }
+}
+
+impl PageScriptRunner {
+    pub(crate) fn new(page: &Page, bypass_csp: bool) -> Self {
+        Self {
+            items: page.document().script_execution_items().into_iter(),
+            csp: page.csp().clone(),
+            origin: page_origin(page),
+            bypass_csp,
+        }
+    }
+
+    /// Prepare one parser-discovered item without loading external resources.
+    /// `None` means the sequence is complete.
+    pub(crate) fn prepare_next(&mut self, page: &Page) -> Option<PreparedPageScript> {
+        let item = self.items.next()?;
+        Some(match item {
+            DocumentScriptItem::CspMeta(policy) => {
+                if !self.bypass_csp {
+                    self.csp.add_header(&policy);
+                }
+                PreparedPageScript::Skip
+            }
+            DocumentScriptItem::InlineClassicScript(script) => {
+                if self.bypass_csp
+                    || self.csp.allows_inline_script(
+                        &self.origin,
+                        Some(&script.source),
+                        script.nonce.as_deref(),
+                    )
+                {
+                    PreparedPageScript::Inline(script.source)
+                } else {
+                    PreparedPageScript::Skip
+                }
+            }
+            DocumentScriptItem::ExternalClassicScript(script) => {
+                let Some(url) = resolve_external_script_url(page, &script.src) else {
+                    return Some(PreparedPageScript::Skip);
+                };
+                let request = ExternalPageScript {
+                    url,
+                    csp: (!self.bypass_csp).then(|| self.csp.clone()),
+                    origin: self.origin.clone(),
+                    nonce: script.nonce,
+                    context_trustworthy: url::Url::parse(page.url())
+                        .ok()
+                        .as_ref()
+                        .is_some_and(vixen_net::referrer_policy::is_potentially_trustworthy),
+                };
+                if request.allows_url(request.url()) {
+                    PreparedPageScript::External(request)
+                } else {
+                    PreparedPageScript::Skip
+                }
+            }
+        })
     }
 }
 
@@ -1032,6 +1108,7 @@ fn parse_navigation_action(
                 .unwrap_or_default()
                 .clamp(i32::MIN as i64, i32::MAX as i64) as i32,
         }),
+        "overflow" => Ok(JsNavigationAction::Overflow),
         other => Err(EngineError::script(
             codes::SCRIPT_EVAL,
             format!("unsupported navigation action: {other}"),
@@ -1063,6 +1140,28 @@ fn page_origin(page: &Page) -> vixen_net::Origin {
     url::Url::parse(page.url())
         .map(|url| vixen_net::Origin::from_url(&url))
         .unwrap_or_else(|_| vixen_net::Origin::opaque())
+}
+
+pub(crate) fn merge_profile_cookies(
+    store: &vixen_store::Store,
+    url: &url::Url,
+    jar: &mut vixen_net::CookieJar,
+    profile_baseline: &mut Vec<vixen_net::CookieSnapshot>,
+) -> Result<(), EngineError> {
+    webapi::merge_profile_cookies(store, url, jar, profile_baseline)
+        .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))
+}
+
+pub(crate) fn persist_profile_cookies(
+    store: &vixen_store::Store,
+    urls: &[url::Url],
+    delta: &vixen_net::CookieJarDelta,
+) -> Result<(), EngineError> {
+    for url in urls {
+        webapi::persist_profile_cookie_delta(store, url, delta)
+            .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
+    }
+    Ok(())
 }
 
 fn current_unix_timestamp() -> i64 {
@@ -1154,30 +1253,26 @@ fn temporary_storage_backend() -> Result<(webapi::WebStorageBackend, Option<Path
     Ok((backend, Some(path)))
 }
 
+#[cfg(test)]
 fn load_external_page_script(
     network_config: &vixen_net::NetworkConfig,
-    csp: Option<&vixen_net::csp::ContentSecurityPolicy>,
-    origin: &vixen_net::Origin,
-    page: &Page,
-    script: &ExternalScript,
+    request: &ExternalPageScript,
 ) -> Result<Option<String>, EngineError> {
-    let Some(script_url) = resolve_external_script_url(page, &script.src) else {
-        return Ok(None);
-    };
-    if let Some(csp) = csp
-        && !csp.allows_external_script(origin, &script_url, script.nonce.as_deref())
-    {
-        return Ok(None);
-    }
-
-    match script_url.scheme() {
-        "file" => Ok(load_file_script(&script_url)),
+    match request.url().scheme() {
+        "file" => Ok(load_file_script(
+            request.url(),
+            network_config.max_body_bytes,
+        )),
         "http" | "https" => {
-            let response = match fetch_http_script(network_config.clone(), script_url) {
+            let response = match fetch_http_script(network_config.clone(), request.url().clone()) {
                 Ok(response) => response,
                 Err(_) => return Ok(None),
             };
-            if script_response_allowed(&response) {
+            let final_url = match url::Url::parse(&response.final_url) {
+                Ok(url) => url,
+                Err(_) => return Ok(None),
+            };
+            if request.allows_url(&final_url) && script_response_allowed(&response) {
                 Ok(Some(response.body))
             } else {
                 Ok(None)
@@ -1195,11 +1290,26 @@ fn resolve_external_script_url(page: &Page, src: &str) -> Option<url::Url> {
         .ok()
 }
 
-fn load_file_script(url: &url::Url) -> Option<String> {
+#[cfg(test)]
+fn load_file_script(url: &url::Url, max_body_bytes: u64) -> Option<String> {
     let path = url.to_file_path().ok()?;
-    std::fs::read_to_string(path).ok()
+    let metadata = std::fs::metadata(&path).ok()?;
+    if metadata.len() > max_body_bytes {
+        return None;
+    }
+    let file = std::fs::File::open(path).ok()?;
+    let mut bytes =
+        Vec::with_capacity(usize::try_from(metadata.len().min(max_body_bytes)).unwrap_or_default());
+    file.take(max_body_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if (bytes.len() as u64) > max_body_bytes {
+        return None;
+    }
+    String::from_utf8(bytes).ok()
 }
 
+#[cfg(test)]
 fn fetch_http_script(
     network_config: vixen_net::NetworkConfig,
     url: url::Url,
@@ -1225,7 +1335,10 @@ fn fetch_http_script(
     })?
 }
 
-fn script_response_allowed(response: &vixen_net::TextResponse) -> bool {
+pub(crate) fn script_response_allowed(response: &vixen_net::TextResponse) -> bool {
+    if !(200..300).contains(&response.status) {
+        return false;
+    }
     let nosniff = response
         .header("x-content-type-options")
         .is_some_and(vixen_net::is_nosniff);
@@ -1839,6 +1952,23 @@ mod tests {
         let mut config = vixen_net::NetworkConfig::default();
         config.dns_overrides.push((host.to_owned(), vec![addr]));
         (format!("http://{host}:{}", addr.port()), config, handle)
+    }
+
+    #[test]
+    fn runtime_jobs_timeout_and_leave_the_isolate_reusable() {
+        let mut runtime = JsRuntime::new().expect("engine init");
+
+        let loop_error = runtime
+            .evaluate("for (;;) {}")
+            .expect_err("infinite JavaScript must be interrupted");
+        assert_eq!(loop_error.code(), codes::SCRIPT_TIMEOUT);
+        assert_eq!(runtime.evaluate("20 + 22").unwrap(), JsValue::Int32(42));
+
+        let promise_error = runtime
+            .evaluate("new Promise(() => {})")
+            .expect_err("an unresolved promise must be bounded");
+        assert_eq!(promise_error.code(), codes::SCRIPT_EVAL);
+        assert_eq!(runtime.evaluate("6 * 7").unwrap(), JsValue::Int32(42));
     }
 
     #[test]
@@ -4183,6 +4313,25 @@ mod tests {
     }
 
     #[test]
+    fn page_navigation_action_queue_retains_only_limit_and_overflow_marker() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "https://queue.test/start",
+            "<!doctype html><title>Queue</title>",
+        )
+        .unwrap();
+        rt.evaluate_with_page_mut(
+            "for (let i = 0; i < 10000; i++) location.assign('/next-' + i)",
+            &mut page,
+        )
+        .unwrap();
+
+        let actions = rt.drain_navigation_actions().unwrap();
+        assert_eq!(actions.len(), 65);
+        assert!(matches!(actions.last(), Some(JsNavigationAction::Overflow)));
+    }
+
+    #[test]
     fn page_request_submit_uses_submitter_and_honors_prevent_default() {
         let mut rt = JsRuntime::new().expect("engine init");
         let mut page = Page::from_html(
@@ -4742,7 +4891,7 @@ mod tests {
 
         assert_eq!(
             rt.evaluate(&expr).unwrap(),
-            JsValue::String(format!("302:false:{url}:/target:redirect body"))
+            JsValue::String(format!("302:false:{url}:/target:"))
         );
         server.join().unwrap();
     }

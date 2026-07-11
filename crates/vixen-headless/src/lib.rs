@@ -17,11 +17,7 @@ use clap::Parser;
 
 use vixen_api::DocumentTextKind;
 use vixen_engine::engine_error::codes;
-#[cfg(test)]
-use vixen_engine::page::Page;
 use vixen_engine::paint::{self, RgbaFrame};
-#[cfg(test)]
-use vixen_net::{CookieJar, Method, Network};
 
 mod browser_adapter;
 pub mod cdp;
@@ -44,6 +40,10 @@ pub struct Cli {
     /// Viewport size (default 800x600).
     #[arg(long, default_value = "800x600")]
     pub viewport: String,
+
+    /// Persist browser profile state under this directory.
+    #[arg(long)]
+    pub profile_dir: Option<PathBuf>,
 
     /// Print visible text content.
     #[arg(long)]
@@ -149,13 +149,13 @@ pub fn run(cli: Cli) -> ExitCode {
             return ExitCode::from(2);
         }
         let path = cli.screenshot.as_deref().expect("checked above");
-        return run_screenshot(url, viewport, path);
+        return run_screenshot(url, viewport, path, cli.profile_dir.as_deref());
     }
 
     // --screenshot requires the offscreen renderer (Phase 5) and short-circuits
     // the textual DOM/layout output modes.
     if let Some(path) = cli.screenshot.as_deref() {
-        return run_screenshot(url, viewport, path);
+        return run_screenshot(url, viewport, path, cli.profile_dir.as_deref());
     }
 
     if has_interaction_action(&cli) {
@@ -167,7 +167,7 @@ pub fn run(cli: Cli) -> ExitCode {
 
     // --eval: the Phase 2 gate path.
     if let Some(js) = cli.eval.as_deref() {
-        return run_eval(url, js);
+        return run_eval(url, js, cli.profile_dir.as_deref());
     }
 
     // --dump-dom / --extract-text / --dump-layout-tree / --dump-lines /
@@ -186,18 +186,18 @@ pub fn run(cli: Cli) -> ExitCode {
     // malformed input — docs/SPEC.md), then query the core-owned document and
     // print each match as JSON. Selector matching runs through Stylo (Phase 3).
     if let Some(sel) = cli.extract_selector.as_deref() {
-        return run_extract_selector(url, sel, viewport);
+        return run_extract_selector(url, sel, viewport, cli.profile_dir.as_deref());
     }
 
     // `--cdp` starts the WebSocket CDP server (Phase 8 step 4). It runs
     // until the process is killed.
     if cli.cdp {
-        return run_cdp_server(url, cli.cdp_port);
+        return run_cdp_server(url, cli.cdp_port, cli.profile_dir.clone());
     }
 
     // Nothing else to do: still perform the load so URL-only runs exercise the
     // same file/HTTP trust boundary as the other page actions.
-    match browser_adapter::BrowserSession::load(url) {
+    match browser_adapter::BrowserSession::load(url, cli.profile_dir.as_deref()) {
         Ok(mut session) => {
             let loaded_url = match session.current_url() {
                 Ok(loaded_url) => loaded_url,
@@ -222,7 +222,7 @@ pub fn run(cli: Cli) -> ExitCode {
 /// The connection adapter uses local `Rc<RefCell<_>>` protocol state, so it runs
 /// on a single-threaded tokio runtime + `LocalSet`. BrowserCore owns its separate
 /// engine thread.
-fn run_cdp_server(initial_url: &str, port: u16) -> ExitCode {
+fn run_cdp_server(initial_url: &str, port: u16, profile_dir: Option<PathBuf>) -> ExitCode {
     let rt = match tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -236,7 +236,7 @@ fn run_cdp_server(initial_url: &str, port: u16) -> ExitCode {
     let local = tokio::task::LocalSet::new();
     let result = local.block_on(
         &rt,
-        cdp::serve_with_initial_url(port, Some(initial_url.to_owned())),
+        cdp::serve_with_initial_url_and_profile(port, Some(initial_url.to_owned()), profile_dir),
     );
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -247,8 +247,13 @@ fn run_cdp_server(initial_url: &str, port: u16) -> ExitCode {
     }
 }
 
-fn run_screenshot(url: &str, viewport: (u32, u32), output: &Path) -> ExitCode {
-    let mut session = match browser_adapter::BrowserSession::load(url) {
+fn run_screenshot(
+    url: &str,
+    viewport: (u32, u32),
+    output: &Path,
+    profile_dir: Option<&Path>,
+) -> ExitCode {
+    let mut session = match browser_adapter::BrowserSession::load(url, profile_dir) {
         Ok(session) => session,
         Err(e) => {
             eprintln!("error: {e}");
@@ -461,7 +466,12 @@ fn memory_stats() -> MemoryStats {
 /// element matching `css` as a JSON object (one per line).
 /// Returns the stable `invalid-selector` code on malformed selectors
 /// (docs/SPEC.md). Selector matching uses Stylo via `vixen_engine::style_dom`.
-fn run_extract_selector(url: &str, sel: &str, viewport: (u32, u32)) -> ExitCode {
+fn run_extract_selector(
+    url: &str,
+    sel: &str,
+    viewport: (u32, u32),
+    profile_dir: Option<&Path>,
+) -> ExitCode {
     use vixen_engine::style_dom::Selector;
 
     let _parsed = match Selector::parse(sel) {
@@ -472,7 +482,7 @@ fn run_extract_selector(url: &str, sel: &str, viewport: (u32, u32)) -> ExitCode 
         }
     };
 
-    let mut session = match browser_adapter::BrowserSession::load(url) {
+    let mut session = match browser_adapter::BrowserSession::load(url, profile_dir) {
         Ok(session) => session,
         Err(e) => {
             eprintln!("error: {e}");
@@ -511,8 +521,8 @@ fn run_extract_selector(url: &str, sel: &str, viewport: (u32, u32)) -> ExitCode 
 }
 
 /// `--url file://… --eval '1+2'` → load the page context then prints `3`.
-fn run_eval(url: &str, js: &str) -> ExitCode {
-    let mut session = match browser_adapter::BrowserSession::load(url) {
+fn run_eval(url: &str, js: &str, profile_dir: Option<&Path>) -> ExitCode {
+    let mut session = match browser_adapter::BrowserSession::load(url, profile_dir) {
         Ok(session) => session,
         Err(error) => {
             eprintln!("error: {error}");
@@ -531,514 +541,11 @@ fn run_eval(url: &str, js: &str) -> ExitCode {
     }
 }
 
-#[cfg(test)]
-fn run_dom_eval(url: &str, js: &str) -> Option<Result<String, String>> {
-    if !looks_like_dom_eval(js) {
-        return None;
-    }
-    match load_page(url) {
-        Ok(page) => run_dom_eval_on_page(&page, js),
-        Err(e) => Some(Err(e)),
-    }
-}
-
-#[cfg(test)]
-fn run_dom_eval_on_page(page: &Page, js: &str) -> Option<Result<String, String>> {
-    if uses_runtime_dom_eval(js) {
-        return None;
-    }
-    if !looks_like_dom_eval(js) {
-        return None;
-    }
-    page.evaluate_dom_expression(js)
-}
-
-#[cfg(test)]
-pub(crate) fn uses_runtime_dom_eval(js: &str) -> bool {
-    let js = js.trim_start();
-    runtime_document_projection_eval(js)
-        || runtime_location_eval(js)
-        || runtime_web_api_eval(js)
-        || simple_query_selector_eval(js, "document.querySelector(")
-        || simple_get_element_by_id_eval(js)
-        || simple_query_selector_all_length_eval(js)
-        || simple_document_element_eval(js, "document.body")
-        || simple_document_element_eval(js, "document.documentElement")
-        || simple_document_element_eval(js, "document.activeElement")
-        || simple_document_collection_length_eval(js, "document.getElementsByTagName(")
-        || simple_document_collection_length_eval(js, "document.getElementsByClassName(")
-        || simple_get_computed_style_eval(js)
-        || simple_cssom_eval(js)
-}
-
-#[cfg(test)]
-fn runtime_document_projection_eval(js: &str) -> bool {
-    matches!(
-        js,
-        "document.title"
-            | "document.URL"
-            | "document.documentURI"
-            | "document.readyState"
-            | "document.baseURI"
-            | "document.compatMode"
-            | "document.characterSet"
-            | "document.charset"
-            | "document.contentType"
-            | "document.visibilityState"
-            | "document.hidden"
-            | "document.referrer"
-            | "document.cookie"
-            | "document.hasFocus()"
-            | "document.location.href"
-            | "document.forms.length"
-            | "document.images.length"
-            | "document.links.length"
-            | "document.scripts.length"
-    )
-}
-
-#[cfg(test)]
-fn runtime_location_eval(js: &str) -> bool {
-    matches!(js, "location.href" | "window.location.href")
-}
-
-#[cfg(test)]
-fn runtime_web_api_eval(js: &str) -> bool {
-    js.starts_with("document.createRange()")
-        || js.starts_with("document.createTreeWalker(")
-        || js.starts_with("document.createNodeIterator(")
-        || js.starts_with("document.getSelection()")
-        || js.starts_with("window.getSelection()")
-        || js.starts_with("structuredClone(")
-        || js.starts_with("new MutationObserver(")
-        || js.starts_with("new Headers(")
-        || js.starts_with("new Blob(")
-        || js.starts_with("new File(")
-        || js.starts_with("new Request(")
-        || js.starts_with("new Response(")
-        || js.starts_with("Response.")
-        || js.starts_with("new DOMPoint(")
-        || js.starts_with("DOMPoint.")
-        || js.starts_with("new DOMRect(")
-        || js.starts_with("DOMRect.")
-        || js.starts_with("DOMQuad.")
-        || js.starts_with("new DOMMatrix(")
-        || js.starts_with("DOMMatrix.")
-        || js.starts_with("new Event(")
-        || js.starts_with("new CustomEvent(")
-        || js.starts_with("new TextEncoder(")
-        || js.starts_with("new TextDecoder(")
-        || js.starts_with("btoa(")
-        || js.starts_with("atob(")
-        || js.starts_with("window.btoa(")
-        || js.starts_with("window.atob(")
-        || js.starts_with("new DOMParser(")
-        || js.starts_with("new AbortController()")
-        || js.starts_with("AbortSignal.")
-        || js.starts_with("new URL(")
-        || js.starts_with("URL.canParse(")
-        || js.starts_with("window.URL.canParse(")
-        || js.starts_with("new URLPattern(")
-        || js.starts_with("new URLSearchParams(")
-        || js.starts_with("performance.")
-        || js.starts_with("window.performance.")
-        || js.starts_with("typeof performance.")
-        || js.starts_with("typeof window.performance.")
-        || js.starts_with("navigator.")
-        || js.starts_with("window.navigator.")
-        || js.starts_with("localStorage.")
-        || js.starts_with("sessionStorage.")
-        || js.starts_with("history.")
-        || js.starts_with("window.history.")
-        || js.starts_with("document.querySelector(")
-        || js.starts_with("document.getElementById(")
-        || js.starts_with("matchMedia(")
-        || js.starts_with("window.matchMedia(")
-}
-
-#[cfg(test)]
-fn simple_document_element_eval(js: &str, prefix: &str) -> bool {
-    let Some(member) = js.strip_prefix(prefix) else {
-        return false;
-    };
-    is_simple_dom_host_member(member)
-}
-
-#[cfg(test)]
-pub(crate) fn looks_like_dom_eval(js: &str) -> bool {
-    let js = js.trim_start();
-    js.starts_with("document.")
-        || js.starts_with("location.")
-        || js.starts_with("window.location.")
-        || js.starts_with("history.")
-        || js.starts_with("window.history.")
-        || js.starts_with("getComputedStyle(")
-        || js.starts_with("window.getComputedStyle(")
-        || js.starts_with("performance.")
-        || js.starts_with("window.performance.")
-        || js.starts_with("typeof performance.")
-        || js.starts_with("typeof window.performance.")
-        || js.starts_with("matchMedia(")
-        || js.starts_with("window.matchMedia(")
-        || js.starts_with("window.getSelection()")
-        || js.starts_with("structuredClone(")
-        || js.starts_with("new MutationObserver(")
-        || js.starts_with("new Headers(")
-        || js.starts_with("new Blob(")
-        || js.starts_with("new File(")
-        || js.starts_with("new Request(")
-        || js.starts_with("new Response(")
-        || js.starts_with("Response.")
-        || js.starts_with("new DOMPoint(")
-        || js.starts_with("DOMPoint.")
-        || js.starts_with("new DOMRect(")
-        || js.starts_with("DOMRect.")
-        || js.starts_with("DOMQuad.")
-        || js.starts_with("new DOMMatrix(")
-        || js.starts_with("DOMMatrix.")
-        || js.starts_with("new Event(")
-        || js.starts_with("new CustomEvent(")
-        || js.starts_with("new TextEncoder(")
-        || js.starts_with("new TextDecoder(")
-        || js.starts_with("btoa(")
-        || js.starts_with("atob(")
-        || js.starts_with("window.btoa(")
-        || js.starts_with("window.atob(")
-        || js.starts_with("new DOMParser(")
-        || js.starts_with("new AbortController()")
-        || js.starts_with("AbortSignal.")
-        || js.starts_with("new URL(")
-        || js.starts_with("new URLPattern(")
-        || js.starts_with("new URLSearchParams(")
-}
-
-#[cfg(test)]
-fn simple_query_selector_eval(js: &str, prefix: &str) -> bool {
-    let Some((selector, tail)) = single_string_arg_call_tail(js, prefix) else {
-        return false;
-    };
-    let Some(member) = tail.strip_prefix(')') else {
-        return false;
-    };
-    is_simple_dom_host_selector(selector) && is_simple_dom_host_member(member)
-}
-
-#[cfg(test)]
-fn simple_get_element_by_id_eval(js: &str) -> bool {
-    let Some((id, tail)) = single_string_arg_call_tail(js, "document.getElementById(") else {
-        return false;
-    };
-    let Some(member) = tail.strip_prefix(')') else {
-        return false;
-    };
-    is_simple_dom_host_name(id) && is_simple_dom_host_member(member)
-}
-
-#[cfg(test)]
-fn simple_query_selector_all_length_eval(js: &str) -> bool {
-    let Some((selector, tail)) = single_string_arg_call_tail(js, "document.querySelectorAll(")
-    else {
-        return false;
-    };
-    tail == ").length" && is_simple_dom_host_selector(selector)
-}
-
-#[cfg(test)]
-fn simple_document_collection_length_eval(js: &str, prefix: &str) -> bool {
-    let Some((name, tail)) = single_string_arg_call_tail(js, prefix) else {
-        return false;
-    };
-    if tail != ").length" {
-        return false;
-    }
-    if prefix == "document.getElementsByTagName(" {
-        return name == "*" || is_simple_dom_host_selector_atom(name);
-    }
-    is_simple_dom_host_selector_atom(name)
-}
-
-#[cfg(test)]
-fn simple_get_computed_style_eval(js: &str) -> bool {
-    ["getComputedStyle(", "window.getComputedStyle("]
-        .iter()
-        .any(|prefix| {
-            let Some(rest) = js.strip_prefix(prefix) else {
-                return false;
-            };
-            let Some((selector, tail)) =
-                single_string_arg_call_tail(rest, "document.querySelector(")
-            else {
-                return false;
-            };
-            let Some(member) = tail.strip_prefix("))") else {
-                return false;
-            };
-            is_simple_dom_host_selector(selector) && is_simple_computed_style_member(member)
-        })
-}
-
-#[cfg(test)]
-fn is_simple_computed_style_member(member: &str) -> bool {
-    if simple_dom_host_string_method(member, ".getPropertyValue(") {
-        return true;
-    }
-    if let Some(property) = member.strip_prefix('.') {
-        return is_simple_dom_host_dataset_ident(property);
-    }
-    false
-}
-
-#[cfg(test)]
-fn simple_cssom_eval(js: &str) -> bool {
-    if matches!(
-        js,
-        "document.styleSheets.length"
-            | "document.styleSheets[0].disabled"
-            | "document.styleSheets[0].href === null"
-            | "document.styleSheets[0].ownerNode.tagName"
-            | "document.styleSheets[0].cssRules.length"
-    ) {
-        return true;
-    }
-    let Some(rest) = js.strip_prefix("document.styleSheets[0].cssRules[") else {
-        return false;
-    };
-    let Some((index, member)) = rest.split_once(']') else {
-        return false;
-    };
-    is_ascii_usize(index.trim()) && is_simple_css_rule_member(member)
-}
-
-#[cfg(test)]
-fn is_simple_css_rule_member(member: &str) -> bool {
-    matches!(member, ".selectorText" | ".cssText" | ".style.length")
-        || simple_dom_host_string_method(member, ".style.getPropertyValue(")
-        || simple_dom_host_usize_method(member, ".style.item(")
-        || member
-            .strip_prefix(".style")
-            .is_some_and(simple_dom_host_usize_index)
-}
-
-#[cfg(test)]
-fn simple_dom_geometry_member(member: &str) -> bool {
-    if let Some(rest) = member.strip_prefix(".getBoundingClientRect()") {
-        return simple_dom_rect_member(rest);
-    }
-    if let Some(rest) = member.strip_prefix(".getClientRects()") {
-        return rest == ".length" || simple_dom_rect_list_member(rest);
-    }
-    false
-}
-
-#[cfg(test)]
-fn simple_dom_rect_list_member(member: &str) -> bool {
-    if let Some(rest) = member.strip_prefix("[0]") {
-        return simple_dom_rect_member(rest);
-    }
-    if let Some((index, rest)) = dom_host_usize_method_tail(member, ".item(") {
-        return index == 0 && simple_dom_rect_member(rest);
-    }
-    false
-}
-
-#[cfg(test)]
-fn simple_dom_rect_member(member: &str) -> bool {
-    let member = member.strip_prefix(".toJSON()").unwrap_or(member);
-    matches!(
-        member,
-        ".x" | ".y" | ".width" | ".height" | ".left" | ".top" | ".right" | ".bottom"
-    )
-}
-
-#[cfg(test)]
-fn dom_host_usize_method_tail<'a>(member: &'a str, prefix: &str) -> Option<(usize, &'a str)> {
-    let rest = member.strip_prefix(prefix)?;
-    let (raw_index, tail) = rest.split_once(')')?;
-    let index = raw_index.trim().parse().ok()?;
-    Some((index, tail))
-}
-
-#[cfg(test)]
-fn is_simple_dom_host_member(member: &str) -> bool {
-    matches!(
-        member,
-        " === null"
-            | " !== null"
-            | ".id"
-            | ".className"
-            | ".tagName"
-            | ".nodeName"
-            | ".localName"
-            | ".nodeType"
-            | ".isConnected"
-            | ".ownerDocument === document"
-            | ".textContent"
-            | ".innerText"
-    ) || simple_dom_host_string_method(member, ".getAttribute(")
-        || simple_dom_host_string_method(member, ".hasAttribute(")
-        || simple_dom_host_selector_method(member, ".matches(")
-        || simple_dom_token_list_member(member, ".classList")
-        || simple_dom_token_list_member(member, ".relList")
-        || simple_dom_token_list_member(member, ".sandbox")
-        || simple_dataset_member(member)
-        || simple_dom_geometry_member(member)
-}
-
-#[cfg(test)]
-fn simple_dom_host_string_method(member: &str, prefix: &str) -> bool {
-    let Some((name, tail)) = single_string_arg_call_tail(member, prefix) else {
-        return false;
-    };
-    tail == ")" && is_simple_dom_host_name(name)
-}
-
-#[cfg(test)]
-fn simple_dom_host_selector_method(member: &str, prefix: &str) -> bool {
-    let Some((selector, tail)) = single_string_arg_call_tail(member, prefix) else {
-        return false;
-    };
-    tail == ")" && is_simple_dom_host_selector(selector)
-}
-
-#[cfg(test)]
-fn simple_dom_token_list_member(member: &str, prefix: &str) -> bool {
-    let Some(rest) = member.strip_prefix(prefix) else {
-        return false;
-    };
-    matches!(rest, ".length" | ".value" | ".toString()")
-        || simple_dom_host_string_method(rest, ".contains(")
-        || simple_dom_host_usize_method(rest, ".item(")
-        || simple_dom_host_usize_index(rest)
-}
-
-#[cfg(test)]
-fn simple_dom_host_usize_method(member: &str, prefix: &str) -> bool {
-    let Some(inner) = member
-        .strip_prefix(prefix)
-        .and_then(|rest| rest.strip_suffix(')'))
-    else {
-        return false;
-    };
-    is_ascii_usize(inner.trim())
-}
-
-#[cfg(test)]
-fn simple_dom_host_usize_index(member: &str) -> bool {
-    let Some(inner) = member
-        .strip_prefix('[')
-        .and_then(|rest| rest.strip_suffix(']'))
-    else {
-        return false;
-    };
-    is_ascii_usize(inner.trim())
-}
-
-#[cfg(test)]
-fn is_ascii_usize(input: &str) -> bool {
-    !input.is_empty() && input.bytes().all(|byte| byte.is_ascii_digit())
-}
-
-#[cfg(test)]
-fn simple_dataset_member(member: &str) -> bool {
-    let Some(rest) = member.strip_prefix(".dataset") else {
-        return false;
-    };
-    if let Some(property) = rest.strip_prefix('.') {
-        return is_simple_dom_host_dataset_ident(property);
-    }
-    if let Some((property, tail)) = single_string_arg_call_tail(rest, "[") {
-        return tail == "]" && is_simple_dom_host_dataset_name(property);
-    }
-    false
-}
-
-#[cfg(test)]
-fn single_string_arg_call_tail<'a>(input: &'a str, prefix: &str) -> Option<(&'a str, &'a str)> {
-    let rest = input.strip_prefix(prefix)?;
-    let bytes = rest.as_bytes();
-    let quote = *bytes.first()?;
-    if quote != b'\'' && quote != b'"' {
-        return None;
-    }
-    let mut escaped = false;
-    for index in 1..bytes.len() {
-        let byte = bytes[index];
-        if escaped {
-            escaped = false;
-            continue;
-        }
-        if byte == b'\\' {
-            escaped = true;
-            continue;
-        }
-        if byte == quote {
-            return Some((&rest[1..index], &rest[index + 1..]));
-        }
-    }
-    None
-}
-
-#[cfg(test)]
-fn is_simple_dom_host_selector(selector: &str) -> bool {
-    if selector == "*" {
-        return true;
-    }
-    if let Some(id) = selector.strip_prefix('#') {
-        return is_simple_dom_host_selector_atom(id);
-    }
-    if let Some(class) = selector.strip_prefix('.') {
-        return is_simple_dom_host_selector_atom(class);
-    }
-    is_simple_dom_host_selector_atom(selector)
-        && selector
-            .bytes()
-            .next()
-            .is_some_and(|b| b.is_ascii_alphabetic())
-}
-
-#[cfg(test)]
-fn is_simple_dom_host_selector_atom(name: &str) -> bool {
-    let Some(first) = name.bytes().next() else {
-        return false;
-    };
-    (first.is_ascii_alphabetic() || first == b'_')
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-}
-
-#[cfg(test)]
-fn is_simple_dom_host_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':'))
-}
-
-#[cfg(test)]
-fn is_simple_dom_host_dataset_ident(name: &str) -> bool {
-    let Some(first) = name.bytes().next() else {
-        return false;
-    };
-    (first.is_ascii_alphabetic() || first == b'_')
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-}
-
-#[cfg(test)]
-fn is_simple_dom_host_dataset_name(name: &str) -> bool {
-    !name.is_empty()
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b':' | b'.'))
-}
-
 /// `--dump-dom` / `--extract-text` / `--dump-layout-tree` / `--dump-lines` /
 /// `--dump-display-list` / `--paint-stats`: load the URL's HTML and print the requested
 /// DOM/layout/paint projections.
 fn run_dom_outputs(url: &str, cli: &Cli, viewport: (u32, u32)) -> ExitCode {
-    let mut session = match browser_adapter::BrowserSession::load(url) {
+    let mut session = match browser_adapter::BrowserSession::load(url, cli.profile_dir.as_deref()) {
         Ok(session) => session,
         Err(e) => {
             eprintln!("error: {e}");
@@ -1106,92 +613,19 @@ fn parse_viewport(input: &str) -> Result<(u32, u32), String> {
     Ok((w, h))
 }
 
-/// Test-only loader for the legacy-evaluation classifier tests. Production CLI
-/// and CDP loading both cross BrowserCore.
-#[cfg(test)]
-fn load_page(url: &str) -> Result<Page, String> {
-    let LoadedSource {
-        final_url,
-        html,
-        headers,
-    } = load_url_source(url)?;
-    Page::from_html_with_headers(
-        final_url,
-        &html,
-        headers
-            .iter()
-            .map(|(name, value)| (name.as_str(), value.as_str())),
-    )
-    .map_err(|e| format!("parse failed: {e}"))
-}
-
-#[derive(Debug)]
-#[cfg(test)]
-struct LoadedSource {
-    final_url: String,
-    html: String,
-    headers: Vec<(String, String)>,
-}
-
-/// Read a page's source. `file://` is direct filesystem I/O; HTTP(S) crosses
-/// the `vixen-net` trust boundary so URL policy, redirects, cookies, timeouts,
-/// and body-size limits are all enforced in one place.
-#[cfg(test)]
-fn load_url_source(url: &str) -> Result<LoadedSource, String> {
-    let parsed = url::Url::parse(url).map_err(|e| format!("invalid URL: {e}"))?;
-    match parsed.scheme() {
-        "file" => {
-            let mut path_url = parsed.clone();
-            path_url.set_query(None);
-            path_url.set_fragment(None);
-            path_url
-                .to_file_path()
-                .map_err(|_| "file:// URL has no local path".to_string())
-                .and_then(|p| {
-                    let html = std::fs::read_to_string(&p)
-                        .map_err(|e| format!("read {}: {e}", p.display()))?;
-                    Ok(LoadedSource {
-                        final_url: parsed.to_string(),
-                        html,
-                        headers: Vec::new(),
-                    })
-                })
-        }
-        "http" | "https" => fetch_http_source(parsed),
-        scheme => Err(format!(
-            "{scheme}: URLs are not supported by the headless source loader"
-        )),
-    }
-}
-
-#[cfg(test)]
-fn fetch_http_source(url: url::Url) -> Result<LoadedSource, String> {
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("network runtime failed: {e}"))?;
-    rt.block_on(async move {
-        let mut network =
-            Network::with_defaults().map_err(|e| format!("network client failed: {e}"))?;
-        let mut jar = CookieJar::default();
-        let response = network
-            .get_text_with_cookies(&mut jar, &url, false, Method::Get)
-            .await
-            .map_err(|e| format!("fetch {url}: {e}"))?;
-        Ok(LoadedSource {
-            final_url: response.final_url,
-            html: response.body,
-            headers: response.headers.into_iter().collect(),
-        })
-    })
-}
-
 /// Minimal URL validation. Network policy (SSRF/private-IP) is enforced in
 /// `vixen-net` for HTTP(S); here we only check the scheme is present.
 fn validate_url(url: &str) -> Result<(), String> {
-    let scheme = url.split("://").next().unwrap_or("");
-    if scheme.is_empty() || scheme == url {
+    let Some((scheme, _)) = url.split_once(':') else {
         return Err("URL must include a scheme (e.g. https:// or file://)".into());
+    };
+    if scheme.is_empty()
+        || !scheme.bytes().enumerate().all(|(index, byte)| {
+            byte.is_ascii_alphabetic()
+                || (index > 0 && (byte.is_ascii_digit() || matches!(byte, b'+' | b'-' | b'.')))
+        })
+    {
+        return Err("URL must include a valid scheme (e.g. https://, file://, or data:)".into());
     }
     Ok(())
 }
@@ -1218,6 +652,8 @@ mod tests {
             "out.png",
             "--viewport",
             "1280x720",
+            "--profile-dir",
+            "profiles/baseline",
             "--extract-text",
             "--extract-selector",
             "div.main",
@@ -1242,8 +678,29 @@ mod tests {
         ]);
         assert_eq!(cli.url.as_deref(), Some("https://example.com"));
         assert_eq!(cli.viewport, "1280x720");
+        assert_eq!(cli.profile_dir, Some(PathBuf::from("profiles/baseline")));
         assert_eq!(cli.cdp_port, 9999);
         assert!(cli.dump_dom && cli.dump_layout_tree && cli.cdp && cli.incremental);
+    }
+
+    #[test]
+    fn parses_profile_dir() {
+        let cli = parse(&[
+            "--url",
+            "https://example.com",
+            "--profile-dir",
+            "/tmp/vixen-profile",
+        ]);
+
+        assert_eq!(cli.profile_dir, Some(PathBuf::from("/tmp/vixen-profile")));
+    }
+
+    #[test]
+    fn url_validation_accepts_standard_and_opaque_schemes() {
+        assert!(validate_url("file:///tmp/control.html").is_ok());
+        assert!(validate_url("data:text/html,control").is_ok());
+        assert!(validate_url("missing-scheme").is_err());
+        assert!(validate_url("1invalid:value").is_err());
     }
 
     #[test]
@@ -1481,327 +938,26 @@ mod tests {
         )
         .unwrap();
         let url = format!("file://{}", html.display());
-        assert!(looks_like_dom_eval("document.title"));
-        assert!(uses_runtime_dom_eval("document.title"));
-        assert!(uses_runtime_dom_eval("document.readyState"));
-        assert!(uses_runtime_dom_eval("document.URL"));
-        assert!(uses_runtime_dom_eval("document.baseURI"));
-        assert!(uses_runtime_dom_eval("document.compatMode"));
-        assert!(uses_runtime_dom_eval("document.characterSet"));
-        assert!(uses_runtime_dom_eval("document.contentType"));
-        assert!(uses_runtime_dom_eval("document.visibilityState"));
-        assert!(uses_runtime_dom_eval("document.cookie"));
-        assert!(uses_runtime_dom_eval("document.hasFocus()"));
-        assert!(uses_runtime_dom_eval("document.location.href"));
-        assert!(uses_runtime_dom_eval("location.href"));
-        assert!(uses_runtime_dom_eval("window.location.href"));
-        assert!(uses_runtime_dom_eval("document.forms.length"));
-        assert!(uses_runtime_dom_eval("document.images.length"));
-        assert!(uses_runtime_dom_eval("document.links.length"));
-        assert!(uses_runtime_dom_eval("document.scripts.length"));
-        assert!(uses_runtime_dom_eval("document.documentElement.tagName"));
-        assert!(uses_runtime_dom_eval("document.activeElement.tagName"));
-        assert!(uses_runtime_dom_eval(
-            "document.getElementsByTagName('p').length"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.getElementsByClassName('note').length"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#lead').textContent"
-        ));
-        assert!(uses_runtime_dom_eval("document.querySelector('#f').method"));
-        assert!(uses_runtime_dom_eval(
-            "document.getElementById('lead').tagName"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelectorAll('p').length"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#lead').matches('.note')"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#lead').classList.contains('note')"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#theme').relList.contains('alternate')"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#frame').sandbox.length"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#lead').dataset.authorName"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#lead').dataset['authorName']"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#widths').currentSrc"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "getComputedStyle(document.querySelector('#lead')).color"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "window.getComputedStyle(document.querySelector('#lead')).getPropertyValue('color')"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.styleSheets[0].cssRules[0].selectorText"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.styleSheets[0].cssRules[0].style.getPropertyValue('color')"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#lead').getBoundingClientRect().x"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#lead').getClientRects().length"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#lead').getClientRects().item(0).width"
-        ));
-        assert!(uses_runtime_dom_eval("document.createRange().collapsed"));
-        assert!(uses_runtime_dom_eval("window.getSelection().rangeCount"));
-        assert!(uses_runtime_dom_eval(
-            "document.createTreeWalker(document.getElementById('lead'), NodeFilter.SHOW_ELEMENT).root.id"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "new Headers([['X-Test', 'a']]).get('x-test')"
-        ));
-        assert!(uses_runtime_dom_eval("new Blob(['Hi']).size"));
-        assert!(uses_runtime_dom_eval(
-            "new File(['hello'], 'note.txt').name"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "new Response('Created', { status: 201 }).status"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "Response.json({ok:true}, { status: 201 }).status"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "new Request('https://example.com/api').method"
-        ));
-        assert!(uses_runtime_dom_eval("new DOMPoint(1,2,3,4).z"));
-        assert!(uses_runtime_dom_eval(
-            "DOMRect.fromRect({x:1,y:2,width:3,height:4}).bottom"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "DOMQuad.fromRect({x:1,y:2,width:3,height:4}).getBounds().height"
-        ));
-        assert!(uses_runtime_dom_eval("new DOMMatrix().is2D"));
-        assert!(uses_runtime_dom_eval("new Event('message').type"));
-        assert!(uses_runtime_dom_eval(
-            "new CustomEvent('note', {detail:'payload'}).detail"
-        ));
-        assert!(uses_runtime_dom_eval("new TextEncoder().encoding"));
-        assert!(uses_runtime_dom_eval(
-            "new TextDecoder('utf-8', { fatal: true }).fatal"
-        ));
-        assert!(uses_runtime_dom_eval("btoa('Vixen')"));
-        assert!(uses_runtime_dom_eval(
-            "new DOMParser().parseFromString(\"<p>ok</p>\", 'text/html').body.textContent"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "structuredClone(new Map([['answer', 42]])).get('answer')"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "new URL('/other', 'https://example.com/app/page').href"
-        ));
-        assert!(uses_runtime_dom_eval("URL.canParse('://bad')"));
-        assert!(uses_runtime_dom_eval(
-            "new URLPattern({ pathname: '/posts/:id' }).test({ pathname: '/posts/42' })"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "new URLSearchParams('?q=rust+lang&tag=web&tag=engine').get('q')"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "new AbortController().signal.aborted"
-        ));
-        assert!(uses_runtime_dom_eval("AbortSignal.timeout(0).aborted"));
-        assert!(uses_runtime_dom_eval("navigator.onLine"));
-        assert!(uses_runtime_dom_eval("typeof performance.now()"));
-        assert!(uses_runtime_dom_eval(
-            "matchMedia('(min-width: 800px)').matches"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "localStorage.setItem('mode', 'dark')"
-        ));
-        assert!(uses_runtime_dom_eval("history.length"));
-        assert!(uses_runtime_dom_eval("window.history.scrollRestoration"));
-        assert!(uses_runtime_dom_eval(
-            "matchMedia('(min-width: 800px)').matches"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "document.querySelector('#lead').classList.add('new')"
-        ));
-        assert_eq!(run_dom_eval(&url, "document.title"), None);
-        assert_eq!(run_dom_eval(&url, "document.readyState"), None);
-        assert_eq!(run_dom_eval(&url, "document.baseURI"), None);
-        assert_eq!(run_dom_eval(&url, "document.hasFocus()"), None);
-        assert_eq!(run_dom_eval(&url, "document.cookie"), None);
-        assert_eq!(run_dom_eval(&url, "location.href"), None);
-        assert_eq!(run_dom_eval(&url, "document.forms.length"), None);
-        assert_eq!(run_dom_eval(&url, "document.activeElement.tagName"), None);
+        let mut session = browser_adapter::BrowserSession::load(&url, None).unwrap();
         assert_eq!(
-            run_dom_eval(&url, "document.getElementsByTagName('p').length"),
-            None
+            session.evaluate("document.title").unwrap(),
+            vixen_api::ScriptValue::String("DOM title".to_owned())
         );
         assert_eq!(
-            run_dom_eval(&url, "document.getElementsByClassName('note').length"),
-            None
+            session
+                .evaluate("document.querySelector('#lead').textContent")
+                .unwrap(),
+            vixen_api::ScriptValue::String("body".to_owned())
         );
         assert_eq!(
-            run_dom_eval(&url, "document.querySelector('#f').method"),
-            None
+            session
+                .evaluate("document.querySelector('#lead').dataset.authorName")
+                .unwrap(),
+            vixen_api::ScriptValue::String("ada".to_owned())
         );
         assert_eq!(
-            run_dom_eval(&url, "document.querySelector('#lead').matches('.note')"),
-            None
-        );
-        assert_eq!(
-            run_dom_eval(&url, "document.querySelector('#widths').currentSrc"),
-            None
-        );
-        assert_eq!(
-            run_dom_eval(
-                &url,
-                "getComputedStyle(document.querySelector('#lead')).color"
-            ),
-            None
-        );
-        assert_eq!(
-            run_dom_eval(&url, "document.styleSheets[0].cssRules[0].selectorText"),
-            None
-        );
-        assert_eq!(
-            run_dom_eval(
-                &url,
-                "document.querySelector('#lead').getBoundingClientRect().x"
-            ),
-            None
-        );
-        assert_eq!(run_dom_eval(&url, "document.createRange().collapsed"), None);
-        assert_eq!(run_dom_eval(&url, "window.getSelection().rangeCount"), None);
-        assert_eq!(
-            run_dom_eval(&url, "new Headers([['X-Test', 'a']]).get('x-test')"),
-            None
-        );
-        assert_eq!(run_dom_eval(&url, "new Blob(['Hi']).size"), None);
-        assert_eq!(
-            run_dom_eval(&url, "new File(['hello'], 'note.txt').name"),
-            None
-        );
-        assert_eq!(
-            run_dom_eval(&url, "new Response('Created', { status: 201 }).status"),
-            None
-        );
-        assert_eq!(
-            run_dom_eval(&url, "Response.json({ok:true}, { status: 201 }).status"),
-            None
-        );
-        assert_eq!(
-            run_dom_eval(&url, "new Request('https://example.com/api').method"),
-            None
-        );
-        assert_eq!(run_dom_eval(&url, "new DOMPoint(1,2,3,4).z"), None);
-        assert_eq!(
-            run_dom_eval(&url, "DOMRect.fromRect({x:1,y:2,width:3,height:4}).bottom"),
-            None
-        );
-        assert_eq!(
-            run_dom_eval(
-                &url,
-                "DOMQuad.fromRect({x:1,y:2,width:3,height:4}).getBounds().height"
-            ),
-            None
-        );
-        assert_eq!(run_dom_eval(&url, "new DOMMatrix().is2D"), None);
-        assert_eq!(run_dom_eval(&url, "new Event('message').type"), None);
-        assert_eq!(
-            run_dom_eval(&url, "new CustomEvent('note', {detail:'payload'}).detail"),
-            None
-        );
-        assert_eq!(run_dom_eval(&url, "new TextEncoder().encoding"), None);
-        assert_eq!(
-            run_dom_eval(&url, "new TextDecoder('utf-8', { fatal: true }).fatal"),
-            None
-        );
-        assert_eq!(run_dom_eval(&url, "btoa('Vixen')"), None);
-        assert_eq!(
-            run_dom_eval(
-                &url,
-                "new DOMParser().parseFromString(\"<p>ok</p>\", 'text/html').body.textContent"
-            ),
-            None
-        );
-        assert_eq!(
-            run_dom_eval(
-                &url,
-                "new URL('/other', 'https://example.com/app/page').href"
-            ),
-            None
-        );
-        assert_eq!(run_dom_eval(&url, "URL.canParse('://bad')"), None);
-        assert_eq!(
-            run_dom_eval(
-                &url,
-                "new URLPattern({ pathname: '/posts/:id' }).test({ pathname: '/posts/42' })"
-            ),
-            None
-        );
-        assert_eq!(
-            run_dom_eval(
-                &url,
-                "new URLSearchParams('?q=rust+lang&tag=web&tag=engine').get('q')"
-            ),
-            None
-        );
-        assert_eq!(
-            run_dom_eval(&url, "new AbortController().signal.aborted"),
-            None
-        );
-        assert_eq!(run_dom_eval(&url, "AbortSignal.timeout(0).aborted"), None);
-        assert_eq!(run_dom_eval(&url, "navigator.onLine"), None);
-        assert_eq!(run_dom_eval(&url, "typeof performance.now()"), None);
-        assert_eq!(
-            run_dom_eval(&url, "matchMedia('(min-width: 800px)').matches"),
-            None
-        );
-        assert_eq!(run_dom_eval(&url, "localStorage.length"), None);
-        assert_eq!(run_dom_eval(&url, "history.length"), None);
-    }
-
-    #[test]
-    fn encoding_eval_uses_runtime_host_constructors() {
-        assert!(looks_like_dom_eval("new TextEncoder().encoding"));
-        assert!(uses_runtime_dom_eval("new TextEncoder().encoding"));
-        assert!(looks_like_dom_eval(
-            "new TextDecoder('utf-8', { fatal: true }).fatal"
-        ));
-        assert!(uses_runtime_dom_eval(
-            "new TextDecoder('utf-8', { fatal: true }).fatal"
-        ));
-    }
-
-    #[test]
-    fn load_url_source_reads_file_with_final_url() {
-        let dir = tempfile::tempdir().unwrap();
-        let html = dir.path().join("source.html");
-        std::fs::write(&html, "<title>file source</title>").unwrap();
-        let url = format!("file://{}", html.display());
-
-        let source = load_url_source(&url).unwrap();
-
-        assert_eq!(source.final_url, url);
-        assert_eq!(source.html, "<title>file source</title>");
-    }
-
-    #[test]
-    fn http_loads_fail_closed_on_private_hosts() {
-        let err = load_url_source("http://127.0.0.1/").unwrap_err();
-
-        assert!(
-            err.contains("URL rejected by policy"),
-            "unexpected error: {err}"
+            session.evaluate("new TextEncoder().encoding").unwrap(),
+            vixen_api::ScriptValue::String("utf-8".to_owned())
         );
     }
 
