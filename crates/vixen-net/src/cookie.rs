@@ -17,13 +17,13 @@
 //! `Max-Age` semantics) follows RFC 6265.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::{Ipv4Addr, Ipv6Addr};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use time::OffsetDateTime;
 use url::Url;
 
 use crate::fetch_types::Method;
+use crate::site;
 
 /// Vixen's per-jar entry cap (docs/SPEC.md "Cookie defaults").
 pub const MAX_COOKIES: usize = 512;
@@ -339,7 +339,9 @@ impl CookieJar {
     /// `SameSite=Lax` cross-site sending for safe methods only.
     pub fn cookies_for(&mut self, url: &Url, cross_site: bool, method: Method) -> String {
         let now = self.now();
-        let host = url.host_str().unwrap_or("");
+        let Some(host) = url.host() else {
+            return String::new();
+        };
         let path = url.path();
         let secure_context = url.scheme() == "https";
 
@@ -351,7 +353,7 @@ impl CookieJar {
                 if is_expired(c, now) {
                     return false;
                 }
-                if !domain_match(host, c.host_only, &c.domain) {
+                if !site::cookie_domain_matches(&host, c.host_only, &c.domain) {
                     return false;
                 }
                 if !path_match(path, &c.path) {
@@ -402,7 +404,9 @@ impl CookieJar {
     /// (docs/SPEC.md). `SameSite` does not affect readability.
     pub fn document_cookie_string(&self, url: &Url) -> String {
         let now = self.now();
-        let host = url.host_str().unwrap_or("");
+        let Some(host) = url.host() else {
+            return String::new();
+        };
         let path = url.path();
         let secure_context = url.scheme() == "https";
 
@@ -416,7 +420,7 @@ impl CookieJar {
                 if is_expired(c, now) {
                     return false;
                 }
-                if !domain_match(host, c.host_only, &c.domain) {
+                if !site::cookie_domain_matches(&host, c.host_only, &c.domain) {
                     return false;
                 }
                 if !path_match(path, &c.path) {
@@ -492,31 +496,6 @@ fn is_expired(c: &Cookie, now: OffsetDateTime) -> bool {
     }
 }
 
-// --- RFC 6265 §5.1.3 domain matching ----------------------------------------
-
-fn looks_like_ip(host: &str) -> bool {
-    host.parse::<Ipv4Addr>().is_ok() || host.parse::<Ipv6Addr>().is_ok()
-}
-
-/// RFC 6265 §5.1.3 domain-match.
-fn domain_match(host: &str, host_only: bool, domain: &str) -> bool {
-    let host = host.to_ascii_lowercase();
-    let domain = domain.to_ascii_lowercase();
-    if host == domain {
-        return true;
-    }
-    if host_only {
-        return false;
-    }
-    if looks_like_ip(&host) {
-        return false;
-    }
-    // domain must be a suffix of host preceded by '.'.
-    host.ends_with(&domain)
-        && host.len() > domain.len()
-        && host.as_bytes()[host.len() - domain.len() - 1] == b'.'
-}
-
 // --- RFC 6265 §5.1.4 default-path & path matching ---------------------------
 
 /// RFC 6265 §5.1.4.
@@ -588,9 +567,11 @@ fn parse_set_cookie(
         if let Some((k, v)) = seg.split_once('=') {
             match k.trim().to_ascii_lowercase().as_str() {
                 "domain" => {
-                    let d = v.trim().trim_start_matches('.').to_ascii_lowercase();
-                    if !d.is_empty() {
-                        domain = Some(d);
+                    let d = v.trim();
+                    // RFC 6265bis § 5.5.3 ignores an empty value or one with a
+                    // trailing dot. A single leading dot is ignored.
+                    if !d.is_empty() && !d.ends_with('.') {
+                        domain = Some(d.strip_prefix('.').unwrap_or(d).to_owned());
                     }
                 }
                 "path" => {
@@ -640,23 +621,19 @@ fn parse_set_cookie(
         None => expires,
     };
 
-    let request_host = request_url.host_str().unwrap_or("").to_ascii_lowercase();
+    let request_host = request_url.host().ok_or(CookieError::Malformed)?;
+    let request_host_string = request_host.to_string();
     let request_secure = request_url.scheme() == "https";
 
     // Resolve domain + host-only.
     let (domain, host_only) = match domain {
-        Some(d) => {
-            // The Domain attribute must domain-match the request host,
-            // otherwise reject (fail closed).
-            if !domain_match(&request_host, false, &d) {
-                return Err(CookieError::DomainMismatch {
-                    domain: d,
-                    host: request_host,
-                });
-            }
-            (d, false)
-        }
-        None => (request_host, true),
+        Some(d) => site::cookie_domain(&request_host, &d)
+            .ok_or(CookieError::DomainMismatch {
+                domain: d,
+                host: request_host_string.clone(),
+            })?
+            .into_parts(),
+        None => (request_host_string, true),
     };
 
     // Resolve path.
@@ -1080,6 +1057,77 @@ mod tests {
         // Domain mismatch is rejected at store time.
         assert!(matches!(
             j.set_cookie("e=1; Domain=other.com", &root, true),
+            Err(CookieError::DomainMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn domain_rejects_icann_and_private_public_suffixes() {
+        let now = now();
+        let mut j = jar(now);
+        for (url, domain) in [
+            ("https://shop.a.co.uk/", "co.uk"),
+            ("https://a.github.io/", "github.io"),
+        ] {
+            let url = Url::parse(url).unwrap();
+            assert!(matches!(
+                j.set_cookie(&format!("sid=1; Domain={domain}"), &url, true),
+                Err(CookieError::DomainMismatch { .. })
+            ));
+        }
+        assert!(j.is_empty());
+    }
+
+    #[test]
+    fn exact_public_suffix_domain_becomes_host_only() {
+        let now = now();
+        let mut j = jar(now);
+        for host in ["co.uk", "github.io"] {
+            let url = Url::parse(&format!("https://{host}/")).unwrap();
+            j.set_cookie(&format!("{host}=1; Domain={host}"), &url, true)
+                .unwrap();
+            let cookie = j.cookies.last().unwrap();
+            assert_eq!(cookie.domain, host);
+            assert!(cookie.host_only);
+        }
+    }
+
+    #[test]
+    fn registrable_cookie_domains_accept_subdomains_and_idna() {
+        let now = now();
+        let mut j = jar(now);
+        let url = Url::parse("https://www.A.Example.COM/").unwrap();
+        j.set_cookie("a=1; Domain=A.EXAMPLE.COM", &url, true)
+            .unwrap();
+        assert_eq!(j.cookies[0].domain, "a.example.com");
+        assert!(!j.cookies[0].host_only);
+
+        let idna = Url::parse("https://www.bücher.example/").unwrap();
+        j.set_cookie("idna=1; Domain=bücher.example", &idna, true)
+            .unwrap();
+        assert_eq!(j.cookies[1].domain, "xn--bcher-kva.example");
+    }
+
+    #[test]
+    fn trailing_dot_domain_attribute_is_ignored() {
+        let now = now();
+        let mut j = jar(now);
+        let url = Url::parse("https://www.example.com/").unwrap();
+        j.set_cookie("a=1; Domain=example.com.", &url, true)
+            .unwrap();
+        assert_eq!(j.cookies[0].domain, "www.example.com");
+        assert!(j.cookies[0].host_only);
+    }
+
+    #[test]
+    fn ip_domain_attributes_only_match_the_exact_ip() {
+        let now = now();
+        let mut j = jar(now);
+        let url = Url::parse("http://127.0.0.1/").unwrap();
+        j.set_cookie("a=1; Domain=127.0.0.1", &url, true).unwrap();
+        assert_eq!(j.cookies_for(&url, false, Method::Get), "a=1");
+        assert!(matches!(
+            j.set_cookie("b=1; Domain=0.0.1", &url, true),
             Err(CookieError::DomainMismatch { .. })
         ));
     }

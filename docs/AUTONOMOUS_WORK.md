@@ -9,8 +9,11 @@ Until alpha, continue without asking unless a change would alter architecture.
 Architecture changes include:
 
 - a new JS runtime target or abstraction,
-- a new desktop GUI path other than Relm4/libadwaita,
+- a GUI path other than the ADR-018 Flutter shell, or retention of GTK/Relm4
+  beyond its Linux compatibility-baseline parity gate,
 - a second render/paint path,
+- a Flutter bridge that moves browser ownership, web rendering, or accessibility
+  source data out of BrowserCore,
 - a new layout architecture,
 - a core dependency that changes binary-size or subsystem ownership materially,
 - a security-policy change that makes behavior less fail-closed.
@@ -32,6 +35,13 @@ For ordinary implementation details, choose the safest path aligned with
 - **Before push:** hk pre-push hook; long gates run here because iteration speed
   matters.
 - **Release:** `ACCEPTANCE.md` gates plus measured size/compatibility reports.
+
+Flutter is not installed and no Flutter gate exists in this workspace. Until
+real recipes land, never report Rust/GTK checks as Flutter proof. Platform work
+follows `FLUTTER_SHELL.md`: Linux fake/real bridge, bounded RGBA and input/
+viewport, offline Flatpak/size evidence, desktop expansion, Android, then the iOS
+Simulator track, with V8 WebAssembly, accessibility, and host services kept
+consistent across targets.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

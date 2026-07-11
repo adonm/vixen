@@ -2049,6 +2049,22 @@
     },
     {
         "archive-type": "tar-gzip",
+        "dest": "cargo/vendor/psl-2.1.218",
+        "sha256": "f558d33d882cb296fb65dbe0246b98b90e761fbe00c552701d2030eb5bbce63a",
+        "strip-components": 1,
+        "type": "archive",
+        "url": "https://static.crates.io/crates/psl/psl-2.1.218.crate"
+    },
+    {
+        "archive-type": "tar-gzip",
+        "dest": "cargo/vendor/psl-types-2.0.11",
+        "sha256": "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac",
+        "strip-components": 1,
+        "type": "archive",
+        "url": "https://static.crates.io/crates/psl-types/psl-types-2.0.11.crate"
+    },
+    {
+        "archive-type": "tar-gzip",
         "dest": "cargo/vendor/quinn-0.11.9",
         "sha256": "b9e20a958963c291dc322d98411f541009df2ced7b5a4f2bd52337638cfccf20",
         "strip-components": 1,

@@ -52,6 +52,9 @@ impl std::error::Error for BrowserError {}
 #[derive(Debug, Clone, PartialEq)]
 pub enum BrowserCommand {
     LoadProfileSession,
+    /// Persist a session projection of BrowserCore's current context registry.
+    SaveCurrentProfileSession,
+    /// Transitional compatibility command for shells that still author state.
     SaveProfileSession {
         session: ProfileSessionState,
     },
@@ -82,6 +85,9 @@ pub enum BrowserCommand {
     GetBrowsingContextState {
         context_id: BrowsingContextId,
     },
+    /// Capture the authoritative browser and context state in one owner-thread
+    /// operation.
+    GetBrowserSnapshot,
     ConfigureBrowsingContext {
         context_id: BrowsingContextId,
         config: BrowsingContextConfig,
@@ -175,6 +181,7 @@ pub enum BrowserCommand {
 pub enum BrowserCommandResult {
     Accepted,
     ProfileSession(ProfileSessionState),
+    BrowserSnapshot(BrowserSnapshot),
     BrowsingContextCreated { context_id: BrowsingContextId },
     NavigationAccepted { navigation_id: NavigationId },
     BrowsingContextState(BrowsingContextState),
@@ -396,6 +403,18 @@ pub struct NavigationHistoryEntry {
 pub struct ProfileSessionState {
     pub tabs: Vec<String>,
     pub active_index: usize,
+}
+
+/// Atomic projection of BrowserCore's current context registry.
+///
+/// Contexts are ordered by their monotonically allocated context ID, which is
+/// creation order. If event consumption reports `browser.event-lagged`, pending
+/// frontend operations are indeterminate and must be reconciled from a fresh
+/// snapshot rather than assumed to have succeeded.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct BrowserSnapshot {
+    pub active_context_id: Option<BrowsingContextId>,
+    pub contexts: Vec<BrowsingContextState>,
 }
 
 /// Profile-wide persisted data groups selected by clear-data UI or automation.
@@ -712,6 +731,10 @@ pub trait BrowserHandle: Send {
     fn dispatch(&mut self, command: BrowserCommand) -> Result<BrowserCommandResult, BrowserError>;
 
     /// Return the next ordered event without blocking.
+    ///
+    /// On `browser.event-lagged`, pending frontend operations are indeterminate;
+    /// query [`BrowserCommand::GetBrowserSnapshot`] and reconcile instead of
+    /// assuming those operations succeeded.
     fn try_next_event(&mut self) -> Result<Option<BrowserEvent>, BrowserError>;
 }
 

@@ -16,15 +16,15 @@ use std::time::Duration;
 
 use vixen_api::{
     AutomationEvaluation, BrowserCommand, BrowserCommandResult, BrowserError, BrowserEvent,
-    BrowserHandle, BrowserId, BrowsingContextConfig, BrowsingContextId, BrowsingContextState,
-    CrossDocumentNavigationKind, DocumentId, DocumentTextKind, EvaluationResult, FocusEventInfo,
-    FocusProjection, FormEntryInfo, FormEntryValueInfo, FormSubmissionInfo, FrameId,
-    InputDispatchResult, KeyEventData, MouseEventData, NavigationActionOutcome,
-    NavigationCancellationReason, NavigationHistoryEntry, NavigationHistorySnapshot, NavigationId,
-    NavigationPhase, ProfileDataSelection, ProfileId, ProfileSessionState, RequestId,
-    RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue,
-    RuntimeContextId, RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent,
-    RuntimeNetworkEvent, ScriptValue, browser_error_codes,
+    BrowserHandle, BrowserId, BrowserSnapshot, BrowsingContextConfig, BrowsingContextId,
+    BrowsingContextState, CrossDocumentNavigationKind, DocumentId, DocumentTextKind,
+    EvaluationResult, FocusEventInfo, FocusProjection, FormEntryInfo, FormEntryValueInfo,
+    FormSubmissionInfo, FrameId, InputDispatchResult, KeyEventData, MouseEventData,
+    NavigationActionOutcome, NavigationCancellationReason, NavigationHistoryEntry,
+    NavigationHistorySnapshot, NavigationId, NavigationPhase, ProfileDataSelection, ProfileId,
+    ProfileSessionState, RequestId, RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent,
+    RuntimeConsoleValue, RuntimeContextId, RuntimeDialogEvent, RuntimeEffects,
+    RuntimeExceptionEvent, RuntimeNetworkEvent, ScriptValue, browser_error_codes,
 };
 use vixen_net::{
     CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent, RedirectMode,
@@ -112,6 +112,10 @@ impl EngineBrowserHandle {
     }
 
     /// Wait for one ordered browser event, bounded by `timeout`.
+    ///
+    /// On `browser.event-lagged`, pending frontend operations are indeterminate;
+    /// dispatch [`BrowserCommand::GetBrowserSnapshot`] and reconcile instead of
+    /// assuming those operations succeeded.
     pub fn wait_next_event(
         &mut self,
         timeout: Duration,
@@ -719,6 +723,7 @@ impl BrowserCore {
     fn dispatch(&mut self, command: BrowserCommand) -> Result<BrowserCommandResult, BrowserError> {
         match command {
             BrowserCommand::LoadProfileSession => self.load_profile_session(),
+            BrowserCommand::SaveCurrentProfileSession => self.save_current_profile_session(),
             BrowserCommand::SaveProfileSession { session } => self.save_profile_session(session),
             BrowserCommand::ClearProfileData { selection } => self.clear_profile_data(selection),
             BrowserCommand::CreateBrowsingContext => self.create_context(),
@@ -756,6 +761,9 @@ impl BrowserCore {
             BrowserCommand::GetBrowsingContextState { context_id } => Ok(
                 BrowserCommandResult::BrowsingContextState(self.context_state(context_id)?),
             ),
+            BrowserCommand::GetBrowserSnapshot => Ok(BrowserCommandResult::BrowserSnapshot(
+                self.browser_snapshot(),
+            )),
             BrowserCommand::ConfigureBrowsingContext { context_id, config } => {
                 self.configure_context(context_id, config)
             }
@@ -987,6 +995,32 @@ impl BrowserCore {
             })
             .map_err(profile_error)?;
         Ok(BrowserCommandResult::Accepted)
+    }
+
+    fn save_current_profile_session(&self) -> Result<BrowserCommandResult, BrowserError> {
+        let contexts = self.contexts.keys().copied().collect::<Vec<_>>();
+        let session = ProfileSessionState {
+            tabs: contexts
+                .iter()
+                .map(|context_id| self.contexts[context_id].page.url().to_owned())
+                .collect(),
+            active_index: self
+                .active_context
+                .and_then(|active| contexts.iter().position(|context_id| *context_id == active))
+                .unwrap_or(0),
+        };
+        self.save_profile_session(session)
+    }
+
+    fn browser_snapshot(&self) -> BrowserSnapshot {
+        BrowserSnapshot {
+            active_context_id: self.active_context,
+            contexts: self
+                .contexts
+                .iter()
+                .map(|(context_id, context)| context_state(*context_id, context))
+                .collect(),
+        }
     }
 
     fn clear_profile_data(

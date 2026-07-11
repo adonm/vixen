@@ -1,8 +1,9 @@
 # Measurement baselines
 
-Vixen's current baseline suite is a dependency-light, Linux-first measurement
+Vixen's current baseline suite is a dependency-light Linux/headless measurement
 foundation built with Node.js built-ins. It records observations; it does not
-enforce budgets or claim complete real-site behavior.
+enforce budgets, measure a Flutter build, or claim complete real-site behavior.
+Flutter is not installed in this workspace.
 
 ## Commands
 
@@ -58,6 +59,42 @@ reported as absent rather than failing; the required headless binary remains a
 hard error. Logical and allocated sizes deduplicate hardlinks by device and
 inode. Flatpak payload and bundle numbers exclude the separately supplied GNOME
 runtime.
+
+That Flatpak contains the current GTK/Relm4 compatibility shell. Its report
+remains useful historical/current evidence, but it is not a Flutter Linux
+baseline and must not be relabeled as one.
+
+## Flutter GUI baseline protocol
+
+For every target platform and shipped ABI/architecture, produce two controlled
+artifacts with the same Flutter version, build mode, runner configuration,
+plugins, architecture, signing mode where practical, and package format:
+
+1. **hello-Flutter:** the smallest representative native Flutter application;
+2. **Flutter+Vixen:** the release Vixen shell plus BrowserCore.
+
+Both use Flutter release/AOT mode, Rust release mode with strip/LTO, and native
+dead-code stripping where reproducible. Record compressed download, unpacked or
+installed size, native executables/libraries, assets, and separately supplied
+runtime/shared-system costs. Attribute at least Flutter engine/ICU, Dart AOT and
+assets, runner/plugins, BrowserCore/Rust dependencies, V8/ICU/snapshots,
+WebRender/GPU dependencies, Vixen resources, packaging metadata, and symbols.
+Report both the hello-Flutter delta and the delta from the prior accepted Vixen
+artifact.
+
+Each report names platform, OS/toolchain, ABI/architecture, Flutter/Dart/Rust/V8
+and lock/source revisions, exact command, clean revision, hashes, AOT/strip/LTO
+settings, package split strategy, and exclusions. Android reports each split ABI
+rather than hiding duplication in a universal package. macOS reports universal
+and per-architecture attribution when both are distributed.
+
+GUI bundles are inspected for accidental debug Flutter engines, symbols,
+duplicate ABIs, development snapshots, test data, headless/CDP/WPT executables,
+source archives, build tools, and caches. Required symbols are stored separately.
+Warnings may be proposed only after representative reports are reproduced. A
+hard budget follows only after warnings establish normal variance, component
+ownership, comparison statistics, platform/ABI scope, and an explicit override
+policy in `ACCEPTANCE.md`. There is no accepted numeric Flutter budget today.
 
 Run the complete hermetic local batch with:
 
@@ -132,10 +169,13 @@ budget.
 ## Current limits
 
 This batch completes the local latency, Linux process-memory, profile-growth,
-headless-path, and artifact-size measurement foundation. It does not yet measure:
+headless-path, and compatibility-shell artifact-size measurement foundation. It
+does not yet measure:
 
 - representative external sites or complete external-site compatibility;
+- any Flutter GUI or hello-Flutter versus Flutter+Vixen artifact;
 - the GUI/Flatpak path across a supported Linux, GPU, driver, and renderer matrix;
+- native macOS, Windows, Android, or iOS Simulator BrowserCore/V8/WebRender behavior;
 - frame time, frame stability, animation smoothness, or input-to-paint latency;
 - V8/JavaScript heap usage separately from process memory;
 - HTTP transfer or download throughput; or

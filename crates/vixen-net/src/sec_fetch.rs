@@ -17,15 +17,13 @@
 //!   pipeline + Phase 7 hardening consult this module's predicates).
 //! - The Cross-Origin-Resource-Policy header itself (a separate § 3.2
 //!   header; lands alongside this module when the fetch layer wires it).
-//! - The full Public Suffix List for `same-site` registrable-domain
-//!   comparison (v1.0 uses the last-two-labels heuristic documented below;
-//!   the PSL lands when the cookie module's `domain` matching needs it too).
 //!
 //! Reference: <https://fetch.spec.whatwg.org/#http-header-layer>.
 
 #![forbid(unsafe_code)]
 
 use crate::origin::Origin;
+use crate::site::same_registrable_domain;
 
 // ---------------------------------------------------------------------------
 // Sec-Fetch-Site (§ 3.1.4)
@@ -362,28 +360,6 @@ impl SecFetchHeaders {
 /// - Same registrable domain ⇒ [`SecFetchSite::SameSite`].
 /// - Otherwise ⇒ [`SecFetchSite::CrossSite`].
 ///
-/// ## `same-site` registrable-domain heuristic
-///
-/// The general algorithm needs the Public Suffix List. v1.0 uses a pragmatic
-/// approximation: two origins are same-site if their hosts share the **last
-/// two DNS labels** (`a.example.com` ≡ `b.example.com`) *and* their schemes
-/// match. This is correct for ordinary two-label registrable domains
-/// (`example.com`), but **fails OPEN (toward `same-site`)** for multi-label
-/// public suffixes like `co.uk`, `github.io`, or `com.au`: `a.co.uk` and
-/// `b.co.uk` both reduce to the suffix `co.uk`, so two genuinely cross-site
-/// origins are classified as [`SecFetchSite::SameSite`] instead of
-/// [`SecFetchSite::CrossSite`]. Any consumer that treats `same-site` more
-/// permissively than `cross-site` (e.g. a CORP policy that allows
-/// `same-site` but denies `cross-site`) therefore gets a permissive answer
-/// for `*.co.uk`-style domains.
-///
-/// TODO(public-suffix-list): the [`is_same_site`] / [`classify_site`]
-/// outputs — and any caller that distinguishes [`SecFetchSite::SameSite`]
-/// from [`SecFetchSite::CrossSite`] — MUST NOT be trusted for security
-/// decisions (CORP/CORS gating) until this module adopts the Public Suffix
-/// List. The PSL lands alongside the cookie module's `domain` matcher
-/// (see `docs/PLAN.md`); until then the heuristic is permissive, not
-/// restrictive. It under-reports cross-site, the opposite of fail-closed.
 pub fn classify_site(embedder: Option<&Origin>, target: &Origin) -> SecFetchSite {
     let Some(embedder) = embedder else {
         return SecFetchSite::None;
@@ -406,7 +382,6 @@ fn is_same_origin(a: &Origin, b: &Origin) -> bool {
     a.scheme() == b.scheme() && a.host() == b.host() && a.port() == b.port()
 }
 
-/// The v1.0 same-site heuristic (see [`classify_site`] caveats).
 fn is_same_site(a: &Origin, b: &Origin) -> bool {
     // § 3.2.4: same-site additionally requires scheme match (with the legacy
     // upgrade exception that http→https is still same-site). Vixen enforces
@@ -415,13 +390,7 @@ fn is_same_site(a: &Origin, b: &Origin) -> bool {
     if !scheme_compatible_for_same_site(a.scheme(), b.scheme()) {
         return false;
     }
-    let Some(ra) = registrable_suffix(a.host()) else {
-        return false;
-    };
-    let Some(rb) = registrable_suffix(b.host()) else {
-        return false;
-    };
-    ra.eq_ignore_ascii_case(&rb)
+    same_registrable_domain(a.host(), b.host())
 }
 
 /// Whether two schemes are compatible for the same-site test. `http`/`ws` and
@@ -441,24 +410,6 @@ fn scheme_compatible_for_same_site(a: &str, b: &str) -> bool {
     }
     // Both are http/ws or https/wss family ⇒ compatible (the upgrade path).
     true
-}
-
-/// The last two labels of a host (`a.example.com` → `example.com`); a
-/// single-label host (`localhost`) returns itself. The v1.0 registrable-
-/// domain heuristic.
-///
-/// Permissive for multi-label public suffixes: `a.co.uk` and `b.co.uk` both
-/// yield `co.uk`, so two unrelated sites collapse to the same suffix and are
-/// reported as same-site (i.e. the heuristic fails OPEN, not closed). See
-/// the `same-site registrable-domain heuristic` note on [`classify_site`]
-/// and the `TODO(public-suffix-list)` there.
-fn registrable_suffix(host: &str) -> Option<String> {
-    let labels: Vec<&str> = host.split('.').filter(|l| !l.is_empty()).collect();
-    match labels.len() {
-        0 => None,
-        1 | 2 => Some(host.to_ascii_lowercase()),
-        _ => Some(labels[labels.len() - 2..].join(".").to_ascii_lowercase()),
-    }
 }
 
 #[cfg(test)]
@@ -666,54 +617,38 @@ mod tests {
         assert_eq!(parsed.user, SecFetchUser::NotUserActivated);
     }
 
-    // --- registrable_suffix heuristic ---------------------------------
-
-    #[test]
-    fn registrable_suffix_examples() {
-        assert_eq!(
-            registrable_suffix("example.com").as_deref(),
-            Some("example.com")
-        );
-        assert_eq!(
-            registrable_suffix("a.b.example.com").as_deref(),
-            Some("example.com")
-        );
-        assert_eq!(
-            registrable_suffix("localhost").as_deref(),
-            Some("localhost")
-        );
-        assert_eq!(registrable_suffix("").as_deref(), None);
-    }
-
     #[test]
     fn localhost_is_cross_site_to_example() {
-        // localhost is a single-label host; example.com is a two-label host.
-        // Their registrable_suffixes differ ⇒ cross-site.
         let a = origin("http://localhost/");
         let b = origin("https://example.com/");
         assert_eq!(classify_site(Some(&a), &b), SecFetchSite::CrossSite);
     }
 
     #[test]
-    fn multi_label_public_suffix_is_known_permissive() {
-        // KNOWN PERMISSIVE — remove / flip when the Public Suffix List lands.
-        //
-        // `a.co.uk` and `b.co.uk` are genuinely cross-site (their registrable
-        // domains are `a.co.uk` and `b.co.uk` respectively once the PSL
-        // treats `co.uk` as a public suffix). The v1.0 last-two-labels
-        // heuristic collapses both to `co.uk`, so it classifies them as
-        // `same-site` instead of `cross-site` — i.e. it fails OPEN (toward
-        // same-site), not closed. Any CORP/CORS policy that treats
-        // `same-site` more permissively than `cross-site` therefore gets a
-        // permissive answer. This test pins the current behaviour so a
-        // future PSL fix has to flip it deliberately; see the
-        // `TODO(public-suffix-list)` on `classify_site`.
+    fn multi_label_public_suffix_is_cross_site() {
         let a = origin("https://a.co.uk/");
         let b = origin("https://b.co.uk/");
-        assert_eq!(registrable_suffix("a.co.uk").as_deref(), Some("co.uk"));
-        assert_eq!(registrable_suffix("b.co.uk").as_deref(), Some("co.uk"));
-        // Current (incorrect) classification: same-site. With the PSL this
-        // should flip to `CrossSite`.
+        assert_eq!(classify_site(Some(&a), &b), SecFetchSite::CrossSite);
+    }
+
+    #[test]
+    fn private_public_suffix_is_cross_site() {
+        let a = origin("https://a.github.io/");
+        let b = origin("https://b.github.io/");
+        assert_eq!(classify_site(Some(&a), &b), SecFetchSite::CrossSite);
+    }
+
+    #[test]
+    fn same_site_handles_trailing_dot() {
+        let a = origin("https://www.example.com./");
+        let b = origin("https://api.example.com/");
         assert_eq!(classify_site(Some(&a), &b), SecFetchSite::SameSite);
+    }
+
+    #[test]
+    fn ips_without_registrable_domains_are_cross_site() {
+        let a = origin("https://127.0.0.1:443/");
+        let b = origin("https://127.0.0.1:8443/");
+        assert_eq!(classify_site(Some(&a), &b), SecFetchSite::CrossSite);
     }
 }

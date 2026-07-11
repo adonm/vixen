@@ -5,9 +5,10 @@ notes live in the crate docs, `DECISIONS.md`, and code.
 
 ## North star
 
-Vixen is a Firefox replacement for modern Linux: a focused desktop browser plus
-first-class CLI/CDP automation, optimized for the most web capability per byte of
-binary and per MiB of memory.
+Vixen is a focused, cross-platform Firefox replacement with a Flutter GUI on
+Linux, macOS, Windows, Android, and the Apple Silicon iOS Simulator, plus first-class CLI/CDP automation. It
+is optimized for the most web capability per byte of binary and per MiB of
+memory.
 
 The product should feel closer to Ghostty than to a kitchen-sink browser:
 small, fast to build, efficient to run, easy to iterate on, and boringly
@@ -21,13 +22,15 @@ security/release lifecycle. The constraint is not lower ambition; it is refusing
 duplicate engines, duplicate renderers, broad unbacked API shape, and UI features
 that do not move the browser toward daily usefulness.
 
-The product bet is: a small, integrated Linux-first browser can be useful before
-it is universal if it is honest, inspectable, scriptable, and improving against a
-public compatibility loop.
+The product bet is: one small Rust browser core behind a shared native Flutter
+shell can become useful across desktop and mobile before it is universal, if it
+is honest, inspectable, scriptable, and improving against a public compatibility
+loop.
 
 ## Primary users
 
-- Desktop Linux users who want a focused daily browser.
+- Desktop and Android users who want a focused browser on Linux, macOS, Windows,
+  or Android, plus developers exercising the shared GUI on iOS Simulator.
 - CLI/CDP users running headless workflows, Playwright-style automation, and
   terminal-oriented apps such as <https://adonm.github.io/zuko/app.html>.
 - Maintainers and agents using text reports to drive rapid, high-quality
@@ -60,7 +63,8 @@ The user-facing rank is:
 3. **Network/security/fetch/cookies** — real browsing needs safe, fail-closed
    loading before breadth.
 4. **Storage/history/session** — required for real browsing and app-like sites.
-5. **Minimal Relm4 desktop shell** — focused browser UI, not a feature buffet.
+5. **Minimal Flutter shell on five native platforms** — Dart owns chrome and
+   host-service presentation only; the current GTK/Relm4 shell is temporary.
 6. **Headless CLI + CDP/Playwright-compatible seams** — automation and text
    reports are product features, not test-only scaffolding.
 7. **WPT/imported fixture coverage and reports** — correctness driver for every
@@ -105,17 +109,25 @@ CDP, and WPT one engine-owned lifecycle. The following lessons are requirements:
    need reproducible baselines. Every broad feature needs focused fixtures and a
    WPT path; every real-site bug becomes a reduction or an explicitly tracked
    unreduced failure.
+9. **One shell contract, platform-specific proof.** Flutter is the primary GUI
+   substrate, but each platform/ABI earns support through native BrowserCore,
+   V8, WebRender, accessibility, host-service, package, size, and performance
+   evidence. Framework support is not Vixen support.
+10. **Pixels need semantics.** Web content remains one WebRender texture path;
+    BrowserCore also projects accessibility into Flutter Semantics. Dart may not
+    infer browser meaning from pixels.
 
 ## Non-goals before alpha
 
-- Cross-platform release targets beyond modern Linux.
 - A kitchen-sink UI or clone of every Firefox chrome feature.
 - WebKit fallback, runtime engine switching, or a generic JS-engine abstraction.
-- A second desktop GUI toolkit path; Relm4/libadwaita is the GUI path.
+- A permanent second GUI shell; GTK/Relm4 exists only as the Linux compatibility
+  baseline until Flutter parity.
 - A CPU paint fallback that competes with WebRender.
 - Media/WebGPU/WebRTC/service workers unless promoted by a later ADR.
 - Full WPT/browser parity claims before measured profiles justify them.
-- A full extension ecosystem, mobile port, or cross-platform packaging story.
+- A full extension ecosystem before the browser core and five-platform shell are
+  credible.
 - Site isolation/OOPIF work before the single-process browser is measured enough
   to know what isolation architecture is actually needed.
 
@@ -125,12 +137,17 @@ Alpha is not broad API completeness. Alpha means the architecture is frozen and
 validated for full delivery:
 
 - one JS runtime target (`deno_core`/V8),
-- one desktop GUI path (Relm4/libadwaita),
+- one target GUI path (Flutter) with a temporary GTK/Relm4 Linux baseline,
 - one display list and one WebRender paint path,
 - one layout architecture,
 - one WPT/reporting workflow,
 - hk-enforced git lifecycle gates,
 - honest compatibility docs with measured local/imported fixture results.
+
+Flutter alpha additionally requires the browser-scoped Rust bridge contract, a
+Linux fake and real shell, bounded RGBA external-texture transport, input and
+viewport routing, and the accessibility projection shape. Flutter is not
+installed in this workspace, so none of those are currently landed claims.
 
 Alpha also requires a production browser core: one profile service, one context
 registry, one generational navigation/document lifecycle, and one command/event
@@ -141,14 +158,16 @@ surfaces are acceptable; duplicate models are not.
 
 ## Delivery horizon in one sentence
 
-- **Beta**: a controlled real-site corridor is usable in GUI and headless, with
-  measured compatibility/performance and known gaps.
-- **v1.0**: Vixen is an honest daily-driver minimum for focused Linux users and a
-  useful Playwright/CDP automation target, with security/reliability limits
-  documented instead of hidden.
+- **Beta**: a controlled real-site corridor is usable in the Linux Flutter GUI
+  and headless, with measured compatibility/performance and known gaps; desktop
+  expansion proceeds from the same bridge.
+- **v1.0**: Vixen is an honest daily-driver minimum on every platform that has
+  passed its declared gate and a useful Playwright/CDP automation target, with
+  security/reliability limits documented instead of hidden.
 - **Replacement horizon**: continue through accessibility, media, offline apps,
   richer graphics/communications, ecosystem support, and stronger isolation
-  until ordinary modern-Linux browsing—not only a curated corridor—is credible.
+  until ordinary browsing, not only a curated corridor, is credible on supported
+  targets.
 
 After alpha, API surface can still change, but architecture changes need a new
 ADR and human approval.

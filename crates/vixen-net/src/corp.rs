@@ -9,9 +9,8 @@
 //!   `same-site` / `cross-origin`).
 //! - [`parse_corp`] — the header value parse (case-insensitive token;
 //!   `None` for an absent / unparseable header).
-//! - [`is_same_site`] — the § 4.5.3 "same-site" registrable-domain
-//!   heuristic (same scheme + matching last-two-labels; the documented
-//!   eTLD+1 approximation the PSL refines later).
+//! - [`is_same_site`] — the § 4.5.3 schemeful, PSL-backed "same-site"
+//!   registrable-domain predicate.
 //! - [`check_corp`] — the § 4.5.3 CORP check given the request + resource
 //!   origins + the parsed [`Corp`] (`Allow` / `Block`).
 //! - [`coep_corp_gate`] — the combined COEP + CORP gate the fetch layer
@@ -26,10 +25,6 @@
 //! - The CORS check itself — [`crate::cors::cors_check`]; the caller passes
 //!   `is_cors` (whether the request mode is `cors` + the response passed
 //!   the CORS check).
-//! - The full PSL-based registrable-domain computation — `is_same_site`
-//!   uses the last-two-labels heuristic (documented in
-//!   [`crate::sec_fetch::classify_site`]; the PSL lands when the cookie
-//!   `domain` matcher needs it too).
 //!
 //! Reference: <https://fetch.spec.whatwg.org/#cross-origin-resource-policy-header>,
 //! COEP <https://fetch.spec.whatwg.org/#cross-origin-embedder-policy>.
@@ -38,6 +33,7 @@
 
 use crate::coep::Coep;
 use crate::origin::Origin;
+use crate::site::same_registrable_domain;
 
 // ---------------------------------------------------------------------------
 // Corp
@@ -94,10 +90,8 @@ pub fn parse_corp(header: &str) -> Option<Corp> {
 // same-site + the CORP check
 // ---------------------------------------------------------------------------
 
-/// The § 4.5.3 "same-site" predicate: `true` iff `a` + `b` share a scheme +
-/// a registrable domain (the last-two-labels heuristic the PSL refines
-/// later). Opaque origins are never same-site with anything (including
-/// each other).
+/// The § 4.5.3 "same-site" predicate. Opaque origins are never same-site
+/// with anything (including each other).
 pub fn is_same_site(a: &Origin, b: &Origin) -> bool {
     if a.is_opaque() || b.is_opaque() {
         return false;
@@ -105,25 +99,10 @@ pub fn is_same_site(a: &Origin, b: &Origin) -> bool {
     if a.scheme() != b.scheme() {
         return false;
     }
-    registrable_domain(a.host()) == registrable_domain(b.host())
-}
-
-/// The registrable-domain heuristic: the last two dot-separated labels (or
-/// the whole host if fewer than two labels). The PSL-based computation
-/// lands when the cookie `domain` matcher needs it; the last-two-labels
-/// form is the documented approximation [`crate::sec_fetch::classify_site`]
-/// uses too. Returns a slice of `host` (no allocation).
-fn registrable_domain(host: &str) -> &str {
-    let last_dot = match host.rfind('.') {
-        Some(i) => i,
-        None => return host, // single label, no dot
-    };
-    // The dot before the last dot; if present, the registrable domain is
-    // the substring after it (two labels); else the whole host (two labels).
-    match host[..last_dot].rfind('.') {
-        Some(prev_dot) => &host[prev_dot + 1..],
-        None => host,
+    if a == b {
+        return true;
     }
+    same_registrable_domain(a.host(), b.host())
 }
 
 /// The § 4.5.3 CORP check outcome.
@@ -278,7 +257,7 @@ mod tests {
     // --- is_same_site ------------------------------------------------
 
     #[test]
-    fn same_site_last_two_labels() {
+    fn same_site_registrable_domain() {
         let a = origin("https://a.example.com/");
         let b = origin("https://b.example.com/");
         assert!(is_same_site(&a, &b), "same registrable domain ⇒ same-site");
@@ -296,6 +275,30 @@ mod tests {
         let a = origin("https://a.example.com/");
         let b = origin("https://a.other.test/");
         assert!(!is_same_site(&a, &b));
+    }
+
+    #[test]
+    fn same_site_blocks_distinct_icann_and_private_suffix_registrants() {
+        for (a, b) in [
+            ("https://a.co.uk/", "https://b.co.uk/"),
+            ("https://a.github.io/", "https://b.github.io/"),
+        ] {
+            assert!(!is_same_site(&origin(a), &origin(b)));
+            assert_eq!(
+                check_corp(&origin(a), &origin(b), Corp::SameSite),
+                CorpOutcome::Block
+            );
+        }
+    }
+
+    #[test]
+    fn same_site_fails_closed_for_localhost_and_ips_across_ports() {
+        for (a, b) in [
+            ("http://localhost:8000/", "http://localhost:8001/"),
+            ("http://127.0.0.1:8000/", "http://127.0.0.1:8001/"),
+        ] {
+            assert!(!is_same_site(&origin(a), &origin(b)));
+        }
     }
 
     #[test]

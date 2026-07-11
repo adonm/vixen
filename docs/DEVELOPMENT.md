@@ -46,6 +46,10 @@ Every alpha slice should satisfy these rules:
 6. **Tests travel with behavior.** Unit tests prove pure logic; one integration
    check proves the user-visible seam. If a fixture manifest assertion is the
    seam, keep it committed.
+7. **Flutter stays an adapter.** Dart owns chrome and host-service presentation;
+   BrowserCore owns browser state, WebRender, and accessibility source data.
+   Bridge buffers, queues, frames, semantics updates, and native handles are
+   bounded with explicit lifetime and generation tests.
 
 ## Gate tiers
 
@@ -76,11 +80,18 @@ git diff --cached --check
 Adjust `just gate-push` as the alpha architecture changes; hk should keep
 calling that single recipe.
 
-### GTK shell / GNOME SDK blockers
+### GUI shell environment blockers
 
-The supported GTK/libadwaita build path is **Podman + the flatpak-builder
-container**, not host-installed GNOME development packages. If a native
-`cargo check --features vixen-shell/gtk-shell` or `just shell-check` fails with
+Flutter is not installed in this workspace, and no Flutter project or Flutter
+gate exists yet. The native C ABI gate is not a Flutter gate. Do not report a
+Flutter check/build or infer one from Rust, ABI, or GTK tests. When the shell
+lands, pin Flutter 3.44.x and document the exact bootstrap and focused Dart/native
+checks beside the new executable recipes.
+
+The current compatibility shell still uses GTK/libadwaita. Its supported build
+path is **Podman + the flatpak-builder container**, not host-installed GNOME
+development packages. If a native `cargo check --features
+vixen-shell/gtk-shell` or `just shell-check` fails with
 missing `glib-2.0`, `gtk4`, or `libadwaita` `pkg-config` files, treat that as a
 host-environment limitation, not a product blocker. Verify shell changes with:
 
@@ -92,6 +103,26 @@ just flatpak-build
 Use native GTK development packages only for ad-hoc local work. Keep blocker
 notes explicit about this split so follow-up work points at the containerized
 Flatpak path before asking for host package installs.
+
+The target Linux Flutter Flatpak instead uses pinned `flatpak-flutter` 0.15.0
+preprocessing for an offline Flutter+Rust source build. That workflow is a target,
+not an alias for today's `just flatpak-build`. Flutter's Linux embedder uses GTK,
+so migration removes Relm4/libadwaita/custom GLArea ownership without promising
+a GTK-free runtime.
+
+The safe Rust controller and handwritten C ABI can be developed without Flutter
+installed:
+
+```sh
+just test-flutter-controller
+just gate-native-abi
+just gate-architecture
+```
+
+`just gate-native-abi` proves C ABI/header/layout, bounded JSON wire behavior,
+opaque registry ownership, stable errors/events, and buffer release over the
+one-owner controller. These commands do not prove a Dart binding, Flutter
+application or fake shell, texture plugin, Semantics bridge, or platform package.
 
 ## Larger alpha batches
 
@@ -115,6 +146,8 @@ Alpha speed is acceptable only while these budgets stay visible:
 - Prefer boring data flow over framework gravity: DTOs in `vixen-api`, lifecycle
   and pipeline state in the engine-owned browser/context/document graph, and
   browser-facing adapters in headless/CDP/shell.
+- Keep Dart DTOs and native bridge code mechanical. Do not mirror profile,
+  navigation, DOM, layout, permission, or accessibility truth in Flutter state.
 - Avoid duplicate parsers/matchers. Runtime host objects and BrowserCore/Page
   operations must extract or call the same Rust implementation.
 - Do not reintroduce string-expression shims. Retire transitional runtime/

@@ -7,11 +7,15 @@
 //! repository.
 
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command, Output};
 
 use serde::{Deserialize, Serialize};
 
 use crate::check::Check;
 use crate::manifest::{Fixture, FixtureSource, Manifest};
+
+/// Canonical upstream repository accepted by external WPT profiles.
+pub const WPT_REPOSITORY_URL: &str = "https://github.com/web-platform-tests/wpt.git";
 
 /// A curated set of upstream WPT files plus Vixen harness checks.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -32,11 +36,11 @@ pub struct WptProfile {
 /// Pinned upstream WPT checkout information.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct WptUpstream {
-    /// Repository URL, normally `https://github.com/web-platform-tests/wpt.git`.
+    /// Canonical WPT repository URL.
     pub repo: String,
-    /// Commit SHA or immutable ref expected in the external checkout.
+    /// Full, lowercase 40-hex commit expected in the external checkout.
     pub revision: String,
-    /// Optional sparse-checkout directories needed by this profile.
+    /// Relative sparse-checkout paths covering every fixture in this profile.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub sparse_paths: Vec<String>,
 }
@@ -70,11 +74,38 @@ pub enum ProfileError {
     Io(#[from] std::io::Error),
     #[error("WPT profile path must be relative and stay under WPT root: {path}")]
     UnsafePath { path: String },
+    #[error("WPT profile with fixtures must declare upstream provenance")]
+    MissingUpstream,
+    #[error(
+        "WPT upstream repository must be exactly https://github.com/web-platform-tests/wpt.git; found: {repo}"
+    )]
+    InvalidRepository { repo: String },
+    #[error(
+        "WPT upstream revision must be exactly 40 lowercase hexadecimal characters: {revision}"
+    )]
+    InvalidRevision { revision: String },
+    #[error("WPT sparse path must be relative and stay under WPT root: {path}")]
+    UnsafeSparsePath { path: String },
+    #[error("WPT fixture path is not covered by upstream.sparse_paths: {path}")]
+    FixtureOutsideSparsePaths { path: String },
+    #[error("WPT checkout is not a Git worktree rooted at {}", root.display())]
+    NotGitWorktree { root: PathBuf },
+    #[error("Git command failed while checking WPT checkout ({operation}): {detail}")]
+    GitCommand {
+        operation: &'static str,
+        detail: String,
+    },
+    #[error("WPT checkout revision mismatch: expected {expected}, found {actual}")]
+    RevisionMismatch { expected: String, actual: String },
+    #[error("WPT checkout is dirty at {}: {status}", root.display())]
+    DirtyCheckout { root: PathBuf, status: String },
 }
 
 impl WptProfile {
     pub fn from_json(s: &str) -> Result<Self, ProfileError> {
-        Ok(serde_json::from_str(s)?)
+        let profile: Self = serde_json::from_str(s)?;
+        profile.validate()?;
+        Ok(profile)
     }
 
     pub fn from_path(path: &Path) -> Result<Self, ProfileError> {
@@ -82,13 +113,132 @@ impl WptProfile {
     }
 
     pub fn to_json(&self) -> Result<String, ProfileError> {
+        self.validate()?;
         Ok(serde_json::to_string_pretty(self)?)
+    }
+
+    /// Validate pinned provenance and lexical fixture/sparse-checkout paths.
+    pub fn validate(&self) -> Result<(), ProfileError> {
+        let upstream = match &self.upstream {
+            Some(upstream) => upstream,
+            None if self.fixtures.is_empty() => return Ok(()),
+            None => return Err(ProfileError::MissingUpstream),
+        };
+
+        if upstream.repo != WPT_REPOSITORY_URL {
+            return Err(ProfileError::InvalidRepository {
+                repo: upstream.repo.clone(),
+            });
+        }
+        if upstream.revision.len() != 40
+            || !upstream
+                .revision
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(ProfileError::InvalidRevision {
+                revision: upstream.revision.clone(),
+            });
+        }
+
+        let sparse_paths = upstream
+            .sparse_paths
+            .iter()
+            .map(|path| {
+                safe_relative_path(path)
+                    .map_err(|_| ProfileError::UnsafeSparsePath { path: path.clone() })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+
+        for fixture in &self.fixtures {
+            let fixture_path = safe_relative_path(&fixture.path)?;
+            if !sparse_paths
+                .iter()
+                .any(|sparse_path| fixture_path.starts_with(sparse_path))
+            {
+                return Err(ProfileError::FixtureOutsideSparsePaths {
+                    path: fixture.path.clone(),
+                });
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Verify that `wpt_root` is the exact clean Git checkout pinned by this
+    /// profile. Both ordinary repositories (`.git/`) and linked worktrees
+    /// (`.git` file) are accepted, but a path nested inside another worktree is
+    /// not.
+    pub fn verify_checkout(&self, wpt_root: &Path) -> Result<(), ProfileError> {
+        self.validate()?;
+        let upstream = self
+            .upstream
+            .as_ref()
+            .ok_or(ProfileError::MissingUpstream)?;
+
+        if !wpt_root.join(".git").try_exists()? {
+            return Err(ProfileError::NotGitWorktree {
+                root: wpt_root.to_path_buf(),
+            });
+        }
+
+        let inside = git_output(
+            wpt_root,
+            "detect worktree",
+            &["rev-parse", "--is-inside-work-tree"],
+        )?;
+        if output_text(&inside) != "true" {
+            return Err(ProfileError::NotGitWorktree {
+                root: wpt_root.to_path_buf(),
+            });
+        }
+
+        let top_level = git_output(
+            wpt_root,
+            "resolve worktree root",
+            &["rev-parse", "--show-toplevel"],
+        )?;
+        let actual_root = PathBuf::from(output_text(&top_level));
+        if wpt_root.canonicalize()? != actual_root.canonicalize()? {
+            return Err(ProfileError::NotGitWorktree {
+                root: wpt_root.to_path_buf(),
+            });
+        }
+
+        let head = git_output(
+            wpt_root,
+            "resolve HEAD",
+            &["rev-parse", "--verify", "HEAD^{commit}"],
+        )?;
+        let actual_revision = output_text(&head);
+        if actual_revision != upstream.revision {
+            return Err(ProfileError::RevisionMismatch {
+                expected: upstream.revision.clone(),
+                actual: actual_revision,
+            });
+        }
+
+        let status = git_output(
+            wpt_root,
+            "check worktree status",
+            &["status", "--porcelain=v1", "--untracked-files=all"],
+        )?;
+        let status = output_text(&status);
+        if !status.is_empty() {
+            return Err(ProfileError::DirtyCheckout {
+                root: wpt_root.to_path_buf(),
+                status,
+            });
+        }
+
+        Ok(())
     }
 
     /// Materialize this profile into the existing manifest runner format using
     /// `wpt_root` as the external checkout root. Paths are validated before
     /// joining so a checked-in profile cannot escape the intended root.
     pub fn to_manifest(&self, wpt_root: &Path) -> Result<Manifest, ProfileError> {
+        self.validate()?;
         let fixtures = self
             .fixtures
             .iter()
@@ -96,6 +246,38 @@ impl WptProfile {
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Manifest { fixtures })
     }
+}
+
+fn git_output(root: &Path, operation: &'static str, args: &[&str]) -> Result<Output, ProfileError> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .output()
+        .map_err(|error| ProfileError::GitCommand {
+            operation,
+            detail: error.to_string(),
+        })?;
+    if !output.status.success() {
+        let stderr = output_text_bytes(&output.stderr);
+        return Err(ProfileError::GitCommand {
+            operation,
+            detail: if stderr.is_empty() {
+                output.status.to_string()
+            } else {
+                stderr
+            },
+        });
+    }
+    Ok(output)
+}
+
+fn output_text(output: &Output) -> String {
+    output_text_bytes(&output.stdout)
+}
+
+fn output_text_bytes(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim().to_owned()
 }
 
 impl WptProfileFixture {
@@ -117,7 +299,13 @@ fn resolve_profile_path(wpt_root: &Path, relative: &str) -> Result<PathBuf, Prof
 
 fn safe_relative_path(path: &str) -> Result<PathBuf, ProfileError> {
     let input = Path::new(path);
-    if path.trim().is_empty() || input.is_absolute() {
+    if path.trim().is_empty()
+        || input.is_absolute()
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
         return Err(ProfileError::UnsafePath {
             path: path.to_owned(),
         });
@@ -156,7 +344,7 @@ mod tests {
               "name": "layout-smoke",
               "upstream": {
                 "repo": "https://github.com/web-platform-tests/wpt.git",
-                "revision": "0123456789abcdef",
+                "revision": "0123456789abcdef0123456789abcdef01234567",
                 "sparse_paths": ["css/css-display"]
               },
               "fixtures": [
@@ -193,7 +381,7 @@ mod tests {
             let err = WptProfile {
                 name: "bad".into(),
                 description: None,
-                upstream: None,
+                upstream: Some(valid_upstream(vec!["css".into()])),
                 fixtures: vec![WptProfileFixture {
                     path: path.into(),
                     category: None,
@@ -205,6 +393,85 @@ mod tests {
             .unwrap_err();
             assert!(matches!(err, ProfileError::UnsafePath { .. }));
         }
+    }
+
+    #[test]
+    fn profile_rejects_unpinned_revisions() {
+        for revision in [
+            "main",
+            "0123456789abcdef",
+            "0123456789abcdef0123456789abcdef0123456g",
+            "0123456789ABCDEF0123456789ABCDEF01234567",
+        ] {
+            let json = format!(
+                r#"{{
+                  "name": "bad-revision",
+                  "upstream": {{
+                    "repo": "{WPT_REPOSITORY_URL}",
+                    "revision": "{revision}",
+                    "sparse_paths": []
+                  }},
+                  "fixtures": []
+                }}"#
+            );
+            let error = WptProfile::from_json(&json).unwrap_err();
+            assert!(matches!(error, ProfileError::InvalidRevision { .. }));
+        }
+    }
+
+    #[test]
+    fn profile_rejects_unexpected_repository() {
+        let mut profile = WptProfile {
+            name: "wrong-repository".into(),
+            description: None,
+            upstream: Some(valid_upstream(Vec::new())),
+            fixtures: Vec::new(),
+        };
+        profile.upstream.as_mut().unwrap().repo = "http://example.test/wpt.git".into();
+
+        let error = profile.validate().unwrap_err();
+        assert!(matches!(error, ProfileError::InvalidRepository { .. }));
+    }
+
+    #[test]
+    fn profile_rejects_fixture_outside_sparse_paths() {
+        let profile = WptProfile {
+            name: "sparse-mismatch".into(),
+            description: None,
+            upstream: Some(valid_upstream(vec!["css/css-grid".into()])),
+            fixtures: vec![WptProfileFixture {
+                path: "css/css-display/display-flow-root-001.html".into(),
+                category: None,
+                source: FixtureSource::Imported,
+                checks: Vec::new(),
+            }],
+        };
+
+        let error = profile.to_manifest(Path::new("/wpt")).unwrap_err();
+        assert!(matches!(
+            error,
+            ProfileError::FixtureOutsideSparsePaths { .. }
+        ));
+    }
+
+    #[test]
+    fn sparse_paths_use_component_boundaries() {
+        let profile = WptProfile {
+            name: "sparse-prefix".into(),
+            description: None,
+            upstream: Some(valid_upstream(vec!["css/css-display".into()])),
+            fixtures: vec![WptProfileFixture {
+                path: "css/css-display-other/test.html".into(),
+                category: None,
+                source: FixtureSource::Imported,
+                checks: Vec::new(),
+            }],
+        };
+
+        assert!(matches!(
+            profile.validate().unwrap_err(),
+            ProfileError::FixtureOutsideSparsePaths { .. }
+        ));
     }
 
     #[test]
@@ -238,5 +505,13 @@ mod tests {
                 .url
                 .ends_with("display-flow-root-001.html")
         );
+    }
+
+    fn valid_upstream(sparse_paths: Vec<String>) -> WptUpstream {
+        WptUpstream {
+            repo: WPT_REPOSITORY_URL.into(),
+            revision: "0123456789abcdef0123456789abcdef01234567".into(),
+            sparse_paths,
+        }
     }
 }

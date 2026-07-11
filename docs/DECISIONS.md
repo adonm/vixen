@@ -809,3 +809,116 @@ lifecycle quanta; stop/supersede suppresses remaining work, and committed author
 exceptions are runtime effects rather than navigation failures. Runtime creation,
 individual V8 evaluations, promise pumping, and external/discovered-resource jobs
 remain synchronous and require the next cooperative-cancellation slice.
+
+---
+
+## ADR-018: Flutter is the primary five-platform GUI shell
+
+**Status:** accepted
+
+**Supersedes:** ADR-007, ADR-010, and ADR-015 where they make Linux/GNOME or
+Relm4/libadwaita the product shell direction. It also supersedes ADR-003 and
+ADR-006 only where they prescribe `gtk4::GLArea` as the permanent GUI surface.
+ADR-002's single engine, ADR-003/006's single WebRender paint path, ADR-014's
+single `deno_core`/V8 runtime, and ADR-017's BrowserCore ownership remain
+accepted.
+
+**Context.** The Relm4/libadwaita shell proved visible WebRender output and the
+BrowserCore adapter on Linux, but keeping it as the product shell confines Vixen
+to one desktop stack and makes each additional platform a separate chrome
+implementation. Flutter 3.44 officially supports native Linux, macOS, Windows,
+Android, and iOS. Vixen narrows iOS to the Apple Silicon Simulator; a shared
+Flutter chrome can cover those five GUI environments while preserving the Rust
+browser core.
+
+This is substrate evidence, not a port result. Flutter is not installed in this
+workspace and no Flutter shell or package currently exists. Vixen must still
+prove its Rust, V8, WebRender, FFI, accessibility, host-service, packaging,
+policy, size, and performance behavior on every target.
+
+Current rusty_v8 guidance documents Android source cross-builds and the
+`aarch64-apple-ios-sim` target. The simulator keeps V8's JIT and WebAssembly
+support. Vixen does not currently intend to solve the distinct physical-device,
+TestFlight, or App Store runtime/distribution problem.
+
+**Decision.** Flutter is Vixen's primary GUI shell for Linux, macOS, Windows,
+Android, and the Apple Silicon iOS Simulator. Dart owns chrome, presentation, and host-service UI only.
+BrowserCore remains the sole owner of profile, contexts, navigation, documents,
+runtime, network/security policy, storage, layout, WebRender, and accessibility
+source data. Headless/CDP/WPT remain Rust frontends and are not embedded in GUI
+packages.
+
+The initial content transport is a bounded RGBA frame pool exposed as a Flutter
+external texture. It preserves one WebRender renderer while making ownership,
+copy cost, and failure behavior measurable. Platform-specific shared GPU texture
+transports may replace it only after RGBA correctness and platform measurements
+exist; they remain transports behind the same one-renderer contract.
+
+BrowserCore must project an authoritative, bounded, generation-aware
+accessibility tree into Flutter Semantics. A pixel texture without this
+projection is not an accessible browser.
+
+Linux migrates first through a Rust bridge, Flutter fake shell, real BrowserCore
+shell, RGBA texture, input/viewport, accessibility, host services, and an offline
+Flatpak. The Flatpak target uses pinned `flatpak-flutter` 0.15.0 preprocessing
+for Flutter plus Rust/Cargo lock and foreign dependency sources. The existing
+GTK/Relm4 shell remains a temporary compatibility baseline until Flutter Linux
+parity, then is removed. Flutter's Linux embedder itself uses GTK, so this removes
+Vixen's Relm4/libadwaita/custom GLArea ownership, not necessarily GTK runtime
+dependencies.
+
+Desktop expansion follows Linux; Android follows desktop bridge stabilization;
+the iOS Simulator follows on an Apple Silicon macOS host. Android requires a
+pinned V8 source archive/toolchain, GLES and lifecycle proof, and split-ABI
+artifact proof. The iOS target uses `aarch64-apple-ios-sim` and requires a
+repeatable Flutter/BrowserCore/V8/WebRender simulator build plus JavaScript,
+WebAssembly, lifecycle, input, accessibility, and host-service smoke evidence.
+Physical iOS, TestFlight, and App Store distribution are out of scope unless a
+new ADR accepts their different runtime constraints.
+
+WebAssembly remains part of the one `deno_core`/V8 runtime contract on every
+declared target. Vixen does not add a portable alternate Wasm runtime for iOS.
+
+Artifact size is a first-class per-platform/ABI goal. Release/AOT/strip/LTO
+builds compare hello-Flutter with Flutter+Vixen and attribute Flutter, Dart,
+runner/plugins, BrowserCore, V8, WebRender, resources, and packaging. GUI bundles
+exclude debug engines/symbols, duplicate ABIs, headless tools, and build inputs.
+Warnings precede hard budgets; numeric limits require reproducible evidence and
+the acceptance policy rather than invention.
+
+The detailed and authoritative execution/gate plan is
+[`FLUTTER_SHELL.md`](FLUTTER_SHELL.md).
+
+**Alternatives considered.**
+
+- *Keep Relm4/libadwaita as the Linux product and build independent native
+  shells elsewhere.* Rejected: it multiplies chrome, bridge, accessibility, and
+  lifecycle behavior and preserves the Linux-only product constraint.
+- *Let Flutter render web content.* Rejected: it creates a second renderer and
+  abandons the WebRender/display-list invariants.
+- *Share display lists directly with Dart first.* Rejected: it leaks renderer
+  internals and makes Flutter an alternate painter. Bounded RGBA is the smaller
+  correctness-first seam.
+- *Start with zero-copy platform textures.* Deferred: synchronization, lifetime,
+  color, driver, and surface-loss complexity must be justified by measurements.
+- *Use WebKit/JavaScriptCore on iOS.* Rejected under the one-engine decision. A
+  policy or viability failure requires a new ADR, not a silent fallback.
+- *Target physical iOS immediately.* Rejected for this phase: use the V8-enabled
+  Apple Silicon Simulator and require a new ADR before accepting a divergent
+  physical-device runtime or distribution model.
+- *Set a small-binary number now.* Rejected: no Flutter+Vixen artifacts exist.
+  Measurement and attribution must precede warning and failure thresholds.
+
+**Consequences.**
+
+- Five native GUI platforms are committed product targets, but support claims
+  remain platform-gated and evidence-specific.
+- A Dart/FFI/native-runner surface is added, while browser truth remains in
+  BrowserCore and web-platform work continues independently.
+- Linux temporarily carries two shell implementations; parity gates prevent the
+  compatibility baseline from becoming permanent.
+- Accessibility projection and host services are architecture work throughout
+  migration, not release polish.
+- Packaging and artifact reports become per platform and ABI. Existing Linux
+  GTK/Flatpak measurements remain historical/current-baseline evidence and are
+  not Flutter measurements.

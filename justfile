@@ -84,9 +84,22 @@ test-store:
 test-engine:
     cargo test -p vixen-engine
 
+# Safe controller plus its native C ABI tests. This does not require a Flutter
+# SDK and does not prove Dart bindings, a Flutter shell, or external textures.
+test-flutter-controller:
+    cargo test -p vixen-ffi
+
+# Focused native ABI gate: build the rlib/cdylib/staticlib targets and exercise
+# exported ownership, header/layout, bounded JSON wire, and panic containment.
+# This is native C ABI evidence only, not Dart/Flutter/platform package proof.
+gate-native-abi:
+    cargo build -p vixen-ffi
+    cc -std=c11 -Wall -Wextra -Werror -fsyntax-only crates/vixen-ffi/tests/header_smoke.c
+    cargo test -p vixen-ffi c_abi::tests
+
 # ADR-017 ownership vertical: production BrowserCore transport, context/runtime
 # generations, bounded events, profile/session partitioning, and headless adapter.
-test-browser-core:
+test-browser-core: test-flutter-controller
     cargo test -p vixen-engine browser::tests -- --test-threads=1
     cargo test -p vixen-headless browser_adapter::tests -- --test-threads=1
     cargo test -p vixen-headless eval_gate_returns_three -- --test-threads=1

@@ -13,6 +13,10 @@ where Web API code should live so the runtime stays fast, small, and spec-driven
 - DOM, CSS, layout, network policy, and storage state remain Rust source of
   truth.
 - Security-sensitive behavior validates near the host boundary and fails closed.
+- Flutter/Dart is browser chrome only. It does not implement page JavaScript,
+  DOM/Web APIs, navigation, storage, or a fallback runtime.
+- The same BrowserCore/`deno_core` runtime is the target on all five GUI
+  platforms. Platform support is evidence-gated, not inferred from Flutter.
 
 ## Fidelity ladder
 
@@ -81,6 +85,16 @@ runtime work should deepen correctness and converge state:
 - import focused WPT cases for each widened API family,
 - keep generated WebIDL prototype inheritance intact,
 - keep CDP and headless `--eval` consuming the same runtime path.
+
+Android requires a pinned rusty_v8/V8 source archive and toolchain with a proved
+source cross-build for each shipped ABI. The iOS target is Apple Silicon Simulator
+only and builds rusty_v8 for `aarch64-apple-ios-sim`, retaining the same V8
+JavaScript and WebAssembly path. There is no JavaScriptCore, WKWebView, WebKit,
+alternate Wasm runtime, or physical-device fallback.
+
+WebAssembly remains V8-backed on every declared target. Widen it with identical
+module validation, memory/table limits, deadline cancellation, host-call policy,
+and conformance fixtures rather than adding a platform-specific implementation.
 
 ## Required proof for a host-family change
 

@@ -10,6 +10,7 @@
 
 #![deny(unsafe_code)]
 
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -89,7 +90,7 @@ pub struct Cli {
     #[arg(long)]
     pub paint_stats: bool,
 
-    /// Two-frame incremental repaint demo (with --screenshot + --eval).
+    /// Capture before/after frames in one context (with --screenshot + --eval).
     #[arg(long)]
     pub incremental: bool,
 
@@ -112,6 +113,11 @@ pub struct Cli {
 
 /// Run the CLI. Returns a process exit code.
 pub fn run(cli: Cli) -> ExitCode {
+    if let Err(error) = validate_incremental_options(&cli) {
+        eprintln!("error: {error}");
+        return ExitCode::from(2);
+    }
+
     // `--list-fonts` short-circuits and needs no URL.
     if cli.list_fonts {
         return run_list_fonts();
@@ -141,15 +147,14 @@ pub fn run(cli: Cli) -> ExitCode {
         return run_memory_stats();
     }
 
-    // `--incremental` is a two-frame screenshot workflow. The first executable
-    // slice shares the screenshot renderer and validates the required flags.
     if cli.incremental {
-        if cli.screenshot.is_none() || cli.eval.is_none() {
-            eprintln!("error: --incremental requires --screenshot and --eval");
-            return ExitCode::from(2);
-        }
-        let path = cli.screenshot.as_deref().expect("checked above");
-        return run_screenshot(url, viewport, path, cli.profile_dir.as_deref());
+        return run_incremental(
+            url,
+            viewport,
+            cli.screenshot.as_deref().expect("validated above"),
+            cli.eval.as_deref().expect("validated above"),
+            cli.profile_dir.as_deref(),
+        );
     }
 
     // --screenshot requires the offscreen renderer (Phase 5) and short-circuits
@@ -260,14 +265,7 @@ fn run_screenshot(
             return ExitCode::FAILURE;
         }
     };
-    let snapshot = match session.capture_paint_snapshot(viewport) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            eprintln!("{}: {error}", codes::UNSUPPORTED_SCREENSHOT);
-            return ExitCode::FAILURE;
-        }
-    };
-    let png = match capture_commands_png(&snapshot.commands, viewport) {
+    let png = match capture_session_png(&mut session, viewport) {
         Ok(png) => png,
         Err(err) => {
             eprintln!("{}: {err}", codes::UNSUPPORTED_SCREENSHOT);
@@ -281,6 +279,94 @@ fn run_screenshot(
             ExitCode::FAILURE
         }
     }
+}
+
+fn run_incremental(
+    url: &str,
+    viewport: (u32, u32),
+    output: &Path,
+    js: &str,
+    profile_dir: Option<&Path>,
+) -> ExitCode {
+    let mut session = match browser_adapter::BrowserSession::load(url, profile_dir) {
+        Ok(session) => session,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let frame_one_snapshot = match session.capture_paint_snapshot(viewport) {
+        Ok(snapshot) => snapshot,
+        Err(error) => {
+            eprintln!("{}: {error}", codes::UNSUPPORTED_SCREENSHOT);
+            return ExitCode::FAILURE;
+        }
+    };
+    let frame_one = match capture_commands_png(&frame_one_snapshot.commands, viewport) {
+        Ok(png) => png,
+        Err(error) => {
+            eprintln!("{}: {error}", codes::UNSUPPORTED_SCREENSHOT);
+            return ExitCode::FAILURE;
+        }
+    };
+    let value = match session.evaluate_for_incremental(js, frame_one_snapshot.document_id) {
+        Ok(value) => value,
+        Err(error) => {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let frame_two = match capture_session_png(&mut session, viewport) {
+        Ok(png) => png,
+        Err(error) => {
+            eprintln!("{}: {error}", codes::UNSUPPORTED_SCREENSHOT);
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let (frame_one_path, frame_two_path) = incremental_frame_paths(output);
+    for (path, png) in [(&frame_one_path, frame_one), (&frame_two_path, frame_two)] {
+        if let Err(error) =
+            std::fs::write(path, png).map_err(|error| format!("write {}: {error}", path.display()))
+        {
+            eprintln!("error: {error}");
+            return ExitCode::FAILURE;
+        }
+    }
+    println!("{}", value.to_display());
+    ExitCode::SUCCESS
+}
+
+fn capture_session_png(
+    session: &mut browser_adapter::BrowserSession,
+    viewport: (u32, u32),
+) -> Result<Vec<u8>, String> {
+    let snapshot = session.capture_paint_snapshot(viewport)?;
+    capture_commands_png(&snapshot.commands, viewport)
+}
+
+fn incremental_frame_paths(output: &Path) -> (PathBuf, PathBuf) {
+    (
+        incremental_frame_path(output, 1),
+        incremental_frame_path(output, 2),
+    )
+}
+
+fn incremental_frame_path(output: &Path, frame: u8) -> PathBuf {
+    let file_name = output.file_name().unwrap_or(output.as_os_str());
+    let mut frame_name = match output.extension().filter(|extension| !extension.is_empty()) {
+        Some(_) => output
+            .file_stem()
+            .map(OsString::from)
+            .unwrap_or_else(|| file_name.to_os_string()),
+        None => file_name.to_os_string(),
+    };
+    frame_name.push(format!("-frame-{frame}"));
+    if let Some(extension) = output.extension().filter(|extension| !extension.is_empty()) {
+        frame_name.push(".");
+        frame_name.push(extension);
+    }
+    output.with_file_name(frame_name)
 }
 
 pub(crate) fn capture_commands_png(
@@ -352,6 +438,33 @@ fn has_non_memory_action(cli: &Cli) -> bool {
         || cli.paint_stats
         || cli.incremental
         || cli.cdp
+}
+
+fn validate_incremental_options(cli: &Cli) -> Result<(), String> {
+    if !cli.incremental {
+        return Ok(());
+    }
+    if cli.screenshot.is_none() || cli.eval.is_none() {
+        return Err("--incremental requires --screenshot and --eval".to_owned());
+    }
+    if cli.dump_dom
+        || cli.extract_text
+        || cli.dump_display_list
+        || cli.dump_lines
+        || cli.dump_layout_tree
+        || cli.paint_stats
+        || cli.extract_selector.is_some()
+        || has_interaction_action(cli)
+        || cli.cdp
+        || cli.list_fonts
+        || cli.memory_stats
+    {
+        return Err(
+            "--incremental cannot be combined with other output, interaction, CDP, font, or memory actions"
+                .to_owned(),
+        );
+    }
+    Ok(())
 }
 
 fn has_interaction_action(cli: &Cli) -> bool {
@@ -901,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn incremental_is_not_silently_ignored_when_eval_is_present() {
+    fn incremental_requires_both_inputs() {
         let cli = parse(&[
             "--url",
             "file:///dev/null",
@@ -910,6 +1023,54 @@ mod tests {
             "--incremental",
         ]);
         assert_eq!(run(cli), ExitCode::from(2));
+    }
+
+    #[test]
+    fn incremental_rejects_dump_modes() {
+        let cli = parse(&[
+            "--url",
+            "file:///dev/null",
+            "--screenshot",
+            "capture.png",
+            "--eval",
+            "1+2",
+            "--incremental",
+            "--dump-dom",
+        ]);
+        assert_eq!(run(cli), ExitCode::from(2));
+    }
+
+    #[test]
+    fn incremental_rejects_other_actions_instead_of_ignoring_them() {
+        let cli = parse(&[
+            "--url",
+            "file:///dev/null",
+            "--screenshot",
+            "capture.png",
+            "--eval",
+            "1+2",
+            "--incremental",
+            "--paint-stats",
+        ]);
+        assert_eq!(run(cli), ExitCode::from(2));
+    }
+
+    #[test]
+    fn incremental_paths_preserve_extensions_and_extensionless_names() {
+        assert_eq!(
+            incremental_frame_paths(Path::new("captures/page.png")),
+            (
+                PathBuf::from("captures/page-frame-1.png"),
+                PathBuf::from("captures/page-frame-2.png")
+            )
+        );
+        assert_eq!(
+            incremental_frame_paths(Path::new("captures/page")),
+            (
+                PathBuf::from("captures/page-frame-1"),
+                PathBuf::from("captures/page-frame-2")
+            )
+        );
     }
 
     #[test]

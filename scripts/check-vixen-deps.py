@@ -13,6 +13,7 @@ ALLOWED = {
     "vixen-wpt": {"vixen-api"},
     "vixen-shell": {"vixen-api", "vixen-engine"},
     "vixen-headless": {"vixen-api", "vixen-engine"},
+    "vixen-ffi": {"vixen-api", "vixen-engine"},
 }
 
 

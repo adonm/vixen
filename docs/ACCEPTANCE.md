@@ -17,9 +17,9 @@ architecture frozen and validated, with API surface still allowed to move.
 - [ ] `crates/` unique `Cargo.lock` dependencies ≤ 220
 - [ ] `rg -e 'boa_engine|boa_runtime|taffy|tiny-skia|fontdue' Cargo.lock`
       returns nothing
-- [ ] One display list, one paint path, two `GlContext` impls (per
-      ADR-003 / ADR-006) — no CPU rasterizer, no fallback painter, no
-      `PaintBackend` trait
+- [ ] One display list and one WebRender paint path (per ADR-003 / ADR-006 /
+      ADR-018): headless EGL plus bounded GUI texture transport, with no CPU
+      rasterizer, fallback painter, or `PaintBackend` trait
 - [ ] No `sandbox.rs`, no `process_pool.rs`, no `ipc/` (per ADR-004)
 - [ ] No WebKit dependency, no `engine-webkit` feature (per ADR-002)
 - [ ] GUI renders a real web page to the screen via WebRender (manual
@@ -29,8 +29,8 @@ architecture frozen and validated, with API surface still allowed to move.
       surface" with stable error codes preserved
 - [ ] WPT target profile in `docs/COMPAT.md` is green; measured pass counts
       are published for every supported category
-- [ ] GUI/headless artifact sizes are published from `just size-fp` and meet the
-      accepted baseline/regression policy in §"Binary size gates" below
+- [ ] GUI/headless artifact sizes are published by platform and ABI using the
+      accepted baseline/regression policy in section "Binary size gates" below
 - [ ] `docs/COMPAT.md` published with honest capability matrix
 - [ ] `just audit` passes (`cargo audit` + `cargo deny check`)
 - [ ] `just check` passes
@@ -74,15 +74,15 @@ set (`fixtures/realworld/`) renders without obvious breakage.
 Documented gaps allowed in `docs/COMPAT.md`: tables, floats, full vertical
 writing, fragmentation/pagination, and advanced intrinsic sizing.
 
-### Paint
+### Paint and presentation
 
 **Done when**:
 
-- GUI path renders to `gtk4::GLArea` via WebRender (manual smoke)
-- Headless path uses EGL surfaceless (per ADR-009) and produces
-  pixel-diff ≤ 1 % vs GUI on 5 reference fixtures — both renders go
-  through the same WebRender paint path, so this is essentially a
-  surface-binding correctness check
+- Flutter GUI presents WebRender output through the bounded external-texture
+  contract; the GTK GLArea path is accepted only as the temporary Linux
+  compatibility baseline
+- Headless uses EGL surfaceless (per ADR-009), and GUI/headless reference
+  comparisons prove both consume the same WebRender output semantics
 - Headless works on CI with `LIBGL_ALWAYS_SOFTWARE=1` + Mesa
   `llvmpipe` (verified)
 - Display-list invariants from `SPEC.md` enforced by the display-list
@@ -162,23 +162,64 @@ drop the flag.
 - Preferences, shortcuts, about windows
 - Tab status diagnostics for load / TLS / download / permission events
 - Engine actually renders page content to the visible window
+- BrowserCore remains the sole browser owner; Dart owns chrome/presentation and
+  host-service UI only
+- Pointer, wheel, keyboard, text/IME, focus, scale, viewport, and lifecycle
+  changes cross the generation-checked bridge
+- BrowserCore's accessibility projection reaches Flutter Semantics and native
+  assistive-technology smoke; texture pixels alone do not satisfy accessibility
+
+The current GTK/Relm4 shell is evidence for the interaction list, not the v1 GUI
+target. Linux Flutter parity must pass it before that shell is removed. Flutter's
+Linux embedder uses GTK, so removal means no Relm4/libadwaita/custom GLArea
+ownership, not necessarily no GTK runtime dependency.
+
+### Platform gates
+
+Flutter 3.44 supports native deployment to all five targets, but Vixen supports a
+platform only after its gate in [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md) passes:
+
+- **Linux:** real BrowserCore bridge, bounded RGBA texture, input/viewport,
+  Semantics/AT, host services, parity, and pinned offline source-built Flatpak.
+- **macOS and Windows:** native BrowserCore/V8/WebRender builds plus texture,
+  input/IME, accessibility, host services, signing/packaging, and per-architecture
+  size/performance evidence.
+- **Android:** pinned V8 source/toolchain, reproducible cross-build, GLES,
+  lifecycle/surface recovery, input/IME/accessibility, and split-ABI proof.
+- **WebAssembly:** the existing `deno_core`/V8 path passes the same MVP API,
+  validation, resource-limit, malformed-module, and conformance suite on every
+  declared target.
+- **iOS Simulator:** `aarch64-apple-ios-sim` BrowserCore/V8/WebRender plus
+  JavaScript/WebAssembly, simulated lifecycle, input/accessibility/host-service
+  smoke, and a repeatable Flutter simulator runner on Apple Silicon. Physical
+  iOS, TestFlight, and App Store packaging are explicitly outside this gate.
+
+No iOS JavaScriptCore/WebKit, alternate Wasm runtime, or physical-device fallback
+is accepted without a new ADR.
 
 ---
 
 ## Binary size gates
 
-`just size-fp` builds and reports the exported Flatpak `/app` payload plus the
-stripped release headless binary through the structured artifact-size script.
-`just size-headless` works without Flatpak. Reports include logical and allocated
-bytes, SHA-256, file count, and hardlink-deduplicated accounting. The separately
-supplied GNOME runtime is explicitly excluded. The active `deno_core`/V8 + GTK +
-WebRender dependency graph does not yet have an accepted reproducible baseline,
-so these commands are measurement-only rather than enforcing invented limits.
+`just size-fp` and `just size-headless` remain measurement commands for the
+current GTK compatibility Flatpak and release headless binary. They do not prove
+a Flutter artifact. Flutter reports are required for every platform and shipped
+ABI/architecture and compare like-for-like release/AOT/stripped hello-Flutter and
+Flutter+Vixen builds.
 
-Before beta, publish the environment, artifact paths, GUI/headless byte counts,
-and install-size method here. Then adopt explicit warning/failure regression
-thresholds against that baseline. A release is blocked if its measured artifacts
-exceed those accepted thresholds without a documented product tradeoff.
+Reports attribute compressed, unpacked/install, executable, and shared-runtime
+costs to Flutter engine/ICU, Dart AOT/assets, native runner/plugins,
+BrowserCore/Rust, V8/ICU/snapshots, WebRender/GPU dependencies, resources,
+packaging, and symbols. They include exact locks/source revisions, commands,
+hashes, architecture, AOT/strip/LTO settings, and runtime exclusions.
+
+GUI bundles contain no debug Flutter engines, unstripped symbols, duplicate
+ABIs, development snapshots, headless/CDP/WPT tools, source archives, build
+tools, or caches without a documented release need. Adopt warning thresholds
+only after representative reports are reproduced and reviewed. Hard budgets
+follow only after warning behavior establishes variance, ownership, comparison
+statistics, platform/ABI scope, and an override policy. No numerical Flutter
+artifact budget is currently accepted.
 
 ## Performance baseline gates
 
@@ -190,8 +231,9 @@ measures an opaque temporary profile after deterministic repeated and unique
 visits and verifies localStorage after reopening it. `just baseline-beta` runs
 those hermetic controls plus headless artifact sizing.
 
-This completes the local latency, memory, profile-growth, headless, and artifact-
-size measurement foundation. All values remain measurement-only until the
+This completes the local Linux latency, memory, profile-growth, headless, and
+compatibility-shell artifact-size measurement foundation. All values remain
+measurement-only until the
 accepted-report process in [`BASELINES.md`](BASELINES.md) produces reviewed host
 baselines and explicit policies here. Real external-site measurements, the
 GUI/Flatpak host matrix, frame time, JS heap, and transfer throughput remain
@@ -224,12 +266,10 @@ A phase is not done until its gate passes *and* the tock discipline
 
 ## Post-v1.0 scope
 
-Deferred per [`DECISIONS.md`](DECISIONS.md) ADR-007 / ADR-008 and other
-implicit non-goals:
+Deferred per [`DECISIONS.md`](DECISIONS.md) ADR-008 and other explicit non-goals:
 
 - WebKit fallback (rejected, ADR-002)
 - Runtime engine switching (rejected, ADR-002)
-- macOS / Windows native builds (rejected for v1.0, ADR-007)
 - WebGPU (v1.1, via `wgpu`)
 - Media playback (v1.1, via GStreamer)
 - Full writing modes / vertical text (v1.1)

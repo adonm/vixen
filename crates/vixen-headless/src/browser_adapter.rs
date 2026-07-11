@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 
 use vixen_api::{
     BrowserCommand, BrowserCommandResult, BrowserEvent, BrowsingContextId, BrowsingContextState,
-    DocumentTextKind, ElementInfo, FocusProjection, FormSubmissionInfo, NavigationPhase,
-    ScriptValue,
+    DocumentId, DocumentTextKind, ElementInfo, EvaluationResult, FocusProjection,
+    FormSubmissionInfo, NavigationActionOutcome, NavigationId, NavigationPhase, ScriptValue,
 };
 use vixen_engine::browser::{BrowserConfig, EngineBrowserHandle, PaintSnapshot, spawn_browser};
 
@@ -82,7 +82,62 @@ impl BrowserSession {
     }
 
     pub(crate) fn evaluate(&mut self, source: &str) -> Result<ScriptValue, String> {
+        Ok(self.evaluate_result(source)?.value)
+    }
+
+    pub(crate) fn evaluate_for_incremental(
+        &mut self,
+        source: &str,
+        frame_one_document_id: DocumentId,
+    ) -> Result<ScriptValue, String> {
         let state = self.state()?;
+        if state.document_id != frame_one_document_id {
+            return Err(
+                "incremental evaluation cannot run because the frame 1 document is no longer current"
+                    .to_owned(),
+            );
+        }
+        let evaluation = self.evaluate_result_in_state(source, state)?;
+        let navigation_ids = evaluation
+            .navigation_actions
+            .iter()
+            .filter_map(|action| match action {
+                NavigationActionOutcome::CrossDocument { navigation_id, .. } => {
+                    Some(*navigation_id)
+                }
+                NavigationActionOutcome::SameDocument { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        if let Some(&navigation_id) = navigation_ids.last() {
+            self.wait_for_navigation(navigation_id).map_err(|error| {
+                format!(
+                    "incremental frame 2 cannot be captured deterministically after evaluation: {error}"
+                )
+            })?;
+        }
+
+        let refreshed = self.state().map_err(|error| {
+            format!("refresh incremental frame 2 browser state after evaluation: {error}")
+        })?;
+        if refreshed.is_loading {
+            return Err(
+                "incremental frame 2 cannot be captured deterministically while navigation is still loading"
+                    .to_owned(),
+            );
+        }
+        Ok(evaluation.value)
+    }
+
+    fn evaluate_result(&mut self, source: &str) -> Result<EvaluationResult, String> {
+        let state = self.state()?;
+        self.evaluate_result_in_state(source, state)
+    }
+
+    fn evaluate_result_in_state(
+        &mut self,
+        source: &str,
+        state: BrowsingContextState,
+    ) -> Result<EvaluationResult, String> {
         let runtime_context_id = state
             .runtime_context_id
             .ok_or_else(|| "loaded document has no script runtime".to_owned())?;
@@ -96,7 +151,7 @@ impl BrowserSession {
             })
             .map_err(|error| error.to_string())?
         {
-            BrowserCommandResult::Evaluation(evaluation) => Ok(evaluation.value),
+            BrowserCommandResult::Evaluation(evaluation) => Ok(evaluation),
             result => Err(format!("unexpected evaluation result: {result:?}")),
         }
     }
@@ -254,8 +309,12 @@ impl BrowserSession {
             result => return Err(format!("unexpected navigation result: {result:?}")),
         };
 
-        // Completion stays keyed by NavigationId so a failed or superseded load
-        // cannot silently evaluate the previous document's realm.
+        self.wait_for_navigation(navigation_id)
+    }
+
+    // Completion stays keyed by NavigationId so a failed or superseded load
+    // cannot silently use the previous document's realm.
+    fn wait_for_navigation(&mut self, navigation_id: NavigationId) -> Result<(), String> {
         let deadline = Instant::now() + NAVIGATION_WAIT_TIMEOUT;
         loop {
             let remaining = deadline.saturating_duration_since(Instant::now());

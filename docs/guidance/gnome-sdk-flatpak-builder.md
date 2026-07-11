@@ -1,10 +1,17 @@
 # Building against the GNOME SDK via flatpak-builder containers
 
-**The GNOME SDK is not installed on the host.** Vixen targets the GNOME 50
-SDK (ADR-007), and the SDK — `org.gnome.Sdk//50` + `org.gnome.Platform//50`
-— is **managed inside a `flatpak-builder` container image**, not via the
-host package manager. This keeps host pollution at zero and makes the build
-reproducible: the SDK version is pinned by the image tag.
+**Compatibility-baseline workflow:** The GNOME SDK is not installed on the host.
+The current GTK/Relm4 shell uses `org.gnome.Sdk//50` and
+`org.gnome.Platform//50`, managed inside a `flatpak-builder` container image
+rather than the host package manager. This keeps host pollution at zero and
+makes that existing build reproducible: the SDK version is pinned by the image
+tag.
+
+ADR-018 supersedes the GNOME/Relm4 product direction. Flutter is the target GUI
+on five platforms, but is not installed and has no build here. The target Linux
+Flatpak will use pinned `flatpak-flutter` 0.15.0 preprocessing for an offline
+Flutter+Rust source build. Until that workflow lands and reaches parity, this
+page documents the executable compatibility shell only.
 
 > Verified against `ghcr.io/flathub-infra/flatpak-github-actions:gnome-50`
 > (flatpak 1.18.1, flatpak-builder 1.4.9, `org.gnome.Sdk//50` +
@@ -20,7 +27,7 @@ reproducible: the SDK version is pinned by the image tag.
   installs GNOME packages (`.mise.toml`).
 - **Reproducible.** The image tag *is* the SDK version. `gnome-50` today;
   bump the tag to move the SDK.
-- **Matches release builds.** The production Flatpak is built with
+- **Matches the current compatibility build.** The checked-in Flatpak is built with
   `flatpak-builder` against this exact runtime, so dev and release go
   through the same SDK.
 
@@ -174,7 +181,7 @@ pins the preinstalled `org.gnome.Sdk//50` runtime). Updating the SDK is
   Expected on a clean host — there is no GNOME SDK installed natively.
   Either use the container, or install your distro's `gtk4-devel` /
   `libadwaita-devel` yourself for ad-hoc native work (not the supported
-  path).
+  compatibility-shell path).
 
 ---
 
@@ -185,5 +192,6 @@ pins the preinstalled `org.gnome.Sdk//50` runtime). Updating the SDK is
 - Flatpak building docs: <https://docs.flatpak.org/en/latest/building.html>
 - Runtime/SDK concepts:
   [Available runtimes](https://docs.flatpak.org/en/latest/available-runtimes.html).
-- ADR-007 (GNOME-only target), `docs/ARCHITECTURE.md` "Crate layout"
-  (`build-aux/`), `.mise.toml`.
+- ADR-018 and `docs/FLUTTER_SHELL.md` for target direction;
+  `docs/ARCHITECTURE.md` "Crates and responsibilities" for the transitional
+  boundary; `build-aux/` and `.mise.toml` for the current workflow.

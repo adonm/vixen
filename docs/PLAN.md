@@ -1,4 +1,11 @@
-# Vixen build plan
+# Vixen build plan (historical)
+
+> **Historical record:** This runbook records the original Linux/Relm4 phase
+> plan and is not current product or shell direction. Do not execute or rewrite
+> its shell assumptions as current guidance. Use
+> [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md), [`ROADMAP.md`](ROADMAP.md), and the
+> latest ADRs for current work; historical GTK/Relm4 statements below describe
+> how the compatibility baseline was built.
 
 Phased execution runbook. Each phase ends in a green test suite, a
 working binary, and a measured size. Do not start the next phase until
@@ -1564,11 +1571,12 @@ Wire every trust boundary from `docs/ARCHITECTURE.md`.
   value)` iterator (case-insensitive names, last-wins combine). The § 3.2.4
   [`classify_site`] classifier resolves the embedder↔target relationship
   (`same-origin` / `same-site` / `cross-site` / `none`) the fetch layer
-  attaches and that servers consult for the § 3.2 Cross-Origin gates; the
-  `same-site` registrable-domain comparison uses the last-two-labels
-  heuristic (documented limitation; the PSL lands when the cookie `domain`
-  matcher needs it too). `SecFetchDest::is_navigation` / `is_embed` predicate
-  the § 4.4 navigation and § 3.2 COEP checks.
+  attaches and that servers consult for the § 3.2 Cross-Origin gates. One
+  static Mozilla Public Suffix List policy now supplies registrable-domain and
+  public-suffix decisions to Fetch Metadata, CORP, and cookie `Domain`
+  validation, including private suffixes; hosts without a registrable domain
+  fail closed. `SecFetchDest::is_navigation` / `is_embed` predicate the § 4.4
+  navigation and § 3.2 COEP checks.
 - `vixen-net::permissions_policy` — Permissions Policy 1 § 3.3
   `Permissions-Policy` response-header parser + the § 5.2 `<iframe allow>`
   attribute parser. The [`Allowlist`] enum covers every § 3.3 source-list

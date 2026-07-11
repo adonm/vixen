@@ -22,4 +22,4 @@ pub mod visual_hash;
 pub use check::{Check, Outcome};
 pub use harness::{HarnessEngine, Report, RgbaScreenshot, run_fixture, run_manifest};
 pub use manifest::{Fixture, Manifest, ManifestError};
-pub use profile::{ProfileError, WptProfile, WptProfileFixture, WptUpstream};
+pub use profile::{ProfileError, WPT_REPOSITORY_URL, WptProfile, WptProfileFixture, WptUpstream};

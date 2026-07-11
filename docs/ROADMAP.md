@@ -1,10 +1,10 @@
 # Roadmap
 
 This is the delivery sequence from the current component-rich prototype to the
-full project goal: a credible Firefox replacement for modern Linux, with a
-focused desktop shell and first-class headless/CDP automation. It is deliberately
-more ambitious than a demo-browser plan, but it does not turn ambition into an
-unsupported compatibility claim.
+full project goal: a credible Firefox replacement with one focused Flutter shell
+targeting Linux, macOS, Windows, Android, and the Apple Silicon iOS Simulator, plus first-class headless/CDP
+automation. It is deliberately more ambitious than a demo-browser plan, but it
+does not turn framework support into an unsupported Vixen compatibility claim.
 
 Historical phase instructions live in [`PLAN.md`](PLAN.md), executable evidence
 in [`MILESTONES.md`](MILESTONES.md), and measured support in
@@ -19,11 +19,12 @@ The stages are capability gates, not dates:
    and profile services drive one engine-owned browser lifecycle. Narrow behavior
    is acceptable; parallel state models are not.
 2. **Beta — a measured useful browser.** A controlled real-site corridor works
-   in GUI and automation with representative rendering, interaction, persistence,
-   downloads, diagnostics, and Linux integration.
+   in the Linux Flutter GUI and automation with representative rendering,
+   interaction, persistence, downloads, diagnostics, accessibility, and host
+   integration; desktop expansion uses the same bridge.
 3. **v1.0 — an honest daily-driver minimum.** The published corridor is reliable
    enough for focused daily use, release/security operations are credible, and
-   every supported capability has reproducible evidence.
+   every supported platform and capability has reproducible evidence.
 4. **Replacement horizon — broad modern-browser capability.** Media,
    accessibility, offline applications, richer graphics/communications, extension
    support, and stronger process isolation expand the useful site set until
@@ -36,7 +37,7 @@ the profile, platform, command, and measured result.
 
 As of 2026-07-10 the repository has these building blocks:
 
-- A seven-crate workspace, hk/`just` development gates, stable diagnostics, fuzz
+- An eight-crate workspace, hk/`just` development gates, stable diagnostics, fuzz
   targets, and a WPT/fixture harness. The committed manifest currently measures
   **269 fixtures / 2,015 checks at 100%**; `COMPAT.md` owns the detailed counts.
 - `html5ever` parsing, Stylo-backed selector/cascade integration, a Vixen-owned
@@ -54,8 +55,9 @@ As of 2026-07-10 the repository has these building blocks:
 - A useful CDP slice covering navigation, runtime evaluation/handles, DOM basics,
   input, lifecycle/network/console/dialog events, screenshots, permissions,
   tracing-lite, and stable protocol errors, with an external Playwright smoke.
-- A Relm4/libadwaita shell vertical with tabs, URL loading, basic navigation,
-  visible WebRender output, diagnostics, and bounded session restore.
+- A Relm4/libadwaita compatibility-shell vertical with tabs, URL loading, basic
+  navigation, visible WebRender output, diagnostics, and bounded session
+  restore. Flutter is not installed and no Flutter shell/build exists yet.
 
 These are substantial components now routed through one initial browser owner,
 not yet a broadly compatible browser. API shape or inert reflection is still not
@@ -97,9 +99,12 @@ Other material gaps remain:
   service workers, and multi-frame/multi-page execution are absent or only
   browser-shaped probes;
 - downloads have persistence/protocol shape but no complete HTTP transfer
-  lifecycle; and
+  lifecycle;
 - Linux cert/proxy/font/portal/GPU behavior and release measurements are not yet
-  proven across a supported matrix.
+  proven across a supported matrix; and
+- the five-platform Flutter bridge, shell, external-texture transport,
+  accessibility projection, host services, and packages are not implemented;
+  native BrowserCore/V8/WebRender viability remains unproven outside Linux.
 
 ## Design rules for every stage
 
@@ -130,6 +135,10 @@ Other material gaps remain:
 9. **Real-site failures become reductions.** A screenshot starts triage. A local
    fixture, pinned WPT case, or explicitly tracked unreduced failure prevents
    regression.
+10. **Flutter is presentation, not a second browser.** BrowserCore owns browser
+    truth and accessibility source data; Dart owns chrome and host-service UI.
+    One WebRender output crosses a bounded texture transport. Each platform and
+    ABI is supported only after its gate in `FLUTTER_SHELL.md` passes.
 
 ## Alpha — converge on one browser core
 
@@ -186,6 +195,20 @@ remain the next A2 boundary.
 The obsolete fail-closed `Page` string-expression path and headless test-only
 classifiers are deleted; all evaluation adapters use `BrowserCore`/`JsRuntime`.
 Runtime/document snapshots still need convergence with the live page state.
+
+Cross-cutting delivery work has also advanced without widening browser claims.
+The safe Flutter controller now has a versioned handwritten C ABI with opaque
+process tokens, bounded JSON messages and retained output allocations, stable
+tagged responses/events/errors, polling-only event delivery, and panic
+containment; Dart bindings, a fake Flutter shell, texture transport, and
+Semantics remain unimplemented. External WPT profiles now reject mutable or
+mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
+sparse paths. Headless `--incremental` now captures real before/after frames from
+one BrowserCore context around live evaluation. Hosted CI executes architecture,
+native ABI, Node baseline, and external Playwright/CDP evidence, with separate
+dependency-policy and scheduled bounded-fuzz jobs. Fetch Metadata, CORP, and
+cookie `Domain` validation now share one static Mozilla Public Suffix List policy
+including private suffixes; non-registrable site comparisons fail closed.
 
 ### A1. Engine-owned profile, browser, and browsing contexts — landed
 
@@ -356,7 +379,7 @@ by easiest API count.
 - Diagnose policy block, DNS/connectivity, TLS/cert, HTTP/protocol, unsupported
   feature, and likely anti-bot/fingerprinting failure separately.
 
-### B4. Daily-smoke desktop product
+### B4. Daily-smoke Flutter product
 
 - Deliver robust tabs, address/search, reload/stop, back/forward, find, zoom,
   downloads, permission prompts, error/recovery pages, history, session restore,
@@ -366,6 +389,9 @@ by easiest API count.
   document/runtime reset, and failed profile writes.
 - Keep the shell focused: UI exists to browse, recover, inspect, automate, or
   control profile/security state—not to become a feature buffet.
+- Prove the same BrowserCore command/event/texture/semantics contract first on
+  Linux, then macOS and Windows; keep platform adaptations in chrome, native
+  runner, accessibility, texture, and host-service layers.
 
 ### B5. Automation and inspection as products
 
@@ -395,7 +421,9 @@ by easiest API count.
 The corridor loads in GUI and headless, supports meaningful interaction and
 persistence, survives restart/error/cancellation cases, and has published
 screenshots, reductions, WPT/profile counts, automation results, performance
-measurements, and known gaps on the supported Linux matrix.
+measurements, and known gaps on the supported Linux Flutter matrix. A platform
+not yet through its own gate remains a committed target, not a supported beta
+claim.
 
 ## v1.0 — honest daily-driver minimum
 
@@ -408,8 +436,9 @@ Vixen may call itself v1.0 when all of the following are true:
   network, document, runtime, renderer, and profile failures;
 - supported network/security/privacy behavior is fail-closed, observable, and
   backed by tests/fuzzing/audit; single-process isolation limits are prominent;
-- Flatpak install/update, certs, fonts, portals, downloads, GPU/EGL, settings,
-  session restore, and clear-data flows pass on the declared Linux targets;
+- Linux Flatpak install/update, certs, fonts, portals, downloads, GPU, settings,
+  session restore, and clear-data flows pass through the Flutter shell, and each
+  additional declared release platform passes its native gate;
 - compatibility, performance, memory, binary/install size, and unsupported
   capabilities are published from reproducible commands; and
 - every v1 claim maps to an acceptance gate, fixture/profile or smoke, and an
@@ -444,35 +473,46 @@ After v1, prioritize these programs by measured site impact:
    Treat this as an explicit architecture generation, not an ad-hoc worker pool.
 8. **Broader compatibility:** continuously widen WPT and real-site profiles until
    exceptions are uncommon enough that replacement is an honest default-use
-   description. Cross-platform ports remain separate product decisions.
+   description across the five committed GUI targets.
 
 ## Immediate execution order
 
-The first three convergence batches are complete. The source-loading and core
-race-proof parts of the fourth are complete. The immediate local measurement
-batch is also complete: checked-in commands now cover hermetic headless latency
-and Linux process memory, opaque profile growth with reopen persistence, and
-structured headless/Flatpak artifact accounting. The next coherent batches are:
+The core ownership and local headless measurement foundations are landed. The
+next work has two interleaved tracks: Flutter shell migration and browser
+correctness. Neither may starve the other.
 
-1. Finish A2 by making the landed runtime deadline navigation-cancellable and by
-   moving synchronous native host calls plus remaining discovered-resource
-   loading off the owner; preserve exactly one terminal outcome. External classic-
-   script loading is already generation-cancellable.
-   The asynchronous CDP socket path now covers target creation, cross-document
-   history, and runtime/input-triggered navigation without adding another event
-   consumer; configured initial-URL loading intentionally settles before sockets
-   are accepted.
-2. Move parser-discovered scripts and supported DOM mutations onto the live
-   document/runtime. Evaluation adapters already use `BrowserCore`/`JsRuntime`;
-   runtime/document snapshot convergence remains.
-3. Land font discovery/shaping/fallback and image subresource decode as the first
-   broad rendering verticals, then widen layout by failing imported ref tests.
-4. Build the HTTP download lifecycle and shell/CDP events over profile-owned
-   downloads.
-5. Reproduce the completed local measurement foundation on declared Linux GUI/
-   Flatpak hosts, then add named external-site corridor, frame-time, JS-heap, and
-   transfer-throughput reports. Accept budgets only through the documented report
-   policy; the local controls are not complete real-site evidence.
+1. Extend the landed browser-scoped C ABI into mechanical Dart bindings and a
+   Linux Flutter fake shell; keep the bounded ownership rules and one
+   BrowserCore event consumer. In parallel, finish navigation-aware runtime/
+   native-host cancellation and preserve one BrowserCore terminal outcome.
+2. Connect the Linux Flutter shell to real BrowserCore commands/events. Move
+   parser-discovered scripts and supported DOM mutations onto the live document/
+   runtime rather than creating shell-side state.
+3. Present WebRender through a bounded RGBA external texture and route input,
+   IME, focus, scale, and viewport generations. Continue font shaping/fallback,
+   image decode, and WPT-driven layout/rendering work on the shared core.
+4. Establish BrowserCore's incremental accessibility projection into Flutter
+   Semantics and platform host-service UI. Accessibility and host services remain
+   cross-cutting through every later platform.
+5. Produce hello-Flutter and Flutter+Vixen Linux size/performance baselines and a
+   pinned, offline source-built Flatpak through `flatpak-flutter` 0.15.0. Adopt
+   warning thresholds only after reviewed evidence; do not invent hard budgets.
+6. Reach Linux parity, then remove Relm4/libadwaita/custom GLArea ownership. GTK
+   may remain as a Flutter Linux embedder runtime dependency.
+7. Expand the same bridge/chrome contract to macOS and Windows, with native
+   texture, accessibility, host-service, packaging/signing, ABI, size, and
+   performance proof.
+8. Bring up Android with pinned V8 source/toolchain, GLES, lifecycle, input/
+   accessibility, and split-ABI proof.
+9. Widen the existing V8 WebAssembly path with the same API, resource-limit,
+   malformed-module, and conformance proof on every declared target.
+10. Bring up `aarch64-apple-ios-sim` with the same Flutter bridge, V8 JavaScript/
+    WebAssembly, rendering, simulated lifecycle, input, accessibility, and host-
+    service behavior. Physical iOS/TestFlight/App Store work requires a new ADR.
+
+Shared browser work continues throughout: live document/runtime convergence,
+resource loading, fonts/images/layout, downloads, network/security, storage,
+WPT/CDP, real-site reductions, and reliability remain release-critical.
 
 ## Working rule
 

@@ -77,6 +77,7 @@ pub mod permissions_policy;
 pub mod referrer_policy;
 pub mod sandboxing;
 pub mod sec_fetch;
+mod site;
 pub mod strict_transport_security;
 pub mod trusted_types;
 pub mod url_policy;

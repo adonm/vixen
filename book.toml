@@ -1,7 +1,7 @@
 [book]
 title = "Vixen"
 authors = ["adonm"]
-description = "A modern-Linux browser in Rust with a minimal GNOME shell, headless/CDP automation, and Flatpak releases."
+description = "A focused cross-platform Rust browser with a Flutter GUI target and first-class headless/CDP automation."
 language = "en"
 multilingual = false
 src = "docs"

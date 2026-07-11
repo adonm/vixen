@@ -42,3 +42,6 @@ Cargo.lock.bak
 # Node tooling cache/install outputs. `package-lock.json` is tracked; modules are
 # reproduced through mise-managed npm.
 /node_modules/
+
+# Workspace-local external checkouts and other reproducible scratch data
+/.tmp/

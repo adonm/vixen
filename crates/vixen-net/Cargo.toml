@@ -19,6 +19,9 @@ path = "src/lib.rs"
 # `PermissionKind`) are duplicated here on purpose so this crate stays
 # self-contained.
 url = "2"
+# Generated, static Mozilla Public Suffix List, including private suffixes.
+# Dual MIT/Apache-2.0; Vixen uses it under the already-allowed Apache-2.0.
+psl = "2.1"
 thiserror = "2"
 # SHA-2 (SHA-256/384/512) for CSP `'hash-...'` source matching in `csp`.
 # Pure-Rust, `unsafe`-free, compatible with `#![forbid(unsafe_code)]`.

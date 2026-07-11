@@ -5,27 +5,30 @@
 [![Docs](https://img.shields.io/badge/docs-vixen.adonm.dev-blue)](https://vixen.adonm.dev/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/adonm/vixen/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://github.com/adonm/vixen/blob/main/Cargo.toml)
-[![Flatpak](https://img.shields.io/badge/flatpak-GNOME%2050-4a86cf.svg)](guidance/gnome-sdk-flatpak-builder.md)
+[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.44-02569B.svg)](FLUTTER_SHELL.md)
 
-Vixen is a modern-Linux Firefox replacement built in Rust: a minimal desktop
-browser, first-class headless/CDP automation, and the most web capability per
-byte.
+Vixen is a focused cross-platform Firefox replacement: a Flutter GUI targeting
+Linux, macOS, Windows, Android, and the Apple Silicon iOS Simulator, first-class headless/CDP automation, and
+the most web capability per byte.
 
 The hard, spec-heavy subsystems are delegated where that keeps Vixen smaller
 and more correct: **Stylo/selectors** for CSS matching and cascade,
 **deno_core/V8** for JS execution and host packaging, **WebRender** for paint,
-and **html5ever** for HTML. Vixen owns the product glue, modern-Linux
-Relm4/libadwaita shell, networking/security layer, persistence, headless
-tooling, WPT reporting, and the Rust layout engine.
+and **html5ever** for HTML. BrowserCore owns browser truth and Flutter/Dart owns
+only chrome, presentation, and host-service UI. Flutter is not installed here and
+no Flutter build exists; the GTK/Relm4 shell is the temporary Linux compatibility
+baseline.
 
 ## Start here
 
 - [Project Direction](PROJECT_DIRECTION.md) — current focus and constraints.
 - [Architecture](ARCHITECTURE.md) — crate layout and dependency direction.
-- [Plan](PLAN.md) and [Milestones](MILESTONES.md) — implementation roadmap.
+- [Flutter Shell](FLUTTER_SHELL.md) — five-platform migration and gates.
+- [Roadmap](ROADMAP.md) and [Milestones](MILESTONES.md) — current delivery and evidence.
+- [Historical Plan](PLAN.md) — original Linux/Relm4 phase record.
 - [Development](DEVELOPMENT.md) — local workflow and contribution mechanics.
 - [GNOME SDK Flatpak builder](guidance/gnome-sdk-flatpak-builder.md) — the
-  Flatpak build/release path used by CI.
+  current compatibility-shell Flatpak path used by CI.
 
 ## Repository
 

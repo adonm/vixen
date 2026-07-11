@@ -46,7 +46,7 @@ vixen-headless --url <URL> [options]
   --focus <id>                Focus an element by id.
   --submit-form <id>          Submit a form by id.
   --paint-stats               Print paint statistics.
-  --incremental               Two-frame incremental repaint demo (with --screenshot + --eval).
+  --incremental               Capture before/after frames (requires --screenshot + --eval).
   --cdp                       Start CDP WebSocket server on 127.0.0.1.
   --cdp-port <N>              CDP port (default 9222, with --cdp).
   --list-fonts                List system fonts and exit.
@@ -57,9 +57,23 @@ Without `--profile-dir`, each invocation owns and removes an isolated temporary
 profile. With it, BrowserCore stores profile data in `<DIR>/profile.redb`; this
 also applies to `--cdp`.
 
-`--gpu` is removed: every render path uses WebRender against a GPU
-context (GLArea for GUI, EGL surfaceless for headless). Headless
-without a GPU device fails closed with `unsupported.screenshot`.
+`--incremental` loads the URL once in one BrowserCore browsing context, captures
+the loaded document, evaluates `--eval` in that document's current runtime, then
+captures the resulting current document after any script-created navigation has
+settled. Given `--screenshot <name.ext>`, the frames are written as
+`<name>-frame-1.ext` and `<name>-frame-2.ext`; without an extension they are
+`<name>-frame-1` and `<name>-frame-2`. The requested `--screenshot` path itself
+is not written. On success stdout contains only the `--eval` result followed by
+a newline, as in a normal `--eval` run; frame paths are deterministic and are
+not printed. Other output, interaction, CDP, font-list, and memory-stat actions
+are incompatible with `--incremental` and produce a command-line usage error
+rather than being silently ignored.
+
+`--gpu` is removed: every render path uses WebRender against a GPU context.
+Headless uses EGL surfaceless. The current Linux compatibility GUI binds
+WebRender to GLArea; the target Flutter GUI presents WebRender output through a
+bounded external-texture transport. Headless without a GPU device fails closed
+with `unsupported.screenshot`.
 
 **Stable error codes** (returned exactly as written):
 
@@ -93,6 +107,32 @@ without a GPU device fails closed with `unsupported.screenshot`.
 - `Performance.getMetrics`, `Security.getSecurityState`
 - `Input.dispatchMouseEvent` (mouse move/press/release over the current full
   viewport), `Input.dispatchKeyEvent`, and `Input.insertText`
+
+## Flutter GUI shell contract
+
+Flutter is the primary native GUI shell target on Linux, macOS, Windows, Android,
+and the Apple Silicon iOS Simulator. This is a target contract, not an implementation claim: Flutter is not
+installed and no Flutter build exists in this workspace.
+
+- BrowserCore is the sole owner of browser/profile/context/document/runtime/
+  rendering/accessibility state. Dart owns chrome, presentation, and host-service
+  UI only.
+- The Dart FFI bridge carries bounded typed commands/events and opaque handles
+  with explicit lifetime, allocation, version, sequence, and generation rules.
+- WebRender is the sole web-content renderer. The initial GUI transport is a
+  bounded RGBA frame pool presented as a Flutter external texture. Shared GPU
+  textures are measured platform-specific transport optimizations, not renderers.
+- Flutter sends pointer, wheel, keyboard, text/IME, gesture, focus, viewport,
+  scale, visibility, and lifecycle changes to BrowserCore. BrowserCore owns hit
+  testing, scrolling, selection, DOM dispatch, and navigation effects.
+- BrowserCore projects a bounded incremental accessibility tree into Flutter
+  Semantics. A texture without that projection is incomplete.
+- Headless/CDP/WPT remain Rust products and are excluded from GUI bundles.
+
+Platform acceptance, Android V8/GLES/split-ABI gates, the iOS Simulator track,
+Linux offline Flatpak, and artifact policy are specified in
+[`FLUTTER_SHELL.md`](FLUTTER_SHELL.md). JavaScript and WebAssembly use the same
+`deno_core`/V8 runtime path on every declared target.
 
 ---
 
@@ -148,7 +188,7 @@ pub enum EngineDiagnosticCategory {
 }
 ```
 
-The shell surfaces diagnostics in the status row; the WPT
+The GUI shell surfaces diagnostics in chrome; the WPT
 `no-critical-diagnostics` check consumes them. Codes are stable contract.
 
 ---
@@ -241,6 +281,9 @@ Cookies follow RFC 6265 with these Vixen-specific defaults:
   cross-site only for safe methods (GET/HEAD/OPTIONS). `SameSite=Strict`
   cookies are sent only to same-host requests. `HttpOnly` cookies never
   appear in `document.cookie` reads.
+- **Domain policy uses the static Mozilla Public Suffix List**, including its
+  private section. Parent public-suffix attributes are rejected; an exact-host
+  public suffix is converted to host-only as required by RFC 6265bis.
 
 Everything else (domain matching, path matching, secure-gating,
 expiry handling, `Max-Age` semantics) follows RFC 6265 exactly.

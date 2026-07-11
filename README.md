@@ -5,18 +5,25 @@
 [![Docs](https://img.shields.io/badge/docs-vixen.adonm.dev-blue)](https://vixen.adonm.dev/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](Cargo.toml)
-[![Flatpak](https://img.shields.io/badge/flatpak-GNOME%2050-4a86cf.svg)](docs/guidance/gnome-sdk-flatpak-builder.md)
+[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.44-02569B.svg)](docs/FLUTTER_SHELL.md)
 
-A modern-Linux Firefox replacement built in Rust: minimal desktop browser,
-first-class headless/CDP automation, and the most web capability per byte.
+A focused cross-platform Firefox replacement: a Flutter GUI targeting Linux,
+macOS, Windows, Android, and the Apple Silicon iOS Simulator, first-class headless/CDP automation, and the
+most web capability per byte.
 
 The hard, spec-heavy, easy-to-get-wrong subsystems are delegated where that
 keeps Vixen smaller and more correct: **Stylo/selectors** for CSS matching and
 cascade, **deno_core/V8** for JS execution and host packaging, **WebRender** for
-paint, and **html5ever** for HTML. Vixen owns the product glue, modern-Linux
-Relm4/libadwaita shell, networking/security layer, persistence, headless
-tooling, WPT reporting, and the Rust layout engine. See
+paint, and **html5ever** for HTML. BrowserCore owns browser state, networking/
+security, persistence, layout, WebRender, and accessibility source data. Flutter/
+Dart owns only chrome, presentation, and host-service UI. See
 [`docs/PROJECT_DIRECTION.md`](docs/PROJECT_DIRECTION.md) for the current focus.
+
+Flutter is not installed in this workspace and no Flutter build exists yet. A
+Rust-only `vixen-ffi` controller now establishes the one-owner asynchronous bridge
+core, but the C/Dart ABI and texture plugins remain future work. The current GTK/
+Relm4 shell is a temporary Linux compatibility baseline until the Flutter Linux
+shell reaches parity; it is not the product direction.
 
 ---
 
@@ -24,7 +31,7 @@ tooling, WPT reporting, and the Rust layout engine. See
 
 Pre-v1.0. This repository contains the specification, architecture, plan,
 and reference material, plus:
-- **Phase 0** — scaffolding (workspace + 7 crates).
+- **Phase 0** — scaffolding (workspace, engine/adapters, and Rust GUI bridge core).
 - **Phase 1** — networking/security "crown jewels" (`vixen-net`, `vixen-store`).
 - **Phase 2** — the `deno_core` JS runtime seam (`vixen-engine::script`) and the
   `vixen-headless` CLI; `vixen-headless --url <file> --eval '1+2'` → `3` passes
@@ -345,12 +352,17 @@ and reference material, plus:
   permission overrides, bounded Chromium JSON tracing through `IO` streams,
   same-connection stop races for pending navigate/reload requests, and stable
   machine-readable protocol errors.
-- **Browser shell/profile slice** — the GTK shell now resolves production
+- **Browser shell/profile slice** — the compatibility GTK shell now resolves
+  production
   app-ID profile paths on startup and routes bounded session restore/save and
   explicit clear-data selections through BrowserCore profile-session commands
   backed by the engine-owned store. Restore state is persisted as tabs are added,
   closed, selected, or finish loading, and clear-data policy explicitly preserves
   or removes that state.
+- **Flutter shell target** — ADR-018 commits one Flutter chrome to Linux, macOS,
+  Windows, Android, and the Apple Silicon iOS Simulator over the same BrowserCore. The exported C/Dart ABI,
+  Flutter fake/real shell, external texture, Semantics projection, and packages
+  are planned, not implemented.
 
 Future delivery order lives in [`docs/ROADMAP.md`](docs/ROADMAP.md); `PLAN.md`
 retains the historical phase runbook.
@@ -400,10 +412,10 @@ Common recipes:
 | `just audit` | `cargo audit` + `cargo deny check` |
 | `just baseline-headless` / `just baseline-headless-json` | Measure the hermetic local headless scenario suite |
 | `just baseline-profile-growth` | Measure temporary profile growth and storage persistence across reopen |
-| `just size-headless` / `just size-fp` | Report structured headless or Flatpak payload artifact sizes |
+| `just size-headless` / `just size-fp` | Report structured headless or compatibility-Flatpak artifact sizes; not Flutter evidence |
 | `just baseline-beta` | Run the local headless, profile-growth, and headless-size measurement batch |
-| `just flatpak-update-sdk` / `just flatpak-build` | Manage and build against the GNOME SDK container |
-| `just flatpak-install-local` / `just flatpak-run` | Install/run the locally exported Flatpak for GUI smoke |
+| `just flatpak-update-sdk` / `just flatpak-build` | Manage/build the current GTK compatibility shell against the GNOME SDK container |
+| `just flatpak-install-local` / `just flatpak-run` | Install/run the current compatibility Flatpak for GUI smoke |
 
 These commands complete the local latency, Linux process-memory, profile-growth,
 headless-path, and artifact-size measurement foundation. They are measurement-
@@ -422,7 +434,7 @@ reproducible. To build against the SDK (the shell, or the Flatpak):
 
 ```sh
 just flatpak-update-sdk  # pull the image (= install the GNOME 50 SDK)
-just flatpak-build       # build/export the GTK shell against org.gnome.Sdk//50
+just flatpak-build       # build/export the compatibility GTK shell
 ```
 
 `just flatpak-build` runs flatpak-builder inside the container with the host
@@ -430,6 +442,12 @@ workspace mounted at `/workspace`; this is the supported GTK shell build path on
 hosts without native `gtk4`/`libadwaita` development packages. It exports a
 local repo under `build-aux/_repo`; use `just flatpak-install-local` then
 `just flatpak-run` for host GUI smoke.
+
+These commands do not build Flutter. The target Linux package is a pinned,
+offline Flutter+Rust source build preprocessed with `flatpak-flutter` 0.15.0; its
+workflow and commands have not landed. Flutter's Linux embedder uses GTK, so the
+migration removes Relm4/libadwaita/custom GLArea ownership rather than promising
+a GTK-free runtime.
 
 See [`docs/guidance/gnome-sdk-flatpak-builder.md`](docs/guidance/gnome-sdk-flatpak-builder.md)
 for the full workflow. Headless/CI hosts that only build `vixen-api` /
@@ -451,11 +469,12 @@ MSRV is 1.88 (let-chains); the developer toolchain is pinned in
 | [`docs/PROJECT_DIRECTION.md`](docs/PROJECT_DIRECTION.md) | **What Vixen is optimizing for.** North star, users, priorities, alpha definition. |
 | [`docs/ROADMAP.md`](docs/ROADMAP.md)        | **What comes next.** Alpha convergence through the full replacement horizon. |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | **How Vixen is structured.** Crates, data flow, trust boundaries, trait APIs. |
+| [`docs/FLUTTER_SHELL.md`](docs/FLUTTER_SHELL.md) | **How the GUI migrates.** Five-platform bridge, rendering, accessibility, packaging, size, and gates. |
 | [`docs/DECISIONS.md`](docs/DECISIONS.md)    | **Why these choices.** ADR-style records for the major decisions. |
 | [`docs/DEVELOPMENT.md`](docs/DEVELOPMENT.md) | **How to move fast safely.** Alpha/dev workflow, gate tiers, maintainability budget. |
 | [`docs/RUNTIME_WEB_PLATFORM.md`](docs/RUNTIME_WEB_PLATFORM.md) | **How WebIDL/DOM/Web APIs are exposed.** JS bootstrap vs Rust op/resource strategy. |
 | [`docs/AUTONOMOUS_WORK.md`](docs/AUTONOMOUS_WORK.md) | **How agents/maintainers can proceed.** Commit/push policy, hk gates, report format. |
-| [`docs/PLAN.md`](docs/PLAN.md)              | **How to build it.** Phased execution runbook with phase gates. |
+| [`docs/PLAN.md`](docs/PLAN.md)              | **Historical record.** Original Linux/Relm4 phased runbook. |
 | [`docs/REFERENCES.md`](docs/REFERENCES.md)  | **Where to look for truth.** Pinned reference trees + how to consult each. |
 | [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)  | **When it's done.** Release gates per capability. |
 | [`docs/BASELINES.md`](docs/BASELINES.md)    | **How it is measured.** Local latency, memory, profile-growth, and artifact reports. |
@@ -471,10 +490,11 @@ If executing the build:
 1. `docs/PROJECT_DIRECTION.md` — the north star
 2. `docs/ROADMAP.md` — the next delivery order
 3. `docs/ARCHITECTURE.md` — the shape
-4. `docs/RUNTIME_WEB_PLATFORM.md` — runtime host strategy
-5. `docs/DEVELOPMENT.md` and `docs/AUTONOMOUS_WORK.md` — workflow and gates
-6. `docs/DECISIONS.md` — confirm the choices
-7. `docs/SPEC.md`, `docs/PLAN.md`, `docs/REFERENCES.md`, `docs/ACCEPTANCE.md`
+4. `docs/FLUTTER_SHELL.md` — GUI migration and platform gates
+5. `docs/RUNTIME_WEB_PLATFORM.md` — runtime host strategy
+6. `docs/DEVELOPMENT.md` and `docs/AUTONOMOUS_WORK.md` — workflow and gates
+7. `docs/DECISIONS.md` — confirm the choices
+8. `docs/SPEC.md`, `docs/PLAN.md`, `docs/REFERENCES.md`, `docs/ACCEPTANCE.md`
    — contracts, historical runbook, references, release checks
 
 If evaluating the project: read `docs/SPEC.md` and
@@ -487,11 +507,14 @@ Update both when resolving.
 
 ## Working assumptions
 
-- Target platform: **modern Linux**, distributed via Flatpak. The desktop GUI
-  path is Relm4/libadwaita against the GNOME SDK. Other platforms are
-  best-effort, not a release blocker.
-- Build profile is optimal already and carries forward unchanged:
-  `strip = true`, `lto = "thin"`, `codegen-units = 1`, `panic = "abort"`.
+- Primary GUI targets: **Linux, macOS, Windows, Android, and Apple Silicon iOS Simulator** through
+  Flutter 3.44. Each remains evidence-gated; no Flutter build exists yet.
+- Linux ships through an offline source-built Flatpak. GTK/Relm4 remains the
+  compatibility baseline until Flutter parity, after which its direct shell
+  ownership is removed. Flutter Linux may still depend on GTK at runtime.
+- The current Rust release profile starts with `strip = true`, `lto = "thin"`,
+  `codegen-units = 1`, and `panic = "abort"`; Flutter release/AOT and native
+  packaging are measured per platform before any stronger optimization claim.
 - App IDs: `org.vixen.Vixen` (production), `org.vixen.Vixen.Devel` (devel).
 
 ## License

@@ -1,0 +1,66 @@
+name: Scheduled fuzz
+
+on:
+  schedule:
+    - cron: "0 5 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep the scheduled budget bounded; `just fuzz-security` remains the 1M release gate.
+  FUZZ_RUNS: "10000"
+  NIGHTLY_TOOLCHAIN: nightly-2026-07-01
+
+jobs:
+  fuzz:
+    name: Bounded security fuzzing
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install nightly Rust
+        run: rustup toolchain install "$NIGHTLY_TOOLCHAIN" --profile minimal --component rust-src
+
+      - name: Install cargo-fuzz
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-fuzz@0.13.2
+          fallback: cargo-binstall
+
+      - name: Cache fuzz builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fuzz -> target
+          cache-on-failure: true
+
+      - name: Run bounded fuzz targets
+        run: |
+          status=0
+          for target in url_policy_validate csp_parse cookie_set_cookie html5ever_parse; do
+            if [ "$target" = html5ever_parse ]; then
+              max_len=16384
+            else
+              max_len=4096
+            fi
+            cargo +"$NIGHTLY_TOOLCHAIN" fuzz run "$target" -- "-max_len=$max_len" "-runs=$FUZZ_RUNS" || status=1
+          done
+          exit "$status"
+
+      - name: Upload fuzz crashes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-crashes-${{ github.run_id }}
+          path: fuzz/artifacts/**
+          if-no-files-found: ignore
+          retention-days: 14
