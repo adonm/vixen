@@ -24,6 +24,7 @@
 #![forbid(unsafe_code)]
 
 use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::ptr;
@@ -659,6 +660,33 @@ pub struct MatchedElement {
     pub text: String,
 }
 
+/// DOM data needed by Page's accessibility projection. This deliberately
+/// remains engine-internal so semantic decisions stay in `Page`.
+pub(crate) struct AccessibilityElement {
+    pub node_id: usize,
+    pub tag: String,
+    pub role: Option<String>,
+    pub aria_labelledby: Option<String>,
+    pub aria_label: Option<String>,
+    pub title: Option<String>,
+    pub alt: Option<String>,
+    pub value: Option<String>,
+    pub input_type: Option<String>,
+    pub aria_disabled: Option<String>,
+    pub aria_checked: Option<String>,
+    pub aria_selected: Option<String>,
+    pub aria_expanded: Option<String>,
+    pub tabindex: Option<String>,
+    pub text: String,
+    pub label: String,
+    pub href: bool,
+    pub disabled: bool,
+    pub checked: bool,
+    pub selected: bool,
+    pub multiple: bool,
+    pub contenteditable: bool,
+}
+
 /// Element-tree relation for read-only DOM host projections.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ElementRelation {
@@ -751,6 +779,300 @@ fn collect_text(node: &Node, out: &mut String) {
 // ---------------------------------------------------------------------------
 
 impl Document {
+    /// Return at most `maximum` visible, potentially semantic elements in
+    /// document order. Relevant attributes and descendant text are copied with
+    /// a per-string byte bound before Page assigns roles and states.
+    pub(crate) fn accessibility_elements<F>(
+        &self,
+        maximum: usize,
+        max_string_bytes: usize,
+        mut is_visible: F,
+    ) -> (Vec<AccessibilityElement>, bool)
+    where
+        F: FnMut(usize) -> bool,
+    {
+        let arena = ElementArena::build(&self.dom.document);
+        const MAX_DOM_SCAN: usize = 65_536;
+        const MAX_NAME_INDEX_ENTRIES: usize = 4096;
+        const MAX_NAME_WORK: usize = 65_536;
+        let scan_len = arena.len().min(MAX_DOM_SCAN);
+        let mut hidden = vec![false; scan_len];
+        let mut rendered = vec![false; scan_len];
+        let mut inherited_disabled = vec![false; scan_len];
+        let mut disables_descendants = vec![false; scan_len];
+        let mut ids = HashMap::new();
+        let mut labels_for: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut label_count = 0;
+        let mut truncated = arena.len() > scan_len;
+
+        for idx in 0..scan_len {
+            let node = arena.node(idx);
+            let NodeData::Element { name, attrs, .. } = &node.data else {
+                continue;
+            };
+            let attrs = attrs.borrow();
+            let own_hidden = attrs.iter().any(|attr| {
+                let name = attr.name.local.as_ref();
+                name == "hidden"
+                    || (name == "aria-hidden" && attr.value.trim().eq_ignore_ascii_case("true"))
+            }) || (name.local.as_ref() == "input"
+                && attrs.iter().any(|attr| {
+                    attr.name.local.as_ref() == "type"
+                        && attr.value.trim().eq_ignore_ascii_case("hidden")
+                }));
+            hidden[idx] = own_hidden || arena.parent(idx).is_some_and(|parent| hidden[parent]);
+            rendered[idx] = !hidden[idx] && is_visible(idx + 1);
+            inherited_disabled[idx] = arena
+                .parent(idx)
+                .is_some_and(|parent| inherited_disabled[parent] || disables_descendants[parent]);
+            disables_descendants[idx] = matches!(name.local.as_ref(), "fieldset" | "optgroup")
+                && attrs
+                    .iter()
+                    .any(|attr| attr.name.local.as_ref() == "disabled");
+
+            for attr in attrs.iter() {
+                let attr_name = attr.name.local.as_ref();
+                if attr_name == "id"
+                    && !attr.value.is_empty()
+                    && attr.value.len() <= max_string_bytes
+                {
+                    if ids.len() < MAX_NAME_INDEX_ENTRIES {
+                        ids.entry(attr.value.to_string()).or_insert(idx);
+                    } else {
+                        truncated = true;
+                    }
+                } else if name.local.as_ref() == "label"
+                    && attr_name == "for"
+                    && !attr.value.is_empty()
+                    && attr.value.len() <= max_string_bytes
+                {
+                    if label_count < MAX_NAME_INDEX_ENTRIES {
+                        labels_for
+                            .entry(attr.value.to_string())
+                            .or_default()
+                            .push(idx);
+                        label_count += 1;
+                    } else {
+                        truncated = true;
+                    }
+                }
+            }
+        }
+
+        let mut out = Vec::with_capacity(maximum.min(scan_len));
+        let mut remaining_name_work = MAX_NAME_WORK;
+        for idx in 0..scan_len {
+            if !rendered[idx] {
+                continue;
+            }
+            let node = arena.node(idx);
+            let NodeData::Element { name, attrs, .. } = &node.data else {
+                continue;
+            };
+            let node_id = idx + 1;
+            let mut element = AccessibilityElement {
+                node_id,
+                tag: name.local.as_ref().to_owned(),
+                role: None,
+                aria_labelledby: None,
+                aria_label: None,
+                title: None,
+                alt: None,
+                value: None,
+                input_type: None,
+                aria_disabled: None,
+                aria_checked: None,
+                aria_selected: None,
+                aria_expanded: None,
+                tabindex: None,
+                text: String::new(),
+                label: String::new(),
+                href: false,
+                disabled: inherited_disabled[idx],
+                checked: false,
+                selected: false,
+                multiple: false,
+                contenteditable: false,
+            };
+            let attrs = attrs.borrow();
+            for attr in attrs.iter() {
+                let attr_name = attr.name.local.as_ref();
+                match attr_name {
+                    "href" => element.href = true,
+                    "disabled" => element.disabled = true,
+                    "checked" => element.checked = true,
+                    "selected" => element.selected = true,
+                    "multiple" => element.multiple = true,
+                    "contenteditable" => {
+                        element.contenteditable = !attr.value.trim().eq_ignore_ascii_case("false")
+                    }
+                    "role" => {
+                        let (roles, was_truncated) =
+                            bounded_accessibility_string(attr.value.trim(), max_string_bytes);
+                        truncated |= was_truncated;
+                        element.role = first_supported_aria_role(&roles).map(str::to_owned);
+                    }
+                    "aria-labelledby" => copy_accessibility_attr(
+                        &mut element.aria_labelledby,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "aria-label" => copy_accessibility_attr(
+                        &mut element.aria_label,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "title" => copy_accessibility_attr(
+                        &mut element.title,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "alt" => copy_accessibility_attr(
+                        &mut element.alt,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "value" => copy_accessibility_attr(
+                        &mut element.value,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "type" => copy_accessibility_attr(
+                        &mut element.input_type,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "aria-disabled" => copy_accessibility_attr(
+                        &mut element.aria_disabled,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "aria-checked" => copy_accessibility_attr(
+                        &mut element.aria_checked,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "aria-selected" => copy_accessibility_attr(
+                        &mut element.aria_selected,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "aria-expanded" => copy_accessibility_attr(
+                        &mut element.aria_expanded,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "tabindex" => copy_accessibility_attr(
+                        &mut element.tabindex,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    _ => {}
+                }
+            }
+            drop(attrs);
+
+            let hidden_input = element.tag == "input"
+                && element
+                    .input_type
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("hidden"));
+            if hidden_input {
+                continue;
+            }
+            if element
+                .role
+                .as_deref()
+                .is_some_and(|role| matches!(role, "none" | "presentation"))
+            {
+                if presentational_role_conflicts(&element) {
+                    element.role = None;
+                } else {
+                    continue;
+                }
+            }
+            let native = native_accessibility_element(&element);
+            let explicit = element
+                .role
+                .as_deref()
+                .is_some_and(|role| role != "generic");
+            let direct_text =
+                bounded_direct_accessibility_text(node, max_string_bytes, &mut truncated);
+            let has_rendered_child = has_rendered_element_child(&arena, idx, &rendered);
+            element.text = if native || explicit {
+                bounded_accessibility_text(
+                    &arena,
+                    idx,
+                    &rendered,
+                    max_string_bytes,
+                    &mut remaining_name_work,
+                    &mut truncated,
+                )
+            } else if !direct_text.is_empty() {
+                direct_text
+            } else if !has_rendered_child {
+                bounded_accessibility_text(
+                    &arena,
+                    idx,
+                    &rendered,
+                    max_string_bytes,
+                    &mut remaining_name_work,
+                    &mut truncated,
+                )
+            } else {
+                String::new()
+            };
+            let has_authored_name = element
+                .aria_labelledby
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
+                || element
+                    .aria_label
+                    .as_deref()
+                    .is_some_and(|value| !value.is_empty());
+            let redundant_generic =
+                !native && !explicit && ancestor_consumes_accessibility_text(&arena, idx, 64);
+            let potentially_semantic = element.tag != "label"
+                && !redundant_generic
+                && (native
+                    || explicit
+                    || has_authored_name
+                    || !element.text.is_empty()
+                    || element.tabindex.is_some()
+                    || element.contenteditable);
+            if !potentially_semantic {
+                continue;
+            }
+            if out.len() == maximum {
+                truncated = true;
+                break;
+            }
+            element.label = AccessibilityNameResolver {
+                arena: &arena,
+                rendered: &rendered,
+                ids: &ids,
+                labels_for: &labels_for,
+                maximum: max_string_bytes,
+                remaining_work: &mut remaining_name_work,
+                truncated: &mut truncated,
+            }
+            .resolve(idx, &element);
+            out.push(element);
+        }
+        (out, truncated)
+    }
+
     /// Element by the stable 1-based document-order `node_id` used by WPT
     /// checks and inspector DTOs.
     pub fn element_by_node_id(&self, node_id: usize) -> Option<MatchedElement> {
@@ -887,6 +1209,575 @@ impl Document {
         }
         None
     }
+}
+
+fn native_accessibility_element(element: &AccessibilityElement) -> bool {
+    matches!(
+        element.tag.as_str(),
+        "a" | "button"
+            | "input"
+            | "select"
+            | "textarea"
+            | "img"
+            | "h1"
+            | "h2"
+            | "h3"
+            | "h4"
+            | "h5"
+            | "h6"
+            | "ul"
+            | "ol"
+            | "li"
+            | "main"
+            | "nav"
+            | "header"
+            | "footer"
+            | "form"
+            | "option"
+    ) && (element.tag != "a" || element.href)
+}
+
+fn presentational_role_conflicts(element: &AccessibilityElement) -> bool {
+    element.contenteditable
+        || element
+            .tabindex
+            .as_deref()
+            .and_then(|value| value.parse::<i32>().ok())
+            .is_some_and(|value| value >= 0)
+        || matches!(
+            element.tag.as_str(),
+            "button" | "input" | "select" | "textarea" | "option"
+        )
+        || (element.tag == "a" && element.href)
+}
+
+fn first_supported_aria_role(value: &str) -> Option<&'static str> {
+    for token in value.split_ascii_whitespace() {
+        if token.len() > 32 {
+            continue;
+        }
+        let role = match token.to_ascii_lowercase().as_str() {
+            "alert" => "alert",
+            "alertdialog" => "alertdialog",
+            "application" => "application",
+            "article" => "article",
+            "banner" => "banner",
+            "button" => "button",
+            "cell" => "cell",
+            "checkbox" => "checkbox",
+            "columnheader" => "columnheader",
+            "combobox" => "combobox",
+            "complementary" => "complementary",
+            "contentinfo" => "contentinfo",
+            "definition" => "definition",
+            "dialog" => "dialog",
+            "document" => "document",
+            "feed" => "feed",
+            "figure" => "figure",
+            "form" => "form",
+            "generic" => "generic",
+            "grid" => "grid",
+            "gridcell" => "gridcell",
+            "group" => "group",
+            "heading" => "heading",
+            "img" | "image" => "image",
+            "link" => "link",
+            "list" => "list",
+            "listbox" => "listbox",
+            "listitem" => "listitem",
+            "log" => "log",
+            "main" => "main",
+            "marquee" => "marquee",
+            "math" => "math",
+            "menu" => "menu",
+            "menubar" => "menubar",
+            "menuitem" => "menuitem",
+            "menuitemcheckbox" => "menuitemcheckbox",
+            "menuitemradio" => "menuitemradio",
+            "meter" => "meter",
+            "navigation" => "navigation",
+            "none" => "none",
+            "note" => "note",
+            "option" => "option",
+            "presentation" => "presentation",
+            "progressbar" => "progressbar",
+            "radio" => "radio",
+            "radiogroup" => "radiogroup",
+            "region" => "region",
+            "row" => "row",
+            "rowgroup" => "rowgroup",
+            "rowheader" => "rowheader",
+            "scrollbar" => "scrollbar",
+            "search" => "search",
+            "searchbox" => "searchbox",
+            "separator" => "separator",
+            "slider" => "slider",
+            "spinbutton" => "spinbutton",
+            "status" => "status",
+            "switch" => "switch",
+            "tab" => "tab",
+            "table" => "table",
+            "tablist" => "tablist",
+            "tabpanel" => "tabpanel",
+            "term" => "term",
+            "textbox" => "textbox",
+            "timer" => "timer",
+            "toolbar" => "toolbar",
+            "tooltip" => "tooltip",
+            "tree" => "tree",
+            "treegrid" => "treegrid",
+            "treeitem" => "treeitem",
+            _ => continue,
+        };
+        return Some(role);
+    }
+    None
+}
+
+struct AccessibilityNameResolver<'a> {
+    arena: &'a ElementArena,
+    rendered: &'a [bool],
+    ids: &'a HashMap<String, usize>,
+    labels_for: &'a HashMap<String, Vec<usize>>,
+    maximum: usize,
+    remaining_work: &'a mut usize,
+    truncated: &'a mut bool,
+}
+
+impl AccessibilityNameResolver<'_> {
+    fn resolve(&mut self, idx: usize, element: &AccessibilityElement) -> String {
+        let mut visited = HashSet::new();
+        visited.insert(idx);
+        if let Some(labelledby) = element.aria_labelledby.as_deref() {
+            let name = self.labelledby_name(labelledby, &mut visited);
+            if !name.is_empty() {
+                return name;
+            }
+        }
+        if let Some(label) = element
+            .aria_label
+            .as_deref()
+            .filter(|label| !label.is_empty())
+        {
+            return label.to_owned();
+        }
+        if is_labelable_control(&element.tag) {
+            let mut name = String::new();
+            if let Some(id) =
+                bounded_node_attr(self.arena.node(idx), "id", self.maximum, self.truncated)
+                && let Some(labels) = self.labels_for.get(&id)
+            {
+                for label_idx in labels.iter().copied() {
+                    let part = self.reference_name(label_idx, &mut visited);
+                    append_name_part(&mut name, &part, self.maximum, self.truncated);
+                }
+            }
+            let mut parent = self.arena.parent(idx);
+            for _ in 0..64 {
+                let Some(parent_idx) = parent else { break };
+                if node_tag(self.arena.node(parent_idx)) == Some("label") {
+                    let part = self.reference_name(parent_idx, &mut visited);
+                    append_name_part(&mut name, &part, self.maximum, self.truncated);
+                    parent = None;
+                    break;
+                }
+                parent = self.arena.parent(parent_idx);
+            }
+            if parent.is_some() {
+                *self.truncated = true;
+            }
+            if !name.is_empty() {
+                return name;
+            }
+        }
+        element
+            .alt
+            .as_deref()
+            .filter(|value| !value.is_empty())
+            .or_else(|| element.title.as_deref().filter(|value| !value.is_empty()))
+            .or_else(|| {
+                (element.tag == "input")
+                    .then_some(element.value.as_deref())
+                    .flatten()
+                    .filter(|value| !value.is_empty())
+            })
+            .or_else(|| accessibility_name_from_content(element).then_some(element.text.as_str()))
+            .unwrap_or("")
+            .to_owned()
+    }
+
+    fn labelledby_name(&mut self, labelledby: &str, visited: &mut HashSet<usize>) -> String {
+        let mut name = String::new();
+        for (references, id) in labelledby.split_ascii_whitespace().enumerate() {
+            if references == 32 {
+                *self.truncated = true;
+                break;
+            }
+            if let Some(idx) = self.ids.get(id).copied() {
+                let part = self.reference_name(idx, visited);
+                append_name_part(&mut name, &part, self.maximum, self.truncated);
+            }
+        }
+        name
+    }
+
+    fn reference_name(&mut self, idx: usize, visited: &mut HashSet<usize>) -> String {
+        if idx >= self.rendered.len() || !visited.insert(idx) {
+            return String::new();
+        }
+        if !consume_name_work(self.remaining_work, self.truncated) {
+            return String::new();
+        }
+        let node = self.arena.node(idx);
+        if let Some(labelledby) =
+            bounded_node_attr(node, "aria-labelledby", self.maximum, self.truncated)
+        {
+            let name = self.labelledby_name(&labelledby, visited);
+            if !name.is_empty() {
+                return name;
+            }
+        }
+        if let Some(label) = bounded_node_attr(node, "aria-label", self.maximum, self.truncated)
+            && !label.is_empty()
+        {
+            return label;
+        }
+        if self.rendered[idx] {
+            bounded_accessibility_text(
+                self.arena,
+                idx,
+                self.rendered,
+                self.maximum,
+                self.remaining_work,
+                self.truncated,
+            )
+        } else {
+            bounded_referenced_accessibility_text(
+                self.arena,
+                idx,
+                self.rendered.len(),
+                self.maximum,
+                self.remaining_work,
+                self.truncated,
+            )
+        }
+    }
+}
+
+fn is_labelable_control(tag: &str) -> bool {
+    matches!(tag, "button" | "input" | "select" | "textarea")
+}
+
+fn accessibility_name_from_content(element: &AccessibilityElement) -> bool {
+    if let Some(role) = element.role.as_deref() {
+        return matches!(
+            role.to_ascii_lowercase().as_str(),
+            "button"
+                | "link"
+                | "checkbox"
+                | "radio"
+                | "heading"
+                | "listitem"
+                | "menuitem"
+                | "option"
+                | "tab"
+        );
+    }
+    matches!(
+        element.tag.as_str(),
+        "a" | "button" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li" | "option"
+    ) || !native_accessibility_element(element)
+}
+
+fn ancestor_consumes_accessibility_text(
+    arena: &ElementArena,
+    idx: usize,
+    maximum_depth: usize,
+) -> bool {
+    let mut parent = arena.parent(idx);
+    for _ in 0..maximum_depth {
+        let Some(parent_idx) = parent else {
+            return false;
+        };
+        let node = arena.node(parent_idx);
+        let tag = node_tag(node).unwrap_or("");
+        let role = bounded_role_token(node);
+        if role.as_deref().is_some_and(|role| {
+            matches!(
+                role,
+                "button"
+                    | "link"
+                    | "checkbox"
+                    | "radio"
+                    | "heading"
+                    | "listitem"
+                    | "menuitem"
+                    | "option"
+                    | "tab"
+            )
+        }) || matches!(
+            tag,
+            "button" | "h1" | "h2" | "h3" | "h4" | "h5" | "h6" | "li"
+        ) || (tag == "a" && node_has_attr(node, "href"))
+        {
+            return true;
+        }
+        parent = arena.parent(parent_idx);
+    }
+    false
+}
+
+fn node_has_attr(node: &Node, name: &str) -> bool {
+    let NodeData::Element { attrs, .. } = &node.data else {
+        return false;
+    };
+    attrs
+        .borrow()
+        .iter()
+        .any(|attr| attr.name.local.as_ref() == name)
+}
+
+fn bounded_role_token(node: &Node) -> Option<String> {
+    let NodeData::Element { attrs, .. } = &node.data else {
+        return None;
+    };
+    let attrs = attrs.borrow();
+    let role = attrs
+        .iter()
+        .find(|attr| attr.name.local.as_ref() == "role")?;
+    first_supported_aria_role(role.value.as_ref()).map(str::to_owned)
+}
+
+fn node_tag(node: &Node) -> Option<&str> {
+    let NodeData::Element { name, .. } = &node.data else {
+        return None;
+    };
+    Some(name.local.as_ref())
+}
+
+fn copy_accessibility_attr(
+    target: &mut Option<String>,
+    value: &str,
+    maximum: usize,
+    truncated: &mut bool,
+) {
+    let (value, was_truncated) = bounded_accessibility_string(value.trim(), maximum);
+    *target = Some(value);
+    *truncated |= was_truncated;
+}
+
+fn bounded_node_attr(
+    node: &Node,
+    name: &str,
+    maximum: usize,
+    truncated: &mut bool,
+) -> Option<String> {
+    let NodeData::Element { attrs, .. } = &node.data else {
+        return None;
+    };
+    let attrs = attrs.borrow();
+    let value = attrs.iter().find(|attr| attr.name.local.as_ref() == name)?;
+    let (value, was_truncated) = bounded_accessibility_string(value.value.trim(), maximum);
+    *truncated |= was_truncated;
+    Some(value)
+}
+
+fn has_rendered_element_child(arena: &ElementArena, idx: usize, rendered: &[bool]) -> bool {
+    let mut child = arena.first_element_child_of(idx);
+    while let Some(child_idx) = child {
+        if child_idx < rendered.len() && rendered[child_idx] {
+            return true;
+        }
+        child = arena.next_element(child_idx);
+    }
+    false
+}
+
+fn bounded_direct_accessibility_text(node: &Node, maximum: usize, truncated: &mut bool) -> String {
+    let mut out = String::with_capacity(maximum.min(64));
+    if !matches!(node_tag(node), Some("script" | "style")) {
+        for child in node.children.borrow().iter() {
+            if let NodeData::Text { contents } = &child.data {
+                append_accessibility_text(&mut out, &contents.borrow(), maximum, truncated);
+            }
+        }
+    }
+    out.trim().to_owned()
+}
+
+fn bounded_accessibility_text(
+    arena: &ElementArena,
+    idx: usize,
+    rendered: &[bool],
+    maximum: usize,
+    remaining_work: &mut usize,
+    truncated: &mut bool,
+) -> String {
+    let mut out = String::with_capacity(maximum.min(64));
+    collect_accessibility_text(
+        arena,
+        idx,
+        rendered,
+        &mut out,
+        maximum,
+        remaining_work,
+        truncated,
+    );
+    out.trim().to_owned()
+}
+
+fn bounded_referenced_accessibility_text(
+    arena: &ElementArena,
+    idx: usize,
+    scan_len: usize,
+    maximum: usize,
+    remaining_work: &mut usize,
+    truncated: &mut bool,
+) -> String {
+    let mut out = String::with_capacity(maximum.min(64));
+    collect_referenced_accessibility_text(
+        arena,
+        idx,
+        scan_len,
+        &mut out,
+        maximum,
+        remaining_work,
+        truncated,
+    );
+    out.trim().to_owned()
+}
+
+fn collect_referenced_accessibility_text(
+    arena: &ElementArena,
+    idx: usize,
+    scan_len: usize,
+    out: &mut String,
+    maximum: usize,
+    remaining_work: &mut usize,
+    truncated: &mut bool,
+) {
+    if idx >= scan_len || out.len() >= maximum || !consume_name_work(remaining_work, truncated) {
+        return;
+    }
+    let node = arena.node(idx);
+    if matches!(node_tag(node), Some("script" | "style")) {
+        return;
+    }
+    let mut element_child = arena.first_element_child_of(idx);
+    for child in node.children.borrow().iter() {
+        match &child.data {
+            NodeData::Text { contents } => {
+                append_accessibility_text(out, &contents.borrow(), maximum, truncated);
+            }
+            NodeData::Element { .. } => {
+                if let Some(child_idx) = element_child {
+                    collect_referenced_accessibility_text(
+                        arena,
+                        child_idx,
+                        scan_len,
+                        out,
+                        maximum,
+                        remaining_work,
+                        truncated,
+                    );
+                    element_child = arena.next_element(child_idx);
+                }
+            }
+            _ => {}
+        }
+        if out.len() >= maximum {
+            return;
+        }
+    }
+}
+
+fn collect_accessibility_text(
+    arena: &ElementArena,
+    idx: usize,
+    rendered: &[bool],
+    out: &mut String,
+    maximum: usize,
+    remaining_work: &mut usize,
+    truncated: &mut bool,
+) {
+    if idx >= rendered.len()
+        || !rendered[idx]
+        || out.len() >= maximum
+        || !consume_name_work(remaining_work, truncated)
+    {
+        return;
+    }
+    let node = arena.node(idx);
+    if matches!(node_tag(node), Some("script" | "style")) {
+        return;
+    }
+    let mut element_child = arena.first_element_child_of(idx);
+    for child in node.children.borrow().iter() {
+        match &child.data {
+            NodeData::Text { contents } => {
+                append_accessibility_text(out, &contents.borrow(), maximum, truncated);
+            }
+            NodeData::Element { .. } => {
+                if let Some(child_idx) = element_child {
+                    collect_accessibility_text(
+                        arena,
+                        child_idx,
+                        rendered,
+                        out,
+                        maximum,
+                        remaining_work,
+                        truncated,
+                    );
+                    element_child = arena.next_element(child_idx);
+                }
+            }
+            _ => {}
+        }
+        if out.len() >= maximum {
+            return;
+        }
+    }
+}
+
+fn consume_name_work(remaining: &mut usize, truncated: &mut bool) -> bool {
+    if *remaining == 0 {
+        *truncated = true;
+        return false;
+    }
+    *remaining -= 1;
+    true
+}
+
+fn append_name_part(out: &mut String, part: &str, maximum: usize, truncated: &mut bool) {
+    if part.is_empty() {
+        return;
+    }
+    if !out.is_empty() {
+        append_accessibility_text(out, " ", maximum, truncated);
+    }
+    append_accessibility_text(out, part, maximum, truncated);
+}
+
+fn append_accessibility_text(out: &mut String, value: &str, maximum: usize, truncated: &mut bool) {
+    for character in value.chars() {
+        let character = if character.is_control() {
+            ' '
+        } else {
+            character
+        };
+        if out.len() + character.len_utf8() > maximum {
+            *truncated = true;
+            return;
+        }
+        out.push(character);
+    }
+}
+
+fn bounded_accessibility_string(value: &str, maximum: usize) -> (String, bool) {
+    let mut out = String::with_capacity(value.len().min(maximum));
+    let mut truncated = false;
+    append_accessibility_text(&mut out, value, maximum, &mut truncated);
+    (out, truncated)
 }
 
 // ---------------------------------------------------------------------------

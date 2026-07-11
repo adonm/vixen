@@ -86,6 +86,7 @@ where
                     return;
                 }
                 if non_rendered_tag(tag) {
+                    self.skip_element_descendants(node);
                     return;
                 }
 
@@ -94,6 +95,8 @@ where
                     .iter()
                     .any(|attr| attr.name.local.as_ref() == "hidden")
                 {
+                    drop(attrs);
+                    self.skip_element_descendants(node);
                     return;
                 }
                 let html_id = attrs
@@ -105,6 +108,7 @@ where
                 let styles = (self.computed_style)(dom_node_id);
                 let display = display_for(tag, &styles);
                 let Some(display) = display else {
+                    self.skip_element_descendants(node);
                     return;
                 };
                 let style =
@@ -171,5 +175,15 @@ where
         let id = self.tree.push(node);
         self.tree.node_mut(parent).children.push(id);
         id
+    }
+
+    fn skip_element_descendants(&mut self, node: &Handle) {
+        let children: Vec<Handle> = node.children.borrow().clone();
+        for child in children {
+            if matches!(child.data, NodeData::Element { .. }) {
+                self.next_element_node_id += 1;
+            }
+            self.skip_element_descendants(&child);
+        }
     }
 }

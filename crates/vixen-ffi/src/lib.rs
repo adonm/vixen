@@ -3,15 +3,19 @@
 #![deny(unsafe_code)]
 
 pub mod c_abi;
+pub mod c_frame;
+mod frame;
 
 use std::path::PathBuf;
 use std::time::Duration;
 
 pub use vixen_api::{
-    BrowserError, BrowserEvent, BrowserSnapshot, BrowsingContextId, BrowsingContextState,
-    NavigationId, ProfileSessionState,
+    AccessibilityNode, AccessibilityRect, AccessibilitySnapshot, BrowserError, BrowserEvent,
+    BrowserSnapshot, BrowsingContextId, BrowsingContextState, DocumentId, InputDispatchResult,
+    KeyEventData, MouseEventData, NavigationId, ProfileSessionState, RuntimeContextId,
 };
 pub use vixen_engine::browser::BrowserConfig;
+pub use vixen_engine::paint::RgbaFrame;
 
 use vixen_api::{BrowserCommand, BrowserCommandResult, browser_error_codes};
 use vixen_engine::browser::{EngineBrowserHandle, spawn_browser};
@@ -44,6 +48,27 @@ pub enum ControllerCommand {
         delta: i32,
     },
     ContextState(BrowsingContextId),
+    AccessibilitySnapshot {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        viewport: (u32, u32),
+    },
+    DispatchMouseEvent {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        runtime_context_id: RuntimeContextId,
+        viewport: (u32, u32),
+        event_type: String,
+        event: MouseEventData,
+    },
+    DispatchKeyEvent {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        runtime_context_id: RuntimeContextId,
+        viewport: (u32, u32),
+        event_type: String,
+        event: KeyEventData,
+    },
 }
 
 /// Immediate, typed acknowledgement of a [`ControllerCommand`].
@@ -55,6 +80,8 @@ pub enum ControllerResponse {
     ContextCreated(BrowsingContextId),
     NavigationAccepted(NavigationId),
     ContextState(BrowsingContextState),
+    AccessibilitySnapshot(AccessibilitySnapshot),
+    InputDispatched(InputDispatchResult),
 }
 
 /// One browser/profile owner and the sole consumer of its ordered event queue.
@@ -63,6 +90,15 @@ pub enum ControllerResponse {
 /// background model. Frontends drive it from their chosen execution context.
 pub struct FlutterBrowserController {
     handle: EngineBrowserHandle,
+    primary_mouse_press: Option<PrimaryMousePress>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PrimaryMousePress {
+    context_id: BrowsingContextId,
+    document_id: DocumentId,
+    runtime_context_id: RuntimeContextId,
+    node_id: usize,
 }
 
 impl FlutterBrowserController {
@@ -78,6 +114,7 @@ impl FlutterBrowserController {
     pub fn from_config(config: BrowserConfig) -> Result<Self, BrowserError> {
         Ok(Self {
             handle: spawn_browser(config)?,
+            primary_mouse_press: None,
         })
     }
 
@@ -111,6 +148,50 @@ impl FlutterBrowserController {
             ControllerCommand::ContextState(context_id) => {
                 BrowserCommand::GetBrowsingContextState { context_id }
             }
+            ControllerCommand::AccessibilitySnapshot {
+                context_id,
+                document_id,
+                viewport,
+            } => BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id,
+                viewport,
+            },
+            ControllerCommand::DispatchMouseEvent {
+                context_id,
+                document_id,
+                runtime_context_id,
+                viewport,
+                event_type,
+                event,
+            } => {
+                return self.dispatch_mouse_event(
+                    context_id,
+                    document_id,
+                    runtime_context_id,
+                    viewport,
+                    event_type,
+                    event,
+                );
+            }
+            ControllerCommand::DispatchKeyEvent {
+                context_id,
+                document_id,
+                runtime_context_id,
+                viewport: _,
+                event_type,
+                event,
+            } => BrowserCommand::DispatchKeyEvent {
+                context_id,
+                document_id,
+                runtime_context_id,
+                event_type: match event_type.as_str() {
+                    "keydown" => "keyDown".to_owned(),
+                    "keyup" => "keyUp".to_owned(),
+                    _ => event_type,
+                },
+                event,
+            },
         };
 
         match self.handle.dispatch(command)? {
@@ -130,6 +211,143 @@ impl FlutterBrowserController {
             BrowserCommandResult::BrowsingContextState(state) => {
                 Ok(ControllerResponse::ContextState(state))
             }
+            BrowserCommandResult::AccessibilitySnapshot(snapshot) => {
+                Ok(ControllerResponse::AccessibilitySnapshot(snapshot))
+            }
+            BrowserCommandResult::InputDispatched(result) => {
+                Ok(ControllerResponse::InputDispatched(result))
+            }
+            result => Err(unexpected_result(result)),
+        }
+    }
+
+    fn dispatch_mouse_event(
+        &mut self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        runtime_context_id: RuntimeContextId,
+        viewport: (u32, u32),
+        event_type: String,
+        event: MouseEventData,
+    ) -> Result<ControllerResponse, BrowserError> {
+        if !matches!(
+            event_type.as_str(),
+            "mousemove" | "mousedown" | "mouseup" | "wheel"
+        ) {
+            self.primary_mouse_press = None;
+            return Err(BrowserError::new(
+                browser_error_codes::INVALID_ARGUMENT,
+                "unsupported mouse event type",
+            ));
+        }
+
+        let generation_matches = self.primary_mouse_press.is_none_or(|press| {
+            press.context_id == context_id
+                && press.document_id == document_id
+                && press.runtime_context_id == runtime_context_id
+        });
+        if !generation_matches || event_type == "mousedown" {
+            self.primary_mouse_press = None;
+        }
+        let pressed = if event_type == "mouseup" {
+            self.primary_mouse_press.take()
+        } else {
+            None
+        };
+
+        let target = match self.handle.dispatch(BrowserCommand::HitTest {
+            context_id,
+            document_id,
+            viewport,
+            x: event.x,
+            y: event.y,
+        }) {
+            Ok(BrowserCommandResult::HitTest(target)) => target,
+            Ok(result) => {
+                self.primary_mouse_press = None;
+                return Err(unexpected_result(result));
+            }
+            Err(error) => {
+                self.primary_mouse_press = None;
+                return Err(error);
+            }
+        };
+        let Some(target) = target else {
+            self.primary_mouse_press = None;
+            return Ok(ControllerResponse::InputDispatched(empty_input_result()));
+        };
+
+        let mut result = match self.dispatch_mouse_to_node(
+            context_id,
+            document_id,
+            runtime_context_id,
+            target.node_id,
+            event_type.clone(),
+            event.clone(),
+        ) {
+            Ok(result) => result,
+            Err(error) => {
+                self.primary_mouse_press = None;
+                return Err(error);
+            }
+        };
+
+        if event_type == "mousedown" && event.button == 0 {
+            self.primary_mouse_press = Some(PrimaryMousePress {
+                context_id,
+                document_id,
+                runtime_context_id,
+                node_id: target.node_id,
+            });
+        } else if event_type == "mouseup"
+            && event.button == 0
+            && pressed
+                == Some(PrimaryMousePress {
+                    context_id,
+                    document_id,
+                    runtime_context_id,
+                    node_id: target.node_id,
+                })
+        {
+            let clicked = match self.dispatch_mouse_to_node(
+                context_id,
+                document_id,
+                runtime_context_id,
+                target.node_id,
+                "click".to_owned(),
+                event,
+            ) {
+                Ok(result) => result,
+                Err(error) => {
+                    self.primary_mouse_press = None;
+                    return Err(error);
+                }
+            };
+            result.effects.extend(clicked.effects);
+            result.navigation_actions.extend(clicked.navigation_actions);
+        }
+
+        Ok(ControllerResponse::InputDispatched(result))
+    }
+
+    fn dispatch_mouse_to_node(
+        &mut self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        runtime_context_id: RuntimeContextId,
+        node_id: usize,
+        event_type: String,
+        event: MouseEventData,
+    ) -> Result<InputDispatchResult, BrowserError> {
+        match self.handle.dispatch(BrowserCommand::DispatchMouseEvent {
+            context_id,
+            document_id,
+            runtime_context_id,
+            node_id,
+            event_type,
+            event,
+        })? {
+            BrowserCommandResult::InputDispatched(result) => Ok(result),
             result => Err(unexpected_result(result)),
         }
     }
@@ -228,6 +446,33 @@ impl FlutterBrowserController {
         }
     }
 
+    pub fn accessibility_snapshot(
+        &mut self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        viewport: (u32, u32),
+    ) -> Result<AccessibilitySnapshot, BrowserError> {
+        match self.dispatch(ControllerCommand::AccessibilitySnapshot {
+            context_id,
+            document_id,
+            viewport,
+        })? {
+            ControllerResponse::AccessibilitySnapshot(snapshot) => Ok(snapshot),
+            response => Err(unexpected_response("get accessibility snapshot", response)),
+        }
+    }
+
+    /// Capture the active document through BrowserCore's authoritative paint
+    /// snapshot and Vixen's WebRender path using a local offscreen EGL surface.
+    pub fn capture_rgba_frame(
+        &mut self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        viewport: (u32, u32),
+    ) -> Result<RgbaFrame, BrowserError> {
+        frame::capture_rgba_frame(&mut self.handle, context_id, document_id, viewport)
+    }
+
     /// Return the next ordered browser event without blocking.
     ///
     /// On `browser.event-lagged`, pending frontend operations are indeterminate;
@@ -277,6 +522,13 @@ fn unexpected_result(result: BrowserCommandResult) -> BrowserError {
     )
 }
 
+fn empty_input_result() -> InputDispatchResult {
+    InputDispatchResult {
+        effects: Default::default(),
+        navigation_actions: Vec::new(),
+    }
+}
+
 fn unexpected_response(action: &str, response: ControllerResponse) -> BrowserError {
     BrowserError::new(
         browser_error_codes::CLOSED,
@@ -294,7 +546,9 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
-    use vixen_api::{BrowserEvent, NavigationCancellationReason, NavigationPhase};
+    use vixen_api::{
+        BrowserEvent, NavigationActionOutcome, NavigationCancellationReason, NavigationPhase,
+    };
     use vixen_engine::browser::BrowserConfig;
 
     use super::*;
@@ -470,6 +724,51 @@ mod tests {
     }
 
     #[test]
+    fn controller_returns_authoritative_accessibility_snapshot_and_rejects_stale_document() {
+        let profile = TestProfile::new();
+        let url = "https://ffi.test/accessibility";
+        let mut config = BrowserConfig::new(&profile.0);
+        config.document_overrides.insert(
+            url.to_owned(),
+            "<!doctype html><button id='go' aria-label='Continue'>Ignored</button><script>document.querySelector('#go').focus()</script>"
+                .to_owned(),
+        );
+        let mut controller = FlutterBrowserController::from_config(config).unwrap();
+        let context_id = controller.create_context().unwrap();
+        let navigation_id = controller.navigate(context_id, url).unwrap();
+        wait_for_settled(&mut controller, navigation_id);
+        let state = controller.context_state(context_id).unwrap();
+
+        let snapshot = controller
+            .accessibility_snapshot(context_id, state.document_id, (320, 240))
+            .unwrap();
+        assert_eq!(snapshot.context_id, context_id);
+        assert_eq!(snapshot.document_id, state.document_id);
+        assert_ne!(snapshot.generation, 0);
+        assert_eq!(
+            controller
+                .accessibility_snapshot(context_id, state.document_id, (320, 240))
+                .unwrap()
+                .generation,
+            snapshot.generation
+        );
+        let button = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Continue")
+            .unwrap();
+        assert_eq!(button.role, "button");
+        assert!(button.focused);
+        assert!(button.bbox.is_some());
+
+        let stale_document = DocumentId::new(state.document_id.get() + 1).unwrap();
+        let error = controller
+            .accessibility_snapshot(context_id, stale_document, (320, 240))
+            .unwrap_err();
+        assert_eq!(error.code, browser_error_codes::STALE_DOCUMENT);
+    }
+
+    #[test]
     fn stop_is_dispatched_while_a_gated_navigation_is_active() {
         let profile = TestProfile::new();
         let server = GatedServer::start();
@@ -516,6 +815,207 @@ mod tests {
                 .active_navigation_id,
             None
         );
+    }
+
+    #[test]
+    fn controller_owns_primary_click_sequence_and_dispatches_keyboard_input() {
+        let profile = TestProfile::new();
+        let url = "https://ffi.test/input";
+        let mut config = BrowserConfig::new(&profile.0);
+        config.document_overrides.insert(
+            url.to_owned(),
+            r#"<!doctype html>
+                <style>html,body{margin:0}button{display:block;width:160px;height:80px}</style>
+                <button id="target">Target</button>
+                <button id="other">Other</button>
+                <script>
+                  document.querySelector('#target').addEventListener('click', () => {
+                    console.log('ffi-click');
+                    history.pushState({}, '', '#click');
+                  });
+                  document.querySelector('#target').addEventListener('mousemove', () => console.log('ffi-move'));
+                  document.addEventListener('mousedown', event => console.log('ffi-down:' + event.target.id));
+                  document.addEventListener('mouseup', event => {
+                    console.log('ffi-up:' + event.target.id);
+                    history.pushState({}, '', '#up');
+                  });
+                  document.addEventListener('keydown', event => console.log('ffi-key:' + event.key));
+                </script>"#
+                .to_owned(),
+        );
+        let mut controller = FlutterBrowserController::from_config(config).unwrap();
+        let context_id = controller.create_context().unwrap();
+        let navigation_id = controller.navigate(context_id, url).unwrap();
+        wait_for_settled(&mut controller, navigation_id);
+        let state = controller.context_state(context_id).unwrap();
+        let runtime_context_id = state.runtime_context_id.unwrap();
+
+        let down = dispatch_mouse(&mut controller, &state, "mousedown", 20.0, 20.0, 0, 1);
+        assert_eq!(down.effects.console.len(), 1);
+        assert!(
+            down.effects.console[0].args[0]
+                .description
+                .contains("ffi-down:target")
+        );
+
+        let up = dispatch_mouse(&mut controller, &state, "mouseup", 20.0, 20.0, 0, 0);
+        assert_eq!(up.effects.console.len(), 2);
+        assert!(
+            up.effects.console[0].args[0]
+                .description
+                .contains("ffi-up:target")
+        );
+        assert!(
+            up.effects.console[1].args[0]
+                .description
+                .contains("ffi-click")
+        );
+        assert_eq!(up.navigation_actions.len(), 2);
+        assert!(matches!(
+            &up.navigation_actions[0],
+            NavigationActionOutcome::SameDocument { url } if url.ends_with("#up")
+        ));
+        assert!(matches!(
+            &up.navigation_actions[1],
+            NavigationActionOutcome::SameDocument { url } if url.ends_with("#click")
+        ));
+
+        let moved = dispatch_mouse(&mut controller, &state, "mousemove", 20.0, 20.0, 0, 0);
+        assert_eq!(moved.effects.console.len(), 1);
+        assert!(
+            moved.effects.console[0].args[0]
+                .description
+                .contains("ffi-move")
+        );
+
+        let keyed = controller
+            .dispatch(ControllerCommand::DispatchKeyEvent {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id,
+                viewport: (800, 600),
+                event_type: "keydown".to_owned(),
+                event: KeyEventData {
+                    key: "A".to_owned(),
+                    code: "KeyA".to_owned(),
+                    text: "A".to_owned(),
+                    apply_text: false,
+                    ctrl_key: false,
+                    shift_key: true,
+                    alt_key: false,
+                    meta_key: false,
+                    repeat: false,
+                    location: 0,
+                },
+            })
+            .unwrap();
+        let ControllerResponse::InputDispatched(keyed) = keyed else {
+            panic!("unexpected key response: {keyed:?}");
+        };
+        assert_eq!(keyed.effects.console.len(), 1);
+        assert!(
+            keyed.effects.console[0].args[0]
+                .description
+                .contains("ffi-key:A")
+        );
+
+        let _ = dispatch_mouse(&mut controller, &state, "mousedown", 20.0, 20.0, 0, 1);
+        let mismatched = dispatch_mouse(&mut controller, &state, "mouseup", 20.0, 100.0, 0, 0);
+        assert_eq!(mismatched.effects.console.len(), 1);
+        assert!(
+            mismatched.effects.console[0].args[0]
+                .description
+                .contains("ffi-up:other")
+        );
+
+        let _ = dispatch_mouse(&mut controller, &state, "mousedown", 20.0, 20.0, 0, 1);
+        let missed = dispatch_mouse(&mut controller, &state, "mousemove", -1.0, -1.0, 0, 1);
+        assert!(missed.effects.is_empty());
+        assert!(missed.navigation_actions.is_empty());
+        let after_miss = dispatch_mouse(&mut controller, &state, "mouseup", 20.0, 20.0, 0, 0);
+        assert_eq!(after_miss.effects.console.len(), 1);
+        assert!(
+            after_miss.effects.console[0].args[0]
+                .description
+                .contains("ffi-up:target")
+        );
+
+        let _ = dispatch_mouse(&mut controller, &state, "mousedown", 20.0, 20.0, 0, 1);
+        let different_runtime = RuntimeContextId::new(runtime_context_id.get() + 1).unwrap();
+        let generation_mismatch = controller
+            .dispatch(ControllerCommand::DispatchMouseEvent {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id: different_runtime,
+                viewport: (800, 600),
+                event_type: "mousemove".to_owned(),
+                event: mouse_event(20.0, 20.0, 0, 1),
+            })
+            .unwrap_err();
+        assert_eq!(generation_mismatch.code, browser_error_codes::STALE_RUNTIME);
+        let after_generation_mismatch =
+            dispatch_mouse(&mut controller, &state, "mouseup", 20.0, 20.0, 0, 0);
+        assert_eq!(after_generation_mismatch.effects.console.len(), 1);
+        assert!(
+            after_generation_mismatch.effects.console[0].args[0]
+                .description
+                .contains("ffi-up:target")
+        );
+
+        let standalone_click = controller
+            .dispatch(ControllerCommand::DispatchMouseEvent {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id,
+                viewport: (800, 600),
+                event_type: "click".to_owned(),
+                event: mouse_event(20.0, 20.0, 0, 0),
+            })
+            .unwrap_err();
+        assert_eq!(standalone_click.code, browser_error_codes::INVALID_ARGUMENT);
+    }
+
+    fn dispatch_mouse(
+        controller: &mut FlutterBrowserController,
+        state: &BrowsingContextState,
+        event_type: &str,
+        x: f64,
+        y: f64,
+        button: i32,
+        buttons: i64,
+    ) -> InputDispatchResult {
+        let response = controller
+            .dispatch(ControllerCommand::DispatchMouseEvent {
+                context_id: state.context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                viewport: (800, 600),
+                event_type: event_type.to_owned(),
+                event: mouse_event(x, y, button, buttons),
+            })
+            .unwrap();
+        let ControllerResponse::InputDispatched(result) = response else {
+            panic!("unexpected mouse response: {response:?}");
+        };
+        result
+    }
+
+    fn mouse_event(x: f64, y: f64, button: i32, buttons: i64) -> MouseEventData {
+        MouseEventData {
+            x,
+            y,
+            button,
+            buttons,
+            detail: 1,
+            related_node_id: None,
+            bubbles: true,
+            ctrl_key: false,
+            shift_key: false,
+            alt_key: false,
+            meta_key: false,
+            delta_x: 0.0,
+            delta_y: 0.0,
+        }
     }
 
     fn wait_for_settled(controller: &mut FlutterBrowserController, navigation_id: NavigationId) {

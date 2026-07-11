@@ -15,6 +15,9 @@ extern "C" {
 #define VIXEN_MAX_OUTPUT_BYTES 1048576u
 #define VIXEN_MAX_OUTSTANDING_BUFFERS 64u
 #define VIXEN_MAX_WAIT_MILLISECONDS 60000u
+#define VIXEN_MAX_FRAME_DIMENSION 4096u
+#define VIXEN_MAX_FRAME_BYTES 67108864u
+#define VIXEN_MAX_OUTSTANDING_FRAMES 3u
 
 /* Stable return statuses. Only VIXEN_STATUS_OK means an operation succeeded. */
 #define VIXEN_STATUS_OK 0u
@@ -30,6 +33,7 @@ extern "C" {
 #define VIXEN_STATUS_INTERNAL_ERROR 10u
 #define VIXEN_STATUS_OUTPUT_TOO_LARGE 11u
 #define VIXEN_STATUS_BUFFER_LIMIT 12u
+#define VIXEN_STATUS_FRAME_LIMIT 13u
 
 /*
  * Opaque process-local token. Zero is never valid. Tokens are monotonically
@@ -54,13 +58,36 @@ typedef struct VixenBuffer {
 } VixenBuffer;
 
 /*
+ * Retained packed, top-to-bottom RGBA8 frame. An all-zero descriptor means no
+ * frame. Otherwise ptr addresses len immutable bytes owned by Rust until
+ * vixen_frame_release(token) succeeds. Do not write, free, resize, or retain
+ * ptr after release. Frame tokens and their process-wide retention limit are
+ * independent of VixenBuffer tokens. row_stride is width * 4 and len is exactly
+ * row_stride * height. frame_id increases per browser handle; context_id and
+ * document_id identify the authoritative BrowserCore generation rendered.
+ * The pointer remains valid across browser-handle destruction until release.
+ */
+typedef struct VixenFrame {
+    uint64_t token;
+    const uint8_t *ptr;
+    size_t len;
+    uint32_t width;
+    uint32_t height;
+    size_t row_stride;
+    uint64_t frame_id;
+    uint64_t context_id;
+    uint64_t document_id;
+} VixenFrame;
+
+/*
  * Threading and ownership:
  *
  * - vixen_open creates exactly one browser-scoped controller, which owns one
  *   BrowserCore handle and is the sole consumer of its ordered event stream.
  * - Functions are callable from arbitrary native threads. Calls on one handle
  *   serialize; different handles may progress independently. A blocking wait
- *   holds that handle's serialization lock for its duration.
+ *   and a frame snapshot/render hold that handle's serialization lock for their
+ *   duration. Rendering uses a call-local EGL pbuffer/surfaceless GL context.
  * - Do not concurrently destroy a handle with another call on that handle.
  *   Destroy is explicit; zero, unknown, and repeated destruction fail safely.
  * - There are no callbacks. Commands and events are copied across this ABI.
@@ -70,6 +97,9 @@ typedef struct VixenBuffer {
  *   pointers cannot be validated by C or Rust and violate this contract.
  * - Every exported function contains Rust panic containment. PANIC and
  *   INTERNAL_ERROR mean no browser outcome should be assumed.
+ * - Frame descriptors may be read from any thread while retained, but callers
+ *   must synchronize reads with vixen_frame_release; no read may overlap or
+ *   follow successful release of that frame token.
  */
 
 /*
@@ -123,6 +153,10 @@ typedef struct VixenBuffer {
  * Oversized output fails with OUTPUT_TOO_LARGE and ffi.output-too-large.
  * If callers retain too many allocations, BUFFER_LIMIT may have no JSON output;
  * release an earlier token before retrying.
+ *
+ * vixen_capture_frame uses out_json only for this same bounded error shape. On
+ * success out_json is all-zero. Invalid ids/dimensions fail before rendering;
+ * FRAME_LIMIT means three frame allocations are already retained process-wide.
  */
 
 /* Returns VIXEN_ABI_VERSION. Zero is reserved for a contained panic. */
@@ -156,6 +190,24 @@ uint32_t vixen_wait_event(VixenHandle handle,
 
 /* Releases an output allocation by token. Safe failure is UNKNOWN_BUFFER. */
 uint32_t vixen_buffer_release(uint64_t token);
+
+/*
+ * Captures current authoritative paint commands for exactly context_id and
+ * document_id, then renders width x height through WebRender to packed RGBA8.
+ * Both ids and dimensions must be nonzero; each dimension is capped by
+ * VIXEN_MAX_FRAME_DIMENSION and bytes by VIXEN_MAX_FRAME_BYTES. out_frame and
+ * out_json are reset before use. On success out_json remains all-zero.
+ */
+uint32_t vixen_capture_frame(VixenHandle handle,
+                             uint64_t context_id,
+                             uint64_t document_id,
+                             uint32_t width,
+                             uint32_t height,
+                             VixenFrame *out_frame,
+                             VixenBuffer *out_json);
+
+/* Releases one frame allocation by token. Safe failure is UNKNOWN_BUFFER. */
+uint32_t vixen_frame_release(uint64_t token);
 
 #ifdef __cplusplus
 }

@@ -3,7 +3,8 @@
 Vixen's current baseline suite is a dependency-light Linux/headless measurement
 foundation built with Node.js built-ins. It records observations; it does not
 enforce budgets, measure a Flutter build, or claim complete real-site behavior.
-Flutter is not installed in this workspace.
+The Linux Flutter debug bundle exists, but no controlled hello-Flutter versus
+Flutter+Vixen release/AOT size or performance baseline has been recorded yet.
 
 ## Commands
 

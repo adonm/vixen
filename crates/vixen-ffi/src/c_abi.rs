@@ -15,13 +15,19 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use vixen_api::{
-    BrowserError, BrowserEvent, BrowsingContextId, BrowsingContextState,
-    CrossDocumentNavigationKind, DiagnosticScope, DownloadEvent, EngineDiagnostic,
-    EngineDiagnosticCategory, NavigationCancellationReason, NavigationPhase, RuntimeConsoleArg,
+    AccessibilityNode, AccessibilitySnapshot, BrowserError, BrowserEvent, BrowsingContextId,
+    BrowsingContextState, CrossDocumentNavigationKind, DiagnosticScope, DownloadEvent,
+    EngineDiagnostic, EngineDiagnosticCategory, InputDispatchResult, KeyEventData, MouseEventData,
+    NavigationActionOutcome, NavigationCancellationReason, NavigationPhase, RuntimeConsoleArg,
     RuntimeConsoleValue, RuntimeEffects, RuntimeNetworkEvent,
 };
 
 use crate::{ABI_VERSION, ControllerCommand, ControllerResponse, FlutterBrowserController};
+
+pub use crate::c_frame::{
+    VIXEN_MAX_FRAME_BYTES, VIXEN_MAX_FRAME_DIMENSION, VIXEN_MAX_OUTSTANDING_FRAMES,
+    VIXEN_STATUS_FRAME_LIMIT, VixenFrame, vixen_capture_frame, vixen_frame_release,
+};
 
 pub const VIXEN_STATUS_OK: u32 = 0;
 pub const VIXEN_STATUS_NO_EVENT: u32 = 1;
@@ -42,6 +48,15 @@ pub const VIXEN_MAX_MESSAGE_BYTES: usize = 65_536;
 pub const VIXEN_MAX_OUTPUT_BYTES: usize = 1_048_576;
 pub const VIXEN_MAX_OUTSTANDING_BUFFERS: usize = 64;
 pub const VIXEN_MAX_WAIT_MILLISECONDS: u64 = 60_000;
+
+const MAX_INPUT_VIEWPORT_DIMENSION: u32 = 4096;
+const MAX_INPUT_VIEWPORT_BYTES: u64 = 64 * 1024 * 1024;
+const MAX_KEY_BYTES: usize = 256;
+const MAX_CODE_BYTES: usize = 256;
+const MAX_TEXT_BYTES: usize = 4096;
+// 256 nodes with three maximally escaped 512-byte fields and fixed node JSON
+// remain below VIXEN_MAX_OUTPUT_BYTES.
+const MAX_ACCESSIBILITY_ABI_NODES: usize = 256;
 
 const FFI_INVALID_ARGUMENT: &str = "ffi.invalid-argument";
 const FFI_INVALID_UTF8: &str = "ffi.invalid-utf8";
@@ -65,19 +80,20 @@ pub struct VixenBuffer {
 }
 
 impl VixenBuffer {
-    const EMPTY: Self = Self {
+    pub(crate) const EMPTY: Self = Self {
         token: 0,
         ptr: ptr::null(),
         len: 0,
     };
 }
 
-struct ControllerState {
-    controller: FlutterBrowserController,
+pub(crate) struct ControllerState {
+    pub(crate) controller: FlutterBrowserController,
     next_event_sequence: u64,
+    pub(crate) next_frame_id: u64,
 }
 
-type ControllerEntry = Arc<Mutex<ControllerState>>;
+pub(crate) type ControllerEntry = Arc<Mutex<ControllerState>>;
 
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 static NEXT_BUFFER: AtomicU64 = AtomicU64::new(1);
@@ -93,14 +109,14 @@ fn buffers() -> &'static Mutex<HashMap<u64, Box<[u8]>>> {
 }
 
 #[derive(Debug)]
-struct AbiError {
-    status: u32,
-    code: &'static str,
-    message: String,
+pub(crate) struct AbiError {
+    pub(crate) status: u32,
+    pub(crate) code: &'static str,
+    pub(crate) message: String,
 }
 
 impl AbiError {
-    fn new(status: u32, code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(status: u32, code: &'static str, message: impl Into<String>) -> Self {
         Self {
             status,
             code,
@@ -108,7 +124,7 @@ impl AbiError {
         }
     }
 
-    fn invalid_argument(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid_argument(message: impl Into<String>) -> Self {
         Self::new(VIXEN_STATUS_INVALID_ARGUMENT, FFI_INVALID_ARGUMENT, message)
     }
 
@@ -116,7 +132,7 @@ impl AbiError {
         Self::new(VIXEN_STATUS_INVALID_COMMAND, FFI_INVALID_COMMAND, message)
     }
 
-    fn internal(message: impl Into<String>) -> Self {
+    pub(crate) fn internal(message: impl Into<String>) -> Self {
         Self::new(VIXEN_STATUS_INTERNAL_ERROR, FFI_INTERNAL, message)
     }
 }
@@ -169,6 +185,7 @@ pub unsafe extern "C" fn vixen_open(
             let entry = Arc::new(Mutex::new(ControllerState {
                 controller,
                 next_event_sequence: 1,
+                next_frame_id: 1,
             }));
             controllers()
                 .lock()
@@ -358,7 +375,7 @@ fn event_impl(handle: u64, timeout: Option<Duration>, out_json: *mut VixenBuffer
     }
 }
 
-fn initialize_output(out_json: *mut VixenBuffer) -> bool {
+pub(crate) fn initialize_output(out_json: *mut VixenBuffer) -> bool {
     if out_json.is_null() {
         return false;
     }
@@ -366,7 +383,7 @@ fn initialize_output(out_json: *mut VixenBuffer) -> bool {
     true
 }
 
-fn finish(result: Result<(), AbiError>, out_json: *mut VixenBuffer) -> u32 {
+pub(crate) fn finish(result: Result<(), AbiError>, out_json: *mut VixenBuffer) -> u32 {
     match result {
         Ok(()) => VIXEN_STATUS_OK,
         Err(error) => {
@@ -418,7 +435,7 @@ fn write_json(out_json: *mut VixenBuffer, value: &Value) -> Result<(), AbiError>
     Ok(())
 }
 
-fn next_token(counter: &AtomicU64, kind: &str) -> Result<u64, AbiError> {
+pub(crate) fn next_token(counter: &AtomicU64, kind: &str) -> Result<u64, AbiError> {
     counter
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
             value.checked_add(1)
@@ -426,7 +443,7 @@ fn next_token(counter: &AtomicU64, kind: &str) -> Result<u64, AbiError> {
         .map_err(|_| AbiError::internal(format!("{kind} exhausted")))
 }
 
-fn controller_entry(handle: u64) -> Result<ControllerEntry, AbiError> {
+pub(crate) fn controller_entry(handle: u64) -> Result<ControllerEntry, AbiError> {
     if handle == 0 {
         return Err(AbiError::new(
             VIXEN_STATUS_UNKNOWN_HANDLE,
@@ -448,7 +465,7 @@ fn controller_entry(handle: u64) -> Result<ControllerEntry, AbiError> {
         })
 }
 
-fn browser_error(error: BrowserError) -> AbiError {
+pub(crate) fn browser_error(error: BrowserError) -> AbiError {
     AbiError::new(VIXEN_STATUS_BROWSER_ERROR, error.code, error.message)
 }
 
@@ -543,6 +560,75 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
             exact_keys(object, &["context_id", "type", "v"])?;
             ControllerCommand::ContextState(required_context_id(object)?)
         }
+        "accessibility_snapshot" => {
+            exact_keys(
+                object,
+                &["context_id", "document_id", "type", "v", "viewport"],
+            )?;
+            ControllerCommand::AccessibilitySnapshot {
+                context_id: required_context_id(object)?,
+                document_id: required_document_id(object)?,
+                viewport: required_viewport(object)?,
+            }
+        }
+        "dispatch_mouse_event" => {
+            exact_keys(
+                object,
+                &[
+                    "context_id",
+                    "document_id",
+                    "event",
+                    "event_type",
+                    "runtime_context_id",
+                    "type",
+                    "v",
+                    "viewport",
+                ],
+            )?;
+            let event_type = required_string(object, "event_type")?;
+            if !matches!(event_type, "mousemove" | "mousedown" | "mouseup" | "wheel") {
+                return Err(AbiError::invalid_command(
+                    "event_type must be mousemove, mousedown, mouseup, or wheel",
+                ));
+            }
+            ControllerCommand::DispatchMouseEvent {
+                context_id: required_context_id(object)?,
+                document_id: required_document_id(object)?,
+                runtime_context_id: required_runtime_context_id(object)?,
+                viewport: required_viewport(object)?,
+                event_type: event_type.to_owned(),
+                event: required_mouse_event(object)?,
+            }
+        }
+        "dispatch_key_event" => {
+            exact_keys(
+                object,
+                &[
+                    "context_id",
+                    "document_id",
+                    "event",
+                    "event_type",
+                    "runtime_context_id",
+                    "type",
+                    "v",
+                    "viewport",
+                ],
+            )?;
+            let event_type = required_string(object, "event_type")?;
+            if !matches!(event_type, "keydown" | "keyup") {
+                return Err(AbiError::invalid_command(
+                    "event_type must be keydown or keyup",
+                ));
+            }
+            ControllerCommand::DispatchKeyEvent {
+                context_id: required_context_id(object)?,
+                document_id: required_document_id(object)?,
+                runtime_context_id: required_runtime_context_id(object)?,
+                viewport: required_viewport(object)?,
+                event_type: event_type.to_owned(),
+                event: required_key_event(object)?,
+            }
+        }
         _ => return Err(AbiError::invalid_command("unknown command type")),
     };
     Ok(command)
@@ -578,9 +664,157 @@ fn required_i64(object: &Map<String, Value>, field: &str) -> Result<i64, AbiErro
         .ok_or_else(|| AbiError::invalid_command(format!("{field} must be an integer")))
 }
 
+fn required_f64(object: &Map<String, Value>, field: &str) -> Result<f64, AbiError> {
+    let value = object
+        .get(field)
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .ok_or_else(|| AbiError::invalid_command(format!("{field} must be a finite number")))?;
+    Ok(value)
+}
+
+fn required_bool(object: &Map<String, Value>, field: &str) -> Result<bool, AbiError> {
+    object
+        .get(field)
+        .and_then(Value::as_bool)
+        .ok_or_else(|| AbiError::invalid_command(format!("{field} must be a boolean")))
+}
+
+fn required_object<'a>(
+    object: &'a Map<String, Value>,
+    field: &str,
+) -> Result<&'a Map<String, Value>, AbiError> {
+    object
+        .get(field)
+        .and_then(Value::as_object)
+        .ok_or_else(|| AbiError::invalid_command(format!("{field} must be an object")))
+}
+
 fn required_context_id(object: &Map<String, Value>) -> Result<BrowsingContextId, AbiError> {
     BrowsingContextId::new(required_u64(object, "context_id")?)
         .ok_or_else(|| AbiError::invalid_command("context_id must be nonzero"))
+}
+
+fn required_document_id(object: &Map<String, Value>) -> Result<vixen_api::DocumentId, AbiError> {
+    vixen_api::DocumentId::new(required_u64(object, "document_id")?)
+        .ok_or_else(|| AbiError::invalid_command("document_id must be nonzero"))
+}
+
+fn required_runtime_context_id(
+    object: &Map<String, Value>,
+) -> Result<vixen_api::RuntimeContextId, AbiError> {
+    vixen_api::RuntimeContextId::new(required_u64(object, "runtime_context_id")?)
+        .ok_or_else(|| AbiError::invalid_command("runtime_context_id must be nonzero"))
+}
+
+fn required_viewport(object: &Map<String, Value>) -> Result<(u32, u32), AbiError> {
+    let viewport = required_object(object, "viewport")?;
+    exact_keys(viewport, &["height", "width"])?;
+    let width = u32::try_from(required_u64(viewport, "width")?)
+        .map_err(|_| AbiError::invalid_command("viewport width must fit unsigned 32 bits"))?;
+    let height = u32::try_from(required_u64(viewport, "height")?)
+        .map_err(|_| AbiError::invalid_command("viewport height must fit unsigned 32 bits"))?;
+    let rgba_bytes = u64::from(width)
+        .checked_mul(u64::from(height))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or_else(|| AbiError::invalid_command("viewport RGBA size overflows"))?;
+    if width == 0
+        || height == 0
+        || width > MAX_INPUT_VIEWPORT_DIMENSION
+        || height > MAX_INPUT_VIEWPORT_DIMENSION
+        || rgba_bytes > MAX_INPUT_VIEWPORT_BYTES
+    {
+        return Err(AbiError::invalid_command(
+            "viewport must have positive dimensions no larger than 4096 and 67108864 RGBA bytes",
+        ));
+    }
+    Ok((width, height))
+}
+
+fn required_mouse_event(object: &Map<String, Value>) -> Result<MouseEventData, AbiError> {
+    let event = required_object(object, "event")?;
+    exact_keys(
+        event,
+        &[
+            "alt_key",
+            "bubbles",
+            "button",
+            "buttons",
+            "ctrl_key",
+            "delta_x",
+            "delta_y",
+            "detail",
+            "meta_key",
+            "shift_key",
+            "x",
+            "y",
+        ],
+    )?;
+    let button = i32::try_from(required_i64(event, "button")?)
+        .map_err(|_| AbiError::invalid_command("button must fit signed 32 bits"))?;
+    Ok(MouseEventData {
+        x: required_f64(event, "x")?,
+        y: required_f64(event, "y")?,
+        button,
+        buttons: required_i64(event, "buttons")?,
+        detail: required_i64(event, "detail")?,
+        related_node_id: None,
+        bubbles: required_bool(event, "bubbles")?,
+        ctrl_key: required_bool(event, "ctrl_key")?,
+        shift_key: required_bool(event, "shift_key")?,
+        alt_key: required_bool(event, "alt_key")?,
+        meta_key: required_bool(event, "meta_key")?,
+        delta_x: required_f64(event, "delta_x")?,
+        delta_y: required_f64(event, "delta_y")?,
+    })
+}
+
+fn required_key_event(object: &Map<String, Value>) -> Result<KeyEventData, AbiError> {
+    let event = required_object(object, "event")?;
+    exact_keys(
+        event,
+        &[
+            "alt_key",
+            "apply_text",
+            "code",
+            "ctrl_key",
+            "key",
+            "location",
+            "meta_key",
+            "repeat",
+            "shift_key",
+            "text",
+        ],
+    )?;
+    let key = bounded_string(event, "key", MAX_KEY_BYTES)?;
+    let code = bounded_string(event, "code", MAX_CODE_BYTES)?;
+    let text = bounded_string(event, "text", MAX_TEXT_BYTES)?;
+    Ok(KeyEventData {
+        key,
+        code,
+        text,
+        apply_text: required_bool(event, "apply_text")?,
+        ctrl_key: required_bool(event, "ctrl_key")?,
+        shift_key: required_bool(event, "shift_key")?,
+        alt_key: required_bool(event, "alt_key")?,
+        meta_key: required_bool(event, "meta_key")?,
+        repeat: required_bool(event, "repeat")?,
+        location: required_i64(event, "location")?,
+    })
+}
+
+fn bounded_string(
+    object: &Map<String, Value>,
+    field: &str,
+    maximum: usize,
+) -> Result<String, AbiError> {
+    let value = required_string(object, field)?;
+    if value.len() > maximum {
+        return Err(AbiError::invalid_command(format!(
+            "{field} exceeds {maximum} UTF-8 bytes"
+        )));
+    }
+    Ok(value.to_owned())
 }
 
 fn response_json(response: ControllerResponse) -> Value {
@@ -606,6 +840,83 @@ fn response_json(response: ControllerResponse) -> Value {
         ControllerResponse::ContextState(state) => json!({
             "type": "context_state",
             "state": context_state_json(state),
+        }),
+        ControllerResponse::AccessibilitySnapshot(snapshot) => {
+            accessibility_snapshot_json(snapshot)
+        }
+        ControllerResponse::InputDispatched(result) => input_dispatch_result_json(result),
+    }
+}
+
+fn accessibility_snapshot_json(mut snapshot: AccessibilitySnapshot) -> Value {
+    if snapshot.nodes.len() > MAX_ACCESSIBILITY_ABI_NODES {
+        snapshot.nodes.truncate(MAX_ACCESSIBILITY_ABI_NODES);
+        snapshot.truncated = true;
+    }
+    snapshot.refresh_generation();
+    json!({
+        "type": "accessibility_snapshot",
+        "context_id": snapshot.context_id.get(),
+        "document_id": snapshot.document_id.get(),
+        "source_generation": snapshot.source_generation,
+        "generation": snapshot.generation,
+        "viewport": {
+            "width": snapshot.viewport.0,
+            "height": snapshot.viewport.1,
+        },
+        "nodes": snapshot.nodes.into_iter().map(accessibility_node_json).collect::<Vec<_>>(),
+        "truncated": snapshot.truncated,
+    })
+}
+
+fn accessibility_node_json(node: AccessibilityNode) -> Value {
+    json!({
+        "id": node.id,
+        "role": node.role,
+        "label": node.label,
+        "value": node.value,
+        "bbox": node.bbox.map(|bbox| json!({
+            "x": bbox.x,
+            "y": bbox.y,
+            "width": bbox.width,
+            "height": bbox.height,
+        })),
+        "focused": node.focused,
+        "disabled": node.disabled,
+        "checked": node.checked,
+        "selected": node.selected,
+        "expanded": node.expanded,
+        "hidden": node.hidden,
+        "focusable": node.focusable,
+        "actions": node.actions,
+    })
+}
+
+fn input_dispatch_result_json(result: InputDispatchResult) -> Value {
+    json!({
+        "type": "input_dispatched",
+        "effects": runtime_effects_json(result.effects),
+        "navigation_actions": result
+            .navigation_actions
+            .into_iter()
+            .map(navigation_action_json)
+            .collect::<Vec<_>>(),
+    })
+}
+
+fn navigation_action_json(action: NavigationActionOutcome) -> Value {
+    match action {
+        NavigationActionOutcome::SameDocument { url } => json!({
+            "type": "same_document",
+            "url": url,
+        }),
+        NavigationActionOutcome::CrossDocument {
+            navigation_id,
+            kind,
+        } => json!({
+            "type": "cross_document",
+            "navigation_id": navigation_id.get(),
+            "kind": navigation_kind_json(kind),
         }),
     }
 }
@@ -1072,6 +1383,7 @@ mod tests {
         fn drop(&mut self) {
             assert!(controllers().lock().unwrap().is_empty());
             assert!(buffers().lock().unwrap().is_empty());
+            assert!(crate::c_frame::frame_registry_is_empty());
         }
     }
 
@@ -1107,6 +1419,10 @@ mod tests {
         }
     }
 
+    mod frame_tests {
+        include!("c_abi/frame_tests.rs");
+    }
+
     #[test]
     fn version_and_c_layout_are_stable() {
         let _scope = test_scope();
@@ -1117,6 +1433,34 @@ mod tests {
         assert_eq!(offset_of!(VixenBuffer, len), 8 + size_of::<*const u8>());
         assert!(size_of::<VixenBuffer>() >= 8 + size_of::<*const u8>() + size_of::<usize>());
         assert!(align_of::<VixenBuffer>() >= align_of::<u64>());
+        assert_eq!(offset_of!(VixenFrame, token), 0);
+        assert_eq!(offset_of!(VixenFrame, ptr), 8);
+        assert_eq!(offset_of!(VixenFrame, len), 8 + size_of::<*const u8>());
+        assert_eq!(
+            offset_of!(VixenFrame, width),
+            offset_of!(VixenFrame, len) + size_of::<usize>()
+        );
+        assert_eq!(
+            offset_of!(VixenFrame, height),
+            offset_of!(VixenFrame, width) + 4
+        );
+        assert_eq!(
+            offset_of!(VixenFrame, row_stride),
+            offset_of!(VixenFrame, height) + 4
+        );
+        assert_eq!(
+            offset_of!(VixenFrame, frame_id),
+            offset_of!(VixenFrame, row_stride) + size_of::<usize>()
+        );
+        assert_eq!(
+            offset_of!(VixenFrame, context_id),
+            offset_of!(VixenFrame, frame_id) + 8
+        );
+        assert_eq!(
+            offset_of!(VixenFrame, document_id),
+            offset_of!(VixenFrame, context_id) + 8
+        );
+        assert!(size_of::<VixenFrame>() >= offset_of!(VixenFrame, document_id) + 8);
     }
 
     #[test]
@@ -1130,21 +1474,30 @@ mod tests {
             "#define VIXEN_MAX_OUTPUT_BYTES 1048576u",
             "#define VIXEN_MAX_OUTSTANDING_BUFFERS 64u",
             "#define VIXEN_MAX_WAIT_MILLISECONDS 60000u",
+            "#define VIXEN_MAX_FRAME_DIMENSION 4096u",
+            "#define VIXEN_MAX_FRAME_BYTES 67108864u",
+            "#define VIXEN_MAX_OUTSTANDING_FRAMES 3u",
+            "#define VIXEN_STATUS_FRAME_LIMIT 13u",
             "uint32_t vixen_abi_version(void);",
             "uint32_t vixen_destroy(VixenHandle handle);",
             "uint32_t vixen_poll_event(VixenHandle handle, VixenBuffer *out_json);",
             "uint32_t vixen_buffer_release(uint64_t token);",
+            "uint32_t vixen_frame_release(uint64_t token);",
         ] {
             assert!(header.contains(declaration), "missing {declaration}");
         }
         assert!(header.contains("uint32_t vixen_open(const uint8_t *profile_path,"));
         assert!(header.contains("uint32_t vixen_command(VixenHandle handle,"));
         assert!(header.contains("uint32_t vixen_wait_event(VixenHandle handle,"));
+        assert!(header.contains("uint32_t vixen_capture_frame(VixenHandle handle,"));
         assert_eq!(VIXEN_MAX_PROFILE_PATH_BYTES, 4096);
         assert_eq!(VIXEN_MAX_MESSAGE_BYTES, 65_536);
         assert_eq!(VIXEN_MAX_OUTPUT_BYTES, 1_048_576);
         assert_eq!(VIXEN_MAX_OUTSTANDING_BUFFERS, 64);
         assert_eq!(VIXEN_MAX_WAIT_MILLISECONDS, 60_000);
+        assert_eq!(VIXEN_MAX_FRAME_DIMENSION, 4096);
+        assert_eq!(VIXEN_MAX_FRAME_BYTES, 64 * 1024 * 1024);
+        assert_eq!(VIXEN_MAX_OUTSTANDING_FRAMES, 3);
     }
 
     #[test]
@@ -1380,12 +1733,427 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_command_is_strict_and_c_abi_json_is_exact() {
+        let _scope = test_scope();
+        let parsed = parse_command(
+            &json!({
+                "v": 1,
+                "type": "accessibility_snapshot",
+                "context_id": 2,
+                "document_id": 3,
+                "viewport": {"width": 320, "height": 240},
+            })
+            .to_string(),
+        )
+        .unwrap();
+        assert!(matches!(
+            parsed,
+            ControllerCommand::AccessibilitySnapshot {
+                context_id,
+                document_id,
+                viewport: (320, 240),
+            } if context_id.get() == 2 && document_id.get() == 3
+        ));
+        for invalid in [
+            json!({
+                "v": 1,
+                "type": "accessibility_snapshot",
+                "context_id": 0,
+                "document_id": 3,
+                "viewport": {"width": 320, "height": 240},
+            }),
+            json!({
+                "v": 1,
+                "type": "accessibility_snapshot",
+                "context_id": 2,
+                "document_id": 0,
+                "viewport": {"width": 320, "height": 240},
+            }),
+            json!({
+                "v": 1,
+                "type": "accessibility_snapshot",
+                "context_id": 2,
+                "document_id": 3,
+                "viewport": {"width": 4097, "height": 240},
+            }),
+            json!({
+                "v": 1,
+                "type": "accessibility_snapshot",
+                "context_id": 2,
+                "document_id": 3,
+                "viewport": {"width": 320, "height": 240},
+                "extra": true,
+            }),
+        ] {
+            assert!(
+                parse_command(&invalid.to_string()).is_err(),
+                "accepted {invalid}"
+            );
+        }
+
+        let profile = TestProfile::new();
+        let handle = open(&profile);
+        let created = take_json(command(handle.0, json!({"v": 1, "type": "create_context"})));
+        let context_id = created["response"]["context_id"].as_u64().unwrap();
+        let state = take_json(command(
+            handle.0,
+            json!({"v": 1, "type": "context_state", "context_id": context_id}),
+        ));
+        let document_id = state["response"]["state"]["document_id"].as_u64().unwrap();
+        let actual = take_json(command(
+            handle.0,
+            json!({
+                "v": 1,
+                "type": "accessibility_snapshot",
+                "context_id": context_id,
+                "document_id": document_id,
+                "viewport": {"width": 320, "height": 240},
+            }),
+        ));
+        let generation = actual["response"]["generation"].as_u64().unwrap();
+        let source_generation = actual["response"]["source_generation"].as_u64().unwrap();
+        assert_ne!(generation, 0);
+        assert_ne!(source_generation, 0);
+        assert_eq!(
+            actual,
+            json!({
+                "v": 1,
+                "type": "response",
+                "response": {
+                    "type": "accessibility_snapshot",
+                    "context_id": context_id,
+                    "document_id": document_id,
+                    "source_generation": source_generation,
+                    "generation": generation,
+                    "viewport": {"width": 320, "height": 240},
+                    "nodes": [],
+                    "truncated": false,
+                },
+            })
+        );
+
+        let mut output = VixenBuffer::EMPTY;
+        let stale = serde_json::to_vec(&json!({
+            "v": 1,
+            "type": "accessibility_snapshot",
+            "context_id": context_id,
+            "document_id": document_id + 1,
+            "viewport": {"width": 320, "height": 240},
+        }))
+        .unwrap();
+        assert_eq!(
+            unsafe { vixen_command(handle.0, stale.as_ptr(), stale.len(), &mut output) },
+            VIXEN_STATUS_BROWSER_ERROR
+        );
+        let error = take_json(output);
+        assert_eq!(error["error"]["code"], "browser.stale-document");
+    }
+
+    #[test]
+    fn accessibility_response_projects_all_fields_and_stays_under_output_cap() {
+        let node = AccessibilityNode {
+            id: 4,
+            role: "checkbox".to_owned(),
+            label: "Remember me".to_owned(),
+            value: Some("yes".to_owned()),
+            bbox: Some(vixen_api::AccessibilityRect {
+                x: 1.5,
+                y: 2.5,
+                width: 30.0,
+                height: 40.0,
+            }),
+            focused: true,
+            disabled: false,
+            checked: Some(true),
+            selected: true,
+            expanded: Some(false),
+            hidden: false,
+            focusable: true,
+            actions: vec!["tap".to_owned()],
+        };
+        let projected = response_json(ControllerResponse::AccessibilitySnapshot(
+            AccessibilitySnapshot {
+                context_id: BrowsingContextId::new(2).unwrap(),
+                document_id: vixen_api::DocumentId::new(3).unwrap(),
+                source_generation: 1,
+                generation: 1,
+                viewport: (320, 240),
+                nodes: vec![node.clone()],
+                truncated: false,
+            },
+        ));
+        let generation = projected["generation"].as_u64().unwrap();
+        assert_ne!(generation, 0);
+        assert_eq!(
+            projected,
+            json!({
+                "type": "accessibility_snapshot",
+                "context_id": 2,
+                "document_id": 3,
+                "source_generation": 1,
+                "generation": generation,
+                "viewport": {"width": 320, "height": 240},
+                "nodes": [{
+                    "id": 4,
+                    "role": "checkbox",
+                    "label": "Remember me",
+                    "value": "yes",
+                    "bbox": {"x": 1.5, "y": 2.5, "width": 30.0, "height": 40.0},
+                    "focused": true,
+                    "disabled": false,
+                    "checked": true,
+                    "selected": true,
+                    "expanded": false,
+                    "hidden": false,
+                    "focusable": true,
+                    "actions": ["tap"],
+                }],
+                "truncated": false,
+            })
+        );
+
+        let worst = AccessibilityNode {
+            role: "\\".repeat(512),
+            label: "\\".repeat(512),
+            value: Some("\\".repeat(512)),
+            actions: vec!["tap".to_owned()],
+            ..node
+        };
+        let bounded = response_json(ControllerResponse::AccessibilitySnapshot(
+            AccessibilitySnapshot {
+                context_id: BrowsingContextId::new(2).unwrap(),
+                document_id: vixen_api::DocumentId::new(3).unwrap(),
+                source_generation: 7,
+                generation: 1,
+                viewport: (4096, 4096),
+                nodes: vec![worst; MAX_ACCESSIBILITY_ABI_NODES + 1],
+                truncated: false,
+            },
+        ));
+        assert_eq!(
+            bounded["nodes"].as_array().unwrap().len(),
+            MAX_ACCESSIBILITY_ABI_NODES
+        );
+        assert_eq!(bounded["truncated"], true);
+        assert_eq!(bounded["source_generation"], 7);
+        assert!(serde_json::to_vec(&bounded).unwrap().len() < VIXEN_MAX_OUTPUT_BYTES);
+    }
+
+    #[test]
+    fn mouse_input_json_is_strict_and_bounded() {
+        let _scope = test_scope();
+        let parsed = parse_command(&mouse_command().to_string()).unwrap();
+        assert!(matches!(
+            parsed,
+            ControllerCommand::DispatchMouseEvent {
+                context_id,
+                document_id,
+                runtime_context_id,
+                viewport: (800, 600),
+                ref event_type,
+                ref event,
+            } if context_id.get() == 1
+                && document_id.get() == 2
+                && runtime_context_id.get() == 3
+                && event_type == "mousedown"
+                && event.x == 10.5
+                && event.y == 20.25
+        ));
+
+        let mut cases = Vec::new();
+        let mut value = mouse_command();
+        value["extra"] = json!(true);
+        cases.push(value);
+        let mut value = mouse_command();
+        value["viewport"]["extra"] = json!(1);
+        cases.push(value);
+        let mut value = mouse_command();
+        value["event"]["extra"] = json!(1);
+        cases.push(value);
+        for field in ["context_id", "document_id", "runtime_context_id"] {
+            let mut value = mouse_command();
+            value[field] = json!(0);
+            cases.push(value);
+        }
+        for (field, invalid) in [("width", json!(0)), ("height", json!(4097))] {
+            let mut value = mouse_command();
+            value["viewport"][field] = invalid;
+            cases.push(value);
+        }
+        let mut value = mouse_command();
+        value["event_type"] = json!("click");
+        cases.push(value);
+        let mut value = mouse_command();
+        value["event_type"] = json!("dblclick");
+        cases.push(value);
+        let mut value = mouse_command();
+        value["event"]["button"] = json!(i64::MAX);
+        cases.push(value);
+        let mut value = mouse_command();
+        value["event"]["bubbles"] = json!(1);
+        cases.push(value);
+        let mut value = mouse_command();
+        value["event"]["node_id"] = json!(1);
+        cases.push(value);
+        let mut value = mouse_command();
+        value["event"]["delta_x"] = json!("NaN");
+        cases.push(value);
+
+        for value in cases {
+            assert!(
+                parse_command(&value.to_string()).is_err(),
+                "accepted invalid mouse command: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn key_input_json_is_strict_and_bounded() {
+        let _scope = test_scope();
+        let parsed = parse_command(&key_command().to_string()).unwrap();
+        assert!(matches!(
+            parsed,
+            ControllerCommand::DispatchKeyEvent {
+                viewport: (800, 600),
+                ref event_type,
+                ref event,
+                ..
+            } if event_type == "keydown"
+                && event.key == "a"
+                && event.code == "KeyA"
+                && event.text == "a"
+                && event.apply_text
+        ));
+
+        let mut cases = Vec::new();
+        let mut value = key_command();
+        value["event_type"] = json!("keypress");
+        cases.push(value);
+        let mut value = key_command();
+        value["event"]["key"] = json!("x".repeat(MAX_KEY_BYTES + 1));
+        cases.push(value);
+        let mut value = key_command();
+        value["event"]["code"] = json!("x".repeat(MAX_CODE_BYTES + 1));
+        cases.push(value);
+        let mut value = key_command();
+        value["event"]["text"] = json!("x".repeat(MAX_TEXT_BYTES + 1));
+        cases.push(value);
+        let mut value = key_command();
+        value["event"]["repeat"] = json!(0);
+        cases.push(value);
+        let mut value = key_command();
+        value["event"]["unknown"] = json!(false);
+        cases.push(value);
+
+        for value in cases {
+            assert!(
+                parse_command(&value.to_string()).is_err(),
+                "accepted invalid key command: {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn input_response_projects_navigation_outcomes_exactly() {
+        let _scope = test_scope();
+        let result = InputDispatchResult {
+            effects: RuntimeEffects::default(),
+            navigation_actions: vec![
+                NavigationActionOutcome::SameDocument {
+                    url: "https://ffi.test/#next".to_owned(),
+                },
+                NavigationActionOutcome::CrossDocument {
+                    navigation_id: vixen_api::NavigationId::new(9).unwrap(),
+                    kind: CrossDocumentNavigationKind::ContentReplacement {
+                        replaced_document_id: vixen_api::DocumentId::new(7).unwrap(),
+                    },
+                },
+            ],
+        };
+
+        assert_eq!(
+            response_json(ControllerResponse::InputDispatched(result)),
+            json!({
+                "type": "input_dispatched",
+                "effects": {
+                    "console": [],
+                    "dialogs": [],
+                    "bindings": [],
+                    "network": [],
+                    "exceptions": [],
+                },
+                "navigation_actions": [
+                    {"type": "same_document", "url": "https://ffi.test/#next"},
+                    {
+                        "type": "cross_document",
+                        "navigation_id": 9,
+                        "kind": {
+                            "type": "content_replacement",
+                            "replaced_document_id": 7,
+                        },
+                    },
+                ],
+            })
+        );
+    }
+
+    #[test]
     fn panic_boundary_returns_stable_status() {
         let _scope = test_scope();
         assert_eq!(
             ffi_boundary(|| panic!("contained test panic")),
             VIXEN_STATUS_PANIC
         );
+    }
+
+    fn mouse_command() -> Value {
+        json!({
+            "v": 1,
+            "type": "dispatch_mouse_event",
+            "context_id": 1,
+            "document_id": 2,
+            "runtime_context_id": 3,
+            "viewport": {"width": 800, "height": 600},
+            "event_type": "mousedown",
+            "event": {
+                "x": 10.5,
+                "y": 20.25,
+                "button": 0,
+                "buttons": 1,
+                "detail": 1,
+                "bubbles": true,
+                "ctrl_key": false,
+                "shift_key": false,
+                "alt_key": false,
+                "meta_key": false,
+                "delta_x": 0.0,
+                "delta_y": 0.0,
+            },
+        })
+    }
+
+    fn key_command() -> Value {
+        json!({
+            "v": 1,
+            "type": "dispatch_key_event",
+            "context_id": 1,
+            "document_id": 2,
+            "runtime_context_id": 3,
+            "viewport": {"width": 800, "height": 600},
+            "event_type": "keydown",
+            "event": {
+                "key": "a",
+                "code": "KeyA",
+                "text": "a",
+                "apply_text": true,
+                "ctrl_key": false,
+                "shift_key": false,
+                "alt_key": false,
+                "meta_key": false,
+                "repeat": false,
+                "location": 0,
+            },
+        })
     }
 
     fn open(profile: &TestProfile) -> Handle {

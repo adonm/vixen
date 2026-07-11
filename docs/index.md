@@ -15,9 +15,10 @@ The hard, spec-heavy subsystems are delegated where that keeps Vixen smaller
 and more correct: **Stylo/selectors** for CSS matching and cascade,
 **deno_core/V8** for JS execution and host packaging, **WebRender** for paint,
 and **html5ever** for HTML. BrowserCore owns browser truth and Flutter/Dart owns
-only chrome, presentation, and host-service UI. Flutter is not installed here and
-no Flutter build exists; the GTK/Relm4 shell is the temporary Linux compatibility
-baseline.
+only chrome, presentation, and host-service UI. The Linux Flutter alpha shell has
+a real BrowserCore bridge and bounded RGBA texture; the GTK/Relm4 shell remains
+the temporary compatibility baseline until input, accessibility, host services,
+packaging, and parity gates pass.
 
 ## Start here
 

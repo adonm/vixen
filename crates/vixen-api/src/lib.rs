@@ -18,11 +18,12 @@ mod browser;
 mod ids;
 
 pub use browser::{
-    AutomationEvaluation, BrowserCommand, BrowserCommandResult, BrowserError, BrowserEvent,
-    BrowserHandle, BrowserSnapshot, BrowsingContextConfig, BrowsingContextState,
-    CrossDocumentNavigationKind, DiagnosticScope, DocumentTextKind, EvaluationResult,
-    FocusEventInfo, FocusProjection, FormEntryInfo, FormEntryValueInfo, FormSubmissionInfo,
-    InputDispatchResult, KeyEventData, MouseEventData, NavigationActionOutcome,
+    ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityNode, AccessibilityRect,
+    AccessibilitySnapshot, AutomationEvaluation, BrowserCommand, BrowserCommandResult,
+    BrowserError, BrowserEvent, BrowserHandle, BrowserSnapshot, BrowsingContextConfig,
+    BrowsingContextState, CrossDocumentNavigationKind, DiagnosticScope, DocumentTextKind,
+    EvaluationResult, FocusEventInfo, FocusProjection, FormEntryInfo, FormEntryValueInfo,
+    FormSubmissionInfo, InputDispatchResult, KeyEventData, MouseEventData, NavigationActionOutcome,
     NavigationCancellationReason, NavigationHistoryEntry, NavigationHistorySnapshot,
     NavigationPhase, ProfileDataSelection, ProfileSessionState, RuntimeBindingEvent,
     RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue, RuntimeDialogEvent,

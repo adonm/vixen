@@ -9,22 +9,57 @@ ownership in [`ARCHITECTURE.md`](ARCHITECTURE.md), and accepted tradeoffs in
 
 ## Status and evidence boundary
 
-**Partially scaffolded target:** Flutter is not installed in this workspace.
-`vixen-ffi` provides a non-clone safe Rust controller over one BrowserCore
-handle/event receiver and the first handwritten C-compatible ABI milestone over
-that same controller. ABI v1 exports registry-backed opaque browser handles,
-bounded copied UTF-8/JSON commands, polling/timeout event consumption, stable
-tagged responses/events/errors, and explicitly size-capped, tokenized Rust-owned
-output buffers. There is no Dart binding, checked-in Flutter application, fake
-Flutter shell, generated runner, external texture, Semantics bridge, Flutter
-build, Flutter Flatpak, mobile build, or five-platform smoke result yet. The
-current Relm4/libadwaita/GTK shell and its Flatpak are the executable GUI
-compatibility baseline until the Linux Flutter shell reaches parity.
+**Implemented Linux alpha slice:** the repository contains a Flutter 3.44 Linux
+application, deterministic fake-controller tests, handwritten Dart FFI, a
+persistent worker isolate that exclusively owns one BrowserCore handle and its
+ordered event stream, and a generated GTK-backed Linux runner. Production fails
+closed when its process-adjacent `lib/libvixen_ffi.so` or ABI v1 is unavailable;
+it never substitutes the scripted controller.
+
+The same additive ABI v1 now exports bounded retained RGBA frames. BrowserCore
+captures one authoritative document generation through WebRender/EGL; Dart
+copies the frame through `TransferableTypedData`; and the Linux runner publishes
+it through one `FlPixelBufferTexture` with a mutex-protected three-buffer pool.
+Dimensions are capped at 4096 per axis and 64 MiB per frame, with at most three
+retained native frames and one in-flight Dart capture plus one newest
+replacement. `just gate-flutter-shell` runs format, analysis, 44 Dart/widget/
+native smoke tests, and the native ABI gate. A Fedora 43 container build also
+produced a relocatable debug bundle containing the executable, Flutter embedder,
+and `libvixen_ffi.so`.
+
+This does not establish Linux parity: text/IME/gesture/lifecycle input, complete
+semantic hierarchy/actions and native AT smoke, find/zoom, downloads/permissions,
+host services, offline Flatpak packaging,
+release size/performance, and non-Linux runners remain open. The current
+Relm4/libadwaita/GTK shell remains the compatibility baseline until those gates
+pass.
 
 Flutter 3.44 officially supports native deployment to Android, iOS, Windows,
 macOS, and Linux. That establishes a supported shell substrate, not proof that
 Vixen's Rust/V8/WebRender stack builds, packages, performs, or satisfies store
 policy on each target. Every Vixen platform remains gated below.
+
+## Contemporary OS policy
+
+Vixen validates the **latest generally available major OS release** for each
+Flutter target at the release cutoff. Release manifests record the exact OS,
+SDK, image, architecture, and toolchain versions used; moving that pin is an
+ordinary tested platform update, not an implicit compatibility claim.
+
+- Linux uses the latest stable Fedora Workstation major as its native reference
+  host and the current pinned Flatpak/GNOME runtime as its distributable runtime.
+- macOS uses the latest generally available macOS major on supported Apple
+  Silicon hardware.
+- Windows uses the latest generally available Windows client release and current
+  feature update.
+- Android uses the latest stable Android major/API level and current stable
+  Android toolchain.
+- iOS Simulator uses the latest stable iOS Simulator major supplied by the
+  latest stable Xcode on the latest supported macOS major.
+
+Older OS releases are best-effort unless a release manifest explicitly adds a
+tested compatibility tier. Preview/beta OS releases may inform development but
+cannot satisfy a release gate.
 
 ## Fixed boundaries
 
@@ -46,13 +81,13 @@ policy on each target. Every Vixen platform remains gated below.
 
 ## Five-platform matrix
 
-| Platform | Flutter 3.44 substrate | Initial Vixen integration | Required release evidence | Current Vixen status |
-|----------|------------------------|---------------------------|---------------------------|----------------------|
-| Linux | Official native desktop support | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Flutter parity with the compatibility shell; offline source-built Flatpak; GPU/driver, portal, accessibility, size, and performance reports | GTK/Relm4 shell exists; no Flutter build |
-| macOS | Official native desktop support on x64/arm64 | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, universal-or-separated architecture attribution, size/performance reports | Target; unproven |
-| Windows | Official native desktop support on x64/arm64 | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
-| Android | Official native mobile support | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
-| iOS Simulator | Official Flutter iOS development substrate on Apple Silicon | Same bridge and RGBA external texture using Rust/V8 `aarch64-apple-ios-sim` | Simulator BrowserCore/V8/WebRender build, V8 JavaScript/WebAssembly, lifecycle/input/accessibility, and advisory size/performance proof | Committed simulator-only development target; unproven |
+| Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
+|----------|---------------|---------------------------|---------------------------|----------------------|
+| Linux | Latest stable Fedora major plus pinned current Flatpak/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Flutter parity with the compatibility shell; offline source-built Flatpak; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, bounded semantics shape, tests, and debug bundle implemented; IME, full semantics/native AT, host services, packaging, and parity open |
+| macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
+| Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
+| Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
+| iOS Simulator | Latest stable iOS Simulator major in latest stable Xcode/macOS | Same bridge and RGBA external texture using Rust/V8 `aarch64-apple-ios-sim` | Simulator BrowserCore/V8/WebRender build, V8 JavaScript/WebAssembly, lifecycle/input/accessibility, and advisory size/performance proof | Committed simulator-only development target; unproven |
 
 The Linux Flutter embedder uses GTK. Migrating the shell removes Vixen's direct
 Relm4/libadwaita/custom `gtk4::GLArea` ownership; it does **not** promise that GTK
@@ -62,18 +97,12 @@ runtime dependencies disappear from Linux packages.
 
 ### 1. BrowserCore bridge and Linux fake shell
 
-The first audited native portion is implemented: the landed safe Rust controller
-has a narrow handwritten C-compatible ABI over the existing browser-scoped
-command/event API. `just gate-native-abi` builds the native library forms and
-tests C layout/header declarations, bounded JSON v1 commands, registry ownership,
-event sequencing, stable errors, and panic containment. This proves the native C
-ABI/header/wire ownership contract only. It does not prove Dart or Flutter,
-textures, Semantics, platform runners, or packages.
-
-The planned first Flutter harness remains a Linux Flutter chrome shell backed by
-a fake bridge so tabs, routing, focus, shortcuts, dialogs, bounded event queues,
-error handling, and teardown can be tested without pretending the engine is
-connected. No such fake shell is checked in today.
+The safe Rust controller, narrow C-compatible ABI, Dart bindings, and Linux
+Flutter chrome are implemented. `just gate-native-abi` remains native-only
+evidence. `just gate-flutter-shell` additionally proves the injected scripted
+controller, tab/routing/focus/shortcut/dialog/error/teardown behavior, production
+worker protocol, and live process-adjacent native bridge. Scripted behavior is
+test-only and cannot become a production fallback.
 
 Bridge rules:
 
@@ -99,9 +128,10 @@ behavior, artifact cost, and platform support are measured.
 
 ### 2. Linux real shell and bounded RGBA texture
 
-Connect the same Flutter chrome to BrowserCore. WebRender renders web content to
-an engine-owned offscreen target. The initial interoperability contract exports
-a bounded RGBA frame for a Flutter external texture:
+This slice is implemented for Linux. The same Flutter chrome connects to
+BrowserCore, which renders web content through WebRender to an engine-owned
+offscreen target. The interoperability contract exports a bounded RGBA frame for
+a Flutter external texture:
 
 - negotiate physical width, height, scale factor, pixel format, row stride, and
   monotonically increasing frame id;
@@ -118,20 +148,36 @@ must not repaint or reinterpret Vixen's display list.
 
 ### 3. Input, viewport, accessibility, and host services
 
-Flutter sends normalized pointer, wheel, keyboard, text/IME, gesture, focus,
+The first Linux input slice is implemented. Flutter maps logical pointer and
+wheel positions into the exact bounded physical frame viewport and sends strict
+context/document/runtime-generation commands through a serialized 64-event
+queue. BrowserCore performs authoritative hit testing before mouse dispatch;
+the wire never accepts a Dart-selected node id. Keyboard down/up events preserve
+modifiers and text where Flutter provides it, shell shortcuts remain chrome-owned,
+and input responses retain runtime effects and navigation actions. Each accepted
+input requests a fresh generation-checked frame.
+
+The remaining target sends text/IME, gesture, focus,
 viewport, scale, visibility, and lifecycle commands with context and viewport
 generations. BrowserCore performs hit testing, scrolling, selection, DOM event
 dispatch, and navigation effects. Platform-specific raw data may be retained in
 bounded DTOs where web semantics require it.
 
-A texture has no semantic structure. Before a Flutter shell can be called
-accessible, BrowserCore must project its authoritative DOM/layout/accessibility
-state into a bounded, incremental semantics tree consumed by Flutter
-`Semantics`. Nodes need stable ids, roles, names/values/states, bounds,
-relationships, focus, actions, text selection, live-region changes, and
-generation-aware removal. Flutter maps that projection to each platform's
-accessibility bridge; Dart does not infer semantics from pixels or maintain a
-second DOM.
+The initial accessibility shape is implemented. BrowserCore/Page derives native
+and explicit ARIA roles, bounded names (including `aria-labelledby` and HTML
+labels), values, states, focus, tap actions, and physical layout bounds. Engine
+snapshots cap at 1024 nodes and 512 UTF-8 bytes per string; the ABI caps the exact
+wire projection at 256 nodes under 1 MiB. A deterministic nonzero semantic
+generation invalidates document-order ids after mutation. The coordinator
+publishes Semantics only when its context, document, viewport, and capture
+generation match the displayed frame, and Flutter keys nodes by semantic
+generation/id. Dart does not infer meaning from pixels or maintain a second DOM.
+
+This first projection remains flat. Complete accessibility still requires
+hierarchy/relationships, descriptions, heading levels, mixed states, set-value/
+increment/decrement and focus actions, text selection, live regions, incremental
+updates, the disabled-fieldset first-legend exception, full ARIA presentational-
+role conflict handling, and native AT smoke on each platform.
 
 Host-service UI is Flutter-owned presentation over BrowserCore decisions:
 permissions, file/directory selection, downloads, external opens, credentials,

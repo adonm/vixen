@@ -8,6 +8,7 @@ license = "Apache-2.0"
 publish = false
 
 [dependencies]
+khronos-egl = { version = "6.0.0", features = ["dynamic"] }
 serde_json = "1"
 vixen-api = { path = "../vixen-api" }
 vixen-engine = { path = "../vixen-engine" }

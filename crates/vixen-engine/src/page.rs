@@ -14,7 +14,11 @@
 
 #![forbid(unsafe_code)]
 
-use vixen_api::{ElementInfo, EngineDiagnostic, EngineInspector, PageSnapshot};
+use vixen_api::{
+    ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityNode, AccessibilityRect,
+    AccessibilitySnapshot, BrowsingContextId, DocumentId, ElementInfo, EngineDiagnostic,
+    EngineInspector, PageSnapshot,
+};
 use vixen_net::csp::ContentSecurityPolicy;
 
 use crate::display_list::{
@@ -29,7 +33,7 @@ use crate::layout_tree::{
 };
 use crate::line_layout::{LineBox, dump_line_boxes};
 use crate::style_cascade::AuthorStylesheet;
-use crate::style_dom::Selector;
+use crate::style_dom::{AccessibilityElement, Selector};
 use crate::whatwg_url::{parse as parse_url, parse_with_base as parse_url_with_base};
 
 mod interaction;
@@ -44,6 +48,7 @@ pub struct Page {
     author_stylesheet: AuthorStylesheet,
     diagnostics: Vec<EngineDiagnostic>,
     focused_element_node_id: Option<usize>,
+    accessibility_mutation_epoch: u64,
     selection: Option<PageSelection>,
 }
 
@@ -105,6 +110,7 @@ impl Page {
             author_stylesheet,
             diagnostics: Vec::new(),
             focused_element_node_id: None,
+            accessibility_mutation_epoch: 1,
             selection: None,
         })
     }
@@ -148,7 +154,11 @@ impl Page {
 
     /// Persist the focused element across runtime realm replacement.
     pub fn set_focused_element_node_id(&mut self, node_id: Option<usize>) {
+        if self.focused_element_node_id == node_id {
+            return;
+        }
         self.focused_element_node_id = node_id;
+        self.bump_accessibility_mutation_epoch();
     }
 
     /// The page-owned single-range selection projection.
@@ -172,6 +182,8 @@ impl Page {
     /// so later layout/paint/headless/CDP reads see the changed document.
     pub fn set_element_text_content(&mut self, node_id: usize, value: &str) -> Result<(), String> {
         self.document.set_element_text_content(node_id, value)?;
+        self.focused_element_node_id = None;
+        self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
         Ok(())
     }
@@ -184,6 +196,7 @@ impl Page {
         value: &str,
     ) -> Result<(), String> {
         self.document.set_element_attribute(node_id, name, value)?;
+        self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
         Ok(())
     }
@@ -191,6 +204,7 @@ impl Page {
     /// Remove an element attribute in the authoritative Page DOM.
     pub fn remove_element_attribute(&mut self, node_id: usize, name: &str) -> Result<(), String> {
         self.document.remove_element_attribute(node_id, name)?;
+        self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
         Ok(())
     }
@@ -198,12 +212,17 @@ impl Page {
     /// Set the document title from a runtime-produced `document.title` or
     /// `document.write()` mutation.
     pub fn set_title(&mut self, value: &str) -> Result<(), String> {
-        self.document.set_title(value)
+        self.document.set_title(value)?;
+        self.focused_element_node_id = None;
+        self.bump_accessibility_mutation_epoch();
+        Ok(())
     }
 
     /// Replace an element's child subtree from a runtime-produced HTML fragment.
     pub fn set_element_inner_html(&mut self, node_id: usize, html: &str) -> Result<(), String> {
         self.document.set_element_inner_html(node_id, html)?;
+        self.focused_element_node_id = None;
+        self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
         Ok(())
     }
@@ -221,12 +240,17 @@ impl Page {
     ) -> Result<(), String> {
         self.document
             .set_form_control_value(node_id, element_id, name, tag, value)?;
+        self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
         Ok(())
     }
 
     fn refresh_author_stylesheet(&mut self) {
         self.author_stylesheet = AuthorStylesheet::from_blocks(&self.document.style_blocks());
+    }
+
+    fn bump_accessibility_mutation_epoch(&mut self) {
+        self.accessibility_mutation_epoch = self.accessibility_mutation_epoch.saturating_add(1);
     }
 
     /// Enforcing CSP delivered with the document response headers.
@@ -330,6 +354,88 @@ impl Page {
             text_content: self.document.body_text_content(),
             element_count: self.document.element_count(),
         }
+    }
+
+    /// Build the authoritative, bounded semantic projection from this Page's
+    /// current DOM, focus state, and viewport-specific layout.
+    pub fn accessibility_snapshot(
+        &self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        viewport: (u32, u32),
+    ) -> AccessibilitySnapshot {
+        let layout = self.layout_tree(viewport);
+        let bounds = layout
+            .nodes
+            .iter()
+            .filter_map(|node| {
+                node.dom_node_id.map(|node_id| {
+                    (
+                        node_id,
+                        AccessibilityRect {
+                            x: f64::from(node.rect.x),
+                            y: f64::from(node.rect.y),
+                            width: f64::from(node.rect.w),
+                            height: f64::from(node.rect.h),
+                        },
+                    )
+                })
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        let (elements, truncated) = self.document.accessibility_elements(
+            ACCESSIBILITY_MAX_NODES,
+            ACCESSIBILITY_MAX_STRING_BYTES,
+            |node_id| bounds.contains_key(&node_id),
+        );
+        let mut nodes = Vec::with_capacity(elements.len());
+        for element in elements {
+            let Some(role) = accessibility_role(&element) else {
+                continue;
+            };
+            let disabled =
+                element.disabled || aria_bool(element.aria_disabled.as_deref()) == Some(true);
+            let focusable = !disabled && accessibility_focusable(&element);
+            let checked = if element.aria_checked.is_some() {
+                aria_bool(element.aria_checked.as_deref())
+            } else {
+                matches!(role.as_str(), "checkbox" | "radio").then_some(element.checked)
+            };
+            let selected = aria_bool(element.aria_selected.as_deref()).unwrap_or(element.selected);
+            let expanded = aria_bool(element.aria_expanded.as_deref());
+            let value = accessibility_value(&element, &role);
+            let actions =
+                if !disabled && matches!(role.as_str(), "button" | "link" | "checkbox" | "radio") {
+                    vec!["tap".to_owned()]
+                } else {
+                    Vec::new()
+                };
+            nodes.push(AccessibilityNode {
+                id: element.node_id,
+                role,
+                label: element.label,
+                value,
+                bbox: bounds.get(&element.node_id).copied(),
+                focused: self.focused_element_node_id == Some(element.node_id),
+                disabled,
+                checked,
+                selected,
+                expanded,
+                hidden: false,
+                focusable,
+                actions,
+            });
+        }
+        let mut snapshot = AccessibilitySnapshot {
+            context_id,
+            document_id,
+            source_generation: self.accessibility_mutation_epoch,
+            generation: 1,
+            viewport,
+            nodes,
+            truncated,
+        };
+        snapshot.refresh_generation();
+        snapshot
     }
 
     /// Query selector facade over the current DOM-backed selector surface.
@@ -513,6 +619,95 @@ fn layout_bbox_for_node(tree: &LayoutTree, node_id: usize) -> Option<(f64, f64, 
         })
 }
 
+fn accessibility_role(element: &AccessibilityElement) -> Option<String> {
+    if let Some(role) = element
+        .role
+        .as_deref()
+        .and_then(|role| role.split_whitespace().next())
+    {
+        return Some(role.to_ascii_lowercase());
+    }
+    let role = match element.tag.as_str() {
+        "a" if element.href => "link",
+        "button" => "button",
+        "input" => match element
+            .input_type
+            .as_deref()
+            .unwrap_or("text")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "hidden" => return None,
+            "checkbox" => "checkbox",
+            "radio" => "radio",
+            "button" | "submit" | "reset" | "image" => "button",
+            "range" => "slider",
+            "number" => "spinbutton",
+            "search" => "searchbox",
+            _ => "textbox",
+        },
+        "select" if element.multiple => "listbox",
+        "select" => "combobox",
+        "option" => "option",
+        "textarea" => "textbox",
+        "img" => "image",
+        "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => "heading",
+        "ul" | "ol" => "list",
+        "li" => "listitem",
+        "main" => "main",
+        "nav" => "navigation",
+        "header" => "banner",
+        "footer" => "contentinfo",
+        "form" => "form",
+        _ if element.text.is_empty()
+            && element.aria_label.as_deref().is_none_or(str::is_empty)
+            && element.tabindex.is_none()
+            && !element.contenteditable =>
+        {
+            return None;
+        }
+        _ => "generic",
+    };
+    Some(role.to_owned())
+}
+
+fn accessibility_value(element: &AccessibilityElement, role: &str) -> Option<String> {
+    if !matches!(
+        role,
+        "textbox" | "searchbox" | "combobox" | "listbox" | "slider" | "spinbutton"
+    ) {
+        return None;
+    }
+    element.value.clone().or_else(|| {
+        matches!(element.tag.as_str(), "textarea" | "select")
+            .then(|| element.text.clone())
+            .filter(|value| !value.is_empty())
+    })
+}
+
+fn accessibility_focusable(element: &AccessibilityElement) -> bool {
+    let tabindex_focusable = element
+        .tabindex
+        .as_deref()
+        .and_then(|value| value.parse::<i32>().ok())
+        .is_some_and(|value| value >= 0);
+    tabindex_focusable
+        || element.contenteditable
+        || matches!(
+            element.tag.as_str(),
+            "button" | "input" | "select" | "textarea"
+        )
+        || (element.tag == "a" && element.href)
+}
+
+fn aria_bool(value: Option<&str>) -> Option<bool> {
+    match value?.trim().to_ascii_lowercase().as_str() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
 fn count_text_matches(haystack: &str, needle: &str, case_sensitive: bool) -> u32 {
     if needle.is_empty() {
         return 0;
@@ -578,6 +773,332 @@ mod tests {
         assert!(snap.text_content.contains("Hi"));
         assert!(!snap.text_content.contains('T'));
         assert_eq!(snap.element_count, 5);
+    }
+
+    #[test]
+    fn accessibility_snapshot_projects_dom_semantics_focus_and_layout() {
+        let mut page = Page::from_html(
+            "file:///accessibility.html",
+            r#"<!doctype html>
+                <style>html,body{margin:0}button,input,img,[role]{display:block;width:120px;height:24px}</style>
+                <button aria-label="Save" disabled aria-expanded="true">Ignored</button>
+                <input type="checkbox" aria-label="Remember" checked>
+                <img alt="Vixen logo">
+                <div role="tab" title="Settings" tabindex="0" aria-selected="true"></div>
+                <div aria-hidden="true"><button>Secret</button></div>"#,
+        )
+        .unwrap();
+        let checkbox_id = page
+            .query_selector_all("input")
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap()
+            .node_id;
+        page.set_focused_element_node_id(Some(checkbox_id));
+
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(7).unwrap(),
+            DocumentId::new(9).unwrap(),
+            (320, 240),
+        );
+        assert_eq!(snapshot.context_id.get(), 7);
+        assert_eq!(snapshot.document_id.get(), 9);
+        assert_eq!(snapshot.viewport, (320, 240));
+        assert!(!snapshot.truncated);
+        assert!(!snapshot.nodes.iter().any(|node| node.label == "Secret"));
+
+        let button = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Save")
+            .unwrap();
+        assert_eq!(button.role, "button");
+        assert!(button.disabled);
+        assert_eq!(button.expanded, Some(true));
+        assert!(!button.focusable);
+        assert!(button.actions.is_empty());
+        let bounds = button.bbox.unwrap();
+        assert_eq!(bounds.x, 0.0);
+        assert_eq!(bounds.width, 120.0);
+        assert_eq!(bounds.height, 24.0);
+
+        let checkbox = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Remember")
+            .unwrap();
+        assert_eq!(checkbox.role, "checkbox");
+        assert_eq!(checkbox.checked, Some(true));
+        assert!(checkbox.focused);
+        assert!(checkbox.focusable);
+        assert_eq!(checkbox.actions, ["tap"]);
+
+        let image = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Vixen logo")
+            .unwrap();
+        assert_eq!(image.role, "image");
+        let tab = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Settings")
+            .unwrap();
+        assert_eq!(tab.role, "tab");
+        assert!(tab.selected);
+        assert!(tab.focusable);
+    }
+
+    #[test]
+    fn accessibility_snapshot_truncates_nodes_and_utf8_safely() {
+        let mut html = format!("<button aria-label=\"{}\">long</button>", "🦊".repeat(200));
+        for index in 0..ACCESSIBILITY_MAX_NODES + 8 {
+            html.push_str(&format!("<button>button {index}</button>"));
+        }
+        let page = Page::from_html("file:///bounded.html", &html).unwrap();
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(1).unwrap(),
+            DocumentId::new(1).unwrap(),
+            (800, 600),
+        );
+
+        assert_eq!(snapshot.nodes.len(), ACCESSIBILITY_MAX_NODES);
+        assert!(snapshot.truncated);
+        let long = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.role == "button" && node.label.starts_with('🦊'))
+            .unwrap();
+        assert_eq!(long.label.len(), ACCESSIBILITY_MAX_STRING_BYTES);
+        assert!(long.label.is_char_boundary(long.label.len()));
+    }
+
+    #[test]
+    fn accessibility_names_use_idrefs_and_native_labels_without_hidden_text() {
+        let page = Page::from_html(
+            "file:///names.html",
+            r#"<!doctype html>
+                <style>.not-rendered{display:none}</style>
+                <span id="first">First <b>name</b><i hidden>hidden</i></span>
+                <span id="second" aria-label="Second"></span>
+                <button aria-labelledby="first first missing second">Fallback</button>
+                <span id="hidden-reference" hidden>Hidden <b>reference</b></span>
+                <button aria-labelledby="hidden-reference">Hidden fallback</button>
+                <button>Visible <span hidden>leak</span></button>
+                <span id="cycle-a" aria-labelledby="cycle-b"></span>
+                <span id="cycle-b" aria-labelledby="cycle-a">Cycle B</span>
+                <button aria-labelledby="cycle-a">Cycle fallback</button>
+                <button>Nested <span>button</span></button>
+                <label for="named">For label <b aria-hidden="true">secret</b><i class="not-rendered">paint</i></label>
+                <input id="named">
+                <label>Wrapped <b hidden>secret</b><textarea></textarea></label>
+                <div><div>Leaf text</div></div>
+                <main><span>Main leaf</span></main>
+                <div role="presentation">Container <span>Presented leaf</span></div>"#,
+        )
+        .unwrap();
+
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(1).unwrap(),
+            DocumentId::new(1).unwrap(),
+            (800, 600),
+        );
+        let button = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.role == "button")
+            .unwrap();
+        assert_eq!(button.label, "First name Second");
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.role == "button" && node.label == "Cycle B")
+        );
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.role == "button" && node.label == "Nested button")
+        );
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.role == "button" && node.label == "Hidden reference")
+        );
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.role == "button" && node.label == "Visible")
+        );
+        let textboxes = snapshot
+            .nodes
+            .iter()
+            .filter(|node| node.role == "textbox")
+            .collect::<Vec<_>>();
+        assert_eq!(textboxes.len(), 2);
+        assert!(textboxes.iter().any(|node| node.label == "For label"));
+        assert!(textboxes.iter().any(|node| node.label == "Wrapped"));
+        assert_eq!(
+            snapshot
+                .nodes
+                .iter()
+                .filter(|node| node.role == "generic" && node.label == "Leaf text")
+                .count(),
+            1
+        );
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.label == "Presented leaf")
+        );
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.role == "main" && node.label.is_empty())
+        );
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.role == "generic" && node.label == "Main leaf")
+        );
+        assert!(
+            !snapshot
+                .nodes
+                .iter()
+                .any(|node| node.role == "generic" && node.label == "button")
+        );
+        assert!(!snapshot.nodes.iter().any(|node| {
+            node.label.contains("hidden")
+                || node.label.contains("secret")
+                || node.label.contains("paint")
+                || node.label.contains("Container")
+        }));
+    }
+
+    #[test]
+    fn accessibility_generation_is_stable_and_changes_with_projection() {
+        let mut page = Page::from_html(
+            "file:///generation.html",
+            "<style>button{width:100px}</style><button id='target'>Before</button>",
+        )
+        .unwrap();
+        let context_id = BrowsingContextId::new(1).unwrap();
+        let document_id = DocumentId::new(1).unwrap();
+        let first = page.accessibility_snapshot(context_id, document_id, (800, 600));
+        let identical = page.accessibility_snapshot(context_id, document_id, (800, 600));
+        assert_ne!(first.generation, 0);
+        assert_eq!(first.generation, identical.generation);
+
+        let target = page.query_selector_all("button").unwrap()[0].node_id;
+        page.set_focused_element_node_id(Some(target));
+        let focused = page.accessibility_snapshot(context_id, document_id, (800, 600));
+        assert_ne!(first.generation, focused.generation);
+
+        page.set_element_attribute(target, "aria-label", "After")
+            .unwrap();
+        let renamed = page.accessibility_snapshot(context_id, document_id, (800, 600));
+        assert_ne!(focused.generation, renamed.generation);
+
+        let resized = page.accessibility_snapshot(context_id, document_id, (400, 600));
+        assert_ne!(renamed.generation, resized.generation);
+    }
+
+    #[test]
+    fn accessibility_source_generation_tracks_mutations_and_clears_structural_focus() {
+        let mut page = Page::from_html(
+            "file:///mutations.html",
+            "<div id='root'><button id='target'>Same</button></div>",
+        )
+        .unwrap();
+        let context_id = BrowsingContextId::new(1).unwrap();
+        let document_id = DocumentId::new(1).unwrap();
+        let root = page.query_selector_all("#root").unwrap()[0].node_id;
+        let target = page.query_selector_all("#target").unwrap()[0].node_id;
+        page.set_focused_element_node_id(Some(target));
+        let focused = page.accessibility_snapshot(context_id, document_id, (800, 600));
+        page.set_focused_element_node_id(Some(target));
+        let repeated_focus = page.accessibility_snapshot(context_id, document_id, (800, 600));
+        assert_eq!(focused.source_generation, repeated_focus.source_generation);
+
+        page.set_element_inner_html(root, "<button id='target'>Same</button>")
+            .unwrap();
+        assert_eq!(page.focused_element_node_id(), None);
+        let replaced = page.accessibility_snapshot(context_id, document_id, (800, 600));
+        assert!(replaced.source_generation > focused.source_generation);
+        assert_ne!(replaced.generation, focused.generation);
+
+        page.set_element_inner_html(root, "<button id='target'>Same</button>")
+            .unwrap();
+        let identically_replaced = page.accessibility_snapshot(context_id, document_id, (800, 600));
+        assert!(identically_replaced.source_generation > replaced.source_generation);
+        assert_ne!(identically_replaced.generation, replaced.generation);
+
+        let replacement_target = page.query_selector_all("#target").unwrap()[0].node_id;
+        page.set_focused_element_node_id(Some(replacement_target));
+        page.set_element_text_content(root, "Same").unwrap();
+        assert_eq!(page.focused_element_node_id(), None);
+        let text_replaced = page.accessibility_snapshot(context_id, document_id, (800, 600));
+        assert!(text_replaced.source_generation > identically_replaced.source_generation);
+    }
+
+    #[test]
+    fn accessibility_roles_and_inherited_disabledness_are_conservative() {
+        let page = Page::from_html(
+            "file:///roles.html",
+            r#"<!doctype html>
+                <button role="invalid presentation">Native button</button>
+                <div role="invalid checkbox button" aria-label="Chosen role"></div>
+                <div role="invalid" tabindex="0">Invalid fallback</div>
+                <div role="none" tabindex="0">Focusable conflict</div>
+                <img role="presentation" alt="Decorative">
+                <fieldset disabled>
+                  <legend><input aria-label="Legend control"></legend>
+                  <input aria-label="Fieldset control">
+                </fieldset>
+                <select><optgroup disabled><option>Disabled option</option></optgroup></select>"#,
+        )
+        .unwrap();
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(1).unwrap(),
+            DocumentId::new(1).unwrap(),
+            (800, 600),
+        );
+
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.role == "button" && node.label == "Native button")
+        );
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .any(|node| node.role == "checkbox" && node.label == "Chosen role")
+        );
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.role == "generic" && node.label == "Invalid fallback" && node.focusable
+        }));
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.role == "generic" && node.label == "Focusable conflict" && node.focusable
+        }));
+        assert!(!snapshot.nodes.iter().any(|node| node.label == "Decorative"));
+        for label in ["Legend control", "Fieldset control", "Disabled option"] {
+            let node = snapshot
+                .nodes
+                .iter()
+                .find(|node| node.label == label)
+                .unwrap();
+            assert!(node.disabled, "{label} should inherit disabledness");
+            assert!(node.actions.is_empty());
+        }
     }
 
     #[test]

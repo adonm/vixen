@@ -4089,6 +4089,7 @@ dependencies = [
 name = "vixen-ffi"
 version = "0.1.2"
 dependencies = [
+ "khronos-egl",
  "serde_json",
  "vixen-api",
  "vixen-engine",

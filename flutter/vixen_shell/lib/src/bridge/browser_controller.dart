@@ -1,0 +1,150 @@
+import 'browser_models.dart';
+
+/// The browser-scoped seam. Implementations own one BrowserCore handle and
+/// expose its sole ordered event stream.
+abstract class BrowserController {
+  Stream<SequencedBrowserEvent> get events;
+
+  Future<void> start();
+
+  Future<BrowserResponse> dispatch(BrowserCommand command);
+
+  Future<BrowserFrame?> captureFrame({
+    required int contextId,
+    required int documentId,
+    required int width,
+    required int height,
+  }) async => null;
+
+  Future<void> shutdown();
+
+  Future<ProfileSessionState> loadProfileSession() async {
+    final response = await dispatch(BrowserCommand.loadProfileSession());
+    return _expect<ProfileSessionResponse>(response).session;
+  }
+
+  Future<void> saveCurrentProfileSession() async {
+    _expect<AcceptedResponse>(
+      await dispatch(BrowserCommand.saveCurrentProfileSession()),
+    );
+  }
+
+  Future<BrowserSnapshot> browserSnapshot() async {
+    final response = await dispatch(BrowserCommand.browserSnapshot());
+    return _expect<BrowserSnapshotResponse>(response).snapshot;
+  }
+
+  Future<int> createContext() async {
+    final response = await dispatch(BrowserCommand.createContext());
+    return _expect<ContextCreatedResponse>(response).contextId;
+  }
+
+  Future<void> closeContext(int contextId) async {
+    _expect<AcceptedResponse>(
+      await dispatch(BrowserCommand.closeContext(contextId)),
+    );
+  }
+
+  Future<void> activateContext(int contextId) async {
+    _expect<AcceptedResponse>(
+      await dispatch(BrowserCommand.activateContext(contextId)),
+    );
+  }
+
+  Future<int> navigate(int contextId, String url) async {
+    final response = await dispatch(BrowserCommand.navigate(contextId, url));
+    return _expect<NavigationAcceptedResponse>(response).navigationId;
+  }
+
+  Future<int> reload(int contextId) async {
+    final response = await dispatch(BrowserCommand.reload(contextId));
+    return _expect<NavigationAcceptedResponse>(response).navigationId;
+  }
+
+  Future<void> stop(int contextId) async {
+    _expect<AcceptedResponse>(await dispatch(BrowserCommand.stop(contextId)));
+  }
+
+  Future<int?> traverseHistory(int contextId, int delta) async {
+    final response = await dispatch(
+      BrowserCommand.traverseHistory(contextId, delta),
+    );
+    return switch (response) {
+      NavigationAcceptedResponse(:final navigationId) => navigationId,
+      AcceptedResponse() => null,
+      _ => throw StateError(
+        'Unexpected ${response.runtimeType} for traverse_history',
+      ),
+    };
+  }
+
+  Future<BrowsingContextState> contextState(int contextId) async {
+    final response = await dispatch(BrowserCommand.contextState(contextId));
+    return _expect<ContextStateResponse>(response).state;
+  }
+
+  Future<BrowserAccessibilitySnapshot> accessibilitySnapshot({
+    required int contextId,
+    required int documentId,
+    required int viewportWidth,
+    required int viewportHeight,
+  }) async => _expect<AccessibilitySnapshotResponse>(
+    await dispatch(
+      BrowserCommand.accessibilitySnapshot(
+        contextId: contextId,
+        documentId: documentId,
+        viewportWidth: viewportWidth,
+        viewportHeight: viewportHeight,
+      ),
+    ),
+  ).snapshot;
+
+  Future<InputDispatchedResponse> dispatchMouseEvent({
+    required int contextId,
+    required int documentId,
+    required int runtimeContextId,
+    required int viewportWidth,
+    required int viewportHeight,
+    required String eventType,
+    required BrowserMouseEvent event,
+  }) async => _expect<InputDispatchedResponse>(
+    await dispatch(
+      BrowserCommand.dispatchMouseEvent(
+        contextId: contextId,
+        documentId: documentId,
+        runtimeContextId: runtimeContextId,
+        viewportWidth: viewportWidth,
+        viewportHeight: viewportHeight,
+        eventType: eventType,
+        event: event,
+      ),
+    ),
+  );
+
+  Future<InputDispatchedResponse> dispatchKeyEvent({
+    required int contextId,
+    required int documentId,
+    required int runtimeContextId,
+    required int viewportWidth,
+    required int viewportHeight,
+    required String eventType,
+    required BrowserKeyEvent event,
+  }) async => _expect<InputDispatchedResponse>(
+    await dispatch(
+      BrowserCommand.dispatchKeyEvent(
+        contextId: contextId,
+        documentId: documentId,
+        runtimeContextId: runtimeContextId,
+        viewportWidth: viewportWidth,
+        viewportHeight: viewportHeight,
+        eventType: eventType,
+        event: event,
+      ),
+    ),
+  );
+}
+
+T _expect<T extends BrowserResponse>(BrowserResponse response) {
+  if (response case final T typed) return typed;
+  throw StateError('Expected $T, received ${response.runtimeType}');
+}

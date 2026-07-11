@@ -57,7 +57,10 @@ As of 2026-07-10 the repository has these building blocks:
   tracing-lite, and stable protocol errors, with an external Playwright smoke.
 - A Relm4/libadwaita compatibility-shell vertical with tabs, URL loading, basic
   navigation, visible WebRender output, diagnostics, and bounded session
-  restore. Flutter is not installed and no Flutter shell/build exists yet.
+  restore. The Linux Flutter alpha slice now has chrome, real BrowserCore FFI,
+  deterministic fake tests, and visible WebRender output through a bounded RGBA
+  pixel-buffer texture; input, accessibility, host services, packaging, and
+  compatibility-shell parity remain open.
 
 These are substantial components now routed through one initial browser owner,
 not yet a broadly compatible browser. API shape or inert reflection is still not
@@ -102,9 +105,10 @@ Other material gaps remain:
   lifecycle;
 - Linux cert/proxy/font/portal/GPU behavior and release measurements are not yet
   proven across a supported matrix; and
-- the five-platform Flutter bridge, shell, external-texture transport,
-  accessibility projection, host services, and packages are not implemented;
-  native BrowserCore/V8/WebRender viability remains unproven outside Linux.
+- the first Linux Flutter bridge, shell, and RGBA external-texture transport are
+  implemented, but input, accessibility projection, host services, packages,
+  release evidence, and all non-Linux runners remain open; native
+  BrowserCore/V8/WebRender viability remains unproven outside Linux.
 
 ## Design rules for every stage
 
@@ -136,9 +140,10 @@ Other material gaps remain:
    fixture, pinned WPT case, or explicitly tracked unreduced failure prevents
    regression.
 10. **Flutter is presentation, not a second browser.** BrowserCore owns browser
-    truth and accessibility source data; Dart owns chrome and host-service UI.
-    One WebRender output crosses a bounded texture transport. Each platform and
-    ABI is supported only after its gate in `FLUTTER_SHELL.md` passes.
+     truth and accessibility source data; Dart owns chrome and host-service UI.
+     One WebRender output crosses a bounded texture transport. Each platform and
+     ABI is supported only after its gate passes on the latest stable major OS
+     release pinned at the release cutoff. Older OS versions are best-effort.
 
 ## Alpha — converge on one browser core
 
@@ -198,10 +203,15 @@ Runtime/document snapshots still need convergence with the live page state.
 
 Cross-cutting delivery work has also advanced without widening browser claims.
 The safe Flutter controller now has a versioned handwritten C ABI with opaque
-process tokens, bounded JSON messages and retained output allocations, stable
-tagged responses/events/errors, polling-only event delivery, and panic
-containment; Dart bindings, a fake Flutter shell, texture transport, and
-Semantics remain unimplemented. External WPT profiles now reject mutable or
+process tokens, bounded JSON messages and retained output/frame allocations,
+stable tagged responses/events/errors, polling-only event delivery, and panic
+containment. The Linux shell adds handwritten Dart bindings, deterministic fake
+tests, a production worker isolate, bounded RGBA `FlPixelBufferTexture`
+transport, physical viewport mapping, and generation-checked pointer/wheel/key
+dispatch through BrowserCore hit testing. A bounded, mutation-generation-tagged
+BrowserCore projection now maps roles/names/states/bounds and tap into Flutter
+Semantics; hierarchy, richer actions, incremental updates, and native AT remain.
+External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
 sparse paths. Headless `--incremental` now captures real before/after frames from
 one BrowserCore context around live evaluation. Hosted CI executes architecture,
@@ -481,18 +491,18 @@ The core ownership and local headless measurement foundations are landed. The
 next work has two interleaved tracks: Flutter shell migration and browser
 correctness. Neither may starve the other.
 
-1. Extend the landed browser-scoped C ABI into mechanical Dart bindings and a
-   Linux Flutter fake shell; keep the bounded ownership rules and one
-   BrowserCore event consumer. In parallel, finish navigation-aware runtime/
-   native-host cancellation and preserve one BrowserCore terminal outcome.
-2. Connect the Linux Flutter shell to real BrowserCore commands/events. Move
-   parser-discovered scripts and supported DOM mutations onto the live document/
-   runtime rather than creating shell-side state.
-3. Present WebRender through a bounded RGBA external texture and route input,
-   IME, focus, scale, and viewport generations. Continue font shaping/fallback,
+1. Extend the landed physical viewport and pointer/wheel/keyboard path with IME,
+   gesture, focus, scale, visibility, and lifecycle generations. In parallel, finish
+   navigation-aware runtime/native-host cancellation and preserve one BrowserCore
+   terminal outcome.
+2. Move parser-discovered resources and supported DOM mutations onto the live
+   document/runtime rather than creating compatibility state.
+3. Harden and measure the implemented WebRender-to-RGBA texture transport while
+   continuing font shaping/fallback,
    image decode, and WPT-driven layout/rendering work on the shared core.
-4. Establish BrowserCore's incremental accessibility projection into Flutter
-   Semantics and platform host-service UI. Accessibility and host services remain
+4. Extend the landed bounded flat accessibility projection with hierarchy,
+   relationships, richer actions, incremental updates, live regions/text
+   selection, and native AT evidence. Add platform host-service UI; both remain
    cross-cutting through every later platform.
 5. Produce hello-Flutter and Flutter+Vixen Linux size/performance baselines and a
    pinned, offline source-built Flatpak through `flatpak-flutter` 0.15.0. Adopt

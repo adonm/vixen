@@ -111,8 +111,15 @@ with `unsupported.screenshot`.
 ## Flutter GUI shell contract
 
 Flutter is the primary native GUI shell target on Linux, macOS, Windows, Android,
-and the Apple Silicon iOS Simulator. This is a target contract, not an implementation claim: Flutter is not
-installed and no Flutter build exists in this workspace.
+and the Apple Silicon iOS Simulator. The Linux alpha slice implements chrome,
+BrowserCore FFI, and bounded RGBA texture presentation; the remaining contract
+and every other platform stay evidence-gated rather than implied by Flutter.
+
+Platform validation follows a rolling contemporary baseline: the latest stable
+major release of Linux's reference distribution, macOS, Windows client, Android,
+and iOS Simulator at each release cutoff. Exact versions and toolchains are
+recorded in release evidence. Older majors are best-effort unless explicitly
+promoted to an additional tested tier.
 
 - BrowserCore is the sole owner of browser/profile/context/document/runtime/
   rendering/accessibility state. Dart owns chrome, presentation, and host-service

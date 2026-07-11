@@ -110,9 +110,10 @@ CDP, and WPT one engine-owned lifecycle. The following lessons are requirements:
    WPT path; every real-site bug becomes a reduction or an explicitly tracked
    unreduced failure.
 9. **One shell contract, platform-specific proof.** Flutter is the primary GUI
-   substrate, but each platform/ABI earns support through native BrowserCore,
-   V8, WebRender, accessibility, host-service, package, size, and performance
-   evidence. Framework support is not Vixen support.
+    substrate, but each platform/ABI earns support through native BrowserCore,
+    V8, WebRender, accessibility, host-service, package, size, and performance
+    evidence on that target's latest stable major OS release. Exact versions are
+    pinned per release; framework support is not Vixen support.
 10. **Pixels need semantics.** Web content remains one WebRender texture path;
     BrowserCore also projects accessibility into Flutter Semantics. Dart may not
     infer browser meaning from pixels.
@@ -146,8 +147,10 @@ validated for full delivery:
 
 Flutter alpha additionally requires the browser-scoped Rust bridge contract, a
 Linux fake and real shell, bounded RGBA external-texture transport, input and
-viewport routing, and the accessibility projection shape. Flutter is not
-installed in this workspace, so none of those are currently landed claims.
+viewport routing, and the accessibility projection shape. The bridge, shell, and
+RGBA texture, physical viewport, pointer/wheel/keyboard routing, and the first
+bounded BrowserCore-to-Flutter Semantics shape are landed. IME/gesture/lifecycle
+input and complete semantics/native AT behavior remain open.
 
 Alpha also requires a production browser core: one profile service, one context
 registry, one generational navigation/document lifecycle, and one command/event

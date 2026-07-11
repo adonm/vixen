@@ -19,11 +19,16 @@ security, persistence, layout, WebRender, and accessibility source data. Flutter
 Dart owns only chrome, presentation, and host-service UI. See
 [`docs/PROJECT_DIRECTION.md`](docs/PROJECT_DIRECTION.md) for the current focus.
 
-Flutter is not installed in this workspace and no Flutter build exists yet. A
-Rust-only `vixen-ffi` controller now establishes the one-owner asynchronous bridge
-core, but the C/Dart ABI and texture plugins remain future work. The current GTK/
-Relm4 shell is a temporary Linux compatibility baseline until the Flutter Linux
-shell reaches parity; it is not the product direction.
+The checked-in Linux Flutter alpha shell uses handwritten Dart FFI over the
+one-owner `vixen-ffi` controller and presents real BrowserCore/WebRender output
+through a bounded RGBA pixel-buffer texture. Its fake-controller, worker,
+coordinator, texture, input, and live native smoke tests run with
+`just gate-flutter-shell`; a relocatable debug bundle has also compiled. Physical
+viewport plus pointer/wheel/keyboard input are routed through BrowserCore;
+the first bounded BrowserCore-derived Semantics projection is also wired. IME,
+complete accessibility/native AT, host services, release packaging, and non-Linux runners
+remain open, so the GTK/Relm4 shell is still the temporary Linux compatibility
+baseline rather than the product direction.
 
 ---
 
@@ -508,7 +513,10 @@ Update both when resolving.
 ## Working assumptions
 
 - Primary GUI targets: **Linux, macOS, Windows, Android, and Apple Silicon iOS Simulator** through
-  Flutter 3.44. Each remains evidence-gated; no Flutter build exists yet.
+  Flutter 3.44. Each remains evidence-gated; only the initial Linux debug shell
+  and bounded RGBA texture build exist today. Validation tracks each target's
+  latest stable major OS release at the release cutoff; older releases are
+  best-effort unless explicitly added as a tested tier.
 - Linux ships through an offline source-built Flatpak. GTK/Relm4 remains the
   compatibility baseline until Flutter parity, after which its direct shell
   ownership is removed. Flutter Linux may still depend on GTK at runtime.

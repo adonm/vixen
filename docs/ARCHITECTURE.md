@@ -39,13 +39,14 @@ GLArea ownership rather than guaranteeing a GTK-free Linux runtime.
 | `vixen-store` | Bounded redb profile tables and clear-data operations | Persistence leaf using opaque partition/id keys; no network or UI policy |
 | `vixen-engine` | Initial production BrowserCore/thread/profile/context lifecycle, HTML, DOM/Page, Stylo integration, V8 host runtime, forms/history, Vixen layout, display list, WebRender integration | Sole owner of browser/profile/context/document/navigation/resource lifecycle |
 | `vixen-shell` | Transitional Relm4/libadwaita chrome, GLArea surface, one app-level engine worker, BrowserCore context/session routing | Removed after Linux Flutter parity; the replacement native bridge has no chrome, independent browser model, or second renderer |
-| `vixen-ffi` | Non-clone safe GUI controller over one `EngineBrowserHandle` and sole ordered event consumer; handwritten C ABI v1 with process-registry `u64` browser/buffer tokens, bounded copied JSON commands, stable tagged projections, polling/timeout events, and panic containment | Safe core and inspectable C transport behind future Dart bindings and native Flutter texture/semantics plugins; depends only on API and engine |
+| `vixen-ffi` | Non-clone safe GUI controller over one `EngineBrowserHandle` and sole ordered event consumer; handwritten C ABI v1 with process-registry browser/buffer/frame tokens, bounded copied JSON commands, stable tagged projections, polling/timeout events, retained RGBA frames, and panic containment | Safe core and inspectable C/frame transport behind Dart bindings and native Flutter texture/semantics plugins; depends only on API and engine |
 | `vixen-headless` | BrowserCore-backed CLI, CDP target/session adapter, interaction adapter, EGL surfaceless surface | Thin CLI/CDP adapter and composition root over the browser core |
 | `vixen-wpt` | Fixture/profile manifest, runner, reports, checks, visual evidence | Engine-consumer test adapter; no engine internals or alternate semantics |
 
 The thin root `vixen` binary is today's GTK compatibility-shell composition root.
 The target GUI composition roots are Flutter's platform runners plus a narrow
-Rust bridge into BrowserCore. No Flutter runner is checked in yet. `data/` and
+Rust bridge into BrowserCore. The Linux runner is checked in under
+`flutter/vixen_shell`; other platform runners remain targets. `data/` and
 `build-aux/` contain application metadata and current Flatpak packaging;
 `fixtures/` contains the hermetic compatibility suite and external-profile
 descriptors.
@@ -95,9 +96,14 @@ Rules:
   navigation acceptance, stop/history/profile commands, exactly one event
   receiver, non-reused process tokens instead of caller-owned Rust pointers,
   bounded copied UTF-8 JSON, stable event/response/error projections, and one
-  explicitly size-capped, tokenized Rust-owned output-buffer release path. No
-  Dart binding, Flutter package/shell, external texture, Semantics bridge, or
-  Flutter build exists yet.
+  explicitly size-capped, tokenized Rust-owned output-buffer release path, plus
+  bounded retained RGBA frames. The Linux Flutter package adds handwritten Dart
+  bindings, one worker-isolate owner, injected fake tests, an
+  `FlPixelBufferTexture` runner, and strict generation-tagged pointer/wheel/key
+  commands that hit-test only in BrowserCore. BrowserCore also exposes a bounded,
+  mutation-generation-tagged semantic projection that Flutter maps without a
+  second DOM. Complete semantics/native AT, IME/gesture/lifecycle, packages,
+  release builds, and non-Linux runners remain open.
 
 `just gate-architecture` now enforces these frontend boundaries in addition to
 the stable leaf-crate rules. Remaining migration debt is inside the document
@@ -286,8 +292,8 @@ released only by opaque token, and each delivered event receives a monotonically
 increasing per-handle sequence. The crate builds `rlib`, `cdylib`, and `staticlib`
 forms. `just gate-native-abi` is native ABI/header/wire evidence only.
 
-The target Dart FFI binding and Flutter native integration remain transport
-adapters over the same browser-scoped seam:
+The implemented Dart FFI binding, worker isolate, and Linux texture integration
+are transport adapters over the same browser-scoped seam:
 
 - opaque browser handles plus typed context/frame ids, explicit version
   negotiation and destruction, and no Rust references retained by Dart;
@@ -295,13 +301,14 @@ adapters over the same browser-scoped seam:
 - commands copied to BrowserCore and bounded ordered events copied to Dart with
   typed ids/generations;
 - no synchronous Dart callback while Rust locks or V8 scopes are active;
-- bounded frame and Semantics channels with stale-generation rejection; and
+- a bounded, generation-checked RGBA frame channel; a bounded Semantics channel
+  remains a target; and
 - stable structured errors rather than panic/exception-driven lifecycle flow.
 
 A generated bridge is optional, not architectural. Adopt one only if its output,
 ownership, platform build behavior, and artifact cost remain inspectable. The
-planned fake Linux shell precedes real Flutter engine integration so presentation
-can be tested without inventing browser state; no fake shell exists yet.
+Linux shell uses constructor-injected scripted tests without inventing production
+browser state; production always uses the native worker and fails closed.
 
 ## Navigation and document commit
 
@@ -382,11 +389,11 @@ html5ever DOM
   → layout fragments
   → one Vixen display list
   → one WebRender paint path
-  → GTK GLArea or headless EGL surfaceless GlContext
+  → GTK GLArea, headless EGL, or Flutter-frame EGL surfaceless GlContext
 ```
 
-Target GUI presentation adds transport after WebRender, without adding a paint
-backend:
+Implemented Linux Flutter presentation adds transport after WebRender, without
+adding a paint backend:
 
 ```text
 one WebRender paint path

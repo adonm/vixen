@@ -36,12 +36,12 @@ For ordinary implementation details, choose the safest path aligned with
   matters.
 - **Release:** `ACCEPTANCE.md` gates plus measured size/compatibility reports.
 
-Flutter is not installed and no Flutter gate exists in this workspace. Until
-real recipes land, never report Rust/GTK checks as Flutter proof. Platform work
-follows `FLUTTER_SHELL.md`: Linux fake/real bridge, bounded RGBA and input/
-viewport, offline Flatpak/size evidence, desktop expansion, Android, then the iOS
-Simulator track, with V8 WebAssembly, accessibility, and host services kept
-consistent across targets.
+The checked-in Linux Flutter slice uses an exact ignored SDK checkout and
+`just gate-flutter-shell`; bootstrap it with `just setup-flutter`. Do not report
+Rust/GTK checks as Flutter proof, or Dart/widget checks as Linux package proof.
+Platform work follows `FLUTTER_SHELL.md`: IME/lifecycle, complete Semantics/native AT, offline
+Flatpak/size evidence, desktop expansion, Android, then the iOS Simulator track,
+with V8 WebAssembly, accessibility, and host services consistent across targets.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

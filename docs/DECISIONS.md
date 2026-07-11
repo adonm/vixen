@@ -831,10 +831,11 @@ Android, and iOS. Vixen narrows iOS to the Apple Silicon Simulator; a shared
 Flutter chrome can cover those five GUI environments while preserving the Rust
 browser core.
 
-This is substrate evidence, not a port result. Flutter is not installed in this
-workspace and no Flutter shell or package currently exists. Vixen must still
-prove its Rust, V8, WebRender, FFI, accessibility, host-service, packaging,
-policy, size, and performance behavior on every target.
+This remains platform-gated rather than implied by framework support. The Linux
+alpha slice now contains Flutter chrome, BrowserCore FFI, a bounded WebRender RGBA
+texture, tests, and a debug bundle. Vixen must still prove input, accessibility,
+host-service, packaging, policy, size, and performance behavior on Linux and the
+full Rust/V8/WebRender integration on every other target.
 
 Current rusty_v8 guidance documents Android source cross-builds and the
 `aarch64-apple-ios-sim` target. The simulator keeps V8's JIT and WebAssembly
@@ -922,3 +923,32 @@ The detailed and authoritative execution/gate plan is
 - Packaging and artifact reports become per platform and ABI. Existing Linux
   GTK/Flatpak measurements remain historical/current-baseline evidence and are
   not Flutter measurements.
+
+## ADR-019: Validate Flutter targets on the latest stable major OS
+
+**Status:** accepted
+
+**Context.** Carrying a broad legacy OS matrix before Vixen has one supported
+release multiplies native runner, graphics, accessibility, signing, and CI work
+without compatibility evidence. Flutter's own support range is not evidence that
+BrowserCore, V8, WebRender, or Vixen packaging works throughout that range.
+
+**Decision.** At each release cutoff, Vixen validates one contemporary baseline:
+the latest generally available major release for each target OS. Linux uses the
+latest stable Fedora Workstation major as its native reference and the current
+pinned Flatpak/GNOME runtime for distribution; macOS uses the latest stable macOS
+major; Windows uses the latest stable client release and feature update; Android
+uses the latest stable major/API; and iOS Simulator uses the latest stable
+simulator major in the latest stable Xcode on current macOS. Release evidence
+pins exact versions and architectures. Preview releases do not satisfy gates.
+
+Older releases are best-effort unless a release explicitly adds them as tested
+tiers. This policy may move forward at any release after native build, rendering,
+input, accessibility, lifecycle, packaging, and performance gates pass on the
+new baseline.
+
+**Consequences.** Vixen can adopt current platform APIs and security behavior
+without promising an untested legacy matrix. Users receive an exact release
+manifest rather than an ambiguous “Flutter supports it” claim. Expanding
+backward compatibility remains possible, but requires measured demand and its
+own ongoing gate capacity.

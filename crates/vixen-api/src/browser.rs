@@ -7,6 +7,146 @@ use crate::{
     NavigationId, ProfileId, RequestId, RuntimeContextId,
 };
 
+/// Maximum number of document-order nodes in an accessibility snapshot.
+pub const ACCESSIBILITY_MAX_NODES: usize = 1024;
+
+/// Maximum UTF-8 bytes retained for each accessibility string field and for
+/// the aggregate action strings on one node.
+pub const ACCESSIBILITY_MAX_STRING_BYTES: usize = 512;
+
+/// A bounded, flat projection of the active document's current semantics.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessibilitySnapshot {
+    pub context_id: BrowsingContextId,
+    pub document_id: DocumentId,
+    pub source_generation: u64,
+    pub generation: u64,
+    pub viewport: (u32, u32),
+    pub nodes: Vec<AccessibilityNode>,
+    pub truncated: bool,
+}
+
+impl AccessibilitySnapshot {
+    /// Recompute the stable nonzero fingerprint for this exact projection.
+    pub fn refresh_generation(&mut self) {
+        let mut hash = AccessibilityHash::new();
+        hash.u64(self.source_generation);
+        hash.u64(u64::from(self.viewport.0));
+        hash.u64(u64::from(self.viewport.1));
+        hash.boolean(self.truncated);
+        hash.u64(self.nodes.len() as u64);
+        for node in &self.nodes {
+            hash.u64(node.id as u64);
+            hash.string(&node.role);
+            hash.string(&node.label);
+            hash.optional_string(node.value.as_deref());
+            match node.bbox {
+                Some(bbox) => {
+                    hash.byte(1);
+                    hash.u64(bbox.x.to_bits());
+                    hash.u64(bbox.y.to_bits());
+                    hash.u64(bbox.width.to_bits());
+                    hash.u64(bbox.height.to_bits());
+                }
+                None => hash.byte(0),
+            }
+            hash.boolean(node.focused);
+            hash.boolean(node.disabled);
+            hash.optional_bool(node.checked);
+            hash.boolean(node.selected);
+            hash.optional_bool(node.expanded);
+            hash.boolean(node.hidden);
+            hash.boolean(node.focusable);
+            hash.u64(node.actions.len() as u64);
+            for action in &node.actions {
+                hash.string(action);
+            }
+        }
+        self.generation = hash.finish();
+    }
+}
+
+struct AccessibilityHash(u64);
+
+impl AccessibilityHash {
+    const fn new() -> Self {
+        Self(0xcbf2_9ce4_8422_2325)
+    }
+
+    fn byte(&mut self, byte: u8) {
+        self.0 ^= u64::from(byte);
+        self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+
+    fn boolean(&mut self, value: bool) {
+        self.byte(u8::from(value));
+    }
+
+    fn u64(&mut self, value: u64) {
+        for byte in value.to_le_bytes() {
+            self.byte(byte);
+        }
+    }
+
+    fn string(&mut self, value: &str) {
+        self.u64(value.len() as u64);
+        for byte in value.bytes() {
+            self.byte(byte);
+        }
+    }
+
+    fn optional_string(&mut self, value: Option<&str>) {
+        match value {
+            Some(value) => {
+                self.byte(1);
+                self.string(value);
+            }
+            None => self.byte(0),
+        }
+    }
+
+    fn optional_bool(&mut self, value: Option<bool>) {
+        match value {
+            Some(value) => {
+                self.byte(1);
+                self.boolean(value);
+            }
+            None => self.byte(0),
+        }
+    }
+
+    fn finish(self) -> u64 {
+        if self.0 == 0 { 1 } else { self.0 }
+    }
+}
+
+/// One semantic element in stable DOM document order.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AccessibilityNode {
+    pub id: usize,
+    pub role: String,
+    pub label: String,
+    pub value: Option<String>,
+    pub bbox: Option<AccessibilityRect>,
+    pub focused: bool,
+    pub disabled: bool,
+    pub checked: Option<bool>,
+    pub selected: bool,
+    pub expanded: Option<bool>,
+    pub hidden: bool,
+    pub focusable: bool,
+    pub actions: Vec<String>,
+}
+
+/// Physical viewport coordinates for a semantic element's layout border box.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AccessibilityRect {
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+}
+
 /// Stable browser command/error codes consumed by adapters and automation.
 pub mod error_codes {
     pub const INVALID_ARGUMENT: &str = "browser.invalid-argument";
@@ -130,6 +270,11 @@ pub enum BrowserCommand {
         document_id: DocumentId,
         viewport: (u32, u32),
     },
+    AccessibilitySnapshot {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        viewport: (u32, u32),
+    },
     QuerySelectorAll {
         context_id: BrowsingContextId,
         document_id: DocumentId,
@@ -190,6 +335,7 @@ pub enum BrowserCommandResult {
     AutomationEvaluation(AutomationEvaluation),
     InputDispatched(InputDispatchResult),
     Snapshot(crate::PageSnapshot),
+    AccessibilitySnapshot(AccessibilitySnapshot),
     SelectorMatches(Vec<crate::ElementInfo>),
     ComputedStyle(Vec<(String, String)>),
     DisplayListText(String),
@@ -805,6 +951,41 @@ mod tests {
             error.to_string(),
             "browser.unknown-context: context 9 is unknown"
         );
+    }
+
+    #[test]
+    fn accessibility_generation_is_nonzero_stable_and_content_sensitive() {
+        let mut snapshot = AccessibilitySnapshot {
+            context_id: BrowsingContextId::new(1).unwrap(),
+            document_id: DocumentId::new(1).unwrap(),
+            source_generation: 1,
+            generation: 0,
+            viewport: (800, 600),
+            nodes: vec![AccessibilityNode {
+                id: 1,
+                role: "button".to_owned(),
+                label: "Before".to_owned(),
+                value: None,
+                bbox: None,
+                focused: false,
+                disabled: false,
+                checked: None,
+                selected: false,
+                expanded: None,
+                hidden: false,
+                focusable: true,
+                actions: vec!["tap".to_owned()],
+            }],
+            truncated: false,
+        };
+        snapshot.refresh_generation();
+        let first = snapshot.generation;
+        assert_ne!(first, 0);
+        snapshot.refresh_generation();
+        assert_eq!(snapshot.generation, first);
+        snapshot.nodes[0].disabled = true;
+        snapshot.refresh_generation();
+        assert_ne!(snapshot.generation, first);
     }
 
     #[test]

@@ -82,11 +82,18 @@ calling that single recipe.
 
 ### GUI shell environment blockers
 
-Flutter is not installed in this workspace, and no Flutter project or Flutter
-gate exists yet. The native C ABI gate is not a Flutter gate. Do not report a
-Flutter check/build or infer one from Rust, ABI, or GTK tests. When the shell
-lands, pin Flutter 3.44.x and document the exact bootstrap and focused Dart/native
-checks beside the new executable recipes.
+The Linux Flutter project and focused gate are checked in. Bootstrap the exact
+Flutter 3.44.0 revision into ignored workspace-local tooling, then run its gate:
+
+```sh
+just setup-flutter
+just gate-flutter-shell
+```
+
+`just build-flutter-linux` and `just run-flutter` additionally need CMake, Ninja,
+pkg-config, and GTK 3 development headers. Missing host packages are an
+environment limitation; they do not turn Rust or Dart-only checks into Linux
+bundle proof. The debug bundle has been reproduced in a Fedora 43 container.
 
 The current compatibility shell still uses GTK/libadwaita. Its supported build
 path is **Podman + the flatpak-builder container**, not host-installed GNOME
@@ -119,10 +126,13 @@ just gate-native-abi
 just gate-architecture
 ```
 
-`just gate-native-abi` proves C ABI/header/layout, bounded JSON wire behavior,
-opaque registry ownership, stable errors/events, and buffer release over the
-one-owner controller. These commands do not prove a Dart binding, Flutter
-application or fake shell, texture plugin, Semantics bridge, or platform package.
+`just gate-native-abi` proves C ABI/header/layout, bounded JSON/frame wire
+behavior, opaque registry ownership, stable errors/events, and release over the
+one-owner controller. `just gate-flutter-shell` adds the Dart binding, injected
+fake tests, production worker, Linux texture/input presenter, and live native
+smoke. It proves physical viewport and pointer/wheel/key routing, but not
+complete semantics/native AT, IME/gesture/lifecycle, a platform package, or a
+release build. The bounded flat BrowserCore-to-Flutter Semantics shape is covered.
 
 ## Larger alpha batches
 

@@ -23,6 +23,9 @@ alias docs := book-build
 CONTAINER            := "podman"
 FLATPAK_BUILDER_IMAGE := "ghcr.io/flathub-infra/flatpak-github-actions:gnome-50"
 GNOME_RUNTIME_VERSION := "50"
+FLUTTER_VERSION       := "3.44.0"
+FLUTTER_REVISION      := "559ffa3f75e7402d65a8def9c28389a9b2e6fe42"
+FLUTTER_SDK           := ".tmp/ref/flutter"
 
 # Default recipe: explain yourself.
 default:
@@ -49,6 +52,18 @@ setup-dev-tools:
     cargo binstall --no-confirm cargo-audit || cargo install cargo-audit || true
     cargo binstall --no-confirm cargo-deny || cargo install cargo-deny || true
     cargo binstall --no-confirm cargo-fuzz || cargo install cargo-fuzz || true
+
+# Install the exact Flutter SDK used by the checked-in Linux shell. The checkout
+# is reproducible workspace-local tooling and remains ignored under `.tmp/`.
+setup-flutter:
+    mkdir -p .tmp/ref
+    test -d {{FLUTTER_SDK}}/.git || git clone --depth 1 --branch {{FLUTTER_VERSION}} https://github.com/flutter/flutter.git {{FLUTTER_SDK}}
+    test "$(git -C {{FLUTTER_SDK}} rev-parse HEAD)" = "{{FLUTTER_REVISION}}"
+    {{FLUTTER_SDK}}/bin/flutter --version
+
+_flutter-sdk-present:
+    test -x {{FLUTTER_SDK}}/bin/flutter || { printf '%s\n' "Flutter SDK missing; run 'just setup-flutter'" >&2; exit 1; }
+    test "$(git -C {{FLUTTER_SDK}} rev-parse HEAD)" = "{{FLUTTER_REVISION}}" || { printf '%s\n' "Flutter SDK revision mismatch; remove {{FLUTTER_SDK}} and run 'just setup-flutter'" >&2; exit 1; }
 
 # --- Build / check -----------------------------------------------------------
 
@@ -96,6 +111,22 @@ gate-native-abi:
     cargo build -p vixen-ffi
     cc -std=c11 -Wall -Wextra -Werror -fsyntax-only crates/vixen-ffi/tests/header_smoke.c
     cargo test -p vixen-ffi c_abi::tests
+
+# Dart/widget/native bridge evidence for the checked-in Linux Flutter shell.
+# The native smoke test loads the exact cdylib built by gate-native-abi.
+gate-flutter-shell: _flutter-sdk-present gate-native-abi
+    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/dart format --output=none --set-exit-if-changed lib test
+    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter analyze
+    cd flutter/vixen_shell && VIXEN_FFI_LIBRARY="{{justfile_directory()}}/target/debug/libvixen_ffi.so" ../../{{FLUTTER_SDK}}/bin/flutter test
+
+# Build the relocatable Linux bundle, including libvixen_ffi.so. Requires the
+# normal Flutter Linux prerequisites: CMake, Ninja, pkg-config, and GTK 3 headers.
+build-flutter-linux: _flutter-sdk-present
+    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter build linux --debug
+
+# Launch the Linux shell through Flutter's desktop runner.
+run-flutter: _flutter-sdk-present
+    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter run -d linux
 
 # ADR-017 ownership vertical: production BrowserCore transport, context/runtime
 # generations, bounded events, profile/session partitioning, and headless adapter.

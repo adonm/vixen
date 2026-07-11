@@ -842,6 +842,19 @@ impl BrowserCore {
                     context.page.snapshot(viewport),
                 ))
             }
+            BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id,
+                viewport,
+            } => {
+                validate_viewport(viewport)?;
+                let context = self.context_for_document(context_id, document_id)?;
+                Ok(BrowserCommandResult::AccessibilitySnapshot(
+                    context
+                        .page
+                        .accessibility_snapshot(context_id, document_id, viewport),
+                ))
+            }
             BrowserCommand::QuerySelectorAll {
                 context_id,
                 document_id,
@@ -4613,6 +4626,67 @@ mod tests {
             dispatch_navigation(&mut handle, context_id, "https://same.test/next");
         assert_eq!(next_navigation_id.get(), first_navigation_id.get() + 1);
         wait_for_navigation(&mut handle, context_id, next_navigation_id).unwrap();
+    }
+
+    #[test]
+    fn accessibility_snapshot_validates_viewport_and_exact_document_generation() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/input");
+        let current = state(&mut handle, context_id);
+
+        let result = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: (800, 600),
+            })
+            .unwrap();
+        let BrowserCommandResult::AccessibilitySnapshot(snapshot) = result else {
+            panic!("unexpected accessibility result: {result:?}");
+        };
+        assert_eq!(snapshot.context_id, context_id);
+        assert_eq!(snapshot.document_id, current.document_id);
+        assert_eq!(snapshot.viewport, (800, 600));
+        assert_ne!(snapshot.generation, 0);
+        let repeated = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: (800, 600),
+            })
+            .unwrap();
+        let BrowserCommandResult::AccessibilitySnapshot(repeated) = repeated else {
+            panic!("unexpected accessibility result: {repeated:?}");
+        };
+        assert_eq!(snapshot.generation, repeated.generation);
+        let link = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Go")
+            .unwrap();
+        assert_eq!(link.role, "link");
+        assert!(link.focusable);
+        assert!(link.bbox.is_some());
+
+        let invalid = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: (0, 600),
+            })
+            .unwrap_err();
+        assert_eq!(invalid.code, browser_error_codes::INVALID_ARGUMENT);
+
+        navigate(&mut handle, context_id, "https://same.test/b");
+        let stale = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: (800, 600),
+            })
+            .unwrap_err();
+        assert_eq!(stale.code, browser_error_codes::STALE_DOCUMENT);
     }
 
     #[test]

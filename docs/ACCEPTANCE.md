@@ -179,6 +179,11 @@ ownership, not necessarily no GTK runtime dependency.
 Flutter 3.44 supports native deployment to all five targets, but Vixen supports a
 platform only after its gate in [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md) passes:
 
+Each gate runs on the latest generally available major OS release at the release
+cutoff. The release record pins exact OS/SDK/image versions. Older releases are
+best-effort unless explicitly listed as an additional tested tier; preview OS
+releases never satisfy these gates.
+
 - **Linux:** real BrowserCore bridge, bounded RGBA texture, input/viewport,
   Semantics/AT, host services, parity, and pinned offline source-built Flatpak.
 - **macOS and Windows:** native BrowserCore/V8/WebRender builds plus texture,
