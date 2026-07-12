@@ -872,6 +872,7 @@ fn accessibility_snapshot_json(mut snapshot: AccessibilitySnapshot) -> Value {
 fn accessibility_node_json(node: AccessibilityNode) -> Value {
     json!({
         "id": node.id,
+        "parent_id": node.parent_id,
         "role": node.role,
         "label": node.label,
         "value": node.value,
@@ -1853,6 +1854,7 @@ mod tests {
     fn accessibility_response_projects_all_fields_and_stays_under_output_cap() {
         let node = AccessibilityNode {
             id: 4,
+            parent_id: Some(2),
             role: "checkbox".to_owned(),
             label: "Remember me".to_owned(),
             value: Some("yes".to_owned()),
@@ -1895,6 +1897,7 @@ mod tests {
                 "viewport": {"width": 320, "height": 240},
                 "nodes": [{
                     "id": 4,
+                    "parent_id": 2,
                     "role": "checkbox",
                     "label": "Remember me",
                     "value": "yes",

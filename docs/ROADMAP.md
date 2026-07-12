@@ -210,7 +210,9 @@ tests, a production worker isolate, bounded RGBA `FlPixelBufferTexture`
 transport, physical viewport mapping, and generation-checked pointer/wheel/key
 dispatch through BrowserCore hit testing. A bounded, mutation-generation-tagged
 BrowserCore projection now maps roles/names/states/bounds and tap into Flutter
-Semantics; hierarchy, richer actions, incremental updates, and native AT remain.
+Semantics. Nearest emitted semantic-parent relationships now produce a validated,
+document-order nested Flutter hierarchy; non-tree relationships, richer actions,
+incremental updates, and native AT remain.
 External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
 sparse paths. Headless `--incremental` now captures real before/after frames from
@@ -500,7 +502,7 @@ correctness. Neither may starve the other.
 3. Harden and measure the implemented WebRender-to-RGBA texture transport while
    continuing font shaping/fallback,
    image decode, and WPT-driven layout/rendering work on the shared core.
-4. Extend the landed bounded flat accessibility projection with hierarchy,
+4. Extend the landed bounded hierarchical accessibility projection with non-tree
    relationships, richer actions, incremental updates, live regions/text
    selection, and native AT evidence. Add platform host-service UI; both remain
    cross-cutting through every later platform.

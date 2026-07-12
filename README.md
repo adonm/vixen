@@ -25,7 +25,7 @@ through a bounded RGBA pixel-buffer texture. Its fake-controller, worker,
 coordinator, texture, input, and live native smoke tests run with
 `just gate-flutter-shell`; a relocatable debug bundle has also compiled. Physical
 viewport plus pointer/wheel/keyboard input are routed through BrowserCore;
-the first bounded BrowserCore-derived Semantics projection is also wired. IME,
+the first bounded BrowserCore-derived Semantics hierarchy is also wired. IME,
 complete accessibility/native AT, host services, release packaging, and non-Linux runners
 remain open, so the GTK/Relm4 shell is still the temporary Linux compatibility
 baseline rather than the product direction.

@@ -188,6 +188,7 @@ void main() {
               'nodes': [
                 {
                   'id': 9,
+                  'parent_id': null,
                   'role': 'checkbox',
                   'label': 'Remember me',
                   'value': null,
@@ -212,6 +213,7 @@ void main() {
             as AccessibilitySnapshotResponse;
 
     expect(response.snapshot.nodes.single.role, 'checkbox');
+    expect(response.snapshot.nodes.single.parentId, isNull);
     expect(response.snapshot.sourceGeneration, 8);
     expect(response.snapshot.generation, 99);
     expect(response.snapshot.nodes.single.checked, isTrue);
@@ -230,6 +232,62 @@ void main() {
         'document_id': 70,
         'viewport': {'width': 800, 'height': 600},
       },
+    );
+  });
+
+  test('accessibility snapshot validates parent hierarchy', () {
+    BrowserAccessibilityNode node(int id, {int? parentId}) =>
+        BrowserAccessibilityNode(
+          id: id,
+          parentId: parentId,
+          role: 'generic',
+          label: 'node $id',
+          focused: false,
+          disabled: false,
+          selected: false,
+          hidden: false,
+          focusable: false,
+          actions: const [],
+        );
+
+    expect(
+      () => BrowserAccessibilitySnapshot(
+        sourceGeneration: 1,
+        generation: 1,
+        contextId: 1,
+        documentId: 1,
+        viewportWidth: 100,
+        viewportHeight: 100,
+        nodes: [node(2, parentId: 1), node(1)],
+        truncated: false,
+      ),
+      throwsFormatException,
+    );
+    expect(
+      () => BrowserAccessibilitySnapshot(
+        sourceGeneration: 1,
+        generation: 1,
+        contextId: 1,
+        documentId: 1,
+        viewportWidth: 100,
+        viewportHeight: 100,
+        nodes: [node(1), node(1)],
+        truncated: false,
+      ),
+      throwsFormatException,
+    );
+    expect(
+      BrowserAccessibilitySnapshot(
+        sourceGeneration: 1,
+        generation: 1,
+        contextId: 1,
+        documentId: 1,
+        viewportWidth: 100,
+        viewportHeight: 100,
+        nodes: [node(1), node(2, parentId: 1)],
+        truncated: false,
+      ).nodes.last.parentId,
+      1,
     );
   });
 

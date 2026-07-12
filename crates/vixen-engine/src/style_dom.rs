@@ -664,6 +664,7 @@ pub struct MatchedElement {
 /// remains engine-internal so semantic decisions stay in `Page`.
 pub(crate) struct AccessibilityElement {
     pub node_id: usize,
+    pub parent_id: Option<usize>,
     pub tag: String,
     pub role: Option<String>,
     pub aria_labelledby: Option<String>,
@@ -860,8 +861,13 @@ impl Document {
         }
 
         let mut out = Vec::with_capacity(maximum.min(scan_len));
+        let mut nearest_semantic_ancestor = vec![None; scan_len];
         let mut remaining_name_work = MAX_NAME_WORK;
         for idx in 0..scan_len {
+            let parent_id = arena
+                .parent(idx)
+                .and_then(|parent| nearest_semantic_ancestor[parent]);
+            nearest_semantic_ancestor[idx] = parent_id;
             if !rendered[idx] {
                 continue;
             }
@@ -872,6 +878,7 @@ impl Document {
             let node_id = idx + 1;
             let mut element = AccessibilityElement {
                 node_id,
+                parent_id,
                 tag: name.local.as_ref().to_owned(),
                 role: None,
                 aria_labelledby: None,
@@ -1068,6 +1075,7 @@ impl Document {
                 truncated: &mut truncated,
             }
             .resolve(idx, &element);
+            nearest_semantic_ancestor[idx] = Some(node_id);
             out.push(element);
         }
         (out, truncated)

@@ -140,8 +140,26 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetDevicePixelRatio);
     BrowserAccessibilityNode? tapped;
+    final parent = BrowserAccessibilityNode(
+      id: 7,
+      role: 'main',
+      label: 'Page content',
+      bounds: const BrowserAccessibilityRect(
+        x: 0,
+        y: 0,
+        width: 300,
+        height: 200,
+      ),
+      focused: false,
+      disabled: false,
+      selected: false,
+      hidden: false,
+      focusable: false,
+      actions: const [],
+    );
     final node = BrowserAccessibilityNode(
       id: 42,
+      parentId: 7,
       role: 'button',
       label: 'Open settings',
       bounds: const BrowserAccessibilityRect(
@@ -177,7 +195,7 @@ void main() {
                 documentId: 20,
                 viewportWidth: 400,
                 viewportHeight: 300,
-                nodes: [node],
+                nodes: [parent, node],
                 truncated: false,
               ),
               onSemanticTap: (value) => tapped = value,
@@ -189,6 +207,8 @@ void main() {
     await tester.pumpAndSettle();
 
     final finder = find.byKey(const ValueKey('semantic-9-42'));
+    final parentFinder = find.byKey(const ValueKey('semantic-9-7'));
+    expect(find.descendant(of: parentFinder, matching: finder), findsOneWidget);
     expect(
       tester.getSemantics(finder),
       matchesSemantics(

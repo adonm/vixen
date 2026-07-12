@@ -44,13 +44,15 @@ commands remain follow-up work.
 
 ## Accessibility contract
 
-BrowserCore supplies a bounded flat projection of authoritative roles, names,
-values, states, focus, tap actions, and physical bounds. The ABI exposes at most
-256 nodes and tags the exact projection with a deterministic mutation generation.
-The coordinator publishes it only with the matching frame/context/document/
-viewport generation; Flutter maps it to keyed `Semantics` nodes and routes taps
-back through BrowserCore hit testing. Hierarchy, richer actions, incremental/live
-updates, text selection, and native assistive-technology smoke remain open.
+BrowserCore supplies a bounded projection of authoritative roles, names, values,
+states, focus, tap actions, physical bounds, and nearest emitted semantic-parent
+relationships. The ABI exposes at most 256 document-order nodes and tags the
+exact projection with a deterministic mutation generation. The coordinator
+publishes it only with the matching frame/context/document/viewport generation;
+Flutter maps the hierarchy to keyed nested `Semantics` nodes and routes taps back
+through BrowserCore hit testing. Non-tree relationships, richer actions,
+incremental/live updates, text selection, and native assistive-technology smoke
+remain open.
 
 From the repository root, use the pinned Flutter 3.44 SDK and run:
 

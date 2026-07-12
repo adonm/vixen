@@ -473,47 +473,62 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         (_logicalViewport.width - snapshot.viewportWidth * scale) / 2;
     final offsetY =
         (_logicalViewport.height - snapshot.viewportHeight * scale) / 2;
-    final nodes = <Widget>[];
+    final childrenByParent = <int?, List<BrowserAccessibilityNode>>{};
     for (final node in snapshot.nodes) {
-      final bounds = node.bounds;
-      if (node.hidden ||
-          bounds == null ||
-          bounds.width <= 0 ||
-          bounds.height <= 0) {
-        continue;
-      }
-      nodes.add(
-        Positioned(
-          left: offsetX + bounds.x * scale,
-          top: offsetY + bounds.y * scale,
-          width: bounds.width * scale,
-          height: bounds.height * scale,
-          child: Semantics(
-            key: ValueKey('semantic-${snapshot.generation}-${node.id}'),
-            container: true,
-            label: node.label,
-            value: node.value,
-            enabled: _roleHasEnabledState(node.role) ? !node.disabled : null,
-            checked: node.checked,
-            selected: node.role == 'option' || node.role == 'tab'
-                ? node.selected
-                : null,
-            expanded: node.expanded,
-            focusable: node.focusable,
-            focused: node.focused,
-            button: node.role == 'button',
-            link: node.role == 'link',
-            header: node.role == 'heading',
-            image: node.role == 'image',
-            textField: node.role == 'textbox' || node.role == 'searchbox',
-            onTap: node.actions.contains('tap') && !node.disabled
-                ? () => widget.onSemanticTap?.call(node)
-                : null,
-            child: const SizedBox.expand(),
-          ),
-        ),
-      );
+      childrenByParent.putIfAbsent(node.parentId, () => []).add(node);
     }
+
+    List<Widget> buildNodes(int? parentId, double originX, double originY) {
+      final widgets = <Widget>[];
+      for (final node in childrenByParent[parentId] ?? const []) {
+        if (node.hidden) continue;
+        final bounds = node.bounds;
+        if (bounds == null || bounds.width <= 0 || bounds.height <= 0) {
+          widgets.addAll(buildNodes(node.id, originX, originY));
+          continue;
+        }
+        final absoluteX = offsetX + bounds.x * scale;
+        final absoluteY = offsetY + bounds.y * scale;
+        final children = buildNodes(node.id, absoluteX, absoluteY);
+        widgets.add(
+          Positioned(
+            left: absoluteX - originX,
+            top: absoluteY - originY,
+            width: bounds.width * scale,
+            height: bounds.height * scale,
+            child: Semantics(
+              key: ValueKey('semantic-${snapshot.generation}-${node.id}'),
+              container: true,
+              explicitChildNodes: children.isNotEmpty,
+              label: node.label,
+              value: node.value,
+              enabled: _roleHasEnabledState(node.role) ? !node.disabled : null,
+              checked: node.checked,
+              selected: node.role == 'option' || node.role == 'tab'
+                  ? node.selected
+                  : null,
+              expanded: node.expanded,
+              focusable: node.focusable,
+              focused: node.focused,
+              button: node.role == 'button',
+              link: node.role == 'link',
+              header: node.role == 'heading',
+              image: node.role == 'image',
+              textField: node.role == 'textbox' || node.role == 'searchbox',
+              onTap: node.actions.contains('tap') && !node.disabled
+                  ? () => widget.onSemanticTap?.call(node)
+                  : null,
+              child: children.isEmpty
+                  ? const SizedBox.expand()
+                  : Stack(clipBehavior: Clip.none, children: children),
+            ),
+          ),
+        );
+      }
+      return widgets;
+    }
+
+    final nodes = buildNodes(null, 0, 0);
     if (nodes.isEmpty) return visual;
     return Semantics(
       container: true,
@@ -522,7 +537,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         fit: StackFit.expand,
         children: [
           ExcludeSemantics(child: visual),
-          Stack(children: nodes),
+          Stack(clipBehavior: Clip.none, children: nodes),
         ],
       ),
     );

@@ -22,13 +22,13 @@ copies the frame through `TransferableTypedData`; and the Linux runner publishes
 it through one `FlPixelBufferTexture` with a mutex-protected three-buffer pool.
 Dimensions are capped at 4096 per axis and 64 MiB per frame, with at most three
 retained native frames and one in-flight Dart capture plus one newest
-replacement. `just gate-flutter-shell` runs format, analysis, 44 Dart/widget/
+replacement. `just gate-flutter-shell` runs format, analysis, 47 Dart/widget/
 native smoke tests, and the native ABI gate. A Fedora 43 container build also
 produced a relocatable debug bundle containing the executable, Flutter embedder,
 and `libvixen_ffi.so`.
 
 This does not establish Linux parity: text/IME/gesture/lifecycle input, complete
-semantic hierarchy/actions and native AT smoke, find/zoom, downloads/permissions,
+semantic relationships/actions and native AT smoke, find/zoom, downloads/permissions,
 host services, offline Flatpak packaging,
 release size/performance, and non-Linux runners remain open. The current
 Relm4/libadwaita/GTK shell remains the compatibility baseline until those gates
@@ -163,7 +163,7 @@ generations. BrowserCore performs hit testing, scrolling, selection, DOM event
 dispatch, and navigation effects. Platform-specific raw data may be retained in
 bounded DTOs where web semantics require it.
 
-The initial accessibility shape is implemented. BrowserCore/Page derives native
+The initial accessibility hierarchy is implemented. BrowserCore/Page derives native
 and explicit ARIA roles, bounded names (including `aria-labelledby` and HTML
 labels), values, states, focus, tap actions, and physical layout bounds. Engine
 snapshots cap at 1024 nodes and 512 UTF-8 bytes per string; the ABI caps the exact
@@ -171,13 +171,16 @@ wire projection at 256 nodes under 1 MiB. A deterministic nonzero semantic
 generation invalidates document-order ids after mutation. The coordinator
 publishes Semantics only when its context, document, viewport, and capture
 generation match the displayed frame, and Flutter keys nodes by semantic
-generation/id. Dart does not infer meaning from pixels or maintain a second DOM.
+generation/id. Each node names its nearest emitted semantic DOM ancestor;
+document-order validation guarantees retained parents precede children, and
+Flutter builds nested Semantics without inferring hierarchy from geometry. Dart
+does not infer meaning from pixels or maintain a second DOM.
 
-This first projection remains flat. Complete accessibility still requires
-hierarchy/relationships, descriptions, heading levels, mixed states, set-value/
-increment/decrement and focus actions, text selection, live regions, incremental
-updates, the disabled-fieldset first-legend exception, full ARIA presentational-
-role conflict handling, and native AT smoke on each platform.
+Complete accessibility still requires non-tree relationships, descriptions,
+heading levels, mixed states, set-value/increment/decrement and focus actions,
+text selection, live regions, incremental updates, the disabled-fieldset
+first-legend exception, full ARIA presentational-role conflict handling, and
+native AT smoke on each platform.
 
 Host-service UI is Flutter-owned presentation over BrowserCore decisions:
 permissions, file/directory selection, downloads, external opens, credentials,

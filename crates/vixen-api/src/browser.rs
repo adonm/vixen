@@ -14,7 +14,7 @@ pub const ACCESSIBILITY_MAX_NODES: usize = 1024;
 /// the aggregate action strings on one node.
 pub const ACCESSIBILITY_MAX_STRING_BYTES: usize = 512;
 
-/// A bounded, flat projection of the active document's current semantics.
+/// A bounded projection of the active document's current semantic hierarchy.
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccessibilitySnapshot {
     pub context_id: BrowsingContextId,
@@ -37,6 +37,13 @@ impl AccessibilitySnapshot {
         hash.u64(self.nodes.len() as u64);
         for node in &self.nodes {
             hash.u64(node.id as u64);
+            match node.parent_id {
+                Some(parent_id) => {
+                    hash.byte(1);
+                    hash.u64(parent_id as u64);
+                }
+                None => hash.byte(0),
+            }
             hash.string(&node.role);
             hash.string(&node.label);
             hash.optional_string(node.value.as_deref());
@@ -124,6 +131,8 @@ impl AccessibilityHash {
 #[derive(Debug, Clone, PartialEq)]
 pub struct AccessibilityNode {
     pub id: usize,
+    /// Nearest emitted semantic DOM ancestor in this snapshot.
+    pub parent_id: Option<usize>,
     pub role: String,
     pub label: String,
     pub value: Option<String>,
@@ -963,6 +972,7 @@ mod tests {
             viewport: (800, 600),
             nodes: vec![AccessibilityNode {
                 id: 1,
+                parent_id: None,
                 role: "button".to_owned(),
                 label: "Before".to_owned(),
                 value: None,
@@ -986,6 +996,10 @@ mod tests {
         snapshot.nodes[0].disabled = true;
         snapshot.refresh_generation();
         assert_ne!(snapshot.generation, first);
+        let without_parent = snapshot.generation;
+        snapshot.nodes[0].parent_id = Some(7);
+        snapshot.refresh_generation();
+        assert_ne!(snapshot.generation, without_parent);
     }
 
     #[test]

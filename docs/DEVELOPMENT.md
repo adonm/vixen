@@ -132,7 +132,7 @@ one-owner controller. `just gate-flutter-shell` adds the Dart binding, injected
 fake tests, production worker, Linux texture/input presenter, and live native
 smoke. It proves physical viewport and pointer/wheel/key routing, but not
 complete semantics/native AT, IME/gesture/lifecycle, a platform package, or a
-release build. The bounded flat BrowserCore-to-Flutter Semantics shape is covered.
+release build. The bounded BrowserCore-to-Flutter Semantics hierarchy is covered.
 
 ## Larger alpha batches
 

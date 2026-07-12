@@ -310,6 +310,7 @@ final class BrowserAccessibilityRect {
 final class BrowserAccessibilityNode {
   BrowserAccessibilityNode({
     required this.id,
+    this.parentId,
     required this.role,
     required this.label,
     this.value,
@@ -330,7 +331,8 @@ final class BrowserAccessibilityNode {
       throw const FormatException('accessibility actions must be strings');
     }
     return BrowserAccessibilityNode(
-      id: _int(wire, 'id'),
+      id: _positiveInt(wire, 'id'),
+      parentId: _optionalPositiveInt(wire, 'parent_id'),
       role: _string(wire, 'role'),
       label: _string(wire, 'label'),
       value: _optionalString(wire, 'value'),
@@ -349,6 +351,7 @@ final class BrowserAccessibilityNode {
   }
 
   final int id;
+  final int? parentId;
   final String role;
   final String label;
   final String? value;
@@ -364,6 +367,7 @@ final class BrowserAccessibilityNode {
 
   Map<String, Object?> toWire() => {
     'id': id,
+    'parent_id': parentId,
     'role': role,
     'label': label,
     'value': value,
@@ -392,6 +396,18 @@ final class BrowserAccessibilitySnapshot {
   }) : nodes = List.unmodifiable(nodes) {
     if (nodes.length > browserMaxAccessibilityNodes) {
       throw const FormatException('accessibility snapshot exceeds ABI bound');
+    }
+    final seen = <int>{};
+    for (final node in nodes) {
+      if (!seen.add(node.id)) {
+        throw const FormatException('accessibility node ids must be unique');
+      }
+      final parentId = node.parentId;
+      if (parentId != null && !seen.contains(parentId)) {
+        throw const FormatException(
+          'accessibility parents must precede their children',
+        );
+      }
     }
   }
 

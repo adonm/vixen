@@ -411,6 +411,7 @@ impl Page {
                 };
             nodes.push(AccessibilityNode {
                 id: element.node_id,
+                parent_id: element.parent_id,
                 role,
                 label: element.label,
                 value,
@@ -848,6 +849,59 @@ mod tests {
         assert_eq!(tab.role, "tab");
         assert!(tab.selected);
         assert!(tab.focusable);
+    }
+
+    #[test]
+    fn accessibility_snapshot_projects_nearest_semantic_parent_hierarchy() {
+        let page = Page::from_html(
+            "file:///accessibility-hierarchy.html",
+            r#"<!doctype html>
+                <main><div><ul><li><button>Run</button></li></ul></div></main>
+                <p>Independent</p>"#,
+        )
+        .unwrap();
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(1).unwrap(),
+            DocumentId::new(1).unwrap(),
+            (800, 600),
+        );
+        let main = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.role == "main")
+            .unwrap();
+        let list = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.role == "list")
+            .unwrap();
+        let item = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.role == "listitem")
+            .unwrap();
+        let button = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.role == "button")
+            .unwrap();
+        let independent = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Independent")
+            .unwrap();
+
+        assert_eq!(main.parent_id, None);
+        assert_eq!(list.parent_id, Some(main.id));
+        assert_eq!(item.parent_id, Some(list.id));
+        assert_eq!(button.parent_id, Some(item.id));
+        assert_eq!(independent.parent_id, None);
+        assert!(
+            snapshot
+                .nodes
+                .iter()
+                .all(|node| { node.parent_id.is_none_or(|parent_id| parent_id < node.id) })
+        );
     }
 
     #[test]
