@@ -208,7 +208,7 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
       break;
     case 'dispatch_accessibility_action':
       final action = normalized['action'];
-      if (action == 'focus') {
+      if (action == 'focus' || action == 'increase' || action == 'decrease') {
         _expectKeys(normalized, const <String>{
           'v',
           'type',

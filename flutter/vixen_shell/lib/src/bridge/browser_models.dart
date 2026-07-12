@@ -311,9 +311,11 @@ final class BrowserAccessibilityNode {
   BrowserAccessibilityNode({
     required this.id,
     this.parentId,
+    List<int> controlsIds = const [],
     required this.role,
     required this.label,
     this.value,
+    this.range,
     this.bounds,
     required this.focused,
     required this.disabled,
@@ -323,19 +325,30 @@ final class BrowserAccessibilityNode {
     required this.hidden,
     required this.focusable,
     required List<String> actions,
-  }) : actions = List.unmodifiable(actions);
+  }) : controlsIds = List.unmodifiable(controlsIds),
+       actions = List.unmodifiable(actions);
 
   factory BrowserAccessibilityNode.fromWire(Map<String, Object?> wire) {
     final actions = _list(wire, 'actions');
     if (actions.any((action) => action is! String)) {
       throw const FormatException('accessibility actions must be strings');
     }
+    final controlsIds = _list(wire, 'controls_ids');
+    if (controlsIds.any((id) => id is! int || id <= 0)) {
+      throw const FormatException(
+        'accessibility controls ids must be positive integers',
+      );
+    }
     return BrowserAccessibilityNode(
       id: _positiveInt(wire, 'id'),
       parentId: _optionalPositiveInt(wire, 'parent_id'),
+      controlsIds: controlsIds.cast<int>(),
       role: _string(wire, 'role'),
       label: _string(wire, 'label'),
       value: _optionalString(wire, 'value'),
+      range: wire['range'] == null
+          ? null
+          : BrowserAccessibilityRange.fromWire(_map(wire['range'])),
       bounds: wire['bbox'] == null
           ? null
           : BrowserAccessibilityRect.fromWire(_map(wire['bbox'])),
@@ -352,9 +365,11 @@ final class BrowserAccessibilityNode {
 
   final int id;
   final int? parentId;
+  final List<int> controlsIds;
   final String role;
   final String label;
   final String? value;
+  final BrowserAccessibilityRange? range;
   final BrowserAccessibilityRect? bounds;
   final bool focused;
   final bool disabled;
@@ -368,9 +383,11 @@ final class BrowserAccessibilityNode {
   Map<String, Object?> toWire() => {
     'id': id,
     'parent_id': parentId,
+    'controls_ids': controlsIds,
     'role': role,
     'label': label,
     'value': value,
+    'range': range?.toWire(),
     'bbox': bounds?.toWire(),
     'focused': focused,
     'disabled': disabled,
@@ -380,6 +397,47 @@ final class BrowserAccessibilityNode {
     'hidden': hidden,
     'focusable': focusable,
     'actions': actions,
+  };
+}
+
+final class BrowserAccessibilityRange {
+  const BrowserAccessibilityRange({
+    required this.current,
+    required this.minimum,
+    required this.maximum,
+    required this.step,
+  });
+
+  factory BrowserAccessibilityRange.fromWire(Map<String, Object?> wire) {
+    final range = BrowserAccessibilityRange(
+      current: _number(wire, 'current').toDouble(),
+      minimum: _number(wire, 'minimum').toDouble(),
+      maximum: _number(wire, 'maximum').toDouble(),
+      step: _number(wire, 'step').toDouble(),
+    );
+    if (!range.current.isFinite ||
+        !range.minimum.isFinite ||
+        !range.maximum.isFinite ||
+        !range.step.isFinite ||
+        range.maximum < range.minimum ||
+        range.current < range.minimum ||
+        range.current > range.maximum ||
+        range.step <= 0) {
+      throw const FormatException('invalid accessibility range');
+    }
+    return range;
+  }
+
+  final double current;
+  final double minimum;
+  final double maximum;
+  final double step;
+
+  Map<String, Object> toWire() => {
+    'current': current,
+    'minimum': minimum,
+    'maximum': maximum,
+    'step': step,
   };
 }
 
@@ -406,6 +464,14 @@ final class BrowserAccessibilitySnapshot {
       if (parentId != null && !seen.contains(parentId)) {
         throw const FormatException(
           'accessibility parents must precede their children',
+        );
+      }
+    }
+    for (final node in nodes) {
+      if (node.controlsIds.toSet().length != node.controlsIds.length ||
+          node.controlsIds.any((id) => id == node.id || !seen.contains(id))) {
+        throw const FormatException(
+          'accessibility controls ids must be unique emitted nodes',
         );
       }
     }
@@ -610,6 +676,26 @@ final class BrowserCommand {
     'node_id': nodeId,
     'action': 'set_value',
     'value': value,
+  });
+  factory BrowserCommand.dispatchAccessibilityAdjustment({
+    required int contextId,
+    required int documentId,
+    required int runtimeContextId,
+    required int viewportWidth,
+    required int viewportHeight,
+    required int sourceGeneration,
+    required int generation,
+    required int nodeId,
+    required bool increase,
+  }) => BrowserCommand._('dispatch_accessibility_action', {
+    'context_id': contextId,
+    'document_id': documentId,
+    'runtime_context_id': runtimeContextId,
+    'viewport': {'width': viewportWidth, 'height': viewportHeight},
+    'source_generation': sourceGeneration,
+    'generation': generation,
+    'node_id': nodeId,
+    'action': increase ? 'increase' : 'decrease',
   });
   factory BrowserCommand.dispatchMouseEvent({
     required int contextId,

@@ -14,7 +14,7 @@ which layer today?”
 | `just gate-architecture` | leaf-crate dependency rules plus frontend rules that forbid the former shell/headless direct composition; production frontends may use only `vixen-api` and `vixen-engine` |
 | `just test-flutter-controller` | Safe controller and native boundary crate tests: one non-clone BrowserCore/event owner, immediate navigation acceptance, exact terminal events, active-load stop, contexts/profile session, and C ABI unit/integration coverage; not Dart or Flutter proof |
 | `just gate-native-abi` | Builds `vixen-ffi` library forms and runs focused ABI v1 layout/header, opaque handle, bounded UTF-8/JSON command, stable response/event/error, event-sequence, output-buffer ownership, and panic-containment tests; native C ABI evidence only |
-| `just gate-flutter-shell` | Exact mise-managed Flutter 3.46.0-0.3.pre beta framework/engine revisions, Dart formatting/analysis, 47 shell/coordinator/worker/texture/input/Semantics tests, live process-adjacent native bridge smoke, and 23 focused native ABI/frame/input/accessibility tests; Linux source/test evidence, not IME, native AT, package, release, or non-Linux proof |
+| `just gate-flutter-shell` | Exact mise-managed Flutter 3.46.0-0.3.pre beta framework/engine revisions, Dart formatting/analysis, 47 shell/coordinator/worker/texture/input/Semantics tests, including bounded `aria-controls` relationships and native-range adjustment, live process-adjacent native bridge smoke, and 23 focused native ABI/frame/input/accessibility tests; Linux source/test evidence, not IME, native AT, package, release, or non-Linux proof |
 | `just gate-smoke` | reviewer baseline: formatting, clippy, host checks, and all host-runnable tests |
 | `just gate-push` | hk pre-push integration point: alpha, phase-6 runtime, smoke, and diff checks |
 | `just gate-webidl` | generated WebIDL constructor/prototype coverage plus headless/CDP runtime-host integration |
@@ -55,7 +55,8 @@ which layer today?”
   milestone over the same safe controller. `just gate-flutter-shell` adds Dart,
   widget, worker-isolate, texture-presenter, and live native smoke evidence. It
   proves physical viewport, pointer/wheel/keyboard routing, and the bounded
-  BrowserCore-to-Flutter Semantics hierarchy, but not IME, complete semantics/native
+  BrowserCore-to-Flutter Semantics hierarchy with one non-tree relationship and
+  native range actions, but not IME, complete semantics/native
   AT, packages, release behavior, or non-Linux GUI support; use
   `FLUTTER_SHELL.md` for remaining gates.
 - Size/performance thresholds become gates only after a representative baseline,

@@ -185,8 +185,9 @@ non-blocking target creation. Configured initial-URL loading still settles befor
 socket acceptance by design. Configured and parser-discovered scripts yield
 between items; a committed author exception emits
 `Runtime.exceptionThrown`, later independent scripts continue, and normal load
-settlement follows. Individual V8 jobs and external-script fetches remain
-noninterruptible. There is still no HTTP download manager or Playwright
+settlement follows. Individual V8 jobs are deadline-bounded and parser-discovered
+external classic-script reads are generation-cancellable; navigation-aware V8
+interruption and synchronous native host calls remain open. There is still no HTTP download manager or Playwright
 context-tracing archive implementation.
 
 ---
@@ -200,6 +201,12 @@ unavailable profiles fall back to the configured start page and records remain
 bounded by the profile store. Native `gtk-shell` checks may be host-package
 blocked; use `just gate-flutter-shell` and `just linux-release-smoke` for the
 released GUI path.
+
+The Flutter semantics projection additionally carries bounded `aria-controls`
+relationships to retained semantic nodes and native range min/max/current/step
+state. Enabled `input[type=range]` increase/decrease actions execute through the
+same generation-checked BrowserCore/runtime path as focus and set-value. This is
+widget/native-bridge evidence, not native AT or broad ARIA range support.
 
 ---
 

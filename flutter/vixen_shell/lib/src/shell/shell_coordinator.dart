@@ -279,6 +279,31 @@ final class ShellCoordinator extends ChangeNotifier {
     });
   }
 
+  Future<void> dispatchSemanticAdjustment(
+    BrowserAccessibilitySnapshot snapshot,
+    BrowserAccessibilityNode node, {
+    required bool increase,
+  }) {
+    final action = increase ? 'increase' : 'decrease';
+    if (!_isCurrentSemanticAction(snapshot, node, action) || node.disabled) {
+      return Future<void>.value();
+    }
+    return _enqueueInput((inputGeneration) async {
+      if (!_isCurrentSemanticAction(snapshot, node, action)) return;
+      _lastInputResult = await controller.dispatchAccessibilityAdjustment(
+        contextId: inputGeneration.contextId,
+        documentId: inputGeneration.documentId,
+        runtimeContextId: inputGeneration.runtimeContextId,
+        viewportWidth: inputGeneration.viewportWidth,
+        viewportHeight: inputGeneration.viewportHeight,
+        sourceGeneration: snapshot.sourceGeneration,
+        generation: snapshot.generation,
+        nodeId: node.id,
+        increase: increase,
+      );
+    });
+  }
+
   bool _isCurrentSemanticAction(
     BrowserAccessibilitySnapshot snapshot,
     BrowserAccessibilityNode node,

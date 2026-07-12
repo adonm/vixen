@@ -25,7 +25,8 @@ through a bounded RGBA pixel-buffer texture. Its fake-controller, worker,
 coordinator, texture, input, and live native smoke tests run with
 `just gate-flutter-shell`; a relocatable debug bundle has also compiled. Physical
 viewport plus pointer/wheel/keyboard input are routed through BrowserCore;
-the first bounded BrowserCore-derived Semantics hierarchy is also wired. IME,
+the bounded BrowserCore-derived Semantics hierarchy includes parent structure,
+`aria-controls`, text editing, and native range adjustment. IME,
 complete accessibility/native AT, host services, release packaging, and non-Linux runners
 remain open, so the GTK/Relm4 shell is still the temporary Linux compatibility
 baseline rather than the product direction.
@@ -365,9 +366,10 @@ and reference material, plus:
   closed, selected, or finish loading, and clear-data policy explicitly preserves
   or removes that state.
 - **Flutter shell target** — ADR-018 commits one Flutter chrome to Linux, macOS,
-  Windows, Android, and the Apple Silicon iOS Simulator over the same BrowserCore. The exported C/Dart ABI,
-  Flutter fake/real shell, external texture, Semantics projection, and packages
-  are planned, not implemented.
+  Windows, Android, and the Apple Silicon iOS Simulator over the same BrowserCore.
+  The exported C/Dart ABI, fake/real Linux shell, bounded RGBA external texture,
+  input, and initial Semantics projection are implemented; full parity, host
+  services, broader platform runners, and package-matrix evidence remain open.
 
 Future delivery order lives in [`docs/ROADMAP.md`](docs/ROADMAP.md); `PLAN.md`
 retains the historical phase runbook.

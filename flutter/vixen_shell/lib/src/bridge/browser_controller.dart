@@ -149,6 +149,32 @@ abstract class BrowserController {
     ),
   );
 
+  Future<InputDispatchedResponse> dispatchAccessibilityAdjustment({
+    required int contextId,
+    required int documentId,
+    required int runtimeContextId,
+    required int viewportWidth,
+    required int viewportHeight,
+    required int sourceGeneration,
+    required int generation,
+    required int nodeId,
+    required bool increase,
+  }) async => _expect<InputDispatchedResponse>(
+    await dispatch(
+      BrowserCommand.dispatchAccessibilityAdjustment(
+        contextId: contextId,
+        documentId: documentId,
+        runtimeContextId: runtimeContextId,
+        viewportWidth: viewportWidth,
+        viewportHeight: viewportHeight,
+        sourceGeneration: sourceGeneration,
+        generation: generation,
+        nodeId: nodeId,
+        increase: increase,
+      ),
+    ),
+  );
+
   Future<InputDispatchedResponse> dispatchMouseEvent({
     required int contextId,
     required int documentId,

@@ -614,6 +614,28 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
                         ACCESSIBILITY_MAX_VALUE_BYTES,
                     )?)
                 }
+                "increase" | "decrease" => {
+                    exact_keys(
+                        object,
+                        &[
+                            "action",
+                            "context_id",
+                            "document_id",
+                            "generation",
+                            "node_id",
+                            "runtime_context_id",
+                            "source_generation",
+                            "type",
+                            "v",
+                            "viewport",
+                        ],
+                    )?;
+                    if required_string(object, "action")? == "increase" {
+                        AccessibilityAction::Increase
+                    } else {
+                        AccessibilityAction::Decrease
+                    }
+                }
                 _ => {
                     return Err(AbiError::invalid_command(
                         "unsupported accessibility action",
@@ -941,9 +963,16 @@ fn accessibility_node_json(node: AccessibilityNode) -> Value {
     json!({
         "id": node.id,
         "parent_id": node.parent_id,
+        "controls_ids": node.controls_ids,
         "role": node.role,
         "label": node.label,
         "value": node.value,
+        "range": node.range.map(|range| json!({
+            "current": range.current,
+            "minimum": range.minimum,
+            "maximum": range.maximum,
+            "step": range.step,
+        })),
         "bbox": node.bbox.map(|bbox| json!({
             "x": bbox.x,
             "y": bbox.y,
@@ -1960,6 +1989,18 @@ mod tests {
                 ..
             } if value == "Ada"
         ));
+        for (name, expected) in [
+            ("increase", AccessibilityAction::Increase),
+            ("decrease", AccessibilityAction::Decrease),
+        ] {
+            let mut adjustment = value.clone();
+            adjustment["action"] = json!(name);
+            assert!(matches!(
+                parse_command(&adjustment.to_string()).unwrap(),
+                ControllerCommand::DispatchAccessibilityAction { action, .. }
+                    if action == expected
+            ));
+        }
         set_value["value"] = json!("x".repeat(ACCESSIBILITY_MAX_VALUE_BYTES + 1));
         assert!(parse_command(&set_value.to_string()).is_err());
 
@@ -1987,9 +2028,11 @@ mod tests {
         let node = AccessibilityNode {
             id: 4,
             parent_id: Some(2),
+            controls_ids: vec![],
             role: "checkbox".to_owned(),
             label: "Remember me".to_owned(),
             value: Some("yes".to_owned()),
+            range: None,
             bbox: Some(vixen_api::AccessibilityRect {
                 x: 1.5,
                 y: 2.5,
@@ -2030,9 +2073,11 @@ mod tests {
                 "nodes": [{
                     "id": 4,
                     "parent_id": 2,
+                    "controls_ids": [],
                     "role": "checkbox",
                     "label": "Remember me",
                     "value": "yes",
+                    "range": null,
                     "bbox": {"x": 1.5, "y": 2.5, "width": 30.0, "height": 40.0},
                     "focused": true,
                     "disabled": false,

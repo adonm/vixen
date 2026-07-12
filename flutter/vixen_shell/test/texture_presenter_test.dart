@@ -148,8 +148,10 @@ void main() {
     BrowserAccessibilityNode? tapped;
     BrowserAccessibilityNode? focused;
     (BrowserAccessibilityNode, String)? setValue;
+    (BrowserAccessibilityNode, bool)? adjusted;
     final parent = BrowserAccessibilityNode(
       id: 7,
+      controlsIds: const [43],
       role: 'main',
       label: 'Page content',
       bounds: const BrowserAccessibilityRect(
@@ -202,6 +204,31 @@ void main() {
       focusable: true,
       actions: const ['focus', 'set_value'],
     );
+    final slider = BrowserAccessibilityNode(
+      id: 44,
+      parentId: 7,
+      role: 'slider',
+      label: 'Volume',
+      value: '4',
+      range: const BrowserAccessibilityRange(
+        current: 4,
+        minimum: 0,
+        maximum: 10,
+        step: 2,
+      ),
+      bounds: const BrowserAccessibilityRect(
+        x: 10,
+        y: 120,
+        width: 120,
+        height: 40,
+      ),
+      focused: false,
+      disabled: false,
+      selected: false,
+      hidden: false,
+      focusable: true,
+      actions: const ['focus', 'increase', 'decrease'],
+    );
     final semantics = tester.ensureSemantics();
     await tester.pumpWidget(
       MaterialApp(
@@ -222,12 +249,14 @@ void main() {
                 documentId: 20,
                 viewportWidth: 400,
                 viewportHeight: 300,
-                nodes: [parent, node, textbox],
+                nodes: [parent, node, textbox, slider],
                 truncated: false,
               ),
               onSemanticTap: (_, value) => tapped = value,
               onSemanticFocus: (_, value) => focused = value,
               onSemanticSetValue: (_, node, value) => setValue = (node, value),
+              onSemanticAdjustment: (_, node, increase) =>
+                  adjusted = (node, increase),
             ),
           ),
         ),
@@ -272,6 +301,36 @@ void main() {
     tester.widget<Semantics>(textboxFinder).properties.onSetText!('Ada');
     expect(setValue?.$1.id, 43);
     expect(setValue?.$2, 'Ada');
+    expect(tester.widget<Semantics>(parentFinder).properties.controlsNodes, {
+      'vixen-10-20-43',
+    });
+    expect(
+      tester.widget<Semantics>(textboxFinder).properties.identifier,
+      'vixen-10-20-43',
+    );
+    final sliderFinder = find.byKey(const ValueKey('semantic-9-44'));
+    expect(
+      tester.getSemantics(sliderFinder),
+      matchesSemantics(
+        label: 'Volume',
+        value: '4',
+        isSlider: true,
+        hasEnabledState: true,
+        isEnabled: true,
+        isFocusable: true,
+        hasFocusAction: true,
+        hasIncreaseAction: true,
+        hasDecreaseAction: true,
+      ),
+    );
+    final sliderWidget = tester.widget<Semantics>(sliderFinder);
+    expect(sliderWidget.properties.minValue, '0');
+    expect(sliderWidget.properties.maxValue, '10');
+    expect(sliderWidget.properties.increasedValue, '6');
+    expect(sliderWidget.properties.decreasedValue, '2');
+    sliderWidget.properties.onIncrease!();
+    expect(adjusted?.$1.id, 44);
+    expect(adjusted?.$2, isTrue);
     semantics.dispose();
   });
 }

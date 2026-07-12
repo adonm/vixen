@@ -151,7 +151,7 @@ Alpha freezes an architecture capable of carrying the full goal. Complete these
 in order; later work may proceed in parallel only when it does not create a new
 state owner.
 
-Progress as of 2026-07-11: A1 is routed through the dependency-free typed
+Progress as of 2026-07-13: A1 is routed through the dependency-free typed
 `vixen-api` command/event seam and one `vixen-engine::browser::BrowserCore`.
 BrowserCore owns one engine thread, profile Store/network/cookies, bounded
 context/runtime registries, history, evaluation, inspection, and paint inputs.
@@ -214,9 +214,12 @@ BrowserCore projection now maps roles/names/states/bounds and tap/focus into Flu
 Semantics. Nearest emitted semantic-parent relationships now produce a validated,
 document-order nested Flutter hierarchy. Focus actions are exact source/wire-
 generation checked and execute through the live runtime. Bounded set-value uses
-the same checks and live native text-control event path; non-tree relationships,
-range actions,
-incremental updates, and native AT remain.
+the same checks and live native text-control event path. The first bounded
+non-tree relationship maps retained `aria-controls` targets to stable Flutter
+semantic identifiers. Enabled native range inputs expose numeric state and
+exact-generation increase/decrease actions through the live runtime. Additional
+relationships, authored ranges, incremental/live updates, text selection, and
+native AT remain.
 External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
 sparse paths. Headless `--incremental` now captures real before/after frames from
@@ -506,10 +509,11 @@ correctness. Neither may starve the other.
 3. Harden and measure the implemented WebRender-to-RGBA texture transport while
    continuing font shaping/fallback,
    image decode, and WPT-driven layout/rendering work on the shared core.
-4. Extend the landed bounded hierarchical accessibility projection with non-tree
-   relationships, range actions, incremental updates, live regions/text
-   selection, and native AT evidence. Add platform host-service UI; both remain
-   cross-cutting through every later platform.
+4. Extend the landed bounded hierarchical accessibility projection beyond its
+   first `aria-controls` relationship and native-range increase/decrease slice:
+   add descriptions and other relationships, authored ranges, incremental
+   updates, live regions/text selection, and native AT evidence. Add platform
+   host-service UI; both remain cross-cutting through every later platform.
 5. Use the landed checked-in hello-Flutter peer, controlled release-bundle
    build, component/delta analyzer, initial clean x86_64 size report, and pinned
    GitHub Release/FlatPark package to reproduce and review Linux size/performance baselines and

@@ -121,11 +121,19 @@ typedef struct VixenFrame {
  *   {"v":1,"type":"stop","context_id":U64}
  *   {"v":1,"type":"traverse_history","context_id":U64,"delta":I32}
  *   {"v":1,"type":"context_state","context_id":U64}
+ *   {"v":1,"type":"accessibility_snapshot","context_id":U64,
+ *    "document_id":U64,"viewport":{"width":U32,"height":U32}}
+ *   dispatch_accessibility_action additionally requires runtime_context_id,
+ *   source_generation, generation, node_id, viewport, and action. Action is
+ *   focus, increase, decrease, or set_value; only set_value carries value.
+ *   dispatch_mouse_event and dispatch_key_event additionally require document
+ *   and runtime context ids, viewport, event_type, and one bounded event object.
  *
  * Successful commands return:
  *   {"v":1,"type":"response","response":{"type":TAG,...}}
  * Response TAG is accepted, profile_session, browser_snapshot,
- * context_created, navigation_accepted, or context_state. Profile sessions
+ * context_created, navigation_accepted, context_state, accessibility_snapshot,
+ * or input_dispatched. Profile sessions
  * carry tabs and active_index. Snapshots carry active_context_id and contexts.
  * Context states carry context_id, main_frame_id, document_id,
  * runtime_context_id, active_navigation_id, url, title, history_length,

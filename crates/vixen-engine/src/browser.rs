@@ -2527,6 +2527,7 @@ impl BrowserCore {
                 }
                 json_string(value)?
             }
+            AccessibilityAction::Increase | AccessibilityAction::Decrease => "null".to_owned(),
         };
         let action = json_string(action.as_str())?;
         let source = format!(
@@ -3898,7 +3899,7 @@ mod tests {
         );
         config.document_overrides.insert(
             "https://same.test/input".to_owned(),
-            "<!doctype html><button id='same'>Same</button><a id='go' href='https://same.test/b'>Go</a><input id='name' aria-label='Name'>".to_owned(),
+            "<!doctype html><button id='same' aria-controls='name'>Same</button><a id='go' href='https://same.test/b'>Go</a><input id='name' aria-label='Name'><input id='volume' type='range' aria-label='Volume' min='0' max='10' step='2' value='4'>".to_owned(),
         );
         config
     }
@@ -4884,6 +4885,46 @@ mod tests {
                 .nodes
                 .iter()
                 .any(|node| node.id == input_id && node.value.as_deref() == Some("Ada"))
+        );
+
+        let volume = updated
+            .nodes
+            .iter()
+            .find(|node| node.label == "Volume")
+            .unwrap();
+        let volume_id = volume.id;
+        assert_eq!(volume.range.map(|range| range.current), Some(4.0));
+        assert!(volume.actions.iter().any(|action| action == "increase"));
+        let result = handle
+            .dispatch(BrowserCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                viewport: updated.viewport,
+                source_generation: updated.source_generation,
+                node_id: volume_id,
+                action: AccessibilityAction::Increase,
+            })
+            .unwrap();
+        assert!(matches!(result, BrowserCommandResult::InputDispatched(_)));
+        let adjusted = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: updated.viewport,
+            })
+            .unwrap();
+        let BrowserCommandResult::AccessibilitySnapshot(adjusted) = adjusted else {
+            panic!("unexpected accessibility result: {adjusted:?}");
+        };
+        assert_eq!(
+            adjusted
+                .nodes
+                .iter()
+                .find(|node| node.id == volume_id)
+                .and_then(|node| node.range)
+                .map(|range| range.current),
+            Some(6.0)
         );
     }
 

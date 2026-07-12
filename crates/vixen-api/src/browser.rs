@@ -46,9 +46,23 @@ impl AccessibilitySnapshot {
                 }
                 None => hash.byte(0),
             }
+            hash.u64(node.controls_ids.len() as u64);
+            for controls_id in &node.controls_ids {
+                hash.u64(*controls_id as u64);
+            }
             hash.string(&node.role);
             hash.string(&node.label);
             hash.optional_string(node.value.as_deref());
+            match node.range {
+                Some(range) => {
+                    hash.byte(1);
+                    hash.u64(range.current.to_bits());
+                    hash.u64(range.minimum.to_bits());
+                    hash.u64(range.maximum.to_bits());
+                    hash.u64(range.step.to_bits());
+                }
+                None => hash.byte(0),
+            }
             match node.bbox {
                 Some(bbox) => {
                     hash.byte(1);
@@ -136,9 +150,12 @@ pub struct AccessibilityNode {
     pub id: usize,
     /// Nearest emitted semantic DOM ancestor in this snapshot.
     pub parent_id: Option<usize>,
+    /// Emitted semantic nodes referenced by this element's `aria-controls`.
+    pub controls_ids: Vec<usize>,
     pub role: String,
     pub label: String,
     pub value: Option<String>,
+    pub range: Option<AccessibilityRange>,
     pub bbox: Option<AccessibilityRect>,
     pub focused: bool,
     pub disabled: bool,
@@ -148,6 +165,15 @@ pub struct AccessibilityNode {
     pub hidden: bool,
     pub focusable: bool,
     pub actions: Vec<String>,
+}
+
+/// Numeric state for an adjustable native range control.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AccessibilityRange {
+    pub current: f64,
+    pub minimum: f64,
+    pub maximum: f64,
+    pub step: f64,
 }
 
 /// Physical viewport coordinates for a semantic element's layout border box.
@@ -164,6 +190,8 @@ pub struct AccessibilityRect {
 pub enum AccessibilityAction {
     Focus,
     SetValue(String),
+    Increase,
+    Decrease,
 }
 
 impl AccessibilityAction {
@@ -171,6 +199,8 @@ impl AccessibilityAction {
         match self {
             Self::Focus => "focus",
             Self::SetValue(_) => "set_value",
+            Self::Increase => "increase",
+            Self::Decrease => "decrease",
         }
     }
 }
@@ -1002,9 +1032,11 @@ mod tests {
             nodes: vec![AccessibilityNode {
                 id: 1,
                 parent_id: None,
+                controls_ids: vec![],
                 role: "button".to_owned(),
                 label: "Before".to_owned(),
                 value: None,
+                range: None,
                 bbox: None,
                 focused: false,
                 disabled: false,
@@ -1030,6 +1062,19 @@ mod tests {
         snapshot.nodes[0].parent_id = Some(7);
         snapshot.refresh_generation();
         assert_ne!(snapshot.generation, without_parent);
+        let without_controls = snapshot.generation;
+        snapshot.nodes[0].controls_ids.push(9);
+        snapshot.refresh_generation();
+        assert_ne!(snapshot.generation, without_controls);
+        let without_range = snapshot.generation;
+        snapshot.nodes[0].range = Some(AccessibilityRange {
+            current: 4.0,
+            minimum: 0.0,
+            maximum: 10.0,
+            step: 2.0,
+        });
+        snapshot.refresh_generation();
+        assert_ne!(snapshot.generation, without_range);
     }
 
     #[test]

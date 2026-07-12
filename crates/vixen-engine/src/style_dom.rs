@@ -665,14 +665,19 @@ pub struct MatchedElement {
 pub(crate) struct AccessibilityElement {
     pub node_id: usize,
     pub parent_id: Option<usize>,
+    pub controls_ids: Vec<usize>,
     pub tag: String,
     pub role: Option<String>,
     pub aria_labelledby: Option<String>,
+    pub aria_controls: Option<String>,
     pub aria_label: Option<String>,
     pub title: Option<String>,
     pub alt: Option<String>,
     pub value: Option<String>,
     pub input_type: Option<String>,
+    pub minimum: Option<String>,
+    pub maximum: Option<String>,
+    pub step: Option<String>,
     pub aria_disabled: Option<String>,
     pub aria_checked: Option<String>,
     pub aria_selected: Option<String>,
@@ -880,14 +885,19 @@ impl Document {
             let mut element = AccessibilityElement {
                 node_id,
                 parent_id,
+                controls_ids: Vec::new(),
                 tag: name.local.as_ref().to_owned(),
                 role: None,
                 aria_labelledby: None,
+                aria_controls: None,
                 aria_label: None,
                 title: None,
                 alt: None,
                 value: None,
                 input_type: None,
+                minimum: None,
+                maximum: None,
+                step: None,
                 aria_disabled: None,
                 aria_checked: None,
                 aria_selected: None,
@@ -928,6 +938,12 @@ impl Document {
                         max_string_bytes,
                         &mut truncated,
                     ),
+                    "aria-controls" => copy_accessibility_attr(
+                        &mut element.aria_controls,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
                     "aria-label" => copy_accessibility_attr(
                         &mut element.aria_label,
                         attr.value.as_ref(),
@@ -954,6 +970,24 @@ impl Document {
                     ),
                     "type" => copy_accessibility_attr(
                         &mut element.input_type,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "min" => copy_accessibility_attr(
+                        &mut element.minimum,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "max" => copy_accessibility_attr(
+                        &mut element.maximum,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "step" => copy_accessibility_attr(
+                        &mut element.step,
                         attr.value.as_ref(),
                         max_string_bytes,
                         &mut truncated,
@@ -1078,6 +1112,22 @@ impl Document {
                 truncated: &mut truncated,
             }
             .resolve(idx, &element);
+            if let Some(controls) = element.aria_controls.as_deref() {
+                const MAX_CONTROLS: usize = 32;
+                for token in controls.split_ascii_whitespace() {
+                    let Some(target) = ids.get(token).copied().map(|target| target + 1) else {
+                        continue;
+                    };
+                    if element.controls_ids.contains(&target) {
+                        continue;
+                    }
+                    if element.controls_ids.len() == MAX_CONTROLS {
+                        truncated = true;
+                        break;
+                    }
+                    element.controls_ids.push(target);
+                }
+            }
             nearest_semantic_ancestor[idx] = Some(node_id);
             out.push(element);
         }

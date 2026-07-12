@@ -15,9 +15,9 @@
 #![forbid(unsafe_code)]
 
 use vixen_api::{
-    ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityNode, AccessibilityRect,
-    AccessibilitySnapshot, BrowsingContextId, DocumentId, ElementInfo, EngineDiagnostic,
-    EngineInspector, PageSnapshot,
+    ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityNode, AccessibilityRange,
+    AccessibilityRect, AccessibilitySnapshot, BrowsingContextId, DocumentId, ElementInfo,
+    EngineDiagnostic, EngineInspector, PageSnapshot,
 };
 use vixen_net::csp::ContentSecurityPolicy;
 
@@ -403,6 +403,7 @@ impl Page {
             let selected = aria_bool(element.aria_selected.as_deref()).unwrap_or(element.selected);
             let expanded = aria_bool(element.aria_expanded.as_deref());
             let value = accessibility_value(&element, &role);
+            let range = accessibility_range(&element, &role);
             let mut actions = Vec::new();
             if !disabled && matches!(role.as_str(), "button" | "link" | "checkbox" | "radio") {
                 actions.push("tap".to_owned());
@@ -413,12 +414,18 @@ impl Page {
             if !disabled && accessibility_set_value_supported(&element, &role) {
                 actions.push("set_value".to_owned());
             }
+            if !disabled && range.is_some() {
+                actions.push("increase".to_owned());
+                actions.push("decrease".to_owned());
+            }
             nodes.push(AccessibilityNode {
                 id: element.node_id,
                 parent_id: element.parent_id,
+                controls_ids: element.controls_ids,
                 role,
                 label: element.label,
                 value,
+                range,
                 bbox: bounds.get(&element.node_id).copied(),
                 focused: self.focused_element_node_id == Some(element.node_id),
                 disabled,
@@ -429,6 +436,14 @@ impl Page {
                 focusable,
                 actions,
             });
+        }
+        let emitted_ids = nodes
+            .iter()
+            .map(|node| node.id)
+            .collect::<std::collections::HashSet<_>>();
+        for node in &mut nodes {
+            node.controls_ids
+                .retain(|target| emitted_ids.contains(target));
         }
         let mut snapshot = AccessibilitySnapshot {
             context_id,
@@ -690,6 +705,51 @@ fn accessibility_value(element: &AccessibilityElement, role: &str) -> Option<Str
     })
 }
 
+fn accessibility_range(element: &AccessibilityElement, role: &str) -> Option<AccessibilityRange> {
+    if element.tag != "input"
+        || !element
+            .input_type
+            .as_deref()
+            .is_some_and(|value| value.eq_ignore_ascii_case("range"))
+        || role != "slider"
+        || element.read_only
+    {
+        return None;
+    }
+    let minimum = element
+        .minimum
+        .as_deref()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(0.0);
+    let maximum = element
+        .maximum
+        .as_deref()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value >= minimum)
+        .unwrap_or(100.0_f64.max(minimum));
+    let step = element
+        .step
+        .as_deref()
+        .filter(|value| !value.eq_ignore_ascii_case("any"))
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite() && *value > 0.0)
+        .unwrap_or(1.0);
+    let current = element
+        .value
+        .as_deref()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite())
+        .unwrap_or(minimum + (maximum - minimum) / 2.0)
+        .clamp(minimum, maximum);
+    Some(AccessibilityRange {
+        current,
+        minimum,
+        maximum,
+        step,
+    })
+}
+
 fn accessibility_focusable(element: &AccessibilityElement) -> bool {
     let tabindex_focusable = element
         .tabindex
@@ -927,6 +987,52 @@ mod tests {
                 .iter()
                 .all(|node| { node.parent_id.is_none_or(|parent_id| parent_id < node.id) })
         );
+    }
+
+    #[test]
+    fn accessibility_snapshot_projects_controls_relationships_and_native_range() {
+        let page = Page::from_html(
+            "file:///accessibility-controls.html",
+            r#"<!doctype html>
+                <button aria-controls="panel missing panel">Toggle</button>
+                <section id="panel" aria-label="Panel">Content</section>
+                <input type="range" aria-label="Volume" min="10" max="20" step="2" value="14">
+                <div id="hidden" hidden>Hidden target</div>"#,
+        )
+        .unwrap();
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(1).unwrap(),
+            DocumentId::new(1).unwrap(),
+            (800, 600),
+        );
+        let panel = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Panel")
+            .unwrap();
+        let toggle = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Toggle")
+            .unwrap();
+        assert_eq!(toggle.controls_ids, [panel.id]);
+
+        let volume = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Volume")
+            .unwrap();
+        assert_eq!(volume.role, "slider");
+        assert_eq!(
+            volume.range,
+            Some(AccessibilityRange {
+                current: 14.0,
+                minimum: 10.0,
+                maximum: 20.0,
+                step: 2.0,
+            })
+        );
+        assert_eq!(volume.actions, ["focus", "increase", "decrease"]);
     }
 
     #[test]

@@ -410,7 +410,11 @@ void main() {
             documentId: documentId,
             viewportWidth: width,
             viewportHeight: height,
-            nodes: [semanticButton(id: 11), semanticTextbox(id: 12)],
+            nodes: [
+              semanticButton(id: 11),
+              semanticTextbox(id: 12),
+              semanticRange(id: 13),
+            ],
             truncated: false,
           ),
       onCaptureFrame: (contextId, documentId, width, height) => browserFrame(
@@ -462,6 +466,21 @@ void main() {
     expect(setValue['action'], 'set_value');
     expect(setValue['node_id'], 12);
     expect(setValue['value'], 'Ada');
+
+    await flushEvents();
+    final adjusted = coordinator.accessibility!;
+    final range = adjusted.nodes.singleWhere((node) => node.id == 13);
+    await coordinator.dispatchSemanticAdjustment(
+      adjusted,
+      range,
+      increase: true,
+    );
+    final increase = controller.commands
+        .where((command) => command.type == 'dispatch_accessibility_action')
+        .last
+        .toWire();
+    expect(increase['action'], 'increase');
+    expect(increase['node_id'], 13);
 
     await flushEvents();
     final refreshed = coordinator.accessibility!;
@@ -562,6 +581,32 @@ BrowserAccessibilityNode semanticTextbox({required int id}) =>
       hidden: false,
       focusable: true,
       actions: const ['focus', 'set_value'],
+    );
+
+BrowserAccessibilityNode semanticRange({required int id}) =>
+    BrowserAccessibilityNode(
+      id: id,
+      role: 'slider',
+      label: 'Volume',
+      value: '4',
+      range: const BrowserAccessibilityRange(
+        current: 4,
+        minimum: 0,
+        maximum: 10,
+        step: 2,
+      ),
+      bounds: const BrowserAccessibilityRect(
+        x: 10,
+        y: 120,
+        width: 140,
+        height: 40,
+      ),
+      focused: false,
+      disabled: false,
+      selected: false,
+      hidden: false,
+      focusable: true,
+      actions: const ['focus', 'increase', 'decrease'],
     );
 
 BrowserFrame browserFrame({

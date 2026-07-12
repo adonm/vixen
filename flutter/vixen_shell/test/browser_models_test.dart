@@ -183,9 +183,11 @@ void main() {
         {
           'id': 9,
           'parent_id': null,
+          'controls_ids': [],
           'role': 'checkbox',
           'label': 'Remember me',
           'value': null,
+          'range': null,
           'bbox': {'x': 10.0, 'y': 20.0, 'width': 100.0, 'height': 30.0},
           'focused': true,
           'disabled': false,
@@ -271,22 +273,51 @@ void main() {
         'value': 'Ada',
       },
     );
+    expect(
+      BrowserCommand.dispatchAccessibilityAdjustment(
+        contextId: 7,
+        documentId: 70,
+        runtimeContextId: 700,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        sourceGeneration: 8,
+        generation: 99,
+        nodeId: 9,
+        increase: true,
+      ).toWire(),
+      {
+        'v': 1,
+        'type': 'dispatch_accessibility_action',
+        'context_id': 7,
+        'document_id': 70,
+        'runtime_context_id': 700,
+        'viewport': {'width': 800, 'height': 600},
+        'source_generation': 8,
+        'generation': 99,
+        'node_id': 9,
+        'action': 'increase',
+      },
+    );
   });
 
   test('accessibility snapshot validates parent hierarchy', () {
-    BrowserAccessibilityNode node(int id, {int? parentId}) =>
-        BrowserAccessibilityNode(
-          id: id,
-          parentId: parentId,
-          role: 'generic',
-          label: 'node $id',
-          focused: false,
-          disabled: false,
-          selected: false,
-          hidden: false,
-          focusable: false,
-          actions: const [],
-        );
+    BrowserAccessibilityNode node(
+      int id, {
+      int? parentId,
+      List<int> controlsIds = const [],
+    }) => BrowserAccessibilityNode(
+      id: id,
+      parentId: parentId,
+      controlsIds: controlsIds,
+      role: 'generic',
+      label: 'node $id',
+      focused: false,
+      disabled: false,
+      selected: false,
+      hidden: false,
+      focusable: false,
+      actions: const [],
+    );
 
     expect(
       () => BrowserAccessibilitySnapshot(
@@ -326,6 +357,22 @@ void main() {
         truncated: false,
       ).nodes.last.parentId,
       1,
+    );
+    expect(
+      BrowserAccessibilitySnapshot(
+        sourceGeneration: 1,
+        generation: 1,
+        contextId: 1,
+        documentId: 1,
+        viewportWidth: 100,
+        viewportHeight: 100,
+        nodes: [
+          node(1),
+          node(2, controlsIds: const [1]),
+        ],
+        truncated: false,
+      ).nodes.last.controlsIds,
+      [1],
     );
   });
 

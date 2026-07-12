@@ -106,6 +106,7 @@ final class BrowserContentSurface extends StatefulWidget {
     this.onSemanticTap,
     this.onSemanticFocus,
     this.onSemanticSetValue,
+    this.onSemanticAdjustment,
     this.textureController,
     super.key,
   });
@@ -132,6 +133,12 @@ final class BrowserContentSurface extends StatefulWidget {
     String value,
   )?
   onSemanticSetValue;
+  final void Function(
+    BrowserAccessibilitySnapshot snapshot,
+    BrowserAccessibilityNode node,
+    bool increase,
+  )?
+  onSemanticAdjustment;
   final BrowserTextureController? textureController;
 
   @override
@@ -508,6 +515,8 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         final absoluteX = offsetX + bounds.x * scale;
         final absoluteY = offsetY + bounds.y * scale;
         final children = buildNodes(node.id, absoluteX, absoluteY);
+        final range = node.range;
+        final semanticIdentifier = _semanticIdentifier(snapshot, node.id);
         widgets.add(
           Positioned(
             left: absoluteX - originX,
@@ -518,8 +527,33 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
               key: ValueKey('semantic-${snapshot.generation}-${node.id}'),
               container: true,
               explicitChildNodes: children.isNotEmpty,
+              identifier: semanticIdentifier,
+              controlsNodes: node.controlsIds.isEmpty
+                  ? null
+                  : Set<String>.from(
+                      node.controlsIds.map(
+                        (id) => _semanticIdentifier(snapshot, id),
+                      ),
+                    ),
               label: node.label,
               value: node.value,
+              slider: range != null,
+              minValue: range == null
+                  ? null
+                  : _formatSemanticNumber(range.minimum),
+              maxValue: range == null
+                  ? null
+                  : _formatSemanticNumber(range.maximum),
+              increasedValue: range == null
+                  ? null
+                  : _formatSemanticNumber(
+                      math.min(range.maximum, range.current + range.step),
+                    ),
+              decreasedValue: range == null
+                  ? null
+                  : _formatSemanticNumber(
+                      math.max(range.minimum, range.current - range.step),
+                    ),
               enabled: _roleHasEnabledState(node.role) ? !node.disabled : null,
               checked: node.checked,
               selected: node.role == 'option' || node.role == 'tab'
@@ -542,6 +576,14 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
               onSetText: node.actions.contains('set_value') && !node.disabled
                   ? (value) =>
                         widget.onSemanticSetValue?.call(snapshot, node, value)
+                  : null,
+              onIncrease: node.actions.contains('increase') && !node.disabled
+                  ? () =>
+                        widget.onSemanticAdjustment?.call(snapshot, node, true)
+                  : null,
+              onDecrease: node.actions.contains('decrease') && !node.disabled
+                  ? () =>
+                        widget.onSemanticAdjustment?.call(snapshot, node, false)
                   : null,
               child: children.isEmpty
                   ? const SizedBox.expand()
@@ -576,6 +618,13 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
     super.dispose();
   }
 }
+
+String _semanticIdentifier(BrowserAccessibilitySnapshot snapshot, int nodeId) =>
+    'vixen-${snapshot.contextId}-${snapshot.documentId}-$nodeId';
+
+String _formatSemanticNumber(double value) => value == value.truncateToDouble()
+    ? value.toInt().toString()
+    : value.toString();
 
 int _domButton(int buttons) {
   if (buttons & kMiddleMouseButton != 0) return 1;

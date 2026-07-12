@@ -47,7 +47,9 @@ commands remain follow-up work.
 
 BrowserCore supplies a bounded projection of authoritative roles, names, values,
 states, focus, tap/focus actions, physical bounds, and nearest emitted semantic-parent
-relationships. The ABI exposes at most 256 document-order nodes and tags the
+relationships. Bounded `aria-controls` targets map to stable Flutter semantic
+identifiers. Enabled native range inputs expose min/max/current/step and route
+increase/decrease through the exact-generation live runtime action path. The ABI exposes at most 256 document-order nodes and tags the
 exact projection with a deterministic mutation generation. The coordinator
 publishes it only with the matching frame/context/document/viewport generation;
 Flutter maps the hierarchy to keyed nested `Semantics` nodes and routes taps back
@@ -56,7 +58,7 @@ generations and executes through the live runtime before a refreshed projection
 is published. A 16 KiB-bounded `onSetText` path uses the same generation checks
 and live value/event machinery for enabled writable native text controls;
 passwords, readonly controls, unsupported types, and ARIA-only textboxes are not
-advertised. Non-tree relationships, range actions,
+advertised. Additional non-tree relationships, authored range actions,
 incremental/live updates, text selection, and native assistive-technology smoke
 remain open.
 

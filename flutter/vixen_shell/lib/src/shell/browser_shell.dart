@@ -142,6 +142,15 @@ final class _BrowserShellState extends State<BrowserShell> {
                         ),
                       );
                     },
+                    onSemanticAdjustment: (snapshot, node, increase) {
+                      unawaited(
+                        coordinator.dispatchSemanticAdjustment(
+                          snapshot,
+                          node,
+                          increase: increase,
+                        ),
+                      );
+                    },
                   ),
                 ),
                 _StatusBar(status: coordinator.selectedStatus),

@@ -647,6 +647,17 @@ pub(crate) fn bounded_accessibility_snapshot(
         snapshot.nodes.truncate(ACCESSIBILITY_ABI_MAX_NODES);
         snapshot.truncated = true;
     }
+    let retained_ids = snapshot
+        .nodes
+        .iter()
+        .map(|node| node.id)
+        .collect::<std::collections::HashSet<_>>();
+    for node in &mut snapshot.nodes {
+        let before = node.controls_ids.len();
+        node.controls_ids
+            .retain(|target| retained_ids.contains(target));
+        snapshot.truncated |= node.controls_ids.len() != before;
+    }
     snapshot.refresh_generation();
     snapshot
 }

@@ -2339,6 +2339,9 @@ const DOM_API_BOOTSTRAP: &str = r#"
         applyControlValue(target, text, text.length, text.length, 'insertReplacementText', text, true);
         return true;
       }
+      if (String(action) === 'increase' || String(action) === 'decrease') {
+        return adjustRangeControl(target, String(action) === 'increase' ? 1 : -1);
+      }
       return false;
     },
     configurable: true,
@@ -2871,6 +2874,23 @@ const DOM_API_BOOTSTRAP: &str = r#"
     const delta = (Number.isFinite(step) && step > 0 ? step : 1) * (Number(count) || 1) * direction;
     const base = Number.isFinite(inputValueAsNumber(element)) ? inputValueAsNumber(element) : (parseNumberAttr(element, 'min') ?? 0);
     setInputValueAsNumber(element, base + delta);
+  }
+
+  function adjustRangeControl(element, direction) {
+    if (elementTag(element) !== 'input' || elementType(element) !== 'range') return false;
+    const minimum = parseNumberAttr(element, 'min') ?? 0;
+    const authoredMaximum = parseNumberAttr(element, 'max');
+    const maximum = authoredMaximum !== null && authoredMaximum >= minimum ? authoredMaximum : Math.max(100, minimum);
+    const rawStep = reflectedAttribute(element, 'step');
+    const parsedStep = rawStep && rawStep.toLowerCase() !== 'any' ? Number(rawStep) : 1;
+    const step = Number.isFinite(parsedStep) && parsedStep > 0 ? parsedStep : 1;
+    const currentNumber = inputValueAsNumber(element);
+    const current = Number.isFinite(currentNumber) ? currentNumber : minimum + (maximum - minimum) / 2;
+    const next = Math.min(maximum, Math.max(minimum, current + step * direction));
+    if (next === current) return true;
+    const text = String(next);
+    applyControlValue(element, text, text.length, text.length, 'insertReplacementText', text, true);
+    return true;
   }
 
   function setRangeText(element, replacement, start = undefined, end = undefined, selectionMode = 'preserve') {
