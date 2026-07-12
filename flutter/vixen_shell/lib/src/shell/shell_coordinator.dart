@@ -23,6 +23,7 @@ final class ShellCoordinator extends ChangeNotifier {
   Future<void>? _startFuture;
   Future<void>? _closeFuture;
   Future<void> _inputTail = Future<void>.value();
+  Future<void> _hostViewTail = Future<void>.value();
   _FrameCaptureRequest? _replacementCapture;
   _FrameCaptureKey? _lastCaptureKey;
   _AccessibilityCaptureRequest? _replacementAccessibilityCapture;
@@ -36,6 +37,7 @@ final class ShellCoordinator extends ChangeNotifier {
   int _projectionGeneration = 0;
   int? _frameProjectionGeneration;
   int _inputGeneration = 0;
+  int _hostViewGeneration = 0;
   int _pendingInputEvents = 0;
   String? _errorMessage;
   BrowserFrame? _frame;
@@ -44,6 +46,10 @@ final class ShellCoordinator extends ChangeNotifier {
   InputDispatchedResponse? _lastInputResult;
   bool _captureInFlight = false;
   bool _accessibilityCaptureInFlight = false;
+  bool _contentFocused = false;
+  double _scaleFactor = 1;
+  BrowserHostLifecycle _hostLifecycle = BrowserHostLifecycle.resumed;
+  _HostViewKey? _lastHostViewKey;
   bool _isStarting = false;
   bool _isReady = false;
   bool _disposed = false;
@@ -174,14 +180,80 @@ final class ShellCoordinator extends ChangeNotifier {
     }
   });
 
-  void updatePhysicalViewport(int width, int height) {
+  void updatePhysicalViewport(int width, int height, [double scaleFactor = 1]) {
     final bounded = boundFrameViewport(width, height);
-    if (_viewportWidth == bounded.width && _viewportHeight == bounded.height) {
+    if (_viewportWidth == bounded.width &&
+        _viewportHeight == bounded.height &&
+        _scaleFactor == scaleFactor) {
       return;
     }
     _viewportWidth = bounded.width;
     _viewportHeight = bounded.height;
+    _scaleFactor = scaleFactor;
+    _scheduleHostViewUpdate();
     _scheduleFrameCapture();
+  }
+
+  void updateContentFocus(bool focused) {
+    if (_contentFocused == focused) return;
+    _contentFocused = focused;
+    _scheduleHostViewUpdate();
+  }
+
+  void updateApplicationLifecycle(BrowserHostLifecycle lifecycle) {
+    if (_hostLifecycle == lifecycle) return;
+    _hostLifecycle = lifecycle;
+    _scheduleHostViewUpdate();
+    if (_hostViewVisible) _scheduleFrameCapture(force: true);
+  }
+
+  bool get _hostViewVisible =>
+      _hostLifecycle == BrowserHostLifecycle.resumed ||
+      _hostLifecycle == BrowserHostLifecycle.inactive;
+
+  bool get _hostAcceptsInput =>
+      _contentFocused && _hostLifecycle == BrowserHostLifecycle.resumed;
+
+  void _scheduleHostViewUpdate() {
+    if (_closeFuture != null ||
+        !_isReady ||
+        _viewportWidth <= 0 ||
+        _viewportHeight <= 0) {
+      return;
+    }
+    final selected = selectedContext;
+    if (selected == null) return;
+    final key = _HostViewKey(
+      contextId: selected.contextId,
+      width: _viewportWidth,
+      height: _viewportHeight,
+      scaleFactor: _scaleFactor,
+      focused: _hostAcceptsInput,
+      visible: _hostViewVisible,
+      lifecycle: _hostLifecycle,
+    );
+    if (key == _lastHostViewKey) return;
+    _lastHostViewKey = key;
+    final generation = ++_hostViewGeneration;
+    _inputGeneration++;
+    _hostViewTail = _hostViewTail.then((_) async {
+      try {
+        _lastInputResult = await controller.updateHostViewState(
+          contextId: key.contextId,
+          generation: generation,
+          viewportWidth: key.width,
+          viewportHeight: key.height,
+          scaleFactor: key.scaleFactor,
+          focused: key.focused,
+          visible: key.visible,
+          lifecycle: key.lifecycle,
+        );
+      } catch (error) {
+        if (_lastHostViewKey == key) {
+          _showError('Unable to update browser host view', error);
+        }
+      }
+    });
   }
 
   Future<void> dispatchMouseEvent(String eventType, BrowserMouseEvent event) =>
@@ -340,6 +412,7 @@ final class ShellCoordinator extends ChangeNotifier {
         selected == null ||
         selected.isLoading ||
         runtimeContextId == null ||
+        !_hostAcceptsInput ||
         _viewportWidth <= 0 ||
         _viewportHeight <= 0) {
       return Future<void>.value();
@@ -363,6 +436,7 @@ final class ShellCoordinator extends ChangeNotifier {
     _pendingInputEvents++;
     _inputTail = _inputTail.then((_) async {
       try {
+        await _hostViewTail;
         if (_isCurrentInputGeneration(generation)) {
           await operation(generation);
           if (_isCurrentInputGeneration(generation)) {
@@ -592,6 +666,8 @@ final class ShellCoordinator extends ChangeNotifier {
 
   void _scheduleFrameCapture({bool force = false}) {
     if (_closeFuture != null || !_isReady) return;
+    _scheduleHostViewUpdate();
+    if (!_hostViewVisible) return;
     final selected = selectedContext;
     if (selected == null ||
         selected.isLoading ||
@@ -795,6 +871,7 @@ final class ShellCoordinator extends ChangeNotifier {
       if (_eventWork case final eventWork?) await eventWork;
       if (_startFuture != null) await _startFuture;
       await _inputTail;
+      await _hostViewTail;
       await controller.saveCurrentProfileSession();
     } catch (_) {
       // Shutdown still has to release the sole native browser owner.
@@ -845,6 +922,48 @@ final class _FrameCaptureKey {
 
   @override
   int get hashCode => Object.hash(contextId, documentId, width, height);
+}
+
+final class _HostViewKey {
+  const _HostViewKey({
+    required this.contextId,
+    required this.width,
+    required this.height,
+    required this.scaleFactor,
+    required this.focused,
+    required this.visible,
+    required this.lifecycle,
+  });
+
+  final int contextId;
+  final int width;
+  final int height;
+  final double scaleFactor;
+  final bool focused;
+  final bool visible;
+  final BrowserHostLifecycle lifecycle;
+
+  @override
+  bool operator ==(Object other) =>
+      other is _HostViewKey &&
+      contextId == other.contextId &&
+      width == other.width &&
+      height == other.height &&
+      scaleFactor == other.scaleFactor &&
+      focused == other.focused &&
+      visible == other.visible &&
+      lifecycle == other.lifecycle;
+
+  @override
+  int get hashCode => Object.hash(
+    contextId,
+    width,
+    height,
+    scaleFactor,
+    focused,
+    visible,
+    lifecycle,
+  );
 }
 
 final class _FrameCaptureRequest {

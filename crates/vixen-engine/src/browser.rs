@@ -19,12 +19,13 @@ use vixen_api::{
     BrowserCommandResult, BrowserError, BrowserEvent, BrowserHandle, BrowserId, BrowserSnapshot,
     BrowsingContextConfig, BrowsingContextId, BrowsingContextState, CrossDocumentNavigationKind,
     DocumentId, DocumentTextKind, EvaluationResult, FocusEventInfo, FocusProjection, FormEntryInfo,
-    FormEntryValueInfo, FormSubmissionInfo, FrameId, InputDispatchResult, KeyEventData,
-    MouseEventData, NavigationActionOutcome, NavigationCancellationReason, NavigationHistoryEntry,
-    NavigationHistorySnapshot, NavigationId, NavigationPhase, ProfileDataSelection, ProfileId,
-    ProfileSessionState, RequestId, RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent,
-    RuntimeConsoleValue, RuntimeContextId, RuntimeDialogEvent, RuntimeEffects,
-    RuntimeExceptionEvent, RuntimeNetworkEvent, ScriptValue, browser_error_codes,
+    FormEntryValueInfo, FormSubmissionInfo, FrameId, HostViewState, InputDispatchResult,
+    KeyEventData, MouseEventData, NavigationActionOutcome, NavigationCancellationReason,
+    NavigationHistoryEntry, NavigationHistorySnapshot, NavigationId, NavigationPhase,
+    ProfileDataSelection, ProfileId, ProfileSessionState, RequestId, RuntimeBindingEvent,
+    RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue, RuntimeContextId,
+    RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent, RuntimeNetworkEvent, ScriptValue,
+    browser_error_codes,
 };
 use vixen_net::{
     CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent, RedirectMode,
@@ -446,6 +447,7 @@ struct BrowsingContext {
     page: Page,
     runtime_slot: usize,
     config: BrowsingContextConfig,
+    host_view: HostViewState,
 }
 
 struct RuntimeSlot {
@@ -771,6 +773,9 @@ impl BrowserCore {
             BrowserCommand::GetBrowsingContextState { context_id } => Ok(
                 BrowserCommandResult::BrowsingContextState(self.context_state(context_id)?),
             ),
+            BrowserCommand::UpdateHostViewState { context_id, state } => {
+                self.update_host_view_state(context_id, state)
+            }
             BrowserCommand::GetBrowserSnapshot => Ok(BrowserCommandResult::BrowserSnapshot(
                 self.browser_snapshot(),
             )),
@@ -1176,6 +1181,7 @@ impl BrowserCore {
                 page,
                 runtime_slot,
                 config: BrowsingContextConfig::default(),
+                host_view: HostViewState::default(),
             },
         );
         let state = self.context_state(context_id)?;
@@ -1553,7 +1559,7 @@ impl BrowserCore {
                 return;
             }
         };
-        let (old_document_id, old_runtime_context_id, old_runtime_slot, context_config) = {
+        let (old_document_id, old_runtime_context_id, old_runtime_slot, context_config, host_view) = {
             let context = self
                 .context(context_id)
                 .expect("active navigation context exists");
@@ -1562,6 +1568,7 @@ impl BrowserCore {
                 context.runtime_context_id,
                 context.runtime_slot,
                 context.config.clone(),
+                context.host_view,
             )
         };
         if self.runtime_slots.len() >= MAX_RUNTIME_SLOTS {
@@ -1594,6 +1601,21 @@ impl BrowserCore {
             }
         };
         apply_runtime_config(&mut runtime, &context_config);
+        let host_view_source = format!(
+            "globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}) : false",
+            host_view.focused, host_view.visible
+        );
+        if let Err(error) = runtime.with_entered_isolate(|runtime| {
+            runtime.evaluate_with_page_mut(&host_view_source, &mut page)
+        }) {
+            self.fail_navigation(
+                context_id,
+                navigation_id,
+                Some(request_id),
+                engine_error(error),
+            );
+            return;
+        }
         if let Err(error) = self.record_visit_url(&final_url) {
             self.fail_navigation(context_id, navigation_id, Some(request_id), error);
             return;
@@ -2301,6 +2323,69 @@ impl BrowserCore {
         Ok(BrowserCommandResult::Accepted)
     }
 
+    fn update_host_view_state(
+        &mut self,
+        context_id: BrowsingContextId,
+        state: HostViewState,
+    ) -> Result<BrowserCommandResult, BrowserError> {
+        validate_viewport(state.viewport)?;
+        if state.generation == 0
+            || !state.scale_factor.is_finite()
+            || !(0.1..=16.0).contains(&state.scale_factor)
+            || (state.focused && !matches!(state.lifecycle, vixen_api::HostLifecycle::Resumed))
+            || (state.visible
+                && matches!(
+                    state.lifecycle,
+                    vixen_api::HostLifecycle::Hidden
+                        | vixen_api::HostLifecycle::Paused
+                        | vixen_api::HostLifecycle::Detached
+                ))
+        {
+            return Err(BrowserError::new(
+                browser_error_codes::INVALID_ARGUMENT,
+                "host view generation and scale factor must be valid",
+            ));
+        }
+        let (document_id, runtime_context_id, current_generation) = {
+            let context = self.context(context_id)?;
+            (
+                context.document_id,
+                context.runtime_context_id,
+                context.host_view.generation,
+            )
+        };
+        if state.generation <= current_generation {
+            return Err(BrowserError::new(
+                browser_error_codes::STALE_HOST_VIEW,
+                format!(
+                    "host view generation {} is not newer than {current_generation}",
+                    state.generation
+                ),
+            ));
+        }
+        self.context_mut(context_id)?.host_view = state;
+        let source = format!(
+            "globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}) : false",
+            state.focused, state.visible
+        );
+        let evaluation =
+            self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
+        Ok(BrowserCommandResult::InputDispatched(InputDispatchResult {
+            effects: evaluation.effects,
+            navigation_actions: evaluation.navigation_actions,
+        }))
+    }
+
+    fn ensure_host_accepts_input(&self, context_id: BrowsingContextId) -> Result<(), BrowserError> {
+        if self.context(context_id)?.host_view.accepts_input() {
+            return Ok(());
+        }
+        Err(BrowserError::new(
+            browser_error_codes::INVALID_ARGUMENT,
+            "host view is not active for content input",
+        ))
+    }
+
     fn evaluate(
         &mut self,
         context_id: BrowsingContextId,
@@ -2398,6 +2483,7 @@ impl BrowserCore {
         event_type: String,
         event: MouseEventData,
     ) -> Result<BrowserCommandResult, BrowserError> {
+        self.ensure_host_accepts_input(context_id)?;
         if !event.x.is_finite()
             || !event.y.is_finite()
             || !event.delta_x.is_finite()
@@ -2447,6 +2533,7 @@ impl BrowserCore {
         event_type: String,
         event: KeyEventData,
     ) -> Result<BrowserCommandResult, BrowserError> {
+        self.ensure_host_accepts_input(context_id)?;
         let event_type = json_string(&event_type)?;
         let init = deno_core::serde_json::json!({
             "key": event.key,
@@ -2486,6 +2573,7 @@ impl BrowserCore {
             node_id,
             action,
         } = request;
+        self.ensure_host_accepts_input(context_id)?;
         validate_viewport(viewport)?;
         let context = self.context_for_document(context_id, document_id)?;
         if context.runtime_context_id != runtime_context_id {
@@ -4782,6 +4870,98 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(stale.code, browser_error_codes::STALE_DOCUMENT);
+    }
+
+    #[test]
+    fn host_view_generation_drives_live_focus_visibility_and_input_policy() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/input");
+        let current = state(&mut handle, context_id);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "globalThis.visibilityChanges = 0; document.addEventListener('visibilitychange', () => visibilityChanges++); document.hasFocus()"
+            ),
+            ScriptValue::Bool(true)
+        );
+
+        let hidden = HostViewState {
+            generation: 1,
+            viewport: (640, 360),
+            scale_factor: 2.0,
+            focused: false,
+            visible: false,
+            lifecycle: vixen_api::HostLifecycle::Hidden,
+        };
+        assert!(matches!(
+            handle
+                .dispatch(BrowserCommand::UpdateHostViewState {
+                    context_id,
+                    state: hidden,
+                })
+                .unwrap(),
+            BrowserCommandResult::InputDispatched(_)
+        ));
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "`${document.visibilityState}:${document.hidden}:${document.hasFocus()}:${visibilityChanges}`"
+            ),
+            ScriptValue::String("hidden:true:false:1".to_owned())
+        );
+        let blocked = handle
+            .dispatch(BrowserCommand::DispatchKeyEvent {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                event_type: "keyDown".to_owned(),
+                event: KeyEventData {
+                    key: "a".to_owned(),
+                    code: "KeyA".to_owned(),
+                    text: "a".to_owned(),
+                    apply_text: true,
+                    ctrl_key: false,
+                    shift_key: false,
+                    alt_key: false,
+                    meta_key: false,
+                    repeat: false,
+                    location: 0,
+                },
+            })
+            .unwrap_err();
+        assert_eq!(blocked.code, browser_error_codes::INVALID_ARGUMENT);
+        let stale = handle
+            .dispatch(BrowserCommand::UpdateHostViewState {
+                context_id,
+                state: hidden,
+            })
+            .unwrap_err();
+        assert_eq!(stale.code, browser_error_codes::STALE_HOST_VIEW);
+
+        let resumed = HostViewState {
+            generation: 2,
+            focused: true,
+            visible: true,
+            lifecycle: vixen_api::HostLifecycle::Resumed,
+            ..hidden
+        };
+        handle
+            .dispatch(BrowserCommand::UpdateHostViewState {
+                context_id,
+                state: resumed,
+            })
+            .unwrap();
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "`${document.visibilityState}:${document.hasFocus()}:${visibilityChanges}`"
+            ),
+            ScriptValue::String("visible:true:2".to_owned())
+        );
     }
 
     #[test]

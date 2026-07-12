@@ -178,6 +178,16 @@ void main() {
 
     test('accepts the production accessibility and input commands', () {
       final commands = <BrowserCommand>[
+        BrowserCommand.updateHostViewState(
+          contextId: 1,
+          generation: 1,
+          viewportWidth: 320,
+          viewportHeight: 200,
+          scaleFactor: 2,
+          focused: true,
+          visible: true,
+          lifecycle: BrowserHostLifecycle.resumed,
+        ),
         BrowserCommand.accessibilitySnapshot(
           contextId: 1,
           documentId: 2,

@@ -12,8 +12,8 @@ use std::time::Duration;
 pub use vixen_api::{
     AccessibilityAction, AccessibilityNode, AccessibilityRect, AccessibilitySnapshot, BrowserError,
     BrowserEvent, BrowserSnapshot, BrowsingContextId, BrowsingContextState, DocumentId,
-    InputDispatchResult, KeyEventData, MouseEventData, NavigationId, ProfileSessionState,
-    RuntimeContextId,
+    HostLifecycle, HostViewState, InputDispatchResult, KeyEventData, MouseEventData, NavigationId,
+    ProfileSessionState, RuntimeContextId,
 };
 pub use vixen_engine::browser::BrowserConfig;
 pub use vixen_engine::paint::RgbaFrame;
@@ -50,6 +50,10 @@ pub enum ControllerCommand {
         delta: i32,
     },
     ContextState(BrowsingContextId),
+    UpdateHostViewState {
+        context_id: BrowsingContextId,
+        state: HostViewState,
+    },
     AccessibilitySnapshot {
         context_id: BrowsingContextId,
         document_id: DocumentId,
@@ -170,6 +174,10 @@ impl FlutterBrowserController {
             }
             ControllerCommand::ContextState(context_id) => {
                 BrowserCommand::GetBrowsingContextState { context_id }
+            }
+            ControllerCommand::UpdateHostViewState { context_id, state } => {
+                self.primary_mouse_press = None;
+                BrowserCommand::UpdateHostViewState { context_id, state }
             }
             ControllerCommand::AccessibilitySnapshot {
                 context_id,

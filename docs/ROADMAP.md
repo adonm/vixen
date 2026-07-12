@@ -209,7 +209,11 @@ containment. The Linux shell adds handwritten Dart bindings, deterministic fake
 tests, a production worker isolate, bounded RGBA `FlPixelBufferTexture`
 transport, physical viewport mapping, and generation-checked pointer/wheel/key
 dispatch through BrowserCore hit testing, including matching-generation primary-
-press cancellation. A bounded, mutation-generation-tagged
+press cancellation. A monotonic BrowserCore host-view state now carries bounded
+viewport/effective scale, content focus, visibility, and Flutter lifecycle;
+stale updates fail, inactive views reject input, and live documents observe
+focus/visibility state and events across navigation. CSS/physical scale
+separation and lifecycle/surface recovery remain. A bounded, mutation-generation-tagged
 BrowserCore projection now maps roles/names/states/bounds and tap/focus into Flutter
 Semantics. Nearest emitted semantic-parent relationships now produce a validated,
 document-order nested Flutter hierarchy. Focus actions are exact source/wire-
@@ -500,8 +504,9 @@ The core ownership and local headless measurement foundations are landed. The
 next work has two interleaved tracks: Flutter shell migration and browser
 correctness. Neither may starve the other.
 
-1. Extend the landed physical viewport and pointer/wheel/keyboard path with IME,
-   gesture, focus, scale, visibility, and lifecycle generations. In parallel, finish
+1. Extend the landed physical viewport, pointer/wheel/keyboard, and monotonic
+   focus/visibility/lifecycle path with IME, gesture/scrolling, CSS/physical
+   scale correctness, and lifecycle recovery. In parallel, finish
    navigation-aware runtime/native-host cancellation and preserve one BrowserCore
    terminal outcome.
 2. Move parser-discovered resources and supported DOM mutations onto the live

@@ -74,6 +74,29 @@ void main() {
       'context_id': 7,
     });
     expect(
+      BrowserCommand.updateHostViewState(
+        contextId: 7,
+        generation: 3,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        scaleFactor: 2,
+        focused: false,
+        visible: false,
+        lifecycle: BrowserHostLifecycle.hidden,
+      ).toWire(),
+      {
+        'v': 1,
+        'type': 'update_host_view_state',
+        'context_id': 7,
+        'generation': 3,
+        'viewport': {'width': 800, 'height': 600},
+        'scale_factor': 2.0,
+        'focused': false,
+        'visible': false,
+        'lifecycle': 'hidden',
+      },
+    );
+    expect(
       BrowserCommand.dispatchMouseEvent(
         contextId: 7,
         documentId: 70,

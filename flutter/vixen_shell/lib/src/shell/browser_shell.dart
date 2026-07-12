@@ -18,13 +18,15 @@ final class BrowserShell extends StatefulWidget {
   State<BrowserShell> createState() => _BrowserShellState();
 }
 
-final class _BrowserShellState extends State<BrowserShell> {
+final class _BrowserShellState extends State<BrowserShell>
+    with WidgetsBindingObserver {
   final TextEditingController _addressController = TextEditingController();
   final FocusNode _addressFocus = FocusNode();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     widget.coordinator.addListener(_coordinatorChanged);
     _coordinatorChanged();
     unawaited(widget.coordinator.start());
@@ -53,10 +55,22 @@ final class _BrowserShellState extends State<BrowserShell> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     widget.coordinator.removeListener(_coordinatorChanged);
     _addressController.dispose();
     _addressFocus.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    widget.coordinator.updateApplicationLifecycle(switch (state) {
+      AppLifecycleState.resumed => BrowserHostLifecycle.resumed,
+      AppLifecycleState.inactive => BrowserHostLifecycle.inactive,
+      AppLifecycleState.hidden => BrowserHostLifecycle.hidden,
+      AppLifecycleState.paused => BrowserHostLifecycle.paused,
+      AppLifecycleState.detached => BrowserHostLifecycle.detached,
+    });
   }
 
   @override
@@ -115,6 +129,7 @@ final class _BrowserShellState extends State<BrowserShell> {
                     accessibility: coordinator.accessibility,
                     onPhysicalViewportChanged:
                         coordinator.updatePhysicalViewport,
+                    onFocusChanged: coordinator.updateContentFocus,
                     onMouseEvent: (eventType, event) {
                       unawaited(
                         coordinator.dispatchMouseEvent(eventType, event),

@@ -100,7 +100,7 @@ void main() {
               contextState: null,
               frame: testFrame(frameId: 8),
               textureController: _TestTextureController(),
-              onPhysicalViewportChanged: (width, height) {
+              onPhysicalViewportChanged: (width, height, _) {
                 viewport = (width: width, height: height);
               },
               onMouseEvent: (type, event) => mouseEvents.add((type, event)),

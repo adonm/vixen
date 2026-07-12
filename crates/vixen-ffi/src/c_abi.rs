@@ -18,9 +18,9 @@ use vixen_api::{
     ACCESSIBILITY_MAX_VALUE_BYTES, AccessibilityAction, AccessibilityNode, AccessibilitySnapshot,
     BrowserError, BrowserEvent, BrowsingContextId, BrowsingContextState,
     CrossDocumentNavigationKind, DiagnosticScope, DownloadEvent, EngineDiagnostic,
-    EngineDiagnosticCategory, InputDispatchResult, KeyEventData, MouseEventData,
-    NavigationActionOutcome, NavigationCancellationReason, NavigationPhase, RuntimeConsoleArg,
-    RuntimeConsoleValue, RuntimeEffects, RuntimeNetworkEvent,
+    EngineDiagnosticCategory, HostLifecycle, HostViewState, InputDispatchResult, KeyEventData,
+    MouseEventData, NavigationActionOutcome, NavigationCancellationReason, NavigationPhase,
+    RuntimeConsoleArg, RuntimeConsoleValue, RuntimeEffects, RuntimeNetworkEvent,
 };
 
 use crate::{
@@ -559,6 +559,53 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
         "context_state" => {
             exact_keys(object, &["context_id", "type", "v"])?;
             ControllerCommand::ContextState(required_context_id(object)?)
+        }
+        "update_host_view_state" => {
+            exact_keys(
+                object,
+                &[
+                    "context_id",
+                    "focused",
+                    "generation",
+                    "lifecycle",
+                    "scale_factor",
+                    "type",
+                    "v",
+                    "viewport",
+                    "visible",
+                ],
+            )?;
+            let generation = required_u64(object, "generation")?;
+            if generation == 0 {
+                return Err(AbiError::invalid_command(
+                    "host view generation must be nonzero",
+                ));
+            }
+            let lifecycle = match required_string(object, "lifecycle")? {
+                "resumed" => HostLifecycle::Resumed,
+                "inactive" => HostLifecycle::Inactive,
+                "hidden" => HostLifecycle::Hidden,
+                "paused" => HostLifecycle::Paused,
+                "detached" => HostLifecycle::Detached,
+                _ => return Err(AbiError::invalid_command("unsupported host lifecycle")),
+            };
+            let scale_factor = required_f64(object, "scale_factor")?;
+            if !(0.1..=16.0).contains(&scale_factor) {
+                return Err(AbiError::invalid_command(
+                    "host view scale_factor must be between 0.1 and 16",
+                ));
+            }
+            ControllerCommand::UpdateHostViewState {
+                context_id: required_context_id(object)?,
+                state: HostViewState {
+                    generation,
+                    viewport: required_viewport(object)?,
+                    scale_factor,
+                    focused: required_bool(object, "focused")?,
+                    visible: required_bool(object, "visible")?,
+                    lifecycle,
+                },
+            }
         }
         "accessibility_snapshot" => {
             exact_keys(
@@ -2017,6 +2064,48 @@ mod tests {
                 parse_command(&invalid_value.to_string()).is_err(),
                 "accepted {invalid_value}"
             );
+        }
+        let mut extra = value;
+        extra["extra"] = json!(true);
+        assert!(parse_command(&extra.to_string()).is_err());
+    }
+
+    #[test]
+    fn host_view_command_is_strict_and_generation_tagged() {
+        let value = json!({
+            "v": 1,
+            "type": "update_host_view_state",
+            "context_id": 2,
+            "generation": 3,
+            "viewport": {"width": 640, "height": 360},
+            "scale_factor": 2.0,
+            "focused": false,
+            "visible": false,
+            "lifecycle": "hidden",
+        });
+        assert!(matches!(
+            parse_command(&value.to_string()).unwrap(),
+            ControllerCommand::UpdateHostViewState {
+                context_id,
+                state: HostViewState {
+                    generation: 3,
+                    viewport: (640, 360),
+                    scale_factor: 2.0,
+                    focused: false,
+                    visible: false,
+                    lifecycle: HostLifecycle::Hidden,
+                },
+            } if context_id.get() == 2
+        ));
+        for (field, invalid) in [
+            ("generation", json!(0)),
+            ("scale_factor", json!(0)),
+            ("lifecycle", json!("background")),
+            ("focused", json!("false")),
+        ] {
+            let mut command = value.clone();
+            command[field] = invalid;
+            assert!(parse_command(&command.to_string()).is_err());
         }
         let mut extra = value;
         extra["extra"] = json!(true);

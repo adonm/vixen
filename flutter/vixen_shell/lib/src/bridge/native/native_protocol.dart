@@ -206,6 +206,41 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
       _validatePositiveId(normalized['document_id'], 'document_id');
       _validateViewport(normalized['viewport']);
       break;
+    case 'update_host_view_state':
+      _expectKeys(normalized, const <String>{
+        'v',
+        'type',
+        'context_id',
+        'generation',
+        'viewport',
+        'scale_factor',
+        'focused',
+        'visible',
+        'lifecycle',
+      });
+      _validateContextId(normalized['context_id']);
+      _validatePositiveId(normalized['generation'], 'generation');
+      _validateViewport(normalized['viewport']);
+      final scaleFactor = normalized['scale_factor'];
+      if (scaleFactor is! num ||
+          !scaleFactor.isFinite ||
+          scaleFactor < 0.1 ||
+          scaleFactor > 16) {
+        _invalidCommand('scale_factor must be finite and in range');
+      }
+      if (normalized['focused'] is! bool || normalized['visible'] is! bool) {
+        _invalidCommand('host focus and visibility must be booleans');
+      }
+      if (!const {
+        'resumed',
+        'inactive',
+        'hidden',
+        'paused',
+        'detached',
+      }.contains(normalized['lifecycle'])) {
+        _invalidCommand('unsupported host lifecycle');
+      }
+      break;
     case 'dispatch_accessibility_action':
       final action = normalized['action'];
       if (action == 'focus' || action == 'increase' || action == 'decrease') {

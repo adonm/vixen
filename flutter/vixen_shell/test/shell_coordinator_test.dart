@@ -364,6 +364,7 @@ void main() {
       final coordinator = ShellCoordinator(controller);
       await coordinator.start();
       coordinator.updatePhysicalViewport(640, 360);
+      coordinator.updateContentFocus(true);
 
       await coordinator.dispatchMouseEvent(
         'mousedown',
@@ -394,6 +395,50 @@ void main() {
       await coordinator.close();
     },
   );
+
+  test('host focus visibility and lifecycle use monotonic commands', () async {
+    final controller = ScriptedBrowserController(
+      snapshot: BrowserSnapshot(
+        activeContextId: 14,
+        contexts: [contextState(id: 14, url: 'https://host-view.test')],
+      ),
+    );
+    final coordinator = ShellCoordinator(controller);
+    await coordinator.start();
+    coordinator.updatePhysicalViewport(640, 360, 2);
+    coordinator.updateContentFocus(true);
+    await flushEvents();
+
+    coordinator.updateApplicationLifecycle(BrowserHostLifecycle.hidden);
+    await flushEvents();
+    await coordinator.dispatchKeyEvent(
+      'keydown',
+      const BrowserKeyEvent(key: 'a', code: 'KeyA'),
+    );
+    coordinator.updateApplicationLifecycle(BrowserHostLifecycle.resumed);
+    await flushEvents();
+
+    final updates = controller.commands
+        .where((command) => command.type == 'update_host_view_state')
+        .map((command) => command.toWire())
+        .toList();
+    expect(updates.map((command) => command['generation']), [1, 2, 3, 4]);
+    expect(updates[1]['focused'], isTrue);
+    expect(updates[1]['scale_factor'], 2.0);
+    expect(updates[2]['lifecycle'], 'hidden');
+    expect(updates[2]['visible'], isFalse);
+    expect(updates[2]['focused'], isFalse);
+    expect(updates[3]['lifecycle'], 'resumed');
+    expect(updates[3]['visible'], isTrue);
+    expect(updates[3]['focused'], isTrue);
+    expect(
+      controller.commands.where(
+        (command) => command.type == 'dispatch_key_event',
+      ),
+      isEmpty,
+    );
+    await coordinator.close();
+  });
 
   test('accessibility snapshot is generation and viewport matched', () async {
     var nextFrameId = 0;
@@ -428,6 +473,7 @@ void main() {
     final coordinator = ShellCoordinator(controller);
     await coordinator.start();
     coordinator.updatePhysicalViewport(320, 180);
+    coordinator.updateContentFocus(true);
     await flushEvents();
 
     expect(coordinator.accessibility?.contextId, 5);

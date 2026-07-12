@@ -100,6 +100,7 @@ final class BrowserContentSurface extends StatefulWidget {
     required this.contextState,
     required this.frame,
     this.onPhysicalViewportChanged,
+    this.onFocusChanged,
     this.onMouseEvent,
     this.onKeyEvent,
     this.accessibility,
@@ -113,7 +114,9 @@ final class BrowserContentSurface extends StatefulWidget {
 
   final BrowsingContextState? contextState;
   final BrowserFrame? frame;
-  final void Function(int width, int height)? onPhysicalViewportChanged;
+  final void Function(int width, int height, double scaleFactor)?
+  onPhysicalViewportChanged;
+  final ValueChanged<bool>? onFocusChanged;
   final void Function(String eventType, BrowserMouseEvent event)? onMouseEvent;
   final void Function(String eventType, BrowserKeyEvent event)? onKeyEvent;
   final BrowserAccessibilitySnapshot? accessibility;
@@ -251,12 +254,17 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
               widget.onPhysicalViewportChanged?.call(
                 viewport.width,
                 viewport.height,
+                math.min(
+                  viewport.width / _logicalViewport.width,
+                  viewport.height / _logicalViewport.height,
+                ),
               );
             }
           });
         }
         return Focus(
           focusNode: _contentFocus,
+          onFocusChange: widget.onFocusChanged,
           onKeyEvent: _handleKeyEvent,
           child: Listener(
             behavior: HitTestBehavior.opaque,

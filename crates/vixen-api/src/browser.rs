@@ -194,6 +194,58 @@ pub enum AccessibilityAction {
     Decrease,
 }
 
+/// Host application state that affects document visibility and input routing.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HostLifecycle {
+    Resumed,
+    Inactive,
+    Hidden,
+    Paused,
+    Detached,
+}
+
+impl HostLifecycle {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Resumed => "resumed",
+            Self::Inactive => "inactive",
+            Self::Hidden => "hidden",
+            Self::Paused => "paused",
+            Self::Detached => "detached",
+        }
+    }
+}
+
+/// Monotonic presentation state supplied by a native browser host.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HostViewState {
+    pub generation: u64,
+    pub viewport: (u32, u32),
+    pub scale_factor: f64,
+    pub focused: bool,
+    pub visible: bool,
+    pub lifecycle: HostLifecycle,
+}
+
+impl Default for HostViewState {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            viewport: (800, 600),
+            scale_factor: 1.0,
+            focused: true,
+            visible: true,
+            lifecycle: HostLifecycle::Resumed,
+        }
+    }
+}
+
+impl HostViewState {
+    pub const fn accepts_input(self) -> bool {
+        self.focused && self.visible && matches!(self.lifecycle, HostLifecycle::Resumed)
+    }
+}
+
 impl AccessibilityAction {
     pub const fn as_str(&self) -> &'static str {
         match self {
@@ -216,6 +268,7 @@ pub mod error_codes {
     pub const STALE_DOCUMENT: &str = "browser.stale-document";
     pub const STALE_RUNTIME: &str = "browser.stale-runtime";
     pub const STALE_ACCESSIBILITY: &str = "browser.stale-accessibility";
+    pub const STALE_HOST_VIEW: &str = "browser.stale-host-view";
     pub const NAVIGATION_LOAD: &str = "navigation.load";
     pub const PROFILE: &str = "browser.profile";
     pub const EVENT_LAGGED: &str = "browser.event-lagged";
@@ -283,6 +336,10 @@ pub enum BrowserCommand {
     },
     GetBrowsingContextState {
         context_id: BrowsingContextId,
+    },
+    UpdateHostViewState {
+        context_id: BrowsingContextId,
+        state: HostViewState,
     },
     /// Capture the authoritative browser and context state in one owner-thread
     /// operation.

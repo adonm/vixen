@@ -208,6 +208,13 @@ state. Enabled `input[type=range]` increase/decrease actions execute through the
 same generation-checked BrowserCore/runtime path as focus and set-value. This is
 widget/native-bridge evidence, not native AT or broad ARIA range support.
 
+Flutter also sends one monotonic BrowserCore-owned host-view state for content
+focus, visibility, effective scale, and application lifecycle. Current documents
+expose the accepted state through `document.hasFocus()`, `hidden`, and
+`visibilityState`, dispatch focus/blur and `visibilitychange`, and reject input
+while inactive. CSS-versus-physical scale correction and platform lifecycle/
+surface recovery are not established by this slice.
+
 ---
 
 ## WPT target profile

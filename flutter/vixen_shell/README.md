@@ -40,8 +40,12 @@ ids; BrowserCore performs hit testing and the wire has no caller-selected node
 id. Pointer and key events use a serialized, bounded 64-event queue. A stale
 generation is discarded, input effects/navigation outcomes are retained, and an
 accepted event requests a new frame. Pointer cancellation clears only the
-matching pending primary press and cannot synthesize a click. Text/IME, gestures, explicit focus/lifecycle
-commands remain follow-up work.
+matching pending primary press and cannot synthesize a click. A monotonic
+BrowserCore-owned host-view command now carries effective scale, content focus,
+visibility, and Flutter lifecycle; stale updates fail, hidden/inactive views
+reject input, and the live document receives focus/visibility state and events.
+Text/IME, gestures, CSS/physical scale correctness, and lifecycle/surface recovery
+remain follow-up work.
 
 ## Accessibility contract
 

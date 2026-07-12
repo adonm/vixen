@@ -123,6 +123,8 @@ typedef struct VixenFrame {
  *   {"v":1,"type":"context_state","context_id":U64}
  *   {"v":1,"type":"accessibility_snapshot","context_id":U64,
  *    "document_id":U64,"viewport":{"width":U32,"height":U32}}
+ *   update_host_view_state requires context_id, nonzero generation, viewport,
+ *   finite scale_factor, focused, visible, and lifecycle.
  *   dispatch_accessibility_action additionally requires runtime_context_id,
  *   source_generation, generation, node_id, viewport, and action. Action is
  *   focus, increase, decrease, or set_value; only set_value carries value.

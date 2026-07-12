@@ -8,6 +8,17 @@ const int browserMaxFrameDimension = 4096;
 const int browserMaxFrameBytes = 64 * 1024 * 1024;
 const int browserMaxAccessibilityNodes = 256;
 
+enum BrowserHostLifecycle {
+  resumed('resumed'),
+  inactive('inactive'),
+  hidden('hidden'),
+  paused('paused'),
+  detached('detached');
+
+  const BrowserHostLifecycle(this.wireName);
+  final String wireName;
+}
+
 final class BrowserFrame {
   factory BrowserFrame({
     required Uint8List rgba,
@@ -627,6 +638,24 @@ final class BrowserCommand {
       });
   factory BrowserCommand.contextState(int contextId) =>
       BrowserCommand._('context_state', {'context_id': contextId});
+  factory BrowserCommand.updateHostViewState({
+    required int contextId,
+    required int generation,
+    required int viewportWidth,
+    required int viewportHeight,
+    required double scaleFactor,
+    required bool focused,
+    required bool visible,
+    required BrowserHostLifecycle lifecycle,
+  }) => BrowserCommand._('update_host_view_state', {
+    'context_id': contextId,
+    'generation': generation,
+    'viewport': {'width': viewportWidth, 'height': viewportHeight},
+    'scale_factor': scaleFactor,
+    'focused': focused,
+    'visible': visible,
+    'lifecycle': lifecycle.wireName,
+  });
   factory BrowserCommand.accessibilitySnapshot({
     required int contextId,
     required int documentId,

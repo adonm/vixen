@@ -83,6 +83,30 @@ abstract class BrowserController {
     return _expect<ContextStateResponse>(response).state;
   }
 
+  Future<InputDispatchedResponse> updateHostViewState({
+    required int contextId,
+    required int generation,
+    required int viewportWidth,
+    required int viewportHeight,
+    required double scaleFactor,
+    required bool focused,
+    required bool visible,
+    required BrowserHostLifecycle lifecycle,
+  }) async => _expect<InputDispatchedResponse>(
+    await dispatch(
+      BrowserCommand.updateHostViewState(
+        contextId: contextId,
+        generation: generation,
+        viewportWidth: viewportWidth,
+        viewportHeight: viewportHeight,
+        scaleFactor: scaleFactor,
+        focused: focused,
+        visible: visible,
+        lifecycle: lifecycle,
+      ),
+    ),
+  );
+
   Future<BrowserAccessibilitySnapshot> accessibilitySnapshot({
     required int contextId,
     required int documentId,

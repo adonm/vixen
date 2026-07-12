@@ -22,12 +22,13 @@ copies the frame through `TransferableTypedData`; and the Linux runner publishes
 it through one `FlPixelBufferTexture` with a mutex-protected three-buffer pool.
 Dimensions are capped at 4096 per axis and 64 MiB per frame, with at most three
 retained native frames and one in-flight Dart capture plus one newest
-replacement. `just gate-flutter-shell` runs format, analysis, 47 Dart/widget/
+replacement. `just gate-flutter-shell` runs format, analysis, 48 Dart/widget/
 native smoke tests, and the native ABI gate. A Fedora 43 container build also
 produced a relocatable debug bundle containing the executable, Flutter embedder,
 and `libvixen_ffi.so`.
 
-This does not establish Linux parity: text/IME/gesture/lifecycle input, complete
+This does not establish Linux parity: text/IME/gesture input, complete lifecycle
+recovery and scale handling, complete
 semantic relationships/actions and native AT smoke, find/zoom, downloads/permissions,
 host services, broader FlatPark host/portal coverage, release size/performance,
 and non-Linux runners remain open. The current
@@ -159,11 +160,22 @@ cancellation clears only the matching context/document/runtime primary press, so
 a later release cannot synthesize a stale click. Each accepted input requests a
 fresh generation-checked frame.
 
-The remaining target sends text/IME, gesture, focus,
-viewport, scale, visibility, and lifecycle commands with context and viewport
-generations. BrowserCore performs hit testing, scrolling, selection, DOM event
-dispatch, and navigation effects. Platform-specific raw data may be retained in
-bounded DTOs where web semantics require it.
+The first host-view lifecycle slice is implemented. A strict monotonic command
+carries the selected context, bounded physical viewport, effective Flutter scale,
+content focus, visibility, and resumed/inactive/hidden/paused/detached state.
+BrowserCore owns the latest generation, rejects stale updates, preserves it across
+document replacement, updates `document.hasFocus()`, `document.hidden`, and
+`document.visibilityState`, emits live focus/blur and `visibilitychange`, and
+rejects content input while inactive. Flutter invalidates queued input on every
+transition, suppresses hidden captures, and cancels pending primary presses at
+the controller boundary. The stored scale does not yet separate CSS layout pixels
+from the bounded physical render target.
+
+The remaining target adds text/IME, gestures and engine-owned scrolling,
+CSS/physical scale and zoom correctness, and platform lifecycle/surface recovery.
+BrowserCore continues to own hit testing, selection, DOM event dispatch, and
+navigation effects. Platform-specific raw data may be retained in bounded DTOs
+where web semantics require it.
 
 The initial accessibility hierarchy is implemented. BrowserCore/Page derives native
 and explicit ARIA roles, bounded names (including `aria-labelledby` and HTML

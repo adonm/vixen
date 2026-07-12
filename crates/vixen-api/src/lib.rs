@@ -24,12 +24,12 @@ pub use browser::{
     BrowserError, BrowserEvent, BrowserHandle, BrowserSnapshot, BrowsingContextConfig,
     BrowsingContextState, CrossDocumentNavigationKind, DiagnosticScope, DocumentTextKind,
     EvaluationResult, FocusEventInfo, FocusProjection, FormEntryInfo, FormEntryValueInfo,
-    FormSubmissionInfo, InputDispatchResult, KeyEventData, MouseEventData, NavigationActionOutcome,
-    NavigationCancellationReason, NavigationHistoryEntry, NavigationHistorySnapshot,
-    NavigationPhase, ProfileDataSelection, ProfileSessionState, RuntimeBindingEvent,
-    RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue, RuntimeDialogEvent,
-    RuntimeEffects, RuntimeExceptionEvent, RuntimeNetworkEvent, RuntimePermissionGrant,
-    ScriptValue, error_codes as browser_error_codes,
+    FormSubmissionInfo, HostLifecycle, HostViewState, InputDispatchResult, KeyEventData,
+    MouseEventData, NavigationActionOutcome, NavigationCancellationReason, NavigationHistoryEntry,
+    NavigationHistorySnapshot, NavigationPhase, ProfileDataSelection, ProfileSessionState,
+    RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue,
+    RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent, RuntimeNetworkEvent,
+    RuntimePermissionGrant, ScriptValue, error_codes as browser_error_codes,
 };
 pub use ids::{
     BrowserId, BrowsingContextId, DocumentId, DownloadId, FrameId, InvalidId, NavigationId,

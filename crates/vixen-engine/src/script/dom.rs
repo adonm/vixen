@@ -5134,6 +5134,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   let documentWriteBuffer = '';
   let documentWriteOpen = false;
+  let documentVisibilityState = 'visible';
+  let documentHasFocus = true;
 
   function setDocumentTitle(value) {
     data.title = String(value);
@@ -5172,8 +5174,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get characterSet() { return 'UTF-8'; }
     get charset() { return 'UTF-8'; }
     get contentType() { return 'text/html'; }
-    get visibilityState() { return 'visible'; }
-    get hidden() { return false; }
+    get visibilityState() { return documentVisibilityState; }
+    get hidden() { return documentVisibilityState !== 'visible'; }
     get referrer() { return ''; }
     get cookie() { return documentCookie(); }
     set cookie(value) { setDocumentCookie(value); }
@@ -5190,7 +5192,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get scripts() { return new VixenHTMLCollection(data.collections.scripts); }
     getRootNode() { return this; }
     contains(target) { return nodeContains(this, target); }
-    hasFocus() { return true; }
+    hasFocus() { return documentHasFocus; }
     querySelector(selector) { return this.querySelectorAll(selector).item(0); }
     querySelectorAll(selector) { return new VixenNodeList(findAllNodeIds(selector)); }
     elementFromPoint(x, y) {
@@ -5268,6 +5270,24 @@ const DOM_API_BOOTSTRAP: &str = r#"
   webidl.adoptInterface('Document', VixenDocument);
 
   const vixenDocument = new VixenDocument();
+  Object.defineProperty(globalThis, '__vixenApplyHostViewState', {
+    value(focused, visible) {
+      const nextVisibility = visible ? 'visible' : 'hidden';
+      if (documentVisibilityState !== nextVisibility) {
+        documentVisibilityState = nextVisibility;
+        vixenDocument.dispatchEvent(new Event('visibilitychange'));
+      }
+      const nextFocus = Boolean(focused);
+      if (documentHasFocus !== nextFocus) {
+        documentHasFocus = nextFocus;
+        if (typeof globalThis.dispatchEvent === 'function') {
+          globalThis.dispatchEvent(new Event(nextFocus ? 'focus' : 'blur'));
+        }
+      }
+      return true;
+    },
+    configurable: true,
+  });
   const vixenSelection = new VixenSelection();
   vixenSelection.__vixenRestore(data.selection);
   if (typeof globalThis.window === 'undefined') {
