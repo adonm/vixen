@@ -1,11 +1,11 @@
 name: vixen_shell
 description: Vixen's production Flutter shell and isolated native browser bridge.
 publish_to: 'none'
-version: 0.1.0+1
+version: 0.1.5+5
 
 environment:
-  sdk: ^3.12.0
-  flutter: '>=3.44.0'
+  sdk: ^3.13.0-0
+  flutter: '>=3.46.0-0.3.pre'
 
 dependencies:
   ffi: ^2.2.0

@@ -9,7 +9,7 @@ ownership in [`ARCHITECTURE.md`](ARCHITECTURE.md), and accepted tradeoffs in
 
 ## Status and evidence boundary
 
-**Implemented Linux alpha slice:** the repository contains a Flutter 3.44 Linux
+**Implemented Linux alpha slice:** the repository contains a Flutter 3.46 beta Linux
 application, deterministic fake-controller tests, handwritten Dart FFI, a
 persistent worker isolate that exclusively owns one BrowserCore handle and its
 ordered event stream, and a generated GTK-backed Linux runner. Production fails
@@ -29,12 +29,12 @@ and `libvixen_ffi.so`.
 
 This does not establish Linux parity: text/IME/gesture/lifecycle input, complete
 semantic relationships/actions and native AT smoke, find/zoom, downloads/permissions,
-host services, offline Flatpak packaging,
-release size/performance, and non-Linux runners remain open. The current
+host services, broader FlatPark host/portal coverage, release size/performance,
+and non-Linux runners remain open. The current
 Relm4/libadwaita/GTK shell remains the compatibility baseline until those gates
 pass.
 
-Flutter 3.44 officially supports native deployment to Android, iOS, Windows,
+Flutter officially supports native deployment to Android, iOS, Windows,
 macOS, and Linux. That establishes a supported shell substrate, not proof that
 Vixen's Rust/V8/WebRender stack builds, packages, performs, or satisfies store
 policy on each target. Every Vixen platform remains gated below.
@@ -47,7 +47,7 @@ SDK, image, architecture, and toolchain versions used; moving that pin is an
 ordinary tested platform update, not an implicit compatibility claim.
 
 - Linux uses the latest stable Fedora Workstation major as its native reference
-  host and the current pinned Flatpak/GNOME runtime as its distributable runtime.
+  host and the current FlatPark/GNOME runtime as its distributable runtime.
 - macOS uses the latest generally available macOS major on supported Apple
   Silicon hardware.
 - Windows uses the latest generally available Windows client release and current
@@ -83,7 +83,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux | Latest stable Fedora major plus pinned current Flatpak/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Flutter parity with the compatibility shell; offline source-built Flatpak; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, bounded semantics shape, tests, and debug bundle implemented; IME, full semantics/native AT, host services, packaging, and parity open |
+| Linux | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Flutter parity with the compatibility shell; deterministic official archive and checksum-pinned FlatPark package; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; FlatPark review, IME, full semantics/native AT, host services, broader matrix, and parity remain open |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -197,7 +197,7 @@ cert/proxy diagnostics, safe areas, notifications, platform menus, and
 application lifecycle. Native plugins provide OS access only through a narrow
 host-service interface; policy and durable decisions remain in BrowserCore.
 
-### 4. Linux parity, offline Flatpak, and compatibility-shell removal
+### 4. Linux parity, release/FlatPark packaging, and compatibility-shell removal
 
 Linux Flutter parity requires the current shell smoke surface: context/tab
 create/close/duplicate/reopen, address/search, reload/stop, history traversal,
@@ -205,17 +205,19 @@ find, zoom, diagnostics, downloads/permissions, settings/privacy controls,
 session restore, shortcuts, visible WebRender content, input, viewport changes,
 error recovery, and accessibility projection.
 
-The Linux Flatpak must be a pinned offline source build. Pin Flutter 3.44.x and
-`TheAppgineer/flatpak-flutter` 0.15.0, preprocess the Flutter plus Rust manifest,
-include `Cargo.lock` and declared foreign dependencies, and prove
-`flatpak-builder --sandbox` completes without network access. Generated sources
-are reviewable build inputs, not a substitute for lock files or source
-attribution.
+The Linux release archive is now the Flutter composition root. It uses the
+official x86_64 Flutter 3.46.0-0.3.pre beta archive and verifies its framework
+and engine revisions. Cargo, Pub, and rusty_v8 remain locked/pinned inputs.
+`just linux-release-smoke` builds release/AOT Flutter and `libvixen_ffi.so`,
+creates a deterministic archive, extracts that exact file, and requires a
+bounded Impeller Xvfb launch. FlatPark pins the immutable GitHub Release URL,
+size, and SHA-256 and repackages those unchanged bytes as a signed convenience
+Flatpak; Vixen does not maintain a parallel OSTree repository.
 
-Only after parity, required host smokes, and artifact reports pass should the
-Relm4/libadwaita/custom GLArea shell and its shell-specific dependencies be
-removed. Until then it is a temporary compatibility baseline, not a second
-long-term product shell. Linux may still carry GTK through Flutter's embedder.
+The Relm4/libadwaita/custom GLArea shell remains temporarily in-tree for parity
+comparison but is no longer the package entrypoint. Remove it and its
+shell-specific dependencies only after parity and required host smokes pass.
+Linux still carries GTK through Flutter's embedder.
 
 ### 5. Desktop expansion
 
@@ -302,14 +304,15 @@ explicit product override policy. Rebaseline only for a documented dependency or
 product tradeoff; never hide growth by changing attribution.
 
 The Linux raw-bundle foundation is checked in: a controlled hello-Flutter peer,
-SHA-256-pinned rusty_v8 input, network-disabled clean release/AOT recipes, and a
+SHA-256-pinned rusty_v8 input, clean release/AOT recipes, and a
 component/delta analyzer that rejects debug artifacts and mismatched shared
 Flutter engine/ICU files. The recipes use the local GNOME 50 builder container
 for CMake/Ninja/GTK while mounting the pinned Rust toolchain read-only. They
 intentionally report `flatpak_evidence: false`.
 The first clean x86_64 raw-bundle report is linked from `BASELINES.md`;
 independent reproduction, compressed/install accounting, finer native linker
-attribution, and the offline `flatpak-flutter` package remain required.
+attribution, and a reviewed baseline for the FlatPark package remain
+required.
 
 ## Cross-cutting acceptance
 
@@ -334,19 +337,18 @@ improvements to every shell rather than shell-only feature breadth.
 
 ## External evidence
 
-- [Flutter 3.44 supported deployment platforms](https://docs.flutter.dev/reference/supported-platforms)
+- [Flutter supported deployment platforms](https://docs.flutter.dev/reference/supported-platforms)
   lists Android, iOS, Windows, macOS, and Linux as supported native deployment
   platforms.
 - [Flutter desktop support](https://docs.flutter.dev/platform-integration/desktop)
-  and the [Flutter 3.44 Linux runner template](https://github.com/flutter/flutter/tree/3.44.0/packages/flutter_tools/templates/app/linux.tmpl)
+  and the [pinned Flutter beta Linux runner template](https://github.com/flutter/flutter/tree/677d472756f83c14371dd8cc624387065f3d32a7/packages/flutter_tools/templates/app/linux.tmpl)
   describe the native desktop/GTK runner substrate.
 - [Dart native interoperability](https://dart.dev/interop/c-interop) documents
   Dart FFI; [Flutter `Texture`](https://api.flutter.dev/flutter/widgets/Texture-class.html)
   and [Semantics](https://api.flutter.dev/flutter/widgets/Semantics-class.html)
   are the presentation integration points.
-- [`flatpak-flutter` 0.15.0](https://github.com/TheAppgineer/flatpak-flutter/tree/0.15.0)
-  documents manifest preprocessing for pinned offline Flutter builds, including
-  Cargo lock inputs and foreign dependencies.
+- [FlatPark's publishing guide](https://flatpark.org/contributing/) documents
+  checksum-pinned repackaging of official release archives and package review.
 - [Current rusty_v8 source-build guidance](https://github.com/denoland/rusty_v8#build-v8-from-source)
   documents Android source cross-compilation and the
   `aarch64-apple-ios-sim` simulator target, which retains JIT support. Vixen uses

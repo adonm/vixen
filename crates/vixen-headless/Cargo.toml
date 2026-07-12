@@ -3,7 +3,7 @@
 # ADR-014 uses deno_core/V8 behind vixen-engine's JS runtime seam.
 [package]
 name = "vixen-headless"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.88"
 description = "Vixen headless CLI and CDP server"

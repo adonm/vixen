@@ -43,11 +43,12 @@ GLArea ownership rather than guaranteeing a GTK-free Linux runtime.
 | `vixen-headless` | BrowserCore-backed CLI, CDP target/session adapter, interaction adapter, EGL surfaceless surface | Thin CLI/CDP adapter and composition root over the browser core |
 | `vixen-wpt` | Fixture/profile manifest, runner, reports, checks, visual evidence | Engine-consumer test adapter; no engine internals or alternate semantics |
 
-The thin root `vixen` binary is today's GTK compatibility-shell composition root.
-The target GUI composition roots are Flutter's platform runners plus a narrow
-Rust bridge into BrowserCore. The Linux runner is checked in under
-`flutter/vixen_shell`; other platform runners remain targets. `data/` and
-`build-aux/` contain application metadata and current Flatpak packaging;
+The packaged Linux GUI composition root is the Flutter runner plus the narrow
+`vixen-ffi` bridge into BrowserCore. The thin root `vixen` binary remains the
+in-tree GTK compatibility-shell composition root for parity comparison, but is
+not installed by the Flatpak. The Linux runner is under `flutter/vixen_shell`;
+other platform runners remain targets. `data/` contains application metadata;
+`scripts/package-linux-release.py` creates the official archive consumed by FlatPark;
 `fixtures/` contains the hermetic compatibility suite and external-profile
 descriptors.
 
@@ -129,8 +130,8 @@ waiting. Its socket loop polls BrowserCore events while `Page.navigate` or
 `Page.reload` is pending, so the same connection can dispatch `Page.stopLoading`
 without creating a second event consumer. The GTK shell uses the same context/
 history/paint and profile-session commands through one app-level worker.
-Host-runnable multi-context tests cover both adapters; the Flatpak build remains
-the supported GTK SDK proof.
+Host-runnable multi-context tests cover both adapters; the compatibility GTK
+shell is no longer a distribution path.
 
 ## Authoritative ownership model (target)
 
@@ -241,7 +242,7 @@ checks the configured body limit both before allocation and while reading.
 ADR-010 is superseded as product-shell direction by ADR-018, and its
 one-engine-worker-per-tab ownership was already superseded by ADR-017. The
 compatibility shell retains the old component model only until Linux Flutter
-parity. Every shell has one browser adapter (or factory-injected browser handle),
+parity and is no longer the package entrypoint. Every shell has one browser adapter (or factory-injected browser handle),
 not an independent engine state machine per tab.
 
 ## Command and event seam
@@ -581,8 +582,9 @@ codegen-units = 1
 panic = "abort"
 ```
 
-`lto = "fat"` is a measurement experiment, not the default. `just size-fp`
-measures the real Flatpak GUI artifact and release headless binary. Hard budgets
+`lto = "fat"` is a measurement experiment, not the default. `just
+size-flutter-linux` and `just size-headless` measure the GUI and headless release
+shapes. Hard budgets
 must be based on published reproducible baselines for the active
 `deno_core`/V8/GTK/WebRender dependency graph. These are current compatibility-
 shell measurements, not Flutter baselines.

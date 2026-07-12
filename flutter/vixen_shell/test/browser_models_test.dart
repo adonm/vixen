@@ -146,26 +146,21 @@ void main() {
   test(
     'input response preserves BrowserCore effects and navigation actions',
     () {
-      final response =
-          BrowserResponse.fromWire({
-                'type': 'input_dispatched',
-                'effects': {
-                  'console': <Object?>[],
-                  'dialogs': [
-                    {'kind': 'alert', 'message': 'hello'},
-                  ],
-                  'bindings': <Object?>[],
-                  'network': <Object?>[],
-                  'exceptions': <Object?>[],
-                },
-                'navigation_actions': [
-                  {
-                    'type': 'same_document',
-                    'url': 'https://example.test/#next',
-                  },
-                ],
-              })
-              as InputDispatchedResponse;
+      final response = BrowserResponse.fromWire({
+        'type': 'input_dispatched',
+        'effects': {
+          'console': <Object?>[],
+          'dialogs': [
+            {'kind': 'alert', 'message': 'hello'},
+          ],
+          'bindings': <Object?>[],
+          'network': <Object?>[],
+          'exceptions': <Object?>[],
+        },
+        'navigation_actions': [
+          {'type': 'same_document', 'url': 'https://example.test/#next'},
+        ],
+      }) as InputDispatchedResponse;
 
       expect(response.effects['dialogs'], hasLength(1));
       expect(response.navigationActions.single['type'], 'same_document');
@@ -177,40 +172,33 @@ void main() {
   );
 
   test('accessibility snapshot preserves bounded semantic fields', () {
-    final response =
-        BrowserResponse.fromWire({
-              'type': 'accessibility_snapshot',
-              'source_generation': 8,
-              'generation': 99,
-              'context_id': 7,
-              'document_id': 70,
-              'viewport': {'width': 800, 'height': 600},
-              'nodes': [
-                {
-                  'id': 9,
-                  'parent_id': null,
-                  'role': 'checkbox',
-                  'label': 'Remember me',
-                  'value': null,
-                  'bbox': {
-                    'x': 10.0,
-                    'y': 20.0,
-                    'width': 100.0,
-                    'height': 30.0,
-                  },
-                  'focused': true,
-                  'disabled': false,
-                  'checked': true,
-                  'selected': false,
-                  'expanded': null,
-                  'hidden': false,
-                  'focusable': true,
-                  'actions': ['tap'],
-                },
-              ],
-              'truncated': false,
-            })
-            as AccessibilitySnapshotResponse;
+    final response = BrowserResponse.fromWire({
+      'type': 'accessibility_snapshot',
+      'source_generation': 8,
+      'generation': 99,
+      'context_id': 7,
+      'document_id': 70,
+      'viewport': {'width': 800, 'height': 600},
+      'nodes': [
+        {
+          'id': 9,
+          'parent_id': null,
+          'role': 'checkbox',
+          'label': 'Remember me',
+          'value': null,
+          'bbox': {'x': 10.0, 'y': 20.0, 'width': 100.0, 'height': 30.0},
+          'focused': true,
+          'disabled': false,
+          'checked': true,
+          'selected': false,
+          'expanded': null,
+          'hidden': false,
+          'focusable': true,
+          'actions': ['tap'],
+        },
+      ],
+      'truncated': false,
+    }) as AccessibilitySnapshotResponse;
 
     expect(response.snapshot.nodes.single.role, 'checkbox');
     expect(response.snapshot.nodes.single.parentId, isNull);

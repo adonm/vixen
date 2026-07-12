@@ -14,7 +14,7 @@ which layer today?”
 | `just gate-architecture` | leaf-crate dependency rules plus frontend rules that forbid the former shell/headless direct composition; production frontends may use only `vixen-api` and `vixen-engine` |
 | `just test-flutter-controller` | Safe controller and native boundary crate tests: one non-clone BrowserCore/event owner, immediate navigation acceptance, exact terminal events, active-load stop, contexts/profile session, and C ABI unit/integration coverage; not Dart or Flutter proof |
 | `just gate-native-abi` | Builds `vixen-ffi` library forms and runs focused ABI v1 layout/header, opaque handle, bounded UTF-8/JSON command, stable response/event/error, event-sequence, output-buffer ownership, and panic-containment tests; native C ABI evidence only |
-| `just gate-flutter-shell` | Exact Flutter 3.44 SDK revision, Dart formatting/analysis, 47 shell/coordinator/worker/texture/input/Semantics tests, live process-adjacent native bridge smoke, and 23 focused native ABI/frame/input/accessibility tests; Linux source/test evidence, not IME, native AT, package, release, or non-Linux proof |
+| `just gate-flutter-shell` | Exact mise-managed Flutter 3.46.0-0.3.pre beta framework/engine revisions, Dart formatting/analysis, 47 shell/coordinator/worker/texture/input/Semantics tests, live process-adjacent native bridge smoke, and 23 focused native ABI/frame/input/accessibility tests; Linux source/test evidence, not IME, native AT, package, release, or non-Linux proof |
 | `just gate-smoke` | reviewer baseline: formatting, clippy, host checks, and all host-runnable tests |
 | `just gate-push` | hk pre-push integration point: alpha, phase-6 runtime, smoke, and diff checks |
 | `just gate-webidl` | generated WebIDL constructor/prototype coverage plus headless/CDP runtime-host integration |
@@ -33,9 +33,9 @@ which layer today?”
 | `just compat-report` | current BrowserCore-backed committed fixture/profile counts and per-source/category output |
 | `just fuzz-security` | URL, CSP, cookie, and HTML parser fuzz targets at the configured run count |
 | `just audit` | `cargo audit` plus `cargo deny check` |
-| `just flatpak-build` | current GTK/Relm4 compatibility-shell Flatpak build path; not Flutter evidence |
-| `just size-headless` / `just size-fp` | structured logical/allocated size, file count, and SHA-256 for headless and current compatibility Flatpak payload/bundle; GNOME runtime excluded; not a Flutter baseline |
-| `just size-flutter-linux` | network-disabled clean release/AOT build and component-attributed raw-bundle comparison against the checked-in hello-Flutter peer; measurement-only and not Flatpak evidence |
+| `just linux-release-smoke` | pinned x86_64 Flutter 3.46.0-0.3.pre beta release/AOT plus Rust bridge build; deterministic archive creation, clean extraction, and Impeller-aware Xvfb launch smoke |
+| `just size-headless` | structured logical/allocated size, file count, and SHA-256 for the headless release binary |
+| `just size-flutter-linux` | controlled release/AOT build and component-attributed raw-bundle comparison against the checked-in hello-Flutter peer; measurement-only and not FlatPark package evidence |
 | `just baseline-headless` / `just baseline-headless-json` | per-scenario latency and Linux process-memory measurements for committed startup, navigation/runtime, layout, paint, and screenshot controls |
 | `just baseline-profile-growth` | opaque temporary profile growth at init/repeated/unique/storage checkpoints with localStorage reopen proof |
 | `just baseline-beta` | hermetic local headless scenarios, profile growth, and headless artifact size; measurement-only and outside `gate-push` |
@@ -50,7 +50,7 @@ which layer today?”
 - ADR-017 frontend ownership migration is enforced by `gate-architecture`;
   subsequent lifecycle work adds cancellation/partition/live-document evidence
   without restoring direct frontend composition.
-- GTK changes use `just flatpak-build` when host development packages are absent.
+- Released Linux shell changes use `just linux-release-smoke`; FlatPark package verification follows after the immutable GitHub Release exists. Direct GTK compatibility-shell work remains an in-tree parity concern.
 - `just gate-native-abi` proves the handwritten C ABI/header/wire/frame ownership
   milestone over the same safe controller. `just gate-flutter-shell` adds Dart,
   widget, worker-isolate, texture-presenter, and live native smoke evidence. It
@@ -73,7 +73,7 @@ which layer today?”
   2026-07-10. `COMPAT.md` is authoritative.
 - Clean Linux x86_64 Flutter raw-bundle reference: **22,778,750-byte hello /
   85,509,520-byte Vixen / 62,730,770-byte delta**, measurement-only and not
-  Flatpak evidence; see `BASELINES.md`.
+  FlatPark package evidence; see `BASELINES.md`.
 - External automation contract: [`CDP_PLAYWRIGHT_SMOKE.md`](CDP_PLAYWRIGHT_SMOKE.md).
 - Browser ownership/cancellation vertical: `just test-browser-core` (engine,
   headless, and GTK-free shell adapters through the production command/event

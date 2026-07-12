@@ -55,11 +55,11 @@ As of 2026-07-10 the repository has these building blocks:
 - A useful CDP slice covering navigation, runtime evaluation/handles, DOM basics,
   input, lifecycle/network/console/dialog events, screenshots, permissions,
   tracing-lite, and stable protocol errors, with an external Playwright smoke.
-- A Relm4/libadwaita compatibility-shell vertical with tabs, URL loading, basic
-  navigation, visible WebRender output, diagnostics, and bounded session
-  restore. The Linux Flutter alpha slice now has chrome, real BrowserCore FFI,
-  deterministic fake tests, and visible WebRender output through a bounded RGBA
-  pixel-buffer texture; input, accessibility, host services, packaging, and
+- A Relm4/libadwaita compatibility-shell vertical retained in-tree for parity
+  comparison. The packaged Linux composition root is now Flutter: chrome, real
+  BrowserCore FFI, visible WebRender output through a bounded RGBA texture,
+  input/accessibility projection, and a deterministic release/AOT archive with
+  clean extraction and Impeller Xvfb launch smoke. FlatPark review, IME, host services, complete accessibility, and
   compatibility-shell parity remain open.
 
 These are substantial components now routed through one initial browser owner,
@@ -452,7 +452,7 @@ Vixen may call itself v1.0 when all of the following are true:
   network, document, runtime, renderer, and profile failures;
 - supported network/security/privacy behavior is fail-closed, observable, and
   backed by tests/fuzzing/audit; single-process isolation limits are prominent;
-- Linux Flatpak install/update, certs, fonts, portals, downloads, GPU, settings,
+- Linux FlatPark install/update, certs, fonts, portals, downloads, GPU, settings,
   session restore, and clear-data flows pass through the Flutter shell, and each
   additional declared release platform passes its native gate;
 - compatibility, performance, memory, binary/install size, and unsupported
@@ -510,11 +510,11 @@ correctness. Neither may starve the other.
    relationships, range actions, incremental updates, live regions/text
    selection, and native AT evidence. Add platform host-service UI; both remain
    cross-cutting through every later platform.
-5. Use the landed checked-in hello-Flutter peer, network-disabled release-bundle
-   build, component/delta analyzer, and initial clean x86_64 size report to
-   reproduce and review Linux size/performance baselines, then add a pinned offline source-built Flatpak through
-   `flatpak-flutter` 0.15.0. Adopt warning thresholds only after reviewed
-   evidence; do not invent hard budgets.
+5. Use the landed checked-in hello-Flutter peer, controlled release-bundle
+   build, component/delta analyzer, initial clean x86_64 size report, and pinned
+   GitHub Release/FlatPark package to reproduce and review Linux size/performance baselines and
+   add compressed/install attribution. Adopt warning thresholds only after
+   reviewed evidence; do not invent hard budgets.
 6. Reach Linux parity, then remove Relm4/libadwaita/custom GLArea ownership. GTK
    may remain as a Flutter Linux embedder runtime dependency.
 7. Expand the same bridge/chrome contract to macOS and Windows, with native

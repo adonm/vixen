@@ -187,8 +187,9 @@ promises.
 
 **Consequences.**
 
-- `just size-fp` is the source of truth for current structured artifact
-  measurements; budgets require the acceptance policy in `docs/BASELINES.md`.
+- `just size-headless` and `just size-flutter-linux` are the current structured
+  artifact measurements; budgets require the acceptance policy in
+  `docs/BASELINES.md`.
 - Distribution guidance should discuss `deno_core`/V8 artifacts and cache
   behavior, not removed runtime dependencies.
 
@@ -826,7 +827,7 @@ accepted.
 **Context.** The Relm4/libadwaita shell proved visible WebRender output and the
 BrowserCore adapter on Linux, but keeping it as the product shell confines Vixen
 to one desktop stack and makes each additional platform a separate chrome
-implementation. Flutter 3.44 officially supports native Linux, macOS, Windows,
+implementation. Flutter officially supports native Linux, macOS, Windows,
 Android, and iOS. Vixen narrows iOS to the Apple Silicon Simulator; a shared
 Flutter chrome can cover those five GUI environments while preserving the Rust
 browser core.
@@ -860,11 +861,12 @@ accessibility tree into Flutter Semantics. A pixel texture without this
 projection is not an accessible browser.
 
 Linux migrates first through a Rust bridge, Flutter fake shell, real BrowserCore
-shell, RGBA texture, input/viewport, accessibility, host services, and an offline
-Flatpak. The Flatpak target uses pinned `flatpak-flutter` 0.15.0 preprocessing
-for Flutter plus Rust/Cargo lock and foreign dependency sources. The existing
-GTK/Relm4 shell remains a temporary compatibility baseline until Flutter Linux
-parity, then is removed. Flutter's Linux embedder itself uses GTK, so this removes
+shell, RGBA texture, input/viewport, accessibility, host services, and a tested
+release archive. Vixen publishes the official x86_64 archive; FlatPark pins its
+GitHub Release URL, size, and SHA-256 and repackages those unchanged bytes as a
+signed Flatpak. Vixen does not maintain a second signed OSTree repository. The existing
+GTK/Relm4 shell remains an in-tree compatibility baseline, not the packaged
+entrypoint, until Flutter Linux parity permits removal. Flutter's Linux embedder itself uses GTK, so this removes
 Vixen's Relm4/libadwaita/custom GLArea ownership, not necessarily GTK runtime
 dependencies.
 
@@ -907,8 +909,9 @@ The detailed and authoritative execution/gate plan is
 - *Target physical iOS immediately.* Rejected for this phase: use the V8-enabled
   Apple Silicon Simulator and require a new ADR before accepting a divergent
   physical-device runtime or distribution model.
-- *Set a small-binary number now.* Rejected: no Flutter+Vixen artifacts exist.
-  Measurement and attribution must precede warning and failure thresholds.
+- *Set a small-binary number now.* Rejected: Flutter+Vixen raw and package
+  artifacts now exist, but independent reproduction and component attribution
+  must precede warning and failure thresholds.
 
 **Consequences.**
 
@@ -916,13 +919,14 @@ The detailed and authoritative execution/gate plan is
   remain platform-gated and evidence-specific.
 - A Dart/FFI/native-runner surface is added, while browser truth remains in
   BrowserCore and web-platform work continues independently.
-- Linux temporarily carries two shell implementations; parity gates prevent the
-  compatibility baseline from becoming permanent.
+- Linux temporarily carries two shell implementations in-tree, but the official
+  archive and FlatPark package contain only Flutter; parity gates prevent the compatibility baseline from
+  becoming permanent.
 - Accessibility projection and host services are architecture work throughout
   migration, not release polish.
 - Packaging and artifact reports become per platform and ABI. Existing Linux
-  GTK/Flatpak measurements remain historical/current-baseline evidence and are
-  not Flutter measurements.
+  GTK/Flatpak measurements are historical evidence; new package reports measure
+  the official archive and FlatPark package.
 
 ## ADR-019: Validate Flutter targets on the latest stable major OS
 

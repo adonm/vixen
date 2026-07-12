@@ -102,4 +102,4 @@ without providing a maintained browser DOM tree for Vixen's `Page` model.
 
 Expect V8/`rusty_v8` artifacts to dominate JS runtime packaging. Keep Cargo and
 runtime caches inside the workspace via the existing `CARGO_HOME` guidance, then
-remeasure `just size-fp` before release.
+remeasure `just size-headless` and `just size-flutter-linux` before release.

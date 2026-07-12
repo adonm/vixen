@@ -57,11 +57,10 @@ stub `lib.rs` so the workspace compiles.
    `mise bootstrap --yes` converges a fresh machine by delegating project work
    to `just setup`. The library MSRV (1.88) is in each crate's
    `rust-version`; the developer toolchain is pinned in `.mise.toml`. The
-   **GNOME 50 SDK is not installed
-   on the host** — it is managed inside a flatpak-builder container
-   (`just flatpak-update-sdk` / `just flatpak-build`); see
-   [`docs/guidance/gnome-sdk-flatpak-builder.md`](guidance/gnome-sdk-flatpak-builder.md)
-   and [`mise bootstrap`](https://mise.jdx.dev/bootstrap.html).
+   historical GNOME/Flatpak build path was later superseded by the official
+   release archive and FlatPark flow; see
+   [`docs/guidance/flatpark-release.md`](guidance/flatpark-release.md) and
+   [`mise bootstrap`](https://mise.jdx.dev/bootstrap.html).
 
 **Gate:** `just gate-phase0` passes (the workspace builds and `vixen-api` DTO /
 trait tests pass). The shell's
@@ -1789,7 +1788,7 @@ Final tock before v1.0.
    `docs/BASELINES.md`, and add focused `benches/{parse,style,layout,render}` as
    production subsystem paths become isolatable. Adopt regression gates only
    after representative reports and a comparison policy are accepted.
-4. Binary size measurement: `just size-fp`. Confirm targets per
+4. Binary size measurement: `just size-headless` and `just size-flutter-linux`. Confirm targets per
    `docs/ACCEPTANCE.md`.
 5. WPT target profile from `docs/COMPAT.md` is green. Migrate remaining
    end-to-end CSS+DOM assertions out of Rust tests where an HTML fixture can

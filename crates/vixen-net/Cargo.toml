@@ -2,7 +2,7 @@
 # jewels"). Pure Rust, fail-closed, fully unit-tested.
 [package]
 name = "vixen-net"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.88"
 description = "Vixen networking and security policy"

@@ -195,6 +195,10 @@ static void my_application_activate(GApplication* application) {
   gtk_window_set_default_size(window, 1100, 820);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
+  // Flutter 3.46 beta contains Linux Impeller but its project default remains
+  // false in this release tag. Enable it explicitly for packaged and local
+  // runner launches rather than relying on a flutter-tool-only run flag.
+  fl_dart_project_set_enable_impeller(project, TRUE);
   fl_dart_project_set_dart_entrypoint_arguments(
       project, self->dart_entrypoint_arguments);
 

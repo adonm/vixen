@@ -60,7 +60,7 @@ has not completed.
 | `just gate-push` | Long hk pre-push gate |
 | `just audit` | `cargo audit` and `cargo deny check` |
 | `just fuzz-security` | Phase 1 fuzz targets at 1 M iterations |
-| `just flatpak-update-sdk` / `just flatpak-build` | GNOME SDK container workflow |
+| `just linux-release-prefetch` / `just linux-release-smoke` | Build and verify the official Linux archive consumed by FlatPark |
 
 Use `just --list` for the full recipe list.
 

@@ -14,18 +14,16 @@ function usage() {
     '',
     'Options:',
     '  --headless PATH         Required release vixen-headless binary',
-    '  --flatpak-payload PATH  Optional exported /app payload directory',
-    '  --flatpak-bundle PATH   Optional Flatpak bundle file',
     '  --json                  Print the structured report',
     '  -h, --help              Print this help',
     '',
-    'Hardlinked files are counted once by device+inode. The GNOME runtime is excluded.',
+    'Hardlinked files are counted once by device+inode.',
     'Measurement only: this command does not enforce an artifact-size budget.',
   ].join('\n');
 }
 
 function parseArgs(argv) {
-  const options = { headless: null, flatpakPayload: null, flatpakBundle: null, json: false };
+  const options = { headless: null, json: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--help' || arg === '-h') {
@@ -36,12 +34,10 @@ function parseArgs(argv) {
       options.json = true;
       continue;
     }
-    if (['--headless', '--flatpak-payload', '--flatpak-bundle'].includes(arg)) {
+    if (arg === '--headless') {
       const value = argv[++index];
       if (!value) throw new Error(`${arg} requires a value`);
-      if (arg === '--headless') options.headless = value;
-      if (arg === '--flatpak-payload') options.flatpakPayload = value;
-      if (arg === '--flatpak-bundle') options.flatpakBundle = value;
+      options.headless = value;
       continue;
     }
     throw new Error(`unknown argument: ${arg}`);
@@ -73,8 +69,6 @@ async function main() {
   const options = parseArgs(process.argv.slice(2));
   const artifacts = {
     headless: await artifact('headless-binary', options.headless, true),
-    flatpak_payload: await artifact('flatpak-payload', options.flatpakPayload, false),
-    flatpak_bundle: await artifact('flatpak-bundle', options.flatpakBundle, false),
   };
   const report = {
     schema: 'vixen.artifact-size-report',
@@ -84,8 +78,7 @@ async function main() {
     accounting: {
       logical: 'lstat size, with hardlinks deduplicated by device and inode',
       allocated: 'lstat blocks multiplied by 512, with hardlinks deduplicated by device and inode',
-      gnome_runtime_included: false,
-      note: 'Flatpak payload and bundle measurements exclude the separately supplied GNOME runtime.',
+      scope: 'standalone headless release binary',
     },
     metadata: await collectMetadata(),
     artifacts,
@@ -95,7 +88,7 @@ async function main() {
     console.log(JSON.stringify(report, null, 2));
     return;
   }
-  console.log('artifact sizes (measurement only; GNOME runtime excluded)');
+  console.log('artifact sizes (measurement only)');
   for (const value of Object.values(artifacts)) {
     if (!value.present) {
       console.log(`${value.kind}: absent${value.path ? ` (${value.path})` : ' (not configured)'}`);

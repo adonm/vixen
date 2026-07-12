@@ -82,8 +82,8 @@ calling that single recipe.
 
 ### GUI shell environment blockers
 
-The Linux Flutter project and focused gate are checked in. Bootstrap the exact
-Flutter 3.44.0 revision into ignored workspace-local tooling, then run its gate:
+The Linux Flutter project and focused gate are checked in. Install the exact
+Flutter 3.46.0-0.3.pre beta archive declared in `.mise.toml`, then run its gate:
 
 ```sh
 just setup-flutter
@@ -95,27 +95,29 @@ pkg-config, and GTK 3 development headers. Missing host packages are an
 environment limitation; they do not turn Rust or Dart-only checks into Linux
 bundle proof. The debug bundle has been reproduced in a Fedora 43 container.
 
-The current compatibility shell still uses GTK/libadwaita. Its supported build
-path is **Podman + the flatpak-builder container**, not host-installed GNOME
-development packages. If a native `cargo check --features
-vixen-shell/gtk-shell` or `just shell-check` fails with
-missing `glib-2.0`, `gtk4`, or `libadwaita` `pkg-config` files, treat that as a
-host-environment limitation, not a product blocker. Verify shell changes with:
+The released Linux shell is Flutter. Local release builds use **Podman + the
+pinned GNOME builder image**; CI builds the same release shape on Ubuntu 24.04.
+The transitional compatibility shell still uses
+GTK/libadwaita in-tree; if an ad-hoc native `cargo check --features
+vixen-shell/gtk-shell` fails with missing native packages, treat that as a
+host-environment limitation. Verify release-shell changes with:
 
 ```sh
-just flatpak-update-sdk
-just flatpak-build
+just flutter-builder-update
+just linux-release-prefetch
+just linux-release-smoke
 ```
 
 Use native GTK development packages only for ad-hoc local work. Keep blocker
 notes explicit about this split so follow-up work points at the containerized
-Flatpak path before asking for host package installs.
+release path before asking for host package installs.
 
-The target Linux Flutter Flatpak instead uses pinned `flatpak-flutter` 0.15.0
-preprocessing for an offline Flutter+Rust source build. That workflow is a target,
-not an alias for today's `just flatpak-build`. Flutter's Linux embedder uses GTK,
-so migration removes Relm4/libadwaita/custom GLArea ownership without promising
-a GTK-free runtime.
+GitHub Releases publish the deterministic x86_64 archive built with the
+SHA-256-pinned official Flutter 3.46.0-0.3.pre beta, locked application/Cargo
+dependencies, and pinned rusty_v8 input. FlatPark repackages those bytes as a
+signed convenience Flatpak. Flutter's Linux embedder uses GTK, so migration
+removes Relm4/libadwaita/custom GLArea ownership without promising a GTK-free
+runtime.
 
 The safe Rust controller and handwritten C ABI can be developed without Flutter
 installed:

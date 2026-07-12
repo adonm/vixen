@@ -137,7 +137,7 @@ promoted to an additional tested tier.
 - Headless/CDP/WPT remain Rust products and are excluded from GUI bundles.
 
 Platform acceptance, Android V8/GLES/split-ABI gates, the iOS Simulator track,
-Linux offline Flatpak, and artifact policy are specified in
+Linux release/FlatPark packaging, and artifact policy are specified in
 [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md). JavaScript and WebAssembly use the same
 `deno_core`/V8 runtime path on every declared target.
 

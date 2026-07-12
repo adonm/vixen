@@ -60,7 +60,8 @@ advertised. Non-tree relationships, range actions,
 incremental/live updates, text selection, and native assistive-technology smoke
 remain open.
 
-From the repository root, use the pinned Flutter 3.44 SDK and run:
+From the repository root, install the pinned Flutter 3.46.0-0.3.pre beta through
+mise and run:
 
 ```sh
 just setup-flutter
@@ -73,11 +74,20 @@ hello-Flutter peer:
 
 ```sh
 just flutter-size-prefetch # network-capable input staging
-just size-flutter-linux    # clean build with network disabled
+just size-flutter-linux    # controlled hello-versus-Vixen comparison
 ```
 
-This uses the local GNOME 50 builder image with networking disabled and does not
-satisfy the offline Flatpak or accepted size-baseline gates.
+The official Linux release path uses the same GNOME 50 builder environment:
+
+```sh
+just linux-release-prefetch
+just linux-release-smoke
+```
+
+That path builds release/AOT Flutter and the Rust bridge, creates and extracts
+the deterministic GitHub Release archive, and requires an Impeller launch log.
+FlatPark repackages the released archive unchanged; broader host-matrix, native
+AT, portal, and accepted size-baseline gates remain separate.
 
 Set `VIXEN_FFI_LIBRARY` to an absolute `libvixen_ffi.so` path only for the
 native bridge smoke test. Normal Linux bundles load `lib/libvixen_ffi.so`

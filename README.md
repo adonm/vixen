@@ -5,7 +5,7 @@
 [![Docs](https://img.shields.io/badge/docs-vixen.adonm.dev-blue)](https://vixen.adonm.dev/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](Cargo.toml)
-[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.44-02569B.svg)](docs/FLUTTER_SHELL.md)
+[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.46%20beta-02569B.svg)](docs/FLUTTER_SHELL.md)
 
 A focused cross-platform Firefox replacement: a Flutter GUI targeting Linux,
 macOS, Windows, Android, and the Apple Silicon iOS Simulator, first-class headless/CDP automation, and the
@@ -417,56 +417,52 @@ Common recipes:
 | `just audit` | `cargo audit` + `cargo deny check` |
 | `just baseline-headless` / `just baseline-headless-json` | Measure the hermetic local headless scenario suite |
 | `just baseline-profile-growth` | Measure temporary profile growth and storage persistence across reopen |
-| `just size-headless` / `just size-fp` | Report structured headless or compatibility-Flatpak artifact sizes; not Flutter evidence |
+| `just size-headless` | Report structured headless artifact size |
 | `just flutter-size-prefetch` | Network-capable staging for pinned Linux Flutter size inputs; not evidence |
-| `just size-flutter-linux` / `just size-flutter-linux-json` | Network-disabled release/AOT hello-Flutter versus Flutter+Vixen raw-bundle comparison; not Flatpak evidence |
+| `just size-flutter-linux` / `just size-flutter-linux-json` | Release/AOT hello-Flutter versus Flutter+Vixen raw-bundle comparison |
 | `just baseline-beta` | Run the local headless, profile-growth, and headless-size measurement batch |
-| `just flatpak-update-sdk` / `just flatpak-build` | Manage/build the current GTK compatibility shell against the GNOME SDK container |
-| `just flatpak-install-local` / `just flatpak-run` | Install/run the current compatibility Flatpak for GUI smoke |
+| `just flutter-builder-update` | Pull the pinned GNOME 50 local release-builder image |
+| `just linux-release-prefetch` | Stage locked release inputs and the pinned rusty_v8 archive |
+| `just linux-release-smoke` | Build, archive, extract, and Impeller-smoke the official Linux release |
 
 These commands complete the local latency, Linux process-memory, profile-growth,
 headless-path, and artifact-size measurement foundation. They are measurement-
-only: real external-site coverage, the GUI/Flatpak host matrix, frame time, JS
+only: real external-site coverage, the GUI/FlatPark host matrix, frame time, JS
 heap, and transfer throughput remain future baselines. See
 [`docs/BASELINES.md`](docs/BASELINES.md).
 
-The Flutter size recipes add a controlled checked-in hello application and
-strict raw release-bundle analyzer. They use the local GNOME 50 builder image
-with networking disabled, the mise-pinned Rust toolchain, locked workspace-local
-caches, and a separately staged pinned rusty_v8 archive; they do not build or
-measure the target offline Flatpak. The first clean measurement-only x86_64
-reference is recorded in [`docs/BASELINES.md`](docs/BASELINES.md).
+The Flutter release and size recipes use a controlled checked-in hello
+application, the GNOME 50 builder image, the mise-pinned Rust/Flutter
+toolchains, locked dependencies, and a separately staged pinned rusty_v8
+archive. The first clean measurement-only x86_64 reference is recorded in
+[`docs/BASELINES.md`](docs/BASELINES.md).
 
 `mise bootstrap` and recipes run from a mise-active shell use
 `CARGO_HOME=<workspace>/.cargo`, so the Cargo registry cache and installed dev
 tooling stay inside the workspace (see
 [`docs/guidance/cargo-home.md`](docs/guidance/cargo-home.md)).
 
-**The GNOME 50 SDK is not installed on the host** — it is managed inside a
-`flatpak-builder` container, so host churn stays at zero and the build is
-reproducible. To build against the SDK (the shell, or the Flatpak):
+**The GNOME 50 SDK is not installed on the host.** Local Linux release builds
+run in the pinned builder image:
 
 ```sh
-just flatpak-update-sdk  # pull the image (= install the GNOME 50 SDK)
-just flatpak-build       # build/export the compatibility GTK shell
+just flutter-builder-update
+just linux-release-prefetch
+just linux-release-smoke
 ```
 
-`just flatpak-build` runs flatpak-builder inside the container with the host
-workspace mounted at `/workspace`; this is the supported GTK shell build path on
-hosts without native `gtk4`/`libadwaita` development packages. It exports a
-local repo under `build-aux/_repo`; use `just flatpak-install-local` then
-`just flatpak-run` for host GUI smoke.
+The result is a deterministic `vixen-linux-x86_64.tar.gz` GitHub Release asset.
+FlatPark pins and repackages that unchanged upstream archive, signs the Flatpak,
+and hosts the update repository. Vixen does not maintain a parallel OSTree
+repository. Flutter's Linux embedder uses GTK, so this removes packaged
+Relm4/libadwaita/custom GLArea ownership rather than promising a GTK-free
+runtime.
 
-These commands do not build Flutter. The target Linux package is a pinned,
-offline Flutter+Rust source build preprocessed with `flatpak-flutter` 0.15.0; its
-workflow and commands have not landed. Flutter's Linux embedder uses GTK, so the
-migration removes Relm4/libadwaita/custom GLArea ownership rather than promising
-a GTK-free runtime.
-
-See [`docs/guidance/gnome-sdk-flatpak-builder.md`](docs/guidance/gnome-sdk-flatpak-builder.md)
+See [`docs/guidance/flatpark-release.md`](docs/guidance/flatpark-release.md)
 for the full workflow. Headless/CI hosts that only build `vixen-api` /
-`vixen-net` / `vixen-store` need neither the SDK nor the container —
-`mise install` + an activated shell + `just check` is enough.
+`vixen-net` / `vixen-store` need neither the GNOME SDK nor the container.
+`mise install` now provisions the pinned Flutter beta as a project dependency,
+but `just check` does not execute it.
 
 See [`.mise.toml`](.mise.toml) and the
 [mise bootstrap guide](https://mise.jdx.dev/bootstrap.html). The library
@@ -492,7 +488,7 @@ MSRV is 1.88 (let-chains); the developer toolchain is pinned in
 | [`docs/REFERENCES.md`](docs/REFERENCES.md)  | **Where to look for truth.** Pinned reference trees + how to consult each. |
 | [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)  | **When it's done.** Release gates per capability. |
 | [`docs/BASELINES.md`](docs/BASELINES.md)    | **How it is measured.** Local latency, memory, profile-growth, and artifact reports. |
-| [`docs/guidance/`](docs/guidance)           | **How to do specific tasks.** e.g. the GNOME SDK via flatpak-builder containers. |
+| [`docs/guidance/`](docs/guidance)           | **How to do specific tasks.** Tooling, release archives, and FlatPark packaging. |
 | `LICENSE`                                   | Apache 2.0 (lands at Phase 0). |
 
 ---
@@ -522,13 +518,13 @@ Update both when resolving.
 ## Working assumptions
 
 - Primary GUI targets: **Linux, macOS, Windows, Android, and Apple Silicon iOS Simulator** through
-  Flutter 3.44. Each remains evidence-gated; only the initial Linux debug shell
+  the pinned Flutter 3.46.0-0.3.pre beta. Each remains evidence-gated; only the initial Linux debug shell
   and bounded RGBA texture build exist today. Validation tracks each target's
   latest stable major OS release at the release cutoff; older releases are
   best-effort unless explicitly added as a tested tier.
-- Linux ships through an offline source-built Flatpak. GTK/Relm4 remains the
-  compatibility baseline until Flutter parity, after which its direct shell
-  ownership is removed. Flutter Linux may still depend on GTK at runtime.
+- Linux publishes an official x86_64 release archive that FlatPark repackages
+  unchanged as a signed convenience Flatpak. GTK/Relm4 remains the compatibility
+  baseline until Flutter parity; Flutter Linux may still depend on GTK at runtime.
 - The current Rust release profile starts with `strip = true`, `lto = "thin"`,
   `codegen-units = 1`, and `panic = "abort"`; Flutter release/AOT and native
   packaging are measured per platform before any stronger optimization claim.

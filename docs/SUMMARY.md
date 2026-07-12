@@ -33,4 +33,4 @@
   - [mise](guidance/mise.md)
   - [Workspace-local Cargo home](guidance/cargo-home.md)
   - [deno_core / V8](guidance/deno-core.md)
-  - [GNOME SDK compatibility Flatpak](guidance/gnome-sdk-flatpak-builder.md)
+  - [Linux release and FlatPark](guidance/flatpark-release.md)

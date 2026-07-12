@@ -120,58 +120,134 @@ jobs:
       - name: Check dependency policy
         run: cargo deny check
 
-  flatpak:
-    name: Flatpak bundle
+  linux-release:
+    name: Linux release archive
     runs-on: ubuntu-24.04
     needs:
       - host
       - security
     permissions:
-      contents: write
-    container:
-      image: ghcr.io/flathub-infra/flatpak-github-actions:gnome-50
-      options: --privileged
+      contents: read
 
     steps:
       - name: Checkout
         uses: actions/checkout@v5
 
-      - name: Check generated Cargo sources
+      - name: Install Linux build and smoke dependencies
         run: |
-          before="$(mktemp)"
-          trap 'rm -f "$before"' EXIT
-          cp build-aux/cargo-sources.json "$before"
-          python3 build-aux/generate-cargo-sources.py
-          cmp -s "$before" build-aux/cargo-sources.json || {
-            diff -u "$before" build-aux/cargo-sources.json || true
-            exit 1
-          }
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            clang \
+            cmake \
+            libegl-dev \
+            libgl-dev \
+            libgtk-3-dev \
+            liblzma-dev \
+            mesa-vulkan-drivers \
+            ninja-build \
+            pkg-config \
+            xauth \
+            xvfb
 
-      - name: Build Flatpak bundle
-        uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+      - name: Install pinned Rust and Flutter beta
+        uses: jdx/mise-action@v3
         with:
-          bundle: org.vixen.Vixen-x86_64.flatpak
-          manifest-path: build-aux/org.vixen.Vixen.json
-          cache-key: flatpak-builder-${{ github.sha }}
-          arch: x86_64
+          install_args: rust hk http:flutter-beta
+          cache: true
 
-      - name: Verify Flatpak bundle installation
+      - name: Verify Flutter beta revisions
+        run: |
+          flutter --version --machine | python3 -c '
+          import json, sys
+          value = json.load(sys.stdin)
+          assert value["frameworkVersion"] == "3.46.0-0.3.pre"
+          assert value["frameworkRevision"] == "677d472756f83c14371dd8cc624387065f3d32a7"
+          assert value["engineRevision"] == "a24b1ea55dedf3ce992cae0fbc1012b22b373290"
+          '
+
+      - name: Stage pinned rusty_v8 archive
         run: |
           set -eu
-          test -s org.vixen.Vixen-x86_64.flatpak
-          sha256sum org.vixen.Vixen-x86_64.flatpak > org.vixen.Vixen-x86_64.flatpak.sha256
-          export XDG_DATA_HOME="$GITHUB_WORKSPACE/.tmp/flatpak-install"
-          mkdir -p "$XDG_DATA_HOME"
-          flatpak install --user --noninteractive --no-deps --bundle ./org.vixen.Vixen-x86_64.flatpak
-          flatpak info --user org.vixen.Vixen
-          test "$(flatpak info --user --show-ref org.vixen.Vixen)" = "app/org.vixen.Vixen/x86_64/master"
+          archive="$GITHUB_WORKSPACE/.tmp/rusty-v8/librusty_v8.a.gz"
+          mkdir -p "$(dirname "$archive")"
+          curl --fail --location --retry 3 \
+            https://github.com/denoland/rusty_v8/releases/download/v149.4.0/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz \
+            --output "$archive"
+          printf '%s  %s\n' \
+            aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53 \
+            "$archive" | sha256sum --check
+          printf 'RUSTY_V8_ARCHIVE=%s\n' "$archive" >> "$GITHUB_ENV"
 
-      - name: Attach bundle to tagged release
-        if: startsWith(github.ref, 'refs/tags/')
+      - name: Build Flutter release bundle
+        run: |
+          cd flutter/vixen_shell
+          flutter pub get --enforce-lockfile
+          flutter build linux --release --no-pub
+          strip --strip-unneeded build/linux/x64/release/bundle/vixen_shell
+
+      - name: Create deterministic release archive
+        run: |
+          set -eu
+          bundle=flutter/vixen_shell/build/linux/x64/release/bundle
+          output="$GITHUB_WORKSPACE/vixen-linux-x86_64.tar.gz"
+          python3 scripts/package-linux-release.py "$bundle" "$output"
+          cp "$output" "$output.first"
+          python3 scripts/package-linux-release.py "$bundle" "$output"
+          cmp "$output.first" "$output"
+          rm "$output.first"
+          sha256sum "$(basename "$output")" > "$(basename "$output").sha256"
+          tar -tzf "$output" | grep -q '^vixen/lib/libvixen_ffi.so$'
+          tar -tzf "$output" | grep -q '^vixen/lib/libflutter_linux_gtk.so$'
+          tar -tzf "$output" | grep -q '^vixen/lib/libapp.so$'
+
+      - name: Smoke exact release archive with Impeller
+        run: |
+          set -eu
+          mkdir -p .tmp/linux-release-smoke
+          tar -xzf vixen-linux-x86_64.tar.gz -C .tmp/linux-release-smoke
+          set +e
+          timeout 15s xvfb-run -a .tmp/linux-release-smoke/vixen/vixen_shell \
+            > linux-release-smoke.log 2>&1
+          status=$?
+          set -e
+          cat linux-release-smoke.log
+          test "$status" -eq 124
+          grep -Eq 'Using the Impeller rendering backend \((Vulkan|OpenGLES|VulkanSDF|OpenGLESSDF)\)\.' \
+            linux-release-smoke.log
+
+      - name: Upload Linux release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-release-assets
+          path: |
+            vixen-linux-x86_64.tar.gz
+            vixen-linux-x86_64.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - linux-release
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: write
+
+    steps:
+      - name: Download Linux release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-release-assets
+          path: release-assets
+
+      - name: Attach archive to tagged release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            org.vixen.Vixen-x86_64.flatpak
-            org.vixen.Vixen-x86_64.flatpak.sha256
+            release-assets/vixen-linux-x86_64.tar.gz
+            release-assets/vixen-linux-x86_64.tar.gz.sha256
           fail_on_unmatched_files: true
           generate_release_notes: true

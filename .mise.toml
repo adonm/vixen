@@ -55,13 +55,20 @@ cargo-binstall = "1.20.1"
 # browser binaries are downloaded; the script connects to Vixen's CDP endpoint.
 node = "24.18.0"
 
-# --- GNOME SDK --------------------------------------------------------------
-# The GNOME 50 SDK is NOT installed on the host. It is managed inside a
-# flatpak-builder container image — see docs/guidance/gnome-sdk-flatpak-builder.md
-# and the `just flatpak-*` recipes (justfile). Intentionally no
-# `[bootstrap.packages]` GNOME entries: pull the image with `just flatpak-update-sdk`
-# and build with `just flatpak-build`. For ad-hoc native shell work, install
-# your distro's gtk4 / libadwaita -devel packages yourself (unsupported path).
+# Latest Flutter beta with Linux Impeller support. This deliberately uses the
+# official Linux x64 archive rather than mise's stable-only Flutter registry.
+[tools."http:flutter-beta"]
+version = "3.46.0-0.3.pre"
+strip_components = 0
+bin_path = "flutter/bin"
+
+[tools."http:flutter-beta".platforms]
+linux-x64 = { url = "https://storage.googleapis.com/flutter_infra_release/releases/beta/linux/flutter_linux_3.46.0-0.3.pre-beta.tar.xz", checksum = "sha256:931c30fde3cc9b4eae2bbae750914c1ec60bfea4d46531e37f25caaa1a47d2da", size = "1548840020" }
+
+# --- Linux release builder --------------------------------------------------
+# The host does not need GNOME development packages. Local release builds use
+# the pinned GNOME 50 builder image (`just flutter-builder-update`), and
+# FlatPark repackages the resulting official GitHub Release archive.
 
 # --- Imperative project bootstrap -------------------------------------------
 # `mise bootstrap` runs this after [tools] are installed, with the project env

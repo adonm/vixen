@@ -3,9 +3,9 @@
 Vixen's current baseline suite is a dependency-light Linux measurement
 foundation built with Node.js built-ins. It records observations; it does not
 enforce budgets or claim complete real-site behavior. The repository now has a
-checked-in hello-Flutter peer plus strict network-disabled Linux release/AOT
-raw-bundle build and comparison commands. No accepted Flutter report or
-Flutter Flatpak size/performance baseline has been recorded yet; one clean
+checked-in hello-Flutter peer plus controlled Linux release/AOT raw-bundle build
+and comparison commands. No accepted Flutter report or FlatPark package
+size/performance baseline has been recorded yet; one clean
 measurement-only raw-bundle reference is checked in for reproduction.
 
 ## Commands
@@ -44,28 +44,18 @@ fresh process must reopen and read the payload before the last checkpoint. The
 script treats the profile as an opaque directory and does not depend on redb
 files, tables, or allocation internals.
 
-Measure artifacts without requiring Flatpak, or build and measure the exported
-Flatpak payload:
+Measure the headless binary and create the official compressed Linux archive:
 
 ```sh
 just size-headless
-just size-fp
-node scripts/artifact-size.mjs \
-  --headless target/release/vixen-headless \
-  --flatpak-payload build-aux/_build/files \
-  --flatpak-bundle build-aux/vixen.flatpak \
-  --json
+just linux-release-archive
+stat --format='%s' .tmp/release/vixen-linux-x86_64.tar.gz
 ```
 
-`size-fp` still builds Flatpak first. Optional payload or bundle paths are
-reported as absent rather than failing; the required headless binary remains a
-hard error. Logical and allocated sizes deduplicate hardlinks by device and
-inode. Flatpak payload and bundle numbers exclude the separately supplied GNOME
-runtime.
-
-That Flatpak contains the current GTK/Relm4 compatibility shell. Its report
-remains useful historical/current evidence, but it is not a Flutter Linux
-baseline and must not be relabeled as one.
+Reports produced for the former native Flatpak remain historical GTK/Relm4
+evidence and must not be relabeled. The FlatPark package needs its own reviewed
+compressed/install observation after registry publication; the GitHub Release
+archive does not include the separately supplied GNOME runtime.
 
 Stage the pinned Linux Flutter/rusty_v8 inputs, then build and compare clean raw
 release bundles:
@@ -73,19 +63,18 @@ release bundles:
 ```sh
 just flutter-size-prefetch       # network-capable staging; never evidence
 just flutter-size-check-inputs   # revision/archive/namespace checks
-just size-flutter-linux          # network-disabled build and text report
-just size-flutter-linux-json     # network-disabled build and JSON report
+just size-flutter-linux          # controlled build and text report
+just size-flutter-linux-json     # controlled build and JSON report
 just size-flutter-linux-existing # analyze existing release bundles only
 ```
 
-`fixtures/artifact-size/flutter_hello` is generated from the exact pinned
-Flutter 3.44 revision and uses Material plus the standard Linux runner without
-Vixen code. The build resolves both lock files offline and compiles with
-`--network=none` in the local GNOME 50 builder image, using its CMake/Ninja/GTK
-toolchain, the read-only mise Rust toolchain, workspace-local Cargo/Pub caches,
-and the SHA-256-pinned rusty_v8 archive. Missing inputs fail rather than enabling
-network access. The mutable builder-image tag remains a limitation until the
-Flatpak/release path pins an immutable digest.
+The recorded report below used Flutter 3.44 and remains historical evidence.
+`fixtures/artifact-size/flutter_hello` now tracks the exact pinned Flutter
+3.46.0-0.3.pre beta and uses Material plus the standard Linux runner without
+Vixen code. The current local build uses the GNOME 50 builder image, its
+CMake/Ninja/GTK toolchain, the mise Rust/Flutter toolchains, locked Cargo/Pub
+dependencies, and the SHA-256-pinned rusty_v8 archive. The mutable builder-image
+tag remains a limitation until the release path pins an immutable digest.
 
 The analyzer requires release bundle structure (`libapp.so`, Flutter engine,
 and ICU), requires exactly one `libvixen_ffi.so` only in Vixen, rejects debug and
@@ -224,8 +213,8 @@ headless-path, compatibility-shell artifact-size, and Flutter raw-release-bundle
 comparison foundations. It does not yet measure:
 
 - representative external sites or complete external-site compatibility;
-- an accepted/reproduced Flutter GUI size baseline or Flutter Flatpak artifact;
-- the GUI/Flatpak path across a supported Linux, GPU, driver, and renderer matrix;
+- an accepted/reproduced Flutter GUI size baseline or FlatPark package artifact;
+- the GUI/FlatPark path across a supported Linux, GPU, driver, and renderer matrix;
 - native macOS, Windows, Android, or iOS Simulator BrowserCore/V8/WebRender behavior;
 - frame time, frame stability, animation smoothness, or input-to-paint latency;
 - V8/JavaScript heap usage separately from process memory;

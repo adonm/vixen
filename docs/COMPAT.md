@@ -198,7 +198,8 @@ route one app-level worker and all tab ids through BrowserCore. Profile-session
 load/save and explicit clear-data selections use browser commands; empty or
 unavailable profiles fall back to the configured start page and records remain
 bounded by the profile store. Native `gtk-shell` checks may be host-package
-blocked; use the supported Flatpak build path for GUI verification.
+blocked; use `just gate-flutter-shell` and `just linux-release-smoke` for the
+released GUI path.
 
 ---
 

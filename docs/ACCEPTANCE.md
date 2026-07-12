@@ -176,7 +176,7 @@ ownership, not necessarily no GTK runtime dependency.
 
 ### Platform gates
 
-Flutter 3.44 supports native deployment to all five targets, but Vixen supports a
+Flutter supports native deployment to all five targets, but Vixen supports a
 platform only after its gate in [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md) passes:
 
 Each gate runs on the latest generally available major OS release at the release
@@ -185,7 +185,8 @@ best-effort unless explicitly listed as an additional tested tier; preview OS
 releases never satisfy these gates.
 
 - **Linux:** real BrowserCore bridge, bounded RGBA texture, input/viewport,
-  Semantics/AT, host services, parity, and pinned offline source-built Flatpak.
+  Semantics/AT, host services, parity, deterministic official release archive,
+  and checksum-pinned FlatPark package verification.
 - **macOS and Windows:** native BrowserCore/V8/WebRender builds plus texture,
   input/IME, accessibility, host services, signing/packaging, and per-architecture
   size/performance evidence.
@@ -206,13 +207,13 @@ is accepted without a new ADR.
 
 ## Binary size gates
 
-`just size-fp` and `just size-headless` remain measurement commands for the
-current GTK compatibility Flatpak and release headless binary. `just
+`just size-headless` measures the release headless binary. `just
 size-flutter-linux-json` builds and compares like-for-like release/AOT raw Linux
-hello-Flutter and Flutter+Vixen bundles with the network disabled. That report is
-measurement-only and does not satisfy the offline Flatpak, compressed-download,
-installed-size, signing, or launch-smoke gates. Equivalent package reports remain
-required for every supported platform and shipped ABI/architecture.
+hello-Flutter and Flutter+Vixen bundles. That report is measurement-only and
+does not satisfy compressed-download, installed-size, signing, or broader
+host-matrix gates. Deterministic archive and FlatPark package/install smokes are
+separate evidence. Equivalent package reports remain required for every
+supported platform and shipped ABI/architecture.
 
 Reports attribute compressed, unpacked/install, executable, and shared-runtime
 costs to Flutter engine/ICU, Dart AOT/assets, native runner/plugins,
@@ -243,7 +244,7 @@ compatibility-shell artifact-size measurement foundation. All values remain
 measurement-only until the
 accepted-report process in [`BASELINES.md`](BASELINES.md) produces reviewed host
 baselines and explicit policies here. Real external-site measurements, the
-GUI/Flatpak host matrix, frame time, JS heap, and transfer throughput remain
+GUI/FlatPark host matrix, frame time, JS heap, and transfer throughput remain
 unmeasured; do not turn local controls into complete-site or release-budget
 claims.
 

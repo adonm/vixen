@@ -3,25 +3,22 @@ import 'dart:async';
 import '../browser_controller.dart';
 import '../browser_models.dart';
 
-typedef BrowserCommandHandler =
-    FutureOr<BrowserResponse> Function(
-      BrowserCommand command,
-      ScriptedBrowserController controller,
-    );
-typedef BrowserFrameHandler =
-    FutureOr<BrowserFrame?> Function(
-      int contextId,
-      int documentId,
-      int width,
-      int height,
-    );
-typedef BrowserAccessibilityHandler =
-    BrowserAccessibilitySnapshot Function(
-      int contextId,
-      int documentId,
-      int width,
-      int height,
-    );
+typedef BrowserCommandHandler = FutureOr<BrowserResponse> Function(
+  BrowserCommand command,
+  ScriptedBrowserController controller,
+);
+typedef BrowserFrameHandler = FutureOr<BrowserFrame?> Function(
+  int contextId,
+  int documentId,
+  int width,
+  int height,
+);
+typedef BrowserAccessibilityHandler = BrowserAccessibilitySnapshot Function(
+  int contextId,
+  int documentId,
+  int width,
+  int height,
+);
 
 /// An in-memory command/event transport for shell tests. It models BrowserCore's
 /// authoritative registry but never renders or interprets page content.

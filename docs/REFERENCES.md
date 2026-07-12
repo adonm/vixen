@@ -78,7 +78,7 @@ what Vixen wants to be at the shell layer.
 ```
 gnome-web/src/                                     ← shell source
 gnome-web/data/                                    ← gschema, metainfo, desktop
-gnome-web/flatpak/                                 ← manifest conventions (we keep our own in build-aux/)
+gnome-web/flatpak/                                 ← runtime/portal conventions useful for the FlatPark submission
 ```
 
 ### Obscura (`obscura/`)

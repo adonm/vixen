@@ -1,10 +1,9 @@
 # Vixen justfile. Recipe names referenced from docs/PLAN.md,
 # docs/MILESTONES.md, and docs/ACCEPTANCE.md: `check-all-host`, `test-host`,
-# `gate-*`, `size-fp`, `run`.
+# `gate-*`, release, size, and run commands.
 #
-# The GNOME 50 SDK is NOT installed on the host; it is managed inside a
-# flatpak-builder container. See docs/guidance/gnome-sdk-flatpak-builder.md
-# and the `flatpak-*` recipes below.
+# Linux release bundles are built in the pinned GNOME builder image. FlatPark
+# repackages the official GitHub Release archive as a signed Flatpak.
 #
 # Tool ownership is intentionally split: mise pins versions and environment;
 # this justfile owns project actions. Prefer adding/updating a recipe here over
@@ -18,19 +17,17 @@ alias webidl := gate-webidl
 alias hooks := hooks-install
 alias docs := book-build
 
-# Container runtime + the flatpak-builder image that owns the GNOME SDK.
-# Bump these two together (and runtime-version in build-aux/*.json) to move SDK.
-CONTAINER            := "podman"
-FLATPAK_BUILDER_IMAGE := "ghcr.io/flathub-infra/flatpak-github-actions:gnome-50"
-GNOME_RUNTIME_VERSION := "50"
-FREEDESKTOP_RUNTIME_VERSION := "25.08"
-FLUTTER_VERSION       := "3.44.0"
-FLUTTER_REVISION      := "559ffa3f75e7402d65a8def9c28389a9b2e6fe42"
-FLUTTER_SDK           := ".tmp/ref/flutter"
+# Container runtime + GNOME 50 image used for local release builds.
+CONTAINER             := env_var_or_default("CONTAINER", "podman")
+FLUTTER_BUILDER_IMAGE := "ghcr.io/flathub-infra/flatpak-github-actions:gnome-50"
+FLUTTER_VERSION       := "3.46.0-0.3.pre"
+FLUTTER_REVISION      := "677d472756f83c14371dd8cc624387065f3d32a7"
+FLUTTER_ENGINE        := "a24b1ea55dedf3ce992cae0fbc1012b22b373290"
 FLUTTER_HELLO         := "fixtures/artifact-size/flutter_hello"
-FLUTTER_SIZE_V8       := ".tmp/flutter-size/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
-FLUTTER_SIZE_V8_SHA   := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"
-FLUTTER_SIZE_IMAGE    := "ghcr.io/flathub-infra/flatpak-github-actions:gnome-50"
+RUSTY_V8_ARCHIVE      := ".tmp/linux-release/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
+RUSTY_V8_SHA256       := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"
+LINUX_RELEASE_BUNDLE  := "flutter/vixen_shell/build/linux/x64/release/bundle"
+LINUX_RELEASE_ARCHIVE := ".tmp/release/vixen-linux-x86_64.tar.gz"
 
 # Default recipe: explain yourself.
 default:
@@ -58,17 +55,14 @@ setup-dev-tools:
     cargo binstall --no-confirm cargo-deny || cargo install cargo-deny || true
     cargo binstall --no-confirm cargo-fuzz || cargo install cargo-fuzz || true
 
-# Install the exact Flutter SDK used by the checked-in Linux shell. The checkout
-# is reproducible workspace-local tooling and remains ignored under `.tmp/`.
+# Install the exact official Flutter beta archive declared as a mise tool.
 setup-flutter:
-    mkdir -p .tmp/ref
-    test -d {{FLUTTER_SDK}}/.git || git clone --depth 1 --branch {{FLUTTER_VERSION}} https://github.com/flutter/flutter.git {{FLUTTER_SDK}}
-    test "$(git -C {{FLUTTER_SDK}} rev-parse HEAD)" = "{{FLUTTER_REVISION}}"
-    {{FLUTTER_SDK}}/bin/flutter --version
+    mise install http:flutter-beta
+    mise x -- flutter --version
 
 _flutter-sdk-present:
-    test -x {{FLUTTER_SDK}}/bin/flutter || { printf '%s\n' "Flutter SDK missing; run 'just setup-flutter'" >&2; exit 1; }
-    test "$(git -C {{FLUTTER_SDK}} rev-parse HEAD)" = "{{FLUTTER_REVISION}}" || { printf '%s\n' "Flutter SDK revision mismatch; remove {{FLUTTER_SDK}} and run 'just setup-flutter'" >&2; exit 1; }
+    command -v flutter >/dev/null || { printf '%s\n' "mise Flutter beta missing from PATH; activate mise and run 'just setup-flutter'" >&2; exit 1; }
+    test "$(flutter --version --machine | python3 -c 'import json, sys; value = json.load(sys.stdin); print(value["frameworkRevision"], value["engineRevision"])')" = "{{FLUTTER_REVISION}} {{FLUTTER_ENGINE}}" || { printf '%s\n' "Flutter beta revision mismatch; run 'mise install http:flutter-beta'" >&2; exit 1; }
 
 # --- Build / check -----------------------------------------------------------
 
@@ -78,10 +72,8 @@ _flutter-sdk-present:
 check-all-host:
     cargo check --workspace --all-targets
 
-# Type-check including the GTK shell. The canonical way to get the GNOME
-# SDK is the flatpak-builder container (docs/guidance/gnome-sdk-flatpak-builder.md);
-# for ad-hoc native work you can install your distro's gtk4/libadwaita -devel
-# packages and run this. Otherwise use `just flatpak-build`.
+# Type-check including the transitional GTK shell. Install your distro's
+# gtk4/libadwaita development packages for this optional host-only path.
 shell-check:
     cargo check --workspace --all-targets --features vixen-shell/gtk-shell
 
@@ -120,57 +112,85 @@ gate-native-abi:
 # Dart/widget/native bridge evidence for the checked-in Linux Flutter shell.
 # The native smoke test loads the exact cdylib built by gate-native-abi.
 gate-flutter-shell: _flutter-sdk-present gate-native-abi
-    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/dart format --output=none --set-exit-if-changed lib test
-    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter analyze
-    cd flutter/vixen_shell && VIXEN_FFI_LIBRARY="{{justfile_directory()}}/target/debug/libvixen_ffi.so" ../../{{FLUTTER_SDK}}/bin/flutter test
+    cd flutter/vixen_shell && dart format --output=none --set-exit-if-changed lib test
+    cd flutter/vixen_shell && flutter analyze
+    cd flutter/vixen_shell && VIXEN_FFI_LIBRARY="{{justfile_directory()}}/target/debug/libvixen_ffi.so" flutter test
 
 # Build the relocatable Linux bundle, including libvixen_ffi.so. Requires the
 # normal Flutter Linux prerequisites: CMake, Ninja, pkg-config, and GTK 3 headers.
 build-flutter-linux: _flutter-sdk-present
-    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter build linux --debug
+    cd flutter/vixen_shell && flutter build linux --debug
 
 # Launch the Linux shell through Flutter's desktop runner.
 run-flutter: _flutter-sdk-present
-    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter run -d linux
+    cd flutter/vixen_shell && flutter run -d linux
 
-# Network-capable staging only; this command is not size evidence. The strict
-# build below consumes the staged package caches and pinned rusty_v8 archive
-# in the pinned GNOME builder container with networking disabled.
-flutter-size-prefetch: _flutter-sdk-present
-    @printf '%s\n' "staging Flutter size inputs (network-capable; not evidence)"
-    mkdir -p "$(dirname {{FLUTTER_SIZE_V8}})"
-    test -f {{FLUTTER_SIZE_V8}} || curl -L --fail --output {{FLUTTER_SIZE_V8}} https://github.com/denoland/rusty_v8/releases/download/v149.4.0/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz
-    printf '%s  %s\n' {{FLUTTER_SIZE_V8_SHA}} {{FLUTTER_SIZE_V8}} | sha256sum --check
-    cd {{FLUTTER_HELLO}} && PUB_CACHE="{{justfile_directory()}}/.tmp/flutter-size/pub-cache" ../../../{{FLUTTER_SDK}}/bin/flutter pub get --enforce-lockfile
-    cd flutter/vixen_shell && PUB_CACHE="{{justfile_directory()}}/.tmp/flutter-size/pub-cache" ../../{{FLUTTER_SDK}}/bin/flutter pub get --enforce-lockfile
+# Stage locked application/Cargo inputs and the exact rusty_v8 archive. This is
+# network-capable setup, not release evidence.
+linux-release-prefetch: _flutter-sdk-present
+    mkdir -p "$(dirname {{RUSTY_V8_ARCHIVE}})"
+    test -f {{RUSTY_V8_ARCHIVE}} || curl -L --fail --output {{RUSTY_V8_ARCHIVE}} https://github.com/denoland/rusty_v8/releases/download/v149.4.0/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz
+    printf '%s  %s\n' {{RUSTY_V8_SHA256}} {{RUSTY_V8_ARCHIVE}} | sha256sum --check
+    cargo fetch --locked
+    cd {{FLUTTER_HELLO}} && flutter pub get --enforce-lockfile
+    cd flutter/vixen_shell && flutter pub get --enforce-lockfile
 
-flutter-size-check-inputs: _flutter-sdk-present
-    {{CONTAINER}} image exists {{FLUTTER_SIZE_IMAGE}} || { printf '%s\n' "Flutter size builder missing; run 'just flatpak-update-sdk'" >&2; exit 1; }
+# Backward-compatible staging name used by the size workflow.
+flutter-size-prefetch: linux-release-prefetch
+
+linux-release-check-inputs: _flutter-sdk-present
+    {{CONTAINER}} image exists {{FLUTTER_BUILDER_IMAGE}} || { printf '%s\n' "GNOME builder image missing; run 'just flutter-builder-update'" >&2; exit 1; }
     test -d "$RUSTUP_HOME" && test -x "$HOME/.cargo/bin/rustc" && test -d "$HOME/.pub-cache" || { printf '%s\n' "mise Rust and Flutter tool caches are required" >&2; exit 1; }
-    test -f {{FLUTTER_SIZE_V8}} || { printf '%s\n' "rusty_v8 archive missing; run 'just flutter-size-prefetch'" >&2; exit 1; }
-    printf '%s  %s\n' {{FLUTTER_SIZE_V8_SHA}} {{FLUTTER_SIZE_V8}} | sha256sum --check
+    test -f {{RUSTY_V8_ARCHIVE}} || { printf '%s\n' "rusty_v8 archive missing; run 'just linux-release-prefetch'" >&2; exit 1; }
+    printf '%s  %s\n' {{RUSTY_V8_SHA256}} {{RUSTY_V8_ARCHIVE}} | sha256sum --check
 
-# Clean release/AOT bundles built in the local GNOME builder container with
-# dependency resolution and compilation isolated from the network. This is not
-# yet a source-built Flatpak toolchain.
-build-flutter-size-linux: flutter-size-check-inputs
-    cd {{FLUTTER_HELLO}} && ../../../{{FLUTTER_SDK}}/bin/flutter clean
-    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter clean
-    mkdir -p .tmp/flutter-size/bin && ln -sf /usr/sbin/g++ .tmp/flutter-size/bin/clang++ && ln -sf /usr/sbin/gcc .tmp/flutter-size/bin/clang
-    {{CONTAINER}} run --rm --network=none --security-opt label=disable \
+# Build the official release/AOT bundle consumed unchanged by FlatPark.
+build-flutter-release-linux: linux-release-check-inputs
+    cd flutter/vixen_shell && flutter clean
+    mkdir -p .tmp/linux-release/bin && ln -sf /usr/sbin/g++ .tmp/linux-release/bin/clang++ && ln -sf /usr/sbin/gcc .tmp/linux-release/bin/clang
+    {{CONTAINER}} run --rm --security-opt label=disable \
         -v {{justfile_directory()}}:/workspace \
         -v "$(readlink -f "$RUSTUP_HOME")":/host-rustup:ro \
         -v "$(readlink -f "$HOME/.cargo/bin")":/host-cargo-bin:ro \
-        -v "$(readlink -f "$HOME/.pub-cache")":/home/bazzite/.pub-cache:ro \
-        -w /workspace -e RUSTUP_HOME=/host-rustup -e RUSTUP_TOOLCHAIN=1.96.1 \
-        -e CARGO_HOME=/workspace/.cargo -e PUB_CACHE=/workspace/.tmp/flutter-size/pub-cache \
-        -e CARGO_NET_OFFLINE=true -e RUSTY_V8_ARCHIVE=/workspace/{{FLUTTER_SIZE_V8}} \
-        -e FLUTTER_SUPPRESS_ANALYTICS=true {{FLUTTER_SIZE_IMAGE}} sh -lc \
-        'export PATH=/workspace/.tmp/flutter-size/bin:/host-cargo-bin:/usr/sbin:/usr/bin; \
-         cd /workspace/{{FLUTTER_HELLO}} && ../../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile && ../../../{{FLUTTER_SDK}}/bin/flutter build linux --release --no-pub && \
-         cd /workspace/flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile && ../../{{FLUTTER_SDK}}/bin/flutter build linux --release --no-pub'
-    cd {{FLUTTER_HELLO}} && PUB_CACHE="{{justfile_directory()}}/.tmp/flutter-size/pub-cache" ../../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile
-    cd flutter/vixen_shell && PUB_CACHE="{{justfile_directory()}}/.tmp/flutter-size/pub-cache" ../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile
+        -v "$(readlink -f "$HOME/.pub-cache")":"$HOME/.pub-cache" \
+        -v "$(readlink -f "$(mise where http:flutter-beta)")":/opt/flutter-tool \
+        -w /workspace -e HOME="$HOME" -e RUSTUP_HOME=/host-rustup -e RUSTUP_TOOLCHAIN=1.96.1 \
+        -e CARGO_HOME=/workspace/.cargo -e PUB_CACHE="$HOME/.pub-cache" \
+        -e CARGO_NET_OFFLINE=true -e RUSTY_V8_ARCHIVE=/workspace/{{RUSTY_V8_ARCHIVE}} \
+        -e FLUTTER_SUPPRESS_ANALYTICS=true {{FLUTTER_BUILDER_IMAGE}} sh -lc \
+        'export PATH=/workspace/.tmp/linux-release/bin:/opt/flutter-tool/flutter/bin:/host-cargo-bin:/usr/sbin:/usr/bin; \
+         cd /workspace/flutter/vixen_shell && flutter pub get --enforce-lockfile && flutter build linux --release --no-pub'
+    cd flutter/vixen_shell && flutter pub get --offline --enforce-lockfile
+    strip --strip-unneeded {{LINUX_RELEASE_BUNDLE}}/vixen_shell
+
+# Deterministic upstream archive for GitHub Releases and FlatPark extra-data.
+linux-release-archive: build-flutter-release-linux
+    rm -f {{LINUX_RELEASE_ARCHIVE}} {{LINUX_RELEASE_ARCHIVE}}.sha256
+    python3 scripts/package-linux-release.py {{LINUX_RELEASE_BUNDLE}} {{LINUX_RELEASE_ARCHIVE}}
+    cd "$(dirname {{LINUX_RELEASE_ARCHIVE}})" && sha256sum "$(basename {{LINUX_RELEASE_ARCHIVE}})" > "$(basename {{LINUX_RELEASE_ARCHIVE}}).sha256"
+
+# Extract and launch the exact archive on the Linux host. The runner
+# must survive to the timeout and report an Impeller backend.
+linux-release-smoke: linux-release-archive
+    rm -rf .tmp/linux-release/smoke && mkdir -p .tmp/linux-release/smoke
+    tar -xzf {{LINUX_RELEASE_ARCHIVE}} -C .tmp/linux-release/smoke
+    command -v xvfb-run >/dev/null || { printf '%s\n' "xvfb-run is required for the Linux release smoke" >&2; exit 1; }
+    sh -c 'set +e; LIBGL_ALWAYS_SOFTWARE=1 timeout 15s xvfb-run -a .tmp/linux-release/smoke/vixen/vixen_shell > .tmp/linux-release-smoke.log 2>&1; status=$?; set -e; cat .tmp/linux-release-smoke.log; test "$status" -eq 124; grep -Eq "Using the Impeller rendering backend \\((Vulkan|OpenGLES|VulkanSDF|OpenGLESSDF)\\)\\." .tmp/linux-release-smoke.log'
+
+flutter-size-check-inputs: linux-release-check-inputs
+
+# Add the controlled hello peer for the raw release-bundle size comparison.
+build-flutter-size-linux: build-flutter-release-linux
+    cd {{FLUTTER_HELLO}} && flutter clean
+    {{CONTAINER}} run --rm --security-opt label=disable \
+        -v {{justfile_directory()}}:/workspace \
+        -v "$(readlink -f "$(mise where http:flutter-beta)")":/opt/flutter-tool \
+        -v "$(readlink -f "$HOME/.pub-cache")":"$HOME/.pub-cache" \
+        -w /workspace -e HOME="$HOME" -e PUB_CACHE="$HOME/.pub-cache" \
+        -e FLUTTER_SUPPRESS_ANALYTICS=true {{FLUTTER_BUILDER_IMAGE}} sh -lc \
+        'export PATH=/workspace/.tmp/linux-release/bin:/opt/flutter-tool/flutter/bin:/usr/sbin:/usr/bin; \
+         cd /workspace/{{FLUTTER_HELLO}} && flutter pub get --enforce-lockfile && flutter build linux --release --no-pub'
+    cd {{FLUTTER_HELLO}} && flutter pub get --offline --enforce-lockfile
 
 size-flutter-linux: build-flutter-size-linux
     node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle
@@ -346,11 +366,6 @@ fuzz-security: _fuzz-tools-present
 fuzz-init: fuzz-security
 
 # --- Measurement (docs/BASELINES.md) -----------------------------------------
-# Build and measure the exported Flatpak /app payload plus headless release
-# binary. The separately supplied GNOME runtime is not included. Measurement
-# only until docs/ACCEPTANCE.md publishes accepted baselines and budgets.
-size-fp: flatpak-build build-release
-    node scripts/artifact-size.mjs --headless target/release/vixen-headless --flatpak-payload build-aux/_build/files --flatpak-bundle build-aux/vixen.flatpak
 
 # Hermetic local scenarios. Example: `just baseline-headless 9 2`.
 baseline-headless runs="5" warmups="1": build-release
@@ -378,60 +393,18 @@ build-release:
     cargo build --locked --release -p vixen-headless --bin vixen-headless
 
 # --- Run ---------------------------------------------------------------------
-# Launch the GUI. Needs the GNOME SDK; the supported path is the flatpak
-# build (`just flatpak-build`). For ad-hoc native runs, install your distro's
-# gtk4/libadwaita -devel packages and use this.
+# Launch the transitional GTK compatibility GUI. For ad-hoc native runs,
+# install your distro's gtk4/libadwaita development packages.
 run *ARGS:
     cargo run --features vixen-shell/gtk-shell -- {{ARGS}}
 
-# --- GNOME SDK via flatpak-builder containers --------------------------------
-# docs/guidance/gnome-sdk-flatpak-builder.md. The image tag pins the
-# preinstalled org.gnome.Sdk//<GNOME_RUNTIME_VERSION> runtime.
+# --- Local GNOME release builder ---------------------------------------------
 
-# Pull/refresh the builder image. This IS the GNOME SDK install/upgrade.
-flatpak-update-sdk:
-    {{CONTAINER}} pull {{FLATPAK_BUILDER_IMAGE}}
+flutter-builder-update:
+    {{CONTAINER}} pull {{FLUTTER_BUILDER_IMAGE}}
 
-# Refresh Flatpak cargo archive sources from Cargo.lock. Run after dependency
-# changes so the Flatpak build sandbox can stay offline.
-flatpak-cargo-sources:
-    python3 build-aux/generate-cargo-sources.py
-
-# Interactive shell in the SDK container, workspace mounted at /workspace.
-flatpak-shell:
-    {{CONTAINER}} run --rm -it -v {{justfile_directory()}}:/workspace:z -w /workspace {{FLATPAK_BUILDER_IMAGE}}
-
-# Build the Flatpak against org.gnome.Sdk//{{GNOME_RUNTIME_VERSION}} inside the
-# container. `--privileged` lets flatpak-builder run its nested bwrap sandbox on
-# rootless Podman hosts; `--disable-rofiles-fuse` avoids a container dbus/fuse
-# dependency. Cargo uses build-aux/cargo-sources.json and runs offline inside
-# the build sandbox.
-flatpak-build: flatpak-cargo-sources
-    {{CONTAINER}} run --rm --privileged -v {{justfile_directory()}}:/workspace:z -w /workspace {{FLATPAK_BUILDER_IMAGE}} \
-        sh -lc 'flatpak install --noninteractive flathub org.freedesktop.Sdk.Extension.rust-stable//{{FREEDESKTOP_RUNTIME_VERSION}} && \
-        flatpak-builder --disable-rofiles-fuse --force-clean --repo=build-aux/_repo \
-        build-aux/_build build-aux/org.vixen.Vixen.json'
-    rm -f build-aux/vixen.flatpak
-    flatpak build-bundle build-aux/_repo build-aux/vixen.flatpak org.vixen.Vixen
-
-# Import the exact distributable bundle into an isolated user installation.
-# Runtime dependencies are intentionally skipped: this verifies bundle integrity,
-# app metadata, and installability without mutating the normal host installation.
-flatpak-verify-bundle: flatpak-build
-    rm -rf .tmp/flatpak-verify
-    mkdir -p .tmp/flatpak-verify
-    XDG_DATA_HOME="{{justfile_directory()}}/.tmp/flatpak-verify" flatpak install --user --noninteractive --no-deps --bundle build-aux/vixen.flatpak
-    test "$(XDG_DATA_HOME="{{justfile_directory()}}/.tmp/flatpak-verify" flatpak info --user --show-ref org.vixen.Vixen)" = "app/org.vixen.Vixen/x86_64/master"
-    sha256sum build-aux/vixen.flatpak
-
-# Install the locally built Flatpak repo into the host user installation for GUI smoke.
-flatpak-install-local: flatpak-build
-    flatpak remote-add --user --if-not-exists --no-gpg-verify vixen-local {{justfile_directory()}}/build-aux/_repo
-    flatpak install --user --noninteractive vixen-local org.vixen.Vixen
-
-# Run the locally installed Flatpak. Use after `just flatpak-install-local`.
-flatpak-run *ARGS:
-    flatpak run org.vixen.Vixen {{ARGS}}
+flutter-builder-shell:
+    {{CONTAINER}} run --rm -it -v {{justfile_directory()}}:/workspace:z -w /workspace {{FLUTTER_BUILDER_IMAGE}}
 
 # --- Audit (docs/ACCEPTANCE.md hard gate) ------------------------------------
 

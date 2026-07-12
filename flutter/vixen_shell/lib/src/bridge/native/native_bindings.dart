@@ -64,48 +64,60 @@ final class NativeCapturedFrame {
 
 typedef _AbiVersionNative = Uint32 Function();
 typedef _AbiVersionDart = int Function();
-typedef _OpenNative =
-    Uint32 Function(
-      Pointer<Uint8>,
-      Size,
-      Pointer<Uint64>,
-      Pointer<VixenBuffer>,
-    );
-typedef _OpenDart =
-    int Function(Pointer<Uint8>, int, Pointer<Uint64>, Pointer<VixenBuffer>);
+typedef _OpenNative = Uint32 Function(
+  Pointer<Uint8>,
+  Size,
+  Pointer<Uint64>,
+  Pointer<VixenBuffer>,
+);
+typedef _OpenDart = int Function(
+  Pointer<Uint8>,
+  int,
+  Pointer<Uint64>,
+  Pointer<VixenBuffer>,
+);
 typedef _DestroyNative = Uint32 Function(Uint64);
 typedef _DestroyDart = int Function(int);
-typedef _CommandNative =
-    Uint32 Function(Uint64, Pointer<Uint8>, Size, Pointer<VixenBuffer>);
-typedef _CommandDart =
-    int Function(int, Pointer<Uint8>, int, Pointer<VixenBuffer>);
+typedef _CommandNative = Uint32 Function(
+  Uint64,
+  Pointer<Uint8>,
+  Size,
+  Pointer<VixenBuffer>,
+);
+typedef _CommandDart = int Function(
+  int,
+  Pointer<Uint8>,
+  int,
+  Pointer<VixenBuffer>,
+);
 typedef _PollEventNative = Uint32 Function(Uint64, Pointer<VixenBuffer>);
 typedef _PollEventDart = int Function(int, Pointer<VixenBuffer>);
-typedef _WaitEventNative =
-    Uint32 Function(Uint64, Uint64, Pointer<VixenBuffer>);
+typedef _WaitEventNative = Uint32 Function(
+  Uint64,
+  Uint64,
+  Pointer<VixenBuffer>,
+);
 typedef _WaitEventDart = int Function(int, int, Pointer<VixenBuffer>);
 typedef _BufferReleaseNative = Uint32 Function(Uint64);
 typedef _BufferReleaseDart = int Function(int);
-typedef _CaptureFrameNative =
-    Uint32 Function(
-      Uint64,
-      Uint64,
-      Uint64,
-      Uint32,
-      Uint32,
-      Pointer<VixenFrame>,
-      Pointer<VixenBuffer>,
-    );
-typedef _CaptureFrameDart =
-    int Function(
-      int,
-      int,
-      int,
-      int,
-      int,
-      Pointer<VixenFrame>,
-      Pointer<VixenBuffer>,
-    );
+typedef _CaptureFrameNative = Uint32 Function(
+  Uint64,
+  Uint64,
+  Uint64,
+  Uint32,
+  Uint32,
+  Pointer<VixenFrame>,
+  Pointer<VixenBuffer>,
+);
+typedef _CaptureFrameDart = int Function(
+  int,
+  int,
+  int,
+  int,
+  int,
+  Pointer<VixenFrame>,
+  Pointer<VixenBuffer>,
+);
 typedef _FrameReleaseNative = Uint32 Function(Uint64);
 typedef _FrameReleaseDart = int Function(int);
 
