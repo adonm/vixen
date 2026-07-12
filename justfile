@@ -168,6 +168,8 @@ build-flutter-size-linux: flutter-size-check-inputs
         'export PATH=/workspace/.tmp/flutter-size/bin:/host-cargo-bin:/usr/sbin:/usr/bin; \
          cd /workspace/{{FLUTTER_HELLO}} && ../../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile && ../../../{{FLUTTER_SDK}}/bin/flutter build linux --release --no-pub && \
          cd /workspace/flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile && ../../{{FLUTTER_SDK}}/bin/flutter build linux --release --no-pub'
+    cd {{FLUTTER_HELLO}} && PUB_CACHE="{{justfile_directory()}}/.tmp/flutter-size/pub-cache" ../../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile
+    cd flutter/vixen_shell && PUB_CACHE="{{justfile_directory()}}/.tmp/flutter-size/pub-cache" ../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile
 
 size-flutter-linux: build-flutter-size-linux
     node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle
