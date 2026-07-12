@@ -75,8 +75,8 @@ just flutter-size-prefetch # network-capable input staging
 just size-flutter-linux    # clean build with network disabled
 ```
 
-This requires host CMake/Ninja/GTK development inputs and does not satisfy the
-offline Flatpak or accepted size-baseline gates.
+This uses the local GNOME 50 builder image with networking disabled and does not
+satisfy the offline Flatpak or accepted size-baseline gates.
 
 Set `VIXEN_FFI_LIBRARY` to an absolute `libvixen_ffi.so` path only for the
 native bridge smoke test. Normal Linux bundles load `lib/libvixen_ffi.so`

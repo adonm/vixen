@@ -302,7 +302,9 @@ product tradeoff; never hide growth by changing attribution.
 The Linux raw-bundle foundation is checked in: a controlled hello-Flutter peer,
 SHA-256-pinned rusty_v8 input, network-disabled clean release/AOT recipes, and a
 component/delta analyzer that rejects debug artifacts and mismatched shared
-Flutter engine/ICU files. It intentionally reports `flatpak_evidence: false`.
+Flutter engine/ICU files. The recipes use the local GNOME 50 builder container
+for CMake/Ninja/GTK while mounting the pinned Rust toolchain read-only. They
+intentionally report `flatpak_evidence: false`.
 Provisioned clean reports, compressed/install accounting, finer native linker
 attribution, and the offline `flatpak-flutter` package remain required.
 

@@ -79,11 +79,12 @@ just size-flutter-linux-existing # analyze existing release bundles only
 
 `fixtures/artifact-size/flutter_hello` is generated from the exact pinned
 Flutter 3.44 revision and uses Material plus the standard Linux runner without
-Vixen code. The build resolves both lock files offline, compiles inside a fresh
-unprivileged network namespace, sets Cargo offline, and supplies the
-SHA-256-pinned rusty_v8 archive. It requires host CMake, Ninja, GTK development
-files, and pre-populated Flutter/Pub/Cargo inputs; missing inputs fail rather
-than enabling network access.
+Vixen code. The build resolves both lock files offline and compiles with
+`--network=none` in the local GNOME 50 builder image, using its CMake/Ninja/GTK
+toolchain, the read-only mise Rust toolchain, workspace-local Cargo/Pub caches,
+and the SHA-256-pinned rusty_v8 archive. Missing inputs fail rather than enabling
+network access. The mutable builder-image tag remains a limitation until the
+Flatpak/release path pins an immutable digest.
 
 The analyzer requires release bundle structure (`libapp.so`, Flutter engine,
 and ICU), requires exactly one `libvixen_ffi.so` only in Vixen, rejects debug and

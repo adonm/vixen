@@ -431,8 +431,9 @@ heap, and transfer throughput remain future baselines. See
 [`docs/BASELINES.md`](docs/BASELINES.md).
 
 The Flutter size recipes add a controlled checked-in hello application and
-strict raw release-bundle analyzer. They require host CMake/Ninja/GTK development
-inputs and a separately staged pinned rusty_v8 archive; they do not build or
+strict raw release-bundle analyzer. They use the local GNOME 50 builder image
+with networking disabled, the mise-pinned Rust toolchain, locked workspace-local
+caches, and a separately staged pinned rusty_v8 archive; they do not build or
 measure the target offline Flatpak.
 
 `mise bootstrap` and recipes run from a mise-active shell use

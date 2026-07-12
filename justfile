@@ -29,6 +29,7 @@ FLUTTER_SDK           := ".tmp/ref/flutter"
 FLUTTER_HELLO         := "fixtures/artifact-size/flutter_hello"
 FLUTTER_SIZE_V8       := ".tmp/flutter-size/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
 FLUTTER_SIZE_V8_SHA   := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"
+FLUTTER_SIZE_IMAGE    := "ghcr.io/flathub-infra/flatpak-github-actions:gnome-50"
 
 # Default recipe: explain yourself.
 default:
@@ -133,30 +134,40 @@ run-flutter: _flutter-sdk-present
 
 # Network-capable staging only; this command is not size evidence. The strict
 # build below consumes the staged package caches and pinned rusty_v8 archive
-# with a fresh network namespace.
+# in the pinned GNOME builder container with networking disabled.
 flutter-size-prefetch: _flutter-sdk-present
     @printf '%s\n' "staging Flutter size inputs (network-capable; not evidence)"
     mkdir -p "$(dirname {{FLUTTER_SIZE_V8}})"
     test -f {{FLUTTER_SIZE_V8}} || curl -L --fail --output {{FLUTTER_SIZE_V8}} https://github.com/denoland/rusty_v8/releases/download/v149.4.0/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz
     printf '%s  %s\n' {{FLUTTER_SIZE_V8_SHA}} {{FLUTTER_SIZE_V8}} | sha256sum --check
-    cd {{FLUTTER_HELLO}} && ../../../{{FLUTTER_SDK}}/bin/flutter pub get --enforce-lockfile
-    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter pub get --enforce-lockfile
+    cd {{FLUTTER_HELLO}} && PUB_CACHE="{{justfile_directory()}}/.tmp/flutter-size/pub-cache" ../../../{{FLUTTER_SDK}}/bin/flutter pub get --enforce-lockfile
+    cd flutter/vixen_shell && PUB_CACHE="{{justfile_directory()}}/.tmp/flutter-size/pub-cache" ../../{{FLUTTER_SDK}}/bin/flutter pub get --enforce-lockfile
 
 flutter-size-check-inputs: _flutter-sdk-present
-    unshare --user --map-root-user --net true || { printf '%s\n' "unprivileged network namespaces are required" >&2; exit 1; }
+    {{CONTAINER}} image exists {{FLUTTER_SIZE_IMAGE}} || { printf '%s\n' "Flutter size builder missing; run 'just flatpak-update-sdk'" >&2; exit 1; }
+    test -d "$RUSTUP_HOME" && test -x "$HOME/.cargo/bin/rustc" && test -d "$HOME/.pub-cache" || { printf '%s\n' "mise Rust and Flutter tool caches are required" >&2; exit 1; }
     test -f {{FLUTTER_SIZE_V8}} || { printf '%s\n' "rusty_v8 archive missing; run 'just flutter-size-prefetch'" >&2; exit 1; }
     printf '%s  %s\n' {{FLUTTER_SIZE_V8_SHA}} {{FLUTTER_SIZE_V8}} | sha256sum --check
 
-# Clean release/AOT bundles built with dependency resolution and compilation
-# isolated from the network. Host CMake/Ninja/GTK inputs are fingerprinted by
-# the report but are not yet a source-built Flatpak toolchain.
+# Clean release/AOT bundles built in the local GNOME builder container with
+# dependency resolution and compilation isolated from the network. This is not
+# yet a source-built Flatpak toolchain.
 build-flutter-size-linux: flutter-size-check-inputs
     cd {{FLUTTER_HELLO}} && ../../../{{FLUTTER_SDK}}/bin/flutter clean
     cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter clean
-    cd {{FLUTTER_HELLO}} && unshare --user --map-root-user --net ../../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile
-    cd flutter/vixen_shell && unshare --user --map-root-user --net ../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile
-    cd {{FLUTTER_HELLO}} && unshare --user --map-root-user --net ../../../{{FLUTTER_SDK}}/bin/flutter build linux --release --no-pub
-    cd flutter/vixen_shell && unshare --user --map-root-user --net env CARGO_NET_OFFLINE=true RUSTY_V8_ARCHIVE="{{justfile_directory()}}/{{FLUTTER_SIZE_V8}}" ../../{{FLUTTER_SDK}}/bin/flutter build linux --release --no-pub
+    mkdir -p .tmp/flutter-size/bin && ln -sf /usr/sbin/g++ .tmp/flutter-size/bin/clang++ && ln -sf /usr/sbin/gcc .tmp/flutter-size/bin/clang
+    {{CONTAINER}} run --rm --network=none --security-opt label=disable \
+        -v {{justfile_directory()}}:/workspace \
+        -v "$(readlink -f "$RUSTUP_HOME")":/host-rustup:ro \
+        -v "$(readlink -f "$HOME/.cargo/bin")":/host-cargo-bin:ro \
+        -v "$(readlink -f "$HOME/.pub-cache")":/home/bazzite/.pub-cache:ro \
+        -w /workspace -e RUSTUP_HOME=/host-rustup -e RUSTUP_TOOLCHAIN=1.96.1 \
+        -e CARGO_HOME=/workspace/.cargo -e PUB_CACHE=/workspace/.tmp/flutter-size/pub-cache \
+        -e CARGO_NET_OFFLINE=true -e RUSTY_V8_ARCHIVE=/workspace/{{FLUTTER_SIZE_V8}} \
+        -e FLUTTER_SUPPRESS_ANALYTICS=true {{FLUTTER_SIZE_IMAGE}} sh -lc \
+        'export PATH=/workspace/.tmp/flutter-size/bin:/host-cargo-bin:/usr/sbin:/usr/bin; \
+         cd /workspace/{{FLUTTER_HELLO}} && ../../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile && ../../../{{FLUTTER_SDK}}/bin/flutter build linux --release --no-pub && \
+         cd /workspace/flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile && ../../{{FLUTTER_SDK}}/bin/flutter build linux --release --no-pub'
 
 size-flutter-linux: build-flutter-size-linux
     node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle
