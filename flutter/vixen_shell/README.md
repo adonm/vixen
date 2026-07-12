@@ -17,7 +17,7 @@ is copied before its native token is released, and crosses to the UI isolate as
 `TransferableTypedData`. Capture dimensions are physical pixels and are bounded
 to 4096 per axis, 64 MiB, and one in-flight request plus one newest replacement.
 
-The Linux runner exposes `org.vixen.Vixen/texture` using Flutter's standard
+The Linux runner exposes `dev.adonm.vixen/texture` using Flutter's standard
 method codec:
 
 - `create` takes no arguments and returns the registered texture ID.

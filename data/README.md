@@ -5,15 +5,15 @@ matures.
 
 App IDs (docs/ARCHITECTURE.md "App ID and profile paths"):
 
-- `org.vixen.Vixen`        — production
-- `org.vixen.Vixen.Devel`  — development
+- `dev.adonm.vixen`        — production
+- `dev.adonm.vixen.Devel`  — development
 
 Shipped contents:
 
 ```
-org.vixen.Vixen.desktop
-org.vixen.Vixen.metainfo.xml
-icons/hicolor/scalable/apps/org.vixen.Vixen.svg
+dev.adonm.vixen.desktop
+dev.adonm.vixen.metainfo.xml
+icons/hicolor/scalable/apps/dev.adonm.vixen.svg
 ```
 
-`org.vixen.Vixen.gschema.xml` lands when persisted preferences are wired.
+`dev.adonm.vixen.gschema.xml` lands when persisted preferences are wired.

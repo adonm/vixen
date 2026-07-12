@@ -528,7 +528,7 @@ Update both when resolving.
 - The current Rust release profile starts with `strip = true`, `lto = "thin"`,
   `codegen-units = 1`, and `panic = "abort"`; Flutter release/AOT and native
   packaging are measured per platform before any stronger optimization claim.
-- App IDs: `org.vixen.Vixen` (production), `org.vixen.Vixen.Devel` (devel).
+- App IDs: `dev.adonm.vixen` (production), `dev.adonm.vixen.Devel` (devel).
 
 ## License
 

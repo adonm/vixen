@@ -15,7 +15,7 @@ const REPORTS_DIRNAME: &str = "reports";
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfilePaths {
     pub app_id: String,
-    /// App data directory, e.g. `$XDG_DATA_HOME/org.vixen.Vixen`.
+    /// App data directory, e.g. `$XDG_DATA_HOME/dev.adonm.vixen`.
     pub data_dir: PathBuf,
     /// Single redb profile database inside [`Self::data_dir`].
     pub database: PathBuf,
@@ -293,7 +293,7 @@ mod tests {
         assert!(validate_app_id(crate::config::APP_ID).is_ok());
         assert!(validate_app_id(crate::config::APP_ID_DEVEL).is_ok());
         assert!(validate_app_id("org.vixen/evil").is_err());
-        assert!(validate_app_id(".org.vixen.Vixen").is_err());
+        assert!(validate_app_id(".dev.adonm.vixen").is_err());
         assert!(validate_app_id("org..vixen").is_err());
     }
 
@@ -324,14 +324,14 @@ mod tests {
             Some(PathBuf::from("/home/v/Downloads")),
         );
 
-        assert_eq!(paths.data_dir, PathBuf::from("/data/org.vixen.Vixen.Devel"));
+        assert_eq!(paths.data_dir, PathBuf::from("/data/dev.adonm.vixen.Devel"));
         assert_eq!(
             paths.database,
-            PathBuf::from("/data/org.vixen.Vixen.Devel/profile.redb")
+            PathBuf::from("/data/dev.adonm.vixen.Devel/profile.redb")
         );
         assert_eq!(
             paths.profile_downloads_dir,
-            PathBuf::from("/data/org.vixen.Vixen.Devel/downloads")
+            PathBuf::from("/data/dev.adonm.vixen.Devel/downloads")
         );
         assert_eq!(
             paths.user_downloads_dir,
@@ -359,7 +359,7 @@ mod tests {
 
         assert_eq!(
             paths.download_destination("archive.tar").unwrap(),
-            PathBuf::from("/data/org.vixen.Vixen/downloads/archive.tar")
+            PathBuf::from("/data/dev.adonm.vixen/downloads/archive.tar")
         );
     }
 
@@ -401,9 +401,9 @@ mod tests {
         );
         assert_eq!(
             paths
-                .show_in_folder_dir(Path::new("/data/org.vixen.Vixen/downloads/report.pdf"))
+                .show_in_folder_dir(Path::new("/data/dev.adonm.vixen/downloads/report.pdf"))
                 .unwrap(),
-            PathBuf::from("/data/org.vixen.Vixen/downloads")
+            PathBuf::from("/data/dev.adonm.vixen/downloads")
         );
         assert_eq!(
             paths

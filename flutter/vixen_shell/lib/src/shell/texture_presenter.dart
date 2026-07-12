@@ -8,7 +8,7 @@ import 'package:flutter/services.dart';
 
 import '../bridge/browser_models.dart';
 
-const String vixenTextureChannelName = 'org.vixen.Vixen/texture';
+const String vixenTextureChannelName = 'dev.adonm.vixen/texture';
 
 abstract interface class BrowserTextureController {
   Future<int> create();

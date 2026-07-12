@@ -35,9 +35,9 @@
 /// App ID constants (docs/ARCHITECTURE.md "App ID and profile paths").
 pub mod config {
     /// Production app ID.
-    pub const APP_ID: &str = "org.vixen.Vixen";
+    pub const APP_ID: &str = "dev.adonm.vixen";
     /// Development app ID.
-    pub const APP_ID_DEVEL: &str = "org.vixen.Vixen.Devel";
+    pub const APP_ID_DEVEL: &str = "dev.adonm.vixen.Devel";
     /// Vixen version string (kept in sync with the workspace `Cargo.toml`).
     pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 }

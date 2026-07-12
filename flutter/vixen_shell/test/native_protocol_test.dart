@@ -67,13 +67,13 @@ void main() {
           'HOME': '/home/tester',
         },
       ),
-      '/xdg/org.vixen.Vixen/profile.redb',
+      '/xdg/dev.adonm.vixen/profile.redb',
     );
     expect(
       resolveProfilePath(
         environment: const <String, String>{'HOME': '/home/tester'},
       ),
-      '/home/tester/.local/share/org.vixen.Vixen/profile.redb',
+      '/home/tester/.local/share/dev.adonm.vixen/profile.redb',
     );
     expect(
       resolveProfilePath(

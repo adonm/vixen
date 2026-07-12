@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'native_protocol.dart';
 
-const String vixenApplicationId = 'org.vixen.Vixen';
+const String vixenApplicationId = 'dev.adonm.vixen';
 const String vixenLibraryFileName = 'libvixen_ffi.so';
 
 String resolveNativeLibraryPath({

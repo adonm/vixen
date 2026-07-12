@@ -20,7 +20,7 @@ void main() {
   testWidgets('texture lifecycle creates, publishes, displays, and disposes', (
     tester,
   ) async {
-    const channel = MethodChannel('org.vixen.Vixen/texture-test');
+    const channel = MethodChannel('dev.adonm.vixen/texture-test');
     final calls = <MethodCall>[];
     tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(channel, (
       call,

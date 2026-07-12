@@ -10,7 +10,7 @@
 
 namespace {
 
-constexpr char kTextureChannel[] = "org.vixen.Vixen/texture";
+constexpr char kTextureChannel[] = "dev.adonm.vixen/texture";
 constexpr int64_t kMaxDimension = 4096;
 constexpr size_t kMaxFrameBytes = 64U * 1024U * 1024U;
 
