@@ -22,6 +22,11 @@
   </categories>
   <url type="homepage">https://codeberg.org/adonm/vixen</url>
   <releases>
+    <release version="0.1.4" date="2026-07-12">
+      <description>
+        <p>Repair release dependency-policy and pinned native archive gates so install-tested Flatpak bundles publish reliably.</p>
+      </description>
+    </release>
     <release version="0.1.3" date="2026-07-12">
       <description>
         <p>Advance the shared BrowserCore and Flutter shell, add bounded accessibility actions and release measurements, and verify installable release Flatpak bundles.</p>
