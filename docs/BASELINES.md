@@ -5,7 +5,8 @@ foundation built with Node.js built-ins. It records observations; it does not
 enforce budgets or claim complete real-site behavior. The repository now has a
 checked-in hello-Flutter peer plus strict network-disabled Linux release/AOT
 raw-bundle build and comparison commands. No accepted Flutter report or
-Flutter Flatpak size/performance baseline has been recorded yet.
+Flutter Flatpak size/performance baseline has been recorded yet; one clean
+measurement-only raw-bundle reference is checked in for reproduction.
 
 ## Commands
 
@@ -92,6 +93,26 @@ build artifacts, verifies byte-identical shared Flutter engine/ICU files, and
 reports every file plus component and Vixen-minus-hello logical/allocated deltas.
 The native Vixen library remains an honest aggregate because stripped static
 BrowserCore/V8/WebRender attribution needs separate linker-map evidence.
+
+## Recorded Flutter raw-bundle reference
+
+[`baselines/flutter-linux-x64-raw-2026-07-12.json`](baselines/flutter-linux-x64-raw-2026-07-12.json)
+was produced from clean revision `5b1d0af` with `just
+size-flutter-linux-json`. Both release/AOT builds ran in the GNOME 50 builder
+container with `--network=none`; shared Flutter engine and ICU hashes match.
+
+| Artifact | Logical bytes | Allocated bytes | Files |
+|----------|--------------:|----------------:|------:|
+| hello-Flutter | 22,778,750 | 22,814,720 | 12 |
+| Flutter+Vixen | 85,509,520 | 85,540,864 | 13 |
+| Vixen minus hello | 62,730,770 | 62,726,144 | 1 |
+
+The logical delta attributes 60,261,968 bytes to the aggregate stripped
+`libvixen_ffi.so`, 2,457,600 bytes to Dart AOT, 11,200 bytes to the native
+runner, and 2 bytes to Flutter assets. These observations are not a budget and
+have not yet been independently reproduced. Compressed download, installation,
+Flatpak payload/runtime, symbols, and static native subcomponents remain null or
+unattributed as recorded in the report.
 
 ## Flutter GUI baseline protocol
 

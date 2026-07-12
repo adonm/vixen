@@ -1,0 +1,340 @@
+{
+  "schema": "vixen.flutter-linux-artifact-size-report",
+  "version": 1,
+  "measurement_only": true,
+  "package_format": "flutter-linux-relocatable-bundle",
+  "compressed_download_bytes": null,
+  "installed_bytes": null,
+  "flatpak_evidence": false,
+  "limitations": [
+    "Raw release bundles are not distributable Flatpak, compressed-download, or installed-size evidence.",
+    "libvixen_ffi.so aggregates BrowserCore/Rust, V8, and WebRender; this report does not invent static subcomponent sizes.",
+    "No numerical artifact budget is accepted."
+  ],
+  "metadata": {
+    "git": {
+      "revision": "5b1d0af1c87aa902a06eedcfaaa9a6c2a1547f67",
+      "dirty": false
+    },
+    "toolchain": {
+      "node": "v24.18.0",
+      "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+      "cargo": "cargo 1.96.1 (356927216 2026-06-26)"
+    },
+    "host": {
+      "platform": "linux",
+      "architecture": "x64",
+      "kernel_release": "6.17.7-ba29.fc43.x86_64",
+      "distro": "Bazzite",
+      "cpu_model": "AMD Ryzen 7 7700X 8-Core Processor",
+      "logical_cpu_count": 16,
+      "memory_total_bytes": 66461454336,
+      "page_size_bytes": 4096,
+      "renderer_environment": {
+        "LIBGL_ALWAYS_SOFTWARE": null,
+        "MESA_LOADER_DRIVER_OVERRIDE": null,
+        "GALLIUM_DRIVER": null,
+        "WGPU_BACKEND": null,
+        "DISPLAY": null,
+        "WAYLAND_DISPLAY": null,
+        "XDG_SESSION_TYPE": "x11"
+      }
+    }
+  },
+  "artifacts": {
+    "hello": {
+      "root": "/var/home/bazzite/dev/vixen/fixtures/artifact-size/flutter_hello/build/linux/x64/release/bundle",
+      "sha256": "1cf3a809b899acc1bb4974d835317a6a121c41371a32497cc75d8129d86fbb4c",
+      "totals": {
+        "logical_bytes": 22778750,
+        "allocated_bytes": 22814720,
+        "file_count": 12
+      },
+      "categories": {
+        "dart_aot": {
+          "logical_bytes": 3113872,
+          "allocated_bytes": 3117056,
+          "file_count": 1
+        },
+        "flutter_assets": {
+          "logical_bytes": 1788342,
+          "allocated_bytes": 1814528,
+          "file_count": 8
+        },
+        "flutter_engine": {
+          "logical_bytes": 16987200,
+          "allocated_bytes": 16990208,
+          "file_count": 1
+        },
+        "flutter_icu": {
+          "logical_bytes": 862304,
+          "allocated_bytes": 864256,
+          "file_count": 1
+        },
+        "native_runner": {
+          "logical_bytes": 27032,
+          "allocated_bytes": 28672,
+          "file_count": 1
+        }
+      },
+      "files": [
+        {
+          "path": "data/flutter_assets/AssetManifest.bin",
+          "category": "flutter_assets",
+          "logical_bytes": 2,
+          "allocated_bytes": 4096,
+          "sha256": "f566cc6fccc657365c0197accf3a7d6f80f85209ff666ff774f4dcbc524aa842"
+        },
+        {
+          "path": "data/flutter_assets/FontManifest.json",
+          "category": "flutter_assets",
+          "logical_bytes": 82,
+          "allocated_bytes": 4096,
+          "sha256": "28b1eb2b3d2e1ad60b8c8b0f9100b1ccbf492f7fa97f5bebb51ea97e73926e7d"
+        },
+        {
+          "path": "data/flutter_assets/NOTICES.Z",
+          "category": "flutter_assets",
+          "logical_bytes": 103457,
+          "allocated_bytes": 106496,
+          "sha256": "6450410e9a6c305e84a14f3ad11d5a5b9dc3c3cc62f0112465c6f91be4fc8a5c"
+        },
+        {
+          "path": "data/flutter_assets/NativeAssetsManifest.json",
+          "category": "flutter_assets",
+          "logical_bytes": 45,
+          "allocated_bytes": 4096,
+          "sha256": "9548a31e4a048135c1d94f919328bfb62ae2c7bb3cab96557c7941daa97776cb"
+        },
+        {
+          "path": "data/flutter_assets/fonts/MaterialIcons-Regular.otf",
+          "category": "flutter_assets",
+          "logical_bytes": 1645184,
+          "allocated_bytes": 1646592,
+          "sha256": "d9865b671a09d683d13a863089d8825e0f61a37696ce5d7d448bc8023aa62453"
+        },
+        {
+          "path": "data/flutter_assets/shaders/ink_sparkle.frag",
+          "category": "flutter_assets",
+          "logical_bytes": 21856,
+          "allocated_bytes": 24576,
+          "sha256": "1fe8436a743884cb65078fe8c7b38e18f5365f2a2961270916f426fd13c604af"
+        },
+        {
+          "path": "data/flutter_assets/shaders/stretch_effect.frag",
+          "category": "flutter_assets",
+          "logical_bytes": 17624,
+          "allocated_bytes": 20480,
+          "sha256": "62a899ff4e168ac6ca888ce7c2f40e5d3fbf8ca20a1c3ded781a116a6d7907e2"
+        },
+        {
+          "path": "data/flutter_assets/version.json",
+          "category": "flutter_assets",
+          "logical_bytes": 92,
+          "allocated_bytes": 4096,
+          "sha256": "63d378dabcdba7b82832f411ecbea53763d6d2eb9d5a81c7b2f01433999b700e"
+        },
+        {
+          "path": "data/icudtl.dat",
+          "category": "flutter_icu",
+          "logical_bytes": 862304,
+          "allocated_bytes": 864256,
+          "sha256": "998367809a821d595928089c197b3f7959f0420f81f79d4d0daee53378492ed5"
+        },
+        {
+          "path": "lib/libapp.so",
+          "category": "dart_aot",
+          "logical_bytes": 3113872,
+          "allocated_bytes": 3117056,
+          "sha256": "c3a485be74431d02955df68a6b66b04bd4b74b5b99142ee16efb0348c1c8b5da"
+        },
+        {
+          "path": "lib/libflutter_linux_gtk.so",
+          "category": "flutter_engine",
+          "logical_bytes": 16987200,
+          "allocated_bytes": 16990208,
+          "sha256": "88a520b9543a2c32048868692dac3f930137d8dd1783b79787c7c4c5c49074cb"
+        },
+        {
+          "path": "vixen_hello",
+          "category": "native_runner",
+          "logical_bytes": 27032,
+          "allocated_bytes": 28672,
+          "sha256": "9661339551dadd47dfe6ab9aa153799212952b2361c0284e4863fbc95d4d0171"
+        }
+      ]
+    },
+    "vixen": {
+      "root": "/var/home/bazzite/dev/vixen/flutter/vixen_shell/build/linux/x64/release/bundle",
+      "sha256": "2d07b4e6abeb698da1d7d9649b88dc88f8abfe1e8bcc00f2d640c5d9c4da3d37",
+      "totals": {
+        "logical_bytes": 85509520,
+        "allocated_bytes": 85540864,
+        "file_count": 13
+      },
+      "categories": {
+        "dart_aot": {
+          "logical_bytes": 5571472,
+          "allocated_bytes": 5574656,
+          "file_count": 1
+        },
+        "flutter_assets": {
+          "logical_bytes": 1788344,
+          "allocated_bytes": 1814528,
+          "file_count": 8
+        },
+        "flutter_engine": {
+          "logical_bytes": 16987200,
+          "allocated_bytes": 16990208,
+          "file_count": 1
+        },
+        "flutter_icu": {
+          "logical_bytes": 862304,
+          "allocated_bytes": 864256,
+          "file_count": 1
+        },
+        "native_runner": {
+          "logical_bytes": 38232,
+          "allocated_bytes": 40960,
+          "file_count": 1
+        },
+        "vixen_native": {
+          "logical_bytes": 60261968,
+          "allocated_bytes": 60256256,
+          "file_count": 1
+        }
+      },
+      "files": [
+        {
+          "path": "data/flutter_assets/AssetManifest.bin",
+          "category": "flutter_assets",
+          "logical_bytes": 2,
+          "allocated_bytes": 4096,
+          "sha256": "f566cc6fccc657365c0197accf3a7d6f80f85209ff666ff774f4dcbc524aa842"
+        },
+        {
+          "path": "data/flutter_assets/FontManifest.json",
+          "category": "flutter_assets",
+          "logical_bytes": 82,
+          "allocated_bytes": 4096,
+          "sha256": "28b1eb2b3d2e1ad60b8c8b0f9100b1ccbf492f7fa97f5bebb51ea97e73926e7d"
+        },
+        {
+          "path": "data/flutter_assets/NOTICES.Z",
+          "category": "flutter_assets",
+          "logical_bytes": 103459,
+          "allocated_bytes": 106496,
+          "sha256": "4fa9d0418de7baf90169eb9e6e7616ee1edc4487f2ae02147e05910495d96d0e"
+        },
+        {
+          "path": "data/flutter_assets/NativeAssetsManifest.json",
+          "category": "flutter_assets",
+          "logical_bytes": 45,
+          "allocated_bytes": 4096,
+          "sha256": "9548a31e4a048135c1d94f919328bfb62ae2c7bb3cab96557c7941daa97776cb"
+        },
+        {
+          "path": "data/flutter_assets/fonts/MaterialIcons-Regular.otf",
+          "category": "flutter_assets",
+          "logical_bytes": 1645184,
+          "allocated_bytes": 1646592,
+          "sha256": "d9865b671a09d683d13a863089d8825e0f61a37696ce5d7d448bc8023aa62453"
+        },
+        {
+          "path": "data/flutter_assets/shaders/ink_sparkle.frag",
+          "category": "flutter_assets",
+          "logical_bytes": 21856,
+          "allocated_bytes": 24576,
+          "sha256": "1fe8436a743884cb65078fe8c7b38e18f5365f2a2961270916f426fd13c604af"
+        },
+        {
+          "path": "data/flutter_assets/shaders/stretch_effect.frag",
+          "category": "flutter_assets",
+          "logical_bytes": 17624,
+          "allocated_bytes": 20480,
+          "sha256": "62a899ff4e168ac6ca888ce7c2f40e5d3fbf8ca20a1c3ded781a116a6d7907e2"
+        },
+        {
+          "path": "data/flutter_assets/version.json",
+          "category": "flutter_assets",
+          "logical_bytes": 92,
+          "allocated_bytes": 4096,
+          "sha256": "858995ab8f186464e6e4ffd6aab15fe35a8f68810e9abef0546c60b42a5537bd"
+        },
+        {
+          "path": "data/icudtl.dat",
+          "category": "flutter_icu",
+          "logical_bytes": 862304,
+          "allocated_bytes": 864256,
+          "sha256": "998367809a821d595928089c197b3f7959f0420f81f79d4d0daee53378492ed5"
+        },
+        {
+          "path": "lib/libapp.so",
+          "category": "dart_aot",
+          "logical_bytes": 5571472,
+          "allocated_bytes": 5574656,
+          "sha256": "5df8d05cfccc34adaae0889b08c6886190ac5d597dafd93f30d6f8c654ad9d5a"
+        },
+        {
+          "path": "lib/libflutter_linux_gtk.so",
+          "category": "flutter_engine",
+          "logical_bytes": 16987200,
+          "allocated_bytes": 16990208,
+          "sha256": "88a520b9543a2c32048868692dac3f930137d8dd1783b79787c7c4c5c49074cb"
+        },
+        {
+          "path": "lib/libvixen_ffi.so",
+          "category": "vixen_native",
+          "logical_bytes": 60261968,
+          "allocated_bytes": 60256256,
+          "sha256": "c2faa1e52905910b1bc3f5f84954fed718a3dfb252964cafd6b0e68158a17476"
+        },
+        {
+          "path": "vixen_shell",
+          "category": "native_runner",
+          "logical_bytes": 38232,
+          "allocated_bytes": 40960,
+          "sha256": "ee279b869850640003b87cf521383757d27773973865b33d8a3071626619bcc3"
+        }
+      ]
+    }
+  },
+  "delta_from_hello": {
+    "logical_bytes": 62730770,
+    "allocated_bytes": 62726144,
+    "file_count": 1
+  },
+  "category_delta_from_hello": {
+    "dart_aot": {
+      "logical_bytes": 2457600,
+      "allocated_bytes": 2457600,
+      "file_count": 0
+    },
+    "flutter_assets": {
+      "logical_bytes": 2,
+      "allocated_bytes": 0,
+      "file_count": 0
+    },
+    "flutter_engine": {
+      "logical_bytes": 0,
+      "allocated_bytes": 0,
+      "file_count": 0
+    },
+    "flutter_icu": {
+      "logical_bytes": 0,
+      "allocated_bytes": 0,
+      "file_count": 0
+    },
+    "native_runner": {
+      "logical_bytes": 11200,
+      "allocated_bytes": 12288,
+      "file_count": 0
+    },
+    "vixen_native": {
+      "logical_bytes": 60261968,
+      "allocated_bytes": 60256256,
+      "file_count": 1
+    }
+  },
+  "measured_at": "2026-07-12T12:46:29.410Z"
+}

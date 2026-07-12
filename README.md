@@ -434,7 +434,8 @@ The Flutter size recipes add a controlled checked-in hello application and
 strict raw release-bundle analyzer. They use the local GNOME 50 builder image
 with networking disabled, the mise-pinned Rust toolchain, locked workspace-local
 caches, and a separately staged pinned rusty_v8 archive; they do not build or
-measure the target offline Flatpak.
+measure the target offline Flatpak. The first clean measurement-only x86_64
+reference is recorded in [`docs/BASELINES.md`](docs/BASELINES.md).
 
 `mise bootstrap` and recipes run from a mise-active shell use
 `CARGO_HOME=<workspace>/.cargo`, so the Cargo registry cache and installed dev

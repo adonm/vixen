@@ -71,6 +71,9 @@ which layer today?”
 
 - Compatibility baseline: **269 fixtures / 2,015 checks / 100% passing** as of
   2026-07-10. `COMPAT.md` is authoritative.
+- Clean Linux x86_64 Flutter raw-bundle reference: **22,778,750-byte hello /
+  85,509,520-byte Vixen / 62,730,770-byte delta**, measurement-only and not
+  Flatpak evidence; see `BASELINES.md`.
 - External automation contract: [`CDP_PLAYWRIGHT_SMOKE.md`](CDP_PLAYWRIGHT_SMOKE.md).
 - Browser ownership/cancellation vertical: `just test-browser-core` (engine,
   headless, and GTK-free shell adapters through the production command/event

@@ -305,7 +305,8 @@ component/delta analyzer that rejects debug artifacts and mismatched shared
 Flutter engine/ICU files. The recipes use the local GNOME 50 builder container
 for CMake/Ninja/GTK while mounting the pinned Rust toolchain read-only. They
 intentionally report `flatpak_evidence: false`.
-Provisioned clean reports, compressed/install accounting, finer native linker
+The first clean x86_64 raw-bundle report is linked from `BASELINES.md`;
+independent reproduction, compressed/install accounting, finer native linker
 attribution, and the offline `flatpak-flutter` package remain required.
 
 ## Cross-cutting acceptance
