@@ -185,7 +185,8 @@ non-blocking target creation. Configured initial-URL loading still settles befor
 socket acceptance by design. Configured and parser-discovered scripts yield
 between items; a committed author exception emits
 `Runtime.exceptionThrown`, later independent scripts continue, and normal load
-settlement follows. Individual V8 jobs are deadline-bounded and parser-discovered
+settlement follows. Individual V8 jobs are deadline-bounded, failed/timed-out
+evaluations discard deferred DOM mutations before isolate reuse, and parser-discovered
 external classic-script reads are generation-cancellable; navigation-aware V8
 interruption and synchronous native host calls remain open. There is still no HTTP download manager or Playwright
 context-tracing archive implementation.

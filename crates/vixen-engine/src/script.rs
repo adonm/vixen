@@ -421,7 +421,13 @@ impl JsRuntime {
         src: &str,
         page: &mut Page,
     ) -> Result<JsValue, EngineError> {
-        let value = self.evaluate_with_page_context(src, Some(&*page))?;
+        let value = match self.evaluate_with_page_context(src, Some(&*page)) {
+            Ok(value) => value,
+            Err(error) => {
+                self.discard_dom_mutations();
+                return Err(error);
+            }
+        };
         self.apply_dom_mutations(page)?;
         Ok(value)
     }
@@ -738,6 +744,12 @@ impl JsRuntime {
         }
         self.realm_key = RealmKey::Page(page_realm_key(page));
         Ok(())
+    }
+
+    fn discard_dom_mutations(&self) {
+        if let Some(sink) = self.dom_mutations.as_ref() {
+            sink.take();
+        }
     }
 }
 
@@ -1969,6 +1981,30 @@ mod tests {
             .expect_err("an unresolved promise must be bounded");
         assert_eq!(promise_error.code(), codes::SCRIPT_EVAL);
         assert_eq!(runtime.evaluate("6 * 7").unwrap(), JsValue::Int32(42));
+    }
+
+    #[test]
+    fn failed_page_evaluation_discards_deferred_dom_mutations() {
+        let mut runtime = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "https://example.test/",
+            "<!doctype html><title>before</title><body></body>",
+        )
+        .unwrap();
+
+        let error = runtime
+            .evaluate_with_page_mut("document.title = 'stale'; for (;;) {}", &mut page)
+            .expect_err("infinite page script must be interrupted");
+        assert_eq!(error.code(), codes::SCRIPT_TIMEOUT);
+        assert_eq!(page.snapshot((800, 600)).title.as_deref(), Some("before"));
+
+        assert_eq!(
+            runtime
+                .evaluate_with_page_mut("20 + 22", &mut page)
+                .unwrap(),
+            JsValue::Int32(42)
+        );
+        assert_eq!(page.snapshot((800, 600)).title.as_deref(), Some("before"));
     }
 
     #[test]

@@ -178,7 +178,9 @@ on the owner thread. Individual V8 execution, promise pumping, microtask
 checkpoints, and runtime-effect drains now share a five-second production
 deadline; V8 termination is cancelled after the stack unwinds so the isolate is
 reusable, author timeouts surface as `script.timeout`, later scripts continue,
-and the committed navigation still settles. Configured and parser-discovered
+failed/timed-out evaluations discard their deferred DOM mutation sink before the
+reusable realm accepts later work, and the committed navigation still settles.
+Configured and parser-discovered
 scripts now advance one item per generation-checked quantum, followed by separate
 DOMContentLoaded, load, and settle quanta. External classic scripts resolve and
 pass CSP and active-mixed-content policy before every initial/redirect-hop request,
