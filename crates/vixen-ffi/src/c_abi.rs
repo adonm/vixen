@@ -655,9 +655,12 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
                 ],
             )?;
             let event_type = required_string(object, "event_type")?;
-            if !matches!(event_type, "mousemove" | "mousedown" | "mouseup" | "wheel") {
+            if !matches!(
+                event_type,
+                "mousemove" | "mousedown" | "mouseup" | "wheel" | "cancel"
+            ) {
                 return Err(AbiError::invalid_command(
-                    "event_type must be mousemove, mousedown, mouseup, or wheel",
+                    "event_type must be mousemove, mousedown, mouseup, wheel, or cancel",
                 ));
             }
             ControllerCommand::DispatchMouseEvent {

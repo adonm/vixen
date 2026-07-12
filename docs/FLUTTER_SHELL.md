@@ -154,8 +154,10 @@ context/document/runtime-generation commands through a serialized 64-event
 queue. BrowserCore performs authoritative hit testing before mouse dispatch;
 the wire never accepts a Dart-selected node id. Keyboard down/up events preserve
 modifiers and text where Flutter provides it, shell shortcuts remain chrome-owned,
-and input responses retain runtime effects and navigation actions. Each accepted
-input requests a fresh generation-checked frame.
+and input responses retain runtime effects and navigation actions. Pointer
+cancellation clears only the matching context/document/runtime primary press, so
+a later release cannot synthesize a stale click. Each accepted input requests a
+fresh generation-checked frame.
 
 The remaining target sends text/IME, gesture, focus,
 viewport, scale, visibility, and lifecycle commands with context and viewport

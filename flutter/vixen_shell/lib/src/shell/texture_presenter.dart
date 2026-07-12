@@ -304,7 +304,8 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   }
 
   void _handlePointerCancel(PointerCancelEvent event) {
-    _pressedButtons.remove(event.pointer);
+    final button = _pressedButtons.remove(event.pointer) ?? 0;
+    _emitMouse('cancel', event, button: button, buttons: 0);
   }
 
   void _handlePointerSignal(PointerSignalEvent event) {

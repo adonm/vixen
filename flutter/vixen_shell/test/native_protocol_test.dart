@@ -214,6 +214,15 @@ void main() {
           eventType: 'mousedown',
           event: const BrowserMouseEvent(x: 12.5, y: 9, button: 0, buttons: 1),
         ),
+        BrowserCommand.dispatchMouseEvent(
+          contextId: 1,
+          documentId: 2,
+          runtimeContextId: 3,
+          viewportWidth: 320,
+          viewportHeight: 200,
+          eventType: 'cancel',
+          event: const BrowserMouseEvent(x: 12.5, y: 9, button: 0, buttons: 0),
+        ),
         BrowserCommand.dispatchKeyEvent(
           contextId: 1,
           documentId: 2,

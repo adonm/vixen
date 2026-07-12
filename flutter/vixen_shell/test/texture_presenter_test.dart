@@ -119,6 +119,10 @@ void main() {
       ),
     );
     await tester.pump();
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.byKey(const Key('content-surface'))),
+    );
+    await gesture.cancel();
     await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
 
@@ -126,6 +130,8 @@ void main() {
       'mousedown',
       'mouseup',
       'mousemove',
+      'mousedown',
+      'cancel',
     ]);
     expect(mouseEvents.first.$2.x, closeTo(viewport.width / 2, 0.01));
     expect(mouseEvents.first.$2.y, closeTo(viewport.height / 2, 0.01));

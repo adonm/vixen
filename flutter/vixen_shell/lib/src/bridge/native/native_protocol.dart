@@ -260,9 +260,10 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
       if (eventType != 'mousemove' &&
           eventType != 'mousedown' &&
           eventType != 'mouseup' &&
-          eventType != 'wheel') {
+          eventType != 'wheel' &&
+          eventType != 'cancel') {
         _invalidCommand(
-          'event_type must be mousemove, mousedown, mouseup, or wheel',
+          'event_type must be mousemove, mousedown, mouseup, wheel, or cancel',
         );
       }
       _validateMouseEvent(normalized['event']);

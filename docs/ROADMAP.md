@@ -208,7 +208,8 @@ stable tagged responses/events/errors, polling-only event delivery, and panic
 containment. The Linux shell adds handwritten Dart bindings, deterministic fake
 tests, a production worker isolate, bounded RGBA `FlPixelBufferTexture`
 transport, physical viewport mapping, and generation-checked pointer/wheel/key
-dispatch through BrowserCore hit testing. A bounded, mutation-generation-tagged
+dispatch through BrowserCore hit testing, including matching-generation primary-
+press cancellation. A bounded, mutation-generation-tagged
 BrowserCore projection now maps roles/names/states/bounds and tap/focus into Flutter
 Semantics. Nearest emitted semantic-parent relationships now produce a validated,
 document-order nested Flutter hierarchy. Focus actions are exact source/wire-

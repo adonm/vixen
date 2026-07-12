@@ -39,7 +39,8 @@ physical frame viewport. Commands carry current context, document, and runtime
 ids; BrowserCore performs hit testing and the wire has no caller-selected node
 id. Pointer and key events use a serialized, bounded 64-event queue. A stale
 generation is discarded, input effects/navigation outcomes are retained, and an
-accepted event requests a new frame. Text/IME, gestures, explicit focus/lifecycle
+accepted event requests a new frame. Pointer cancellation clears only the
+matching pending primary press and cannot synthesize a click. Text/IME, gestures, explicit focus/lifecycle
 commands remain follow-up work.
 
 ## Accessibility contract

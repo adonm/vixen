@@ -276,13 +276,24 @@ impl FlutterBrowserController {
     ) -> Result<ControllerResponse, BrowserError> {
         if !matches!(
             event_type.as_str(),
-            "mousemove" | "mousedown" | "mouseup" | "wheel"
+            "mousemove" | "mousedown" | "mouseup" | "wheel" | "cancel"
         ) {
             self.primary_mouse_press = None;
             return Err(BrowserError::new(
                 browser_error_codes::INVALID_ARGUMENT,
                 "unsupported mouse event type",
             ));
+        }
+
+        if event_type == "cancel" {
+            if self.primary_mouse_press.is_some_and(|press| {
+                press.context_id == context_id
+                    && press.document_id == document_id
+                    && press.runtime_context_id == runtime_context_id
+            }) {
+                self.primary_mouse_press = None;
+            }
+            return Ok(ControllerResponse::InputDispatched(empty_input_result()));
         }
 
         let generation_matches = self.primary_mouse_press.is_none_or(|press| {
@@ -1134,6 +1145,17 @@ mod tests {
         assert_eq!(after_generation_mismatch.effects.console.len(), 1);
         assert!(
             after_generation_mismatch.effects.console[0].args[0]
+                .description
+                .contains("ffi-up:target")
+        );
+
+        let _ = dispatch_mouse(&mut controller, &state, "mousedown", 20.0, 20.0, 0, 1);
+        let cancelled = dispatch_mouse(&mut controller, &state, "cancel", 20.0, 20.0, 0, 0);
+        assert!(cancelled.effects.is_empty());
+        let after_cancel = dispatch_mouse(&mut controller, &state, "mouseup", 20.0, 20.0, 0, 0);
+        assert_eq!(after_cancel.effects.console.len(), 1);
+        assert!(
+            after_cancel.effects.console[0].args[0]
                 .description
                 .contains("ffi-up:target")
         );
