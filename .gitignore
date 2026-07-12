@@ -23,6 +23,7 @@ Cargo.lock.bak
 /build-aux/_repo
 /build-aux/.flatpak-builder
 /build-aux/.cargo
+/build-aux/vixen.flatpak
 
 # Reference browser checkouts (docs/REFERENCES.md) — never shipped
 /reference-browsers

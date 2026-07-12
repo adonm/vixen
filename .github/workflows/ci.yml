@@ -110,7 +110,9 @@ jobs:
   flatpak:
     name: Flatpak bundle
     runs-on: ubuntu-24.04
-    needs: host
+    needs:
+      - host
+      - security
     permissions:
       contents: write
     container:
@@ -140,9 +142,23 @@ jobs:
           cache-key: flatpak-builder-${{ github.sha }}
           arch: x86_64
 
+      - name: Verify Flatpak bundle installation
+        run: |
+          set -eu
+          test -s org.vixen.Vixen-x86_64.flatpak
+          sha256sum org.vixen.Vixen-x86_64.flatpak > org.vixen.Vixen-x86_64.flatpak.sha256
+          export XDG_DATA_HOME="$GITHUB_WORKSPACE/.tmp/flatpak-install"
+          mkdir -p "$XDG_DATA_HOME"
+          flatpak install --user --noninteractive --no-deps --bundle ./org.vixen.Vixen-x86_64.flatpak
+          flatpak info --user org.vixen.Vixen
+          test "$(flatpak info --user --show-ref org.vixen.Vixen)" = "app/org.vixen.Vixen/x86_64/master"
+
       - name: Attach bundle to tagged release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          files: org.vixen.Vixen-x86_64.flatpak
+          files: |
+            org.vixen.Vixen-x86_64.flatpak
+            org.vixen.Vixen-x86_64.flatpak.sha256
           fail_on_unmatched_files: true
+          generate_release_notes: true

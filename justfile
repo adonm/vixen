@@ -23,6 +23,7 @@ alias docs := book-build
 CONTAINER            := "podman"
 FLATPAK_BUILDER_IMAGE := "ghcr.io/flathub-infra/flatpak-github-actions:gnome-50"
 GNOME_RUNTIME_VERSION := "50"
+FREEDESKTOP_RUNTIME_VERSION := "25.08"
 FLUTTER_VERSION       := "3.44.0"
 FLUTTER_REVISION      := "559ffa3f75e7402d65a8def9c28389a9b2e6fe42"
 FLUTTER_SDK           := ".tmp/ref/flutter"
@@ -407,8 +408,21 @@ flatpak-shell:
 # the build sandbox.
 flatpak-build: flatpak-cargo-sources
     {{CONTAINER}} run --rm --privileged -v {{justfile_directory()}}:/workspace:z -w /workspace {{FLATPAK_BUILDER_IMAGE}} \
-        flatpak-builder --install-deps-from=flathub --disable-rofiles-fuse --force-clean --repo=build-aux/_repo \
-        build-aux/_build build-aux/org.vixen.Vixen.json
+        sh -lc 'flatpak install --noninteractive flathub org.freedesktop.Sdk.Extension.rust-stable//{{FREEDESKTOP_RUNTIME_VERSION}} && \
+        flatpak-builder --disable-rofiles-fuse --force-clean --repo=build-aux/_repo \
+        build-aux/_build build-aux/org.vixen.Vixen.json'
+    rm -f build-aux/vixen.flatpak
+    flatpak build-bundle build-aux/_repo build-aux/vixen.flatpak org.vixen.Vixen
+
+# Import the exact distributable bundle into an isolated user installation.
+# Runtime dependencies are intentionally skipped: this verifies bundle integrity,
+# app metadata, and installability without mutating the normal host installation.
+flatpak-verify-bundle: flatpak-build
+    rm -rf .tmp/flatpak-verify
+    mkdir -p .tmp/flatpak-verify
+    XDG_DATA_HOME="{{justfile_directory()}}/.tmp/flatpak-verify" flatpak install --user --noninteractive --no-deps --bundle build-aux/vixen.flatpak
+    test "$(XDG_DATA_HOME="{{justfile_directory()}}/.tmp/flatpak-verify" flatpak info --user --show-ref org.vixen.Vixen)" = "app/org.vixen.Vixen/x86_64/master"
+    sha256sum build-aux/vixen.flatpak
 
 # Install the locally built Flatpak repo into the host user installation for GUI smoke.
 flatpak-install-local: flatpak-build
