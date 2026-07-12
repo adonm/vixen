@@ -3,6 +3,7 @@ import 'dart:ffi';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:vixen_shell/src/bridge/browser_models.dart';
 import 'package:vixen_shell/src/bridge/native/native_bindings.dart';
 import 'package:vixen_shell/src/bridge/native/native_paths.dart';
 import 'package:vixen_shell/src/bridge/native/native_protocol.dart';
@@ -171,6 +172,80 @@ void main() {
         () => normalizeNativeCommand(
           nativeCommand('reload', <String, Object?>{'context_id': 0}),
         ),
+        throwsA(isA<NativeBridgeException>()),
+      );
+    });
+
+    test('accepts the production accessibility and input commands', () {
+      final commands = <BrowserCommand>[
+        BrowserCommand.accessibilitySnapshot(
+          contextId: 1,
+          documentId: 2,
+          viewportWidth: 320,
+          viewportHeight: 200,
+        ),
+        BrowserCommand.dispatchMouseEvent(
+          contextId: 1,
+          documentId: 2,
+          runtimeContextId: 3,
+          viewportWidth: 320,
+          viewportHeight: 200,
+          eventType: 'mousedown',
+          event: const BrowserMouseEvent(x: 12.5, y: 9, button: 0, buttons: 1),
+        ),
+        BrowserCommand.dispatchKeyEvent(
+          contextId: 1,
+          documentId: 2,
+          runtimeContextId: 3,
+          viewportWidth: 320,
+          viewportHeight: 200,
+          eventType: 'keydown',
+          event: const BrowserKeyEvent(
+            key: 'a',
+            code: 'KeyA',
+            text: 'a',
+            applyText: true,
+          ),
+        ),
+      ];
+
+      for (final command in commands) {
+        expect(normalizeNativeCommand(command.toWire()), command.toWire());
+      }
+    });
+
+    test('strictly rejects malformed production input commands', () {
+      final mouse = BrowserCommand.dispatchMouseEvent(
+        contextId: 1,
+        documentId: 2,
+        runtimeContextId: 3,
+        viewportWidth: 320,
+        viewportHeight: 200,
+        eventType: 'mousedown',
+        event: const BrowserMouseEvent(x: 12, y: 9, button: 0, buttons: 1),
+      ).toWire();
+      expect(
+        () => normalizeNativeCommand(<String, Object?>{
+          ...mouse,
+          'event_type': 'pointerdown',
+        }),
+        throwsA(isA<NativeBridgeException>()),
+      );
+      expect(
+        () => normalizeNativeCommand(<String, Object?>{
+          ...mouse,
+          'viewport': <String, Object?>{'width': 4096, 'height': 4097},
+        }),
+        throwsA(isA<NativeBridgeException>()),
+      );
+      expect(
+        () => normalizeNativeCommand(<String, Object?>{
+          ...mouse,
+          'event': <String, Object?>{
+            ...(mouse['event']! as Map<String, Object?>),
+            'x': double.nan,
+          },
+        }),
         throwsA(isA<NativeBridgeException>()),
       );
     });

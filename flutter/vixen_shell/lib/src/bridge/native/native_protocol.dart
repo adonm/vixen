@@ -193,6 +193,39 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
         _invalidCommand('delta must fit signed 32 bits');
       }
       break;
+    case 'accessibility_snapshot':
+      _expectKeys(normalized, const <String>{
+        'v',
+        'type',
+        'context_id',
+        'document_id',
+        'viewport',
+      });
+      _validateContextId(normalized['context_id']);
+      _validatePositiveId(normalized['document_id'], 'document_id');
+      _validateViewport(normalized['viewport']);
+      break;
+    case 'dispatch_mouse_event':
+      _validateInputCommand(normalized);
+      final eventType = normalized['event_type'];
+      if (eventType != 'mousemove' &&
+          eventType != 'mousedown' &&
+          eventType != 'mouseup' &&
+          eventType != 'wheel') {
+        _invalidCommand(
+          'event_type must be mousemove, mousedown, mouseup, or wheel',
+        );
+      }
+      _validateMouseEvent(normalized['event']);
+      break;
+    case 'dispatch_key_event':
+      _validateInputCommand(normalized);
+      final eventType = normalized['event_type'];
+      if (eventType != 'keydown' && eventType != 'keyup') {
+        _invalidCommand('event_type must be keydown or keyup');
+      }
+      _validateKeyEvent(normalized['event']);
+      break;
     default:
       _invalidCommand('unknown command type');
   }
@@ -267,8 +300,138 @@ void _expectEnvelopeKeys(Map<String, Object?> value, Set<String> expected) {
 }
 
 void _validateContextId(Object? value) {
+  _validatePositiveId(value, 'context_id');
+}
+
+void _validatePositiveId(Object? value, String name) {
   if (value is! int || value <= 0 || value > 0x7fffffffffffffff) {
-    _invalidCommand('context_id must be a positive signed 64-bit integer');
+    _invalidCommand('$name must be a positive signed 64-bit integer');
+  }
+}
+
+void _validateInputCommand(Map<String, Object?> command) {
+  _expectKeys(command, const <String>{
+    'v',
+    'type',
+    'context_id',
+    'document_id',
+    'runtime_context_id',
+    'viewport',
+    'event_type',
+    'event',
+  });
+  _validateContextId(command['context_id']);
+  _validatePositiveId(command['document_id'], 'document_id');
+  _validatePositiveId(command['runtime_context_id'], 'runtime_context_id');
+  _validateViewport(command['viewport']);
+  if (command['event_type'] is! String) {
+    _invalidCommand('event_type must be a string');
+  }
+}
+
+void _validateViewport(Object? value) {
+  final viewport = _commandObject(value, 'viewport');
+  _expectKeys(viewport, const <String>{'width', 'height'});
+  final width = viewport['width'];
+  final height = viewport['height'];
+  if (width is! int ||
+      height is! int ||
+      width <= 0 ||
+      height <= 0 ||
+      width > vixenMaxFrameDimension ||
+      height > vixenMaxFrameDimension ||
+      width * height * 4 > vixenMaxFrameBytes) {
+    _invalidCommand(
+      'viewport must have positive bounded dimensions and RGBA byte length',
+    );
+  }
+}
+
+void _validateMouseEvent(Object? value) {
+  final event = _commandObject(value, 'event');
+  _expectKeys(event, const <String>{
+    'x',
+    'y',
+    'button',
+    'buttons',
+    'detail',
+    'bubbles',
+    'ctrl_key',
+    'shift_key',
+    'alt_key',
+    'meta_key',
+    'delta_x',
+    'delta_y',
+  });
+  for (final field in const <String>['x', 'y', 'delta_x', 'delta_y']) {
+    final number = event[field];
+    if (number is! num || !number.isFinite) {
+      _invalidCommand('$field must be a finite number');
+    }
+  }
+  _validateSignedInteger(event['button'], 'button', bits: 32);
+  _validateSignedInteger(event['buttons'], 'buttons');
+  _validateSignedInteger(event['detail'], 'detail');
+  for (final field in const <String>[
+    'bubbles',
+    'ctrl_key',
+    'shift_key',
+    'alt_key',
+    'meta_key',
+  ]) {
+    if (event[field] is! bool) _invalidCommand('$field must be a boolean');
+  }
+}
+
+void _validateKeyEvent(Object? value) {
+  final event = _commandObject(value, 'event');
+  _expectKeys(event, const <String>{
+    'key',
+    'code',
+    'text',
+    'apply_text',
+    'ctrl_key',
+    'shift_key',
+    'alt_key',
+    'meta_key',
+    'repeat',
+    'location',
+  });
+  _validateBoundedString(event['key'], 'key', 256);
+  _validateBoundedString(event['code'], 'code', 256);
+  _validateBoundedString(event['text'], 'text', 4096);
+  for (final field in const <String>[
+    'apply_text',
+    'ctrl_key',
+    'shift_key',
+    'alt_key',
+    'meta_key',
+    'repeat',
+  ]) {
+    if (event[field] is! bool) _invalidCommand('$field must be a boolean');
+  }
+  _validateSignedInteger(event['location'], 'location');
+}
+
+Map<String, Object?> _commandObject(Object? value, String name) {
+  if (value is! Map<Object?, Object?> ||
+      value.keys.any((key) => key is! String)) {
+    _invalidCommand('$name must be an object with string keys');
+  }
+  return value.cast<String, Object?>();
+}
+
+void _validateSignedInteger(Object? value, String name, {int bits = 64}) {
+  if (value is! int ||
+      bits == 32 && (value < -2147483648 || value > 2147483647)) {
+    _invalidCommand('$name must fit signed $bits bits');
+  }
+}
+
+void _validateBoundedString(Object? value, String name, int maximumBytes) {
+  if (value is! String) _invalidCommand('$name must be a string');
+  if (utf8.encode(value).length > maximumBytes) {
+    _invalidCommand('$name exceeds $maximumBytes UTF-8 bytes');
   }
 }
 
