@@ -418,6 +418,8 @@ Common recipes:
 | `just baseline-headless` / `just baseline-headless-json` | Measure the hermetic local headless scenario suite |
 | `just baseline-profile-growth` | Measure temporary profile growth and storage persistence across reopen |
 | `just size-headless` / `just size-fp` | Report structured headless or compatibility-Flatpak artifact sizes; not Flutter evidence |
+| `just flutter-size-prefetch` | Network-capable staging for pinned Linux Flutter size inputs; not evidence |
+| `just size-flutter-linux` / `just size-flutter-linux-json` | Network-disabled release/AOT hello-Flutter versus Flutter+Vixen raw-bundle comparison; not Flatpak evidence |
 | `just baseline-beta` | Run the local headless, profile-growth, and headless-size measurement batch |
 | `just flatpak-update-sdk` / `just flatpak-build` | Manage/build the current GTK compatibility shell against the GNOME SDK container |
 | `just flatpak-install-local` / `just flatpak-run` | Install/run the current compatibility Flatpak for GUI smoke |
@@ -427,6 +429,11 @@ headless-path, and artifact-size measurement foundation. They are measurement-
 only: real external-site coverage, the GUI/Flatpak host matrix, frame time, JS
 heap, and transfer throughput remain future baselines. See
 [`docs/BASELINES.md`](docs/BASELINES.md).
+
+The Flutter size recipes add a controlled checked-in hello application and
+strict raw release-bundle analyzer. They require host CMake/Ninja/GTK development
+inputs and a separately staged pinned rusty_v8 archive; they do not build or
+measure the target offline Flatpak.
 
 `mise bootstrap` and recipes run from a mise-active shell use
 `CARGO_HOME=<workspace>/.cargo`, so the Cargo registry cache and installed dev

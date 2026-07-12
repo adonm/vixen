@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test scripts/baseline-common.test.mjs",
+    "test": "node --test scripts/*.test.mjs",
     "cdp:playwright-smoke": "node scripts/playwright-cdp-smoke.mjs"
   },
   "devDependencies": {

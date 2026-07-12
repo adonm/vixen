@@ -35,6 +35,7 @@ which layer today?”
 | `just audit` | `cargo audit` plus `cargo deny check` |
 | `just flatpak-build` | current GTK/Relm4 compatibility-shell Flatpak build path; not Flutter evidence |
 | `just size-headless` / `just size-fp` | structured logical/allocated size, file count, and SHA-256 for headless and current compatibility Flatpak payload/bundle; GNOME runtime excluded; not a Flutter baseline |
+| `just size-flutter-linux` | network-disabled clean release/AOT build and component-attributed raw-bundle comparison against the checked-in hello-Flutter peer; measurement-only and not Flatpak evidence |
 | `just baseline-headless` / `just baseline-headless-json` | per-scenario latency and Linux process-memory measurements for committed startup, navigation/runtime, layout, paint, and screenshot controls |
 | `just baseline-profile-growth` | opaque temporary profile growth at init/repeated/unique/storage checkpoints with localStorage reopen proof |
 | `just baseline-beta` | hermetic local headless scenarios, profile growth, and headless artifact size; measurement-only and outside `gate-push` |

@@ -506,9 +506,11 @@ correctness. Neither may starve the other.
    relationships, richer actions, incremental updates, live regions/text
    selection, and native AT evidence. Add platform host-service UI; both remain
    cross-cutting through every later platform.
-5. Produce hello-Flutter and Flutter+Vixen Linux size/performance baselines and a
-   pinned, offline source-built Flatpak through `flatpak-flutter` 0.15.0. Adopt
-   warning thresholds only after reviewed evidence; do not invent hard budgets.
+5. Use the landed checked-in hello-Flutter peer, network-disabled release-bundle
+   build, and component/delta analyzer to produce reviewed Linux size/performance
+   baselines, then add a pinned offline source-built Flatpak through
+   `flatpak-flutter` 0.15.0. Adopt warning thresholds only after reviewed
+   evidence; do not invent hard budgets.
 6. Reach Linux parity, then remove Relm4/libadwaita/custom GLArea ownership. GTK
    may remain as a Flutter Linux embedder runtime dependency.
 7. Expand the same bridge/chrome contract to macOS and Windows, with native

@@ -1,10 +1,11 @@
 # Measurement baselines
 
-Vixen's current baseline suite is a dependency-light Linux/headless measurement
+Vixen's current baseline suite is a dependency-light Linux measurement
 foundation built with Node.js built-ins. It records observations; it does not
-enforce budgets, measure a Flutter build, or claim complete real-site behavior.
-The Linux Flutter debug bundle exists, but no controlled hello-Flutter versus
-Flutter+Vixen release/AOT size or performance baseline has been recorded yet.
+enforce budgets or claim complete real-site behavior. The repository now has a
+checked-in hello-Flutter peer plus strict network-disabled Linux release/AOT
+raw-bundle build and comparison commands. No accepted Flutter report or
+Flutter Flatpak size/performance baseline has been recorded yet.
 
 ## Commands
 
@@ -65,6 +66,32 @@ That Flatpak contains the current GTK/Relm4 compatibility shell. Its report
 remains useful historical/current evidence, but it is not a Flutter Linux
 baseline and must not be relabeled as one.
 
+Stage the pinned Linux Flutter/rusty_v8 inputs, then build and compare clean raw
+release bundles:
+
+```sh
+just flutter-size-prefetch       # network-capable staging; never evidence
+just flutter-size-check-inputs   # revision/archive/namespace checks
+just size-flutter-linux          # network-disabled build and text report
+just size-flutter-linux-json     # network-disabled build and JSON report
+just size-flutter-linux-existing # analyze existing release bundles only
+```
+
+`fixtures/artifact-size/flutter_hello` is generated from the exact pinned
+Flutter 3.44 revision and uses Material plus the standard Linux runner without
+Vixen code. The build resolves both lock files offline, compiles inside a fresh
+unprivileged network namespace, sets Cargo offline, and supplies the
+SHA-256-pinned rusty_v8 archive. It requires host CMake, Ninja, GTK development
+files, and pre-populated Flutter/Pub/Cargo inputs; missing inputs fail rather
+than enabling network access.
+
+The analyzer requires release bundle structure (`libapp.so`, Flutter engine,
+and ICU), requires exactly one `libvixen_ffi.so` only in Vixen, rejects debug and
+build artifacts, verifies byte-identical shared Flutter engine/ICU files, and
+reports every file plus component and Vixen-minus-hello logical/allocated deltas.
+The native Vixen library remains an honest aggregate because stripped static
+BrowserCore/V8/WebRender attribution needs separate linker-map evidence.
+
 ## Flutter GUI baseline protocol
 
 For every target platform and shipped ABI/architecture, produce two controlled
@@ -119,6 +146,7 @@ JSON reports are versioned independently:
 | Headless scenarios | `vixen.headless-baseline-report` version 1 |
 | Profile growth | `vixen.profile-growth-baseline-report` version 1 |
 | Artifact size | `vixen.artifact-size-report` version 1 |
+| Flutter Linux raw bundles | `vixen.flutter-linux-artifact-size-report` version 1 |
 | Scenario input | `vixen.headless-scenario-suite` version 1 |
 
 Every report says `measurement_only: true`. Headless scenario reports include
@@ -170,11 +198,11 @@ budget.
 ## Current limits
 
 This batch completes the local latency, Linux process-memory, profile-growth,
-headless-path, and compatibility-shell artifact-size measurement foundation. It
-does not yet measure:
+headless-path, compatibility-shell artifact-size, and Flutter raw-release-bundle
+comparison foundations. It does not yet measure:
 
 - representative external sites or complete external-site compatibility;
-- any Flutter GUI or hello-Flutter versus Flutter+Vixen artifact;
+- an accepted/reproduced Flutter GUI size baseline or Flutter Flatpak artifact;
 - the GUI/Flatpak path across a supported Linux, GPU, driver, and renderer matrix;
 - native macOS, Windows, Android, or iOS Simulator BrowserCore/V8/WebRender behavior;
 - frame time, frame stability, animation smoothness, or input-to-paint latency;

@@ -26,6 +26,9 @@ GNOME_RUNTIME_VERSION := "50"
 FLUTTER_VERSION       := "3.44.0"
 FLUTTER_REVISION      := "559ffa3f75e7402d65a8def9c28389a9b2e6fe42"
 FLUTTER_SDK           := ".tmp/ref/flutter"
+FLUTTER_HELLO         := "fixtures/artifact-size/flutter_hello"
+FLUTTER_SIZE_V8       := ".tmp/flutter-size/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
+FLUTTER_SIZE_V8_SHA   := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"
 
 # Default recipe: explain yourself.
 default:
@@ -127,6 +130,42 @@ build-flutter-linux: _flutter-sdk-present
 # Launch the Linux shell through Flutter's desktop runner.
 run-flutter: _flutter-sdk-present
     cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter run -d linux
+
+# Network-capable staging only; this command is not size evidence. The strict
+# build below consumes the staged package caches and pinned rusty_v8 archive
+# with a fresh network namespace.
+flutter-size-prefetch: _flutter-sdk-present
+    @printf '%s\n' "staging Flutter size inputs (network-capable; not evidence)"
+    mkdir -p "$(dirname {{FLUTTER_SIZE_V8}})"
+    test -f {{FLUTTER_SIZE_V8}} || curl -L --fail --output {{FLUTTER_SIZE_V8}} https://github.com/denoland/rusty_v8/releases/download/v149.4.0/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz
+    printf '%s  %s\n' {{FLUTTER_SIZE_V8_SHA}} {{FLUTTER_SIZE_V8}} | sha256sum --check
+    cd {{FLUTTER_HELLO}} && ../../../{{FLUTTER_SDK}}/bin/flutter pub get --enforce-lockfile
+    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter pub get --enforce-lockfile
+
+flutter-size-check-inputs: _flutter-sdk-present
+    unshare --user --map-root-user --net true || { printf '%s\n' "unprivileged network namespaces are required" >&2; exit 1; }
+    test -f {{FLUTTER_SIZE_V8}} || { printf '%s\n' "rusty_v8 archive missing; run 'just flutter-size-prefetch'" >&2; exit 1; }
+    printf '%s  %s\n' {{FLUTTER_SIZE_V8_SHA}} {{FLUTTER_SIZE_V8}} | sha256sum --check
+
+# Clean release/AOT bundles built with dependency resolution and compilation
+# isolated from the network. Host CMake/Ninja/GTK inputs are fingerprinted by
+# the report but are not yet a source-built Flatpak toolchain.
+build-flutter-size-linux: flutter-size-check-inputs
+    cd {{FLUTTER_HELLO}} && ../../../{{FLUTTER_SDK}}/bin/flutter clean
+    cd flutter/vixen_shell && ../../{{FLUTTER_SDK}}/bin/flutter clean
+    cd {{FLUTTER_HELLO}} && unshare --user --map-root-user --net ../../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile
+    cd flutter/vixen_shell && unshare --user --map-root-user --net ../../{{FLUTTER_SDK}}/bin/flutter pub get --offline --enforce-lockfile
+    cd {{FLUTTER_HELLO}} && unshare --user --map-root-user --net ../../../{{FLUTTER_SDK}}/bin/flutter build linux --release --no-pub
+    cd flutter/vixen_shell && unshare --user --map-root-user --net env CARGO_NET_OFFLINE=true RUSTY_V8_ARCHIVE="{{justfile_directory()}}/{{FLUTTER_SIZE_V8}}" ../../{{FLUTTER_SDK}}/bin/flutter build linux --release --no-pub
+
+size-flutter-linux: build-flutter-size-linux
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle
+
+size-flutter-linux-json: build-flutter-size-linux
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle --json
+
+size-flutter-linux-existing:
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle
 
 # ADR-017 ownership vertical: production BrowserCore transport, context/runtime
 # generations, bounded events, profile/session partitioning, and headless adapter.

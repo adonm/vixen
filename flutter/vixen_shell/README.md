@@ -62,6 +62,17 @@ just gate-flutter-shell
 just run-flutter
 ```
 
+For the measurement-only Linux release-bundle comparison against the checked-in
+hello-Flutter peer:
+
+```sh
+just flutter-size-prefetch # network-capable input staging
+just size-flutter-linux    # clean build with network disabled
+```
+
+This requires host CMake/Ninja/GTK development inputs and does not satisfy the
+offline Flatpak or accepted size-baseline gates.
+
 Set `VIXEN_FFI_LIBRARY` to an absolute `libvixen_ffi.so` path only for the
 native bridge smoke test. Normal Linux bundles load `lib/libvixen_ffi.so`
 relative to the executable.

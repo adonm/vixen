@@ -207,10 +207,12 @@ is accepted without a new ADR.
 ## Binary size gates
 
 `just size-fp` and `just size-headless` remain measurement commands for the
-current GTK compatibility Flatpak and release headless binary. They do not prove
-a Flutter artifact. Flutter reports are required for every platform and shipped
-ABI/architecture and compare like-for-like release/AOT/stripped hello-Flutter and
-Flutter+Vixen builds.
+current GTK compatibility Flatpak and release headless binary. `just
+size-flutter-linux-json` builds and compares like-for-like release/AOT raw Linux
+hello-Flutter and Flutter+Vixen bundles with the network disabled. That report is
+measurement-only and does not satisfy the offline Flatpak, compressed-download,
+installed-size, signing, or launch-smoke gates. Equivalent package reports remain
+required for every supported platform and shipped ABI/architecture.
 
 Reports attribute compressed, unpacked/install, executable, and shared-runtime
 costs to Flutter engine/ICU, Dart AOT/assets, native runner/plugins,

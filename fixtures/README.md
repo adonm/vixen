@@ -10,6 +10,7 @@ limitations live in [`../docs/COMPAT.md`](../docs/COMPAT.md); reproduce them wit
 
 ```text
 fixtures/
+├── artifact-size/ # controlled hello-Flutter release-bundle size peer
 ├── cdp/           # controlled pages used by CDP/Playwright integration
 ├── css/           # selectors, cascade, computed values
 ├── dom/           # DOM, runtime host objects, storage/history projections

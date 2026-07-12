@@ -292,6 +292,13 @@ variance, component ownership, comparison statistics, platform/ABI scope, and an
 explicit product override policy. Rebaseline only for a documented dependency or
 product tradeoff; never hide growth by changing attribution.
 
+The Linux raw-bundle foundation is checked in: a controlled hello-Flutter peer,
+SHA-256-pinned rusty_v8 input, network-disabled clean release/AOT recipes, and a
+component/delta analyzer that rejects debug artifacts and mismatched shared
+Flutter engine/ICU files. It intentionally reports `flatpak_evidence: false`.
+Provisioned clean reports, compressed/install accounting, finer native linker
+attribution, and the offline `flatpak-flutter` package remain required.
+
 ## Cross-cutting acceptance
 
 Every platform must eventually prove:
