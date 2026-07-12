@@ -123,7 +123,8 @@ impl AccessibilityHash {
     }
 
     fn finish(self) -> u64 {
-        if self.0 == 0 { 1 } else { self.0 }
+        let value = self.0 & i64::MAX as u64;
+        if value == 0 { 1 } else { value }
     }
 }
 
@@ -156,6 +157,20 @@ pub struct AccessibilityRect {
     pub height: f64,
 }
 
+/// A semantic action implemented by the authoritative live document runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibilityAction {
+    Focus,
+}
+
+impl AccessibilityAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Focus => "focus",
+        }
+    }
+}
+
 /// Stable browser command/error codes consumed by adapters and automation.
 pub mod error_codes {
     pub const INVALID_ARGUMENT: &str = "browser.invalid-argument";
@@ -166,6 +181,7 @@ pub mod error_codes {
     pub const CONTEXT_LIMIT: &str = "browser.context-limit";
     pub const STALE_DOCUMENT: &str = "browser.stale-document";
     pub const STALE_RUNTIME: &str = "browser.stale-runtime";
+    pub const STALE_ACCESSIBILITY: &str = "browser.stale-accessibility";
     pub const NAVIGATION_LOAD: &str = "navigation.load";
     pub const PROFILE: &str = "browser.profile";
     pub const EVENT_LAGGED: &str = "browser.event-lagged";
@@ -283,6 +299,15 @@ pub enum BrowserCommand {
         context_id: BrowsingContextId,
         document_id: DocumentId,
         viewport: (u32, u32),
+    },
+    DispatchAccessibilityAction {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        runtime_context_id: RuntimeContextId,
+        viewport: (u32, u32),
+        source_generation: u64,
+        node_id: usize,
+        action: AccessibilityAction,
     },
     QuerySelectorAll {
         context_id: BrowsingContextId,
@@ -991,6 +1016,7 @@ mod tests {
         snapshot.refresh_generation();
         let first = snapshot.generation;
         assert_ne!(first, 0);
+        assert!(first <= i64::MAX as u64);
         snapshot.refresh_generation();
         assert_eq!(snapshot.generation, first);
         snapshot.nodes[0].disabled = true;

@@ -219,6 +219,30 @@ void main() {
     expect(response.snapshot.nodes.single.checked, isTrue);
     expect(response.snapshot.nodes.single.bounds?.width, 100);
     expect(
+      BrowserCommand.dispatchAccessibilityFocus(
+        contextId: 7,
+        documentId: 70,
+        runtimeContextId: 700,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        sourceGeneration: 8,
+        generation: 99,
+        nodeId: 9,
+      ).toWire(),
+      {
+        'v': 1,
+        'type': 'dispatch_accessibility_action',
+        'context_id': 7,
+        'document_id': 70,
+        'runtime_context_id': 700,
+        'viewport': {'width': 800, 'height': 600},
+        'source_generation': 8,
+        'generation': 99,
+        'node_id': 9,
+        'action': 'focus',
+      },
+    );
+    expect(
       BrowserCommand.accessibilitySnapshot(
         contextId: 7,
         documentId: 70,

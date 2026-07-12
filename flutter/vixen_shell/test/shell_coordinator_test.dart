@@ -396,6 +396,7 @@ void main() {
   );
 
   test('accessibility snapshot is generation and viewport matched', () async {
+    var nextFrameId = 0;
     final controller = ScriptedBrowserController(
       snapshot: BrowserSnapshot(
         activeContextId: 5,
@@ -415,7 +416,7 @@ void main() {
       onCaptureFrame: (contextId, documentId, width, height) => browserFrame(
         width: width,
         height: height,
-        frameId: 1,
+        frameId: ++nextFrameId,
         contextId: contextId,
         documentId: documentId,
       ),
@@ -431,9 +432,28 @@ void main() {
     expect(coordinator.accessibility?.viewportWidth, 320);
     expect(coordinator.accessibility?.nodes.single.label, 'Open');
 
-    await coordinator.dispatchSemanticTap(
-      coordinator.accessibility!.nodes.single,
-    );
+    final semantics = coordinator.accessibility!;
+    await coordinator.dispatchSemanticFocus(semantics, semantics.nodes.single);
+    final focus = controller.commands
+        .where((command) => command.type == 'dispatch_accessibility_action')
+        .single
+        .toWire();
+    expect(focus, {
+      'v': 1,
+      'type': 'dispatch_accessibility_action',
+      'context_id': 5,
+      'document_id': 500,
+      'runtime_context_id': 5000,
+      'viewport': {'width': 320, 'height': 180},
+      'source_generation': 1,
+      'generation': 1,
+      'node_id': 11,
+      'action': 'focus',
+    });
+
+    await flushEvents();
+    final refreshed = coordinator.accessibility!;
+    await coordinator.dispatchSemanticTap(refreshed, refreshed.nodes.single);
     final mouseCommands = controller.commands
         .where((command) => command.type == 'dispatch_mouse_event')
         .map((command) => command.toWire())
@@ -508,7 +528,7 @@ BrowserAccessibilityNode semanticButton({required int id}) =>
       selected: false,
       hidden: false,
       focusable: true,
-      actions: const ['tap'],
+      actions: const ['tap', 'focus'],
     );
 
 BrowserFrame browserFrame({

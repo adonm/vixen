@@ -45,12 +45,14 @@ commands remain follow-up work.
 ## Accessibility contract
 
 BrowserCore supplies a bounded projection of authoritative roles, names, values,
-states, focus, tap actions, physical bounds, and nearest emitted semantic-parent
+states, focus, tap/focus actions, physical bounds, and nearest emitted semantic-parent
 relationships. The ABI exposes at most 256 document-order nodes and tags the
 exact projection with a deterministic mutation generation. The coordinator
 publishes it only with the matching frame/context/document/viewport generation;
 Flutter maps the hierarchy to keyed nested `Semantics` nodes and routes taps back
-through BrowserCore hit testing. Non-tree relationships, richer actions,
+through BrowserCore hit testing. Focus requires exact source and capped-wire
+generations and executes through the live runtime before a refreshed projection
+is published. Non-tree relationships, set-value/range actions,
 incremental/live updates, text selection, and native assistive-technology smoke
 remain open.
 

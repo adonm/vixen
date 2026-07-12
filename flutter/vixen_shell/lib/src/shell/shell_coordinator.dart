@@ -210,20 +210,14 @@ final class ShellCoordinator extends ChangeNotifier {
         );
       });
 
-  Future<void> dispatchSemanticTap(BrowserAccessibilityNode node) async {
-    final snapshot = _accessibility;
-    final selected = selectedContext;
+  Future<void> dispatchSemanticTap(
+    BrowserAccessibilitySnapshot snapshot,
+    BrowserAccessibilityNode node,
+  ) async {
     final bounds = node.bounds;
-    if (snapshot == null ||
-        selected == null ||
-        snapshot.contextId != selected.contextId ||
-        snapshot.documentId != selected.documentId ||
-        snapshot.viewportWidth != _viewportWidth ||
-        snapshot.viewportHeight != _viewportHeight ||
+    if (!_isCurrentSemanticAction(snapshot, node, 'tap') ||
         bounds == null ||
-        node.disabled ||
-        !node.actions.contains('tap') ||
-        !snapshot.nodes.any((candidate) => candidate.id == node.id)) {
+        node.disabled) {
       return;
     }
     final x = bounds.x + bounds.width / 2;
@@ -236,6 +230,54 @@ final class ShellCoordinator extends ChangeNotifier {
       'mouseup',
       BrowserMouseEvent(x: x, y: y, button: 0, buttons: 0, detail: 1),
     );
+  }
+
+  Future<void> dispatchSemanticFocus(
+    BrowserAccessibilitySnapshot snapshot,
+    BrowserAccessibilityNode node,
+  ) {
+    if (!_isCurrentSemanticAction(snapshot, node, 'focus') || node.disabled) {
+      return Future<void>.value();
+    }
+    return _enqueueInput((inputGeneration) async {
+      if (!_isCurrentSemanticAction(snapshot, node, 'focus')) return;
+      _lastInputResult = await controller.dispatchAccessibilityFocus(
+        contextId: inputGeneration.contextId,
+        documentId: inputGeneration.documentId,
+        runtimeContextId: inputGeneration.runtimeContextId,
+        viewportWidth: inputGeneration.viewportWidth,
+        viewportHeight: inputGeneration.viewportHeight,
+        sourceGeneration: snapshot.sourceGeneration,
+        generation: snapshot.generation,
+        nodeId: node.id,
+      );
+    });
+  }
+
+  bool _isCurrentSemanticAction(
+    BrowserAccessibilitySnapshot snapshot,
+    BrowserAccessibilityNode node,
+    String action,
+  ) {
+    final current = _accessibility;
+    final selected = selectedContext;
+    return current != null &&
+        selected != null &&
+        current.contextId == snapshot.contextId &&
+        current.documentId == snapshot.documentId &&
+        current.sourceGeneration == snapshot.sourceGeneration &&
+        current.generation == snapshot.generation &&
+        current.viewportWidth == snapshot.viewportWidth &&
+        current.viewportHeight == snapshot.viewportHeight &&
+        snapshot.contextId == selected.contextId &&
+        snapshot.documentId == selected.documentId &&
+        snapshot.viewportWidth == _viewportWidth &&
+        snapshot.viewportHeight == _viewportHeight &&
+        node.actions.contains(action) &&
+        current.nodes.any(
+          (candidate) =>
+              candidate.id == node.id && candidate.actions.contains(action),
+        );
   }
 
   Future<void> _enqueueInput(

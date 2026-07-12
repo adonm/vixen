@@ -140,6 +140,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetDevicePixelRatio);
     BrowserAccessibilityNode? tapped;
+    BrowserAccessibilityNode? focused;
     final parent = BrowserAccessibilityNode(
       id: 7,
       role: 'main',
@@ -173,7 +174,7 @@ void main() {
       selected: false,
       hidden: false,
       focusable: true,
-      actions: const ['tap'],
+      actions: const ['tap', 'focus'],
     );
     final semantics = tester.ensureSemantics();
     await tester.pumpWidget(
@@ -198,7 +199,8 @@ void main() {
                 nodes: [parent, node],
                 truncated: false,
               ),
-              onSemanticTap: (value) => tapped = value,
+              onSemanticTap: (_, value) => tapped = value,
+              onSemanticFocus: (_, value) => focused = value,
             ),
           ),
         ),
@@ -219,10 +221,13 @@ void main() {
         isFocusable: true,
         isFocused: true,
         hasTapAction: true,
+        hasFocusAction: true,
       ),
     );
     tester.widget<Semantics>(finder).properties.onTap!();
+    tester.widget<Semantics>(finder).properties.onFocus!();
     expect(tapped?.id, 42);
+    expect(focused?.id, 42);
     semantics.dispose();
   });
 }

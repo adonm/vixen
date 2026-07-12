@@ -209,9 +209,11 @@ containment. The Linux shell adds handwritten Dart bindings, deterministic fake
 tests, a production worker isolate, bounded RGBA `FlPixelBufferTexture`
 transport, physical viewport mapping, and generation-checked pointer/wheel/key
 dispatch through BrowserCore hit testing. A bounded, mutation-generation-tagged
-BrowserCore projection now maps roles/names/states/bounds and tap into Flutter
+BrowserCore projection now maps roles/names/states/bounds and tap/focus into Flutter
 Semantics. Nearest emitted semantic-parent relationships now produce a validated,
-document-order nested Flutter hierarchy; non-tree relationships, richer actions,
+document-order nested Flutter hierarchy. Focus actions are exact source/wire-
+generation checked and execute through the live runtime; non-tree relationships,
+set-value/range actions,
 incremental updates, and native AT remain.
 External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
@@ -503,7 +505,7 @@ correctness. Neither may starve the other.
    continuing font shaping/fallback,
    image decode, and WPT-driven layout/rendering work on the shared core.
 4. Extend the landed bounded hierarchical accessibility projection with non-tree
-   relationships, richer actions, incremental updates, live regions/text
+   relationships, set-value/range actions, incremental updates, live regions/text
    selection, and native AT evidence. Add platform host-service UI; both remain
    cross-cutting through every later platform.
 5. Use the landed checked-in hello-Flutter peer, network-disabled release-bundle

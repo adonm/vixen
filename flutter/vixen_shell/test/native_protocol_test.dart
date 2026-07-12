@@ -184,6 +184,16 @@ void main() {
           viewportWidth: 320,
           viewportHeight: 200,
         ),
+        BrowserCommand.dispatchAccessibilityFocus(
+          contextId: 1,
+          documentId: 2,
+          runtimeContextId: 3,
+          viewportWidth: 320,
+          viewportHeight: 200,
+          sourceGeneration: 4,
+          generation: 5,
+          nodeId: 6,
+        ),
         BrowserCommand.dispatchMouseEvent(
           contextId: 1,
           documentId: 2,
@@ -245,6 +255,30 @@ void main() {
             ...(mouse['event']! as Map<String, Object?>),
             'x': double.nan,
           },
+        }),
+        throwsA(isA<NativeBridgeException>()),
+      );
+      final focus = BrowserCommand.dispatchAccessibilityFocus(
+        contextId: 1,
+        documentId: 2,
+        runtimeContextId: 3,
+        viewportWidth: 320,
+        viewportHeight: 200,
+        sourceGeneration: 4,
+        generation: 5,
+        nodeId: 6,
+      ).toWire();
+      expect(
+        () => normalizeNativeCommand(<String, Object?>{
+          ...focus,
+          'generation': 0,
+        }),
+        throwsA(isA<NativeBridgeException>()),
+      );
+      expect(
+        () => normalizeNativeCommand(<String, Object?>{
+          ...focus,
+          'action': 'set_value',
         }),
         throwsA(isA<NativeBridgeException>()),
       );

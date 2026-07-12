@@ -205,6 +205,33 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
       _validatePositiveId(normalized['document_id'], 'document_id');
       _validateViewport(normalized['viewport']);
       break;
+    case 'dispatch_accessibility_action':
+      _expectKeys(normalized, const <String>{
+        'v',
+        'type',
+        'context_id',
+        'document_id',
+        'runtime_context_id',
+        'viewport',
+        'source_generation',
+        'generation',
+        'node_id',
+        'action',
+      });
+      _validateContextId(normalized['context_id']);
+      _validatePositiveId(normalized['document_id'], 'document_id');
+      _validatePositiveId(
+        normalized['runtime_context_id'],
+        'runtime_context_id',
+      );
+      _validateViewport(normalized['viewport']);
+      _validatePositiveId(normalized['source_generation'], 'source_generation');
+      _validatePositiveId(normalized['generation'], 'generation');
+      _validatePositiveId(normalized['node_id'], 'node_id');
+      if (normalized['action'] != 'focus') {
+        _invalidCommand('unsupported accessibility action');
+      }
+      break;
     case 'dispatch_mouse_event':
       _validateInputCommand(normalized);
       final eventType = normalized['event_type'];

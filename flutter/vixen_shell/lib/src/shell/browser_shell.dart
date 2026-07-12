@@ -123,8 +123,15 @@ final class _BrowserShellState extends State<BrowserShell> {
                     onKeyEvent: (eventType, event) {
                       unawaited(coordinator.dispatchKeyEvent(eventType, event));
                     },
-                    onSemanticTap: (node) {
-                      unawaited(coordinator.dispatchSemanticTap(node));
+                    onSemanticTap: (snapshot, node) {
+                      unawaited(
+                        coordinator.dispatchSemanticTap(snapshot, node),
+                      );
+                    },
+                    onSemanticFocus: (snapshot, node) {
+                      unawaited(
+                        coordinator.dispatchSemanticFocus(snapshot, node),
+                      );
                     },
                   ),
                 ),

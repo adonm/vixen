@@ -15,12 +15,12 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::Duration;
 
 use vixen_api::{
-    AutomationEvaluation, BrowserCommand, BrowserCommandResult, BrowserError, BrowserEvent,
-    BrowserHandle, BrowserId, BrowserSnapshot, BrowsingContextConfig, BrowsingContextId,
-    BrowsingContextState, CrossDocumentNavigationKind, DocumentId, DocumentTextKind,
-    EvaluationResult, FocusEventInfo, FocusProjection, FormEntryInfo, FormEntryValueInfo,
-    FormSubmissionInfo, FrameId, InputDispatchResult, KeyEventData, MouseEventData,
-    NavigationActionOutcome, NavigationCancellationReason, NavigationHistoryEntry,
+    AccessibilityAction, AutomationEvaluation, BrowserCommand, BrowserCommandResult, BrowserError,
+    BrowserEvent, BrowserHandle, BrowserId, BrowserSnapshot, BrowsingContextConfig,
+    BrowsingContextId, BrowsingContextState, CrossDocumentNavigationKind, DocumentId,
+    DocumentTextKind, EvaluationResult, FocusEventInfo, FocusProjection, FormEntryInfo,
+    FormEntryValueInfo, FormSubmissionInfo, FrameId, InputDispatchResult, KeyEventData,
+    MouseEventData, NavigationActionOutcome, NavigationCancellationReason, NavigationHistoryEntry,
     NavigationHistorySnapshot, NavigationId, NavigationPhase, ProfileDataSelection, ProfileId,
     ProfileSessionState, RequestId, RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent,
     RuntimeConsoleValue, RuntimeContextId, RuntimeDialogEvent, RuntimeEffects,
@@ -43,6 +43,16 @@ use crate::script::{
 };
 
 const DEFAULT_MAX_CONTEXTS: usize = 128;
+
+struct AccessibilityActionDispatch {
+    context_id: BrowsingContextId,
+    document_id: DocumentId,
+    runtime_context_id: RuntimeContextId,
+    viewport: (u32, u32),
+    source_generation: u64,
+    node_id: usize,
+    action: AccessibilityAction,
+}
 const DEFAULT_COMMAND_CAPACITY: usize = 256;
 const DEFAULT_EVENT_CAPACITY: usize = 2048;
 const MAX_SCRIPT_BYTES: usize = 1024 * 1024;
@@ -855,6 +865,23 @@ impl BrowserCore {
                         .accessibility_snapshot(context_id, document_id, viewport),
                 ))
             }
+            BrowserCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id,
+                runtime_context_id,
+                viewport,
+                source_generation,
+                node_id,
+                action,
+            } => self.dispatch_accessibility_action(AccessibilityActionDispatch {
+                context_id,
+                document_id,
+                runtime_context_id,
+                viewport,
+                source_generation,
+                node_id,
+                action,
+            }),
             BrowserCommand::QuerySelectorAll {
                 context_id,
                 document_id,
@@ -2437,6 +2464,61 @@ impl BrowserCore {
         });
         let source = format!(
             "globalThis.__vixenDispatchKeyEvent ? globalThis.__vixenDispatchKeyEvent({event_type}, {init}) : false"
+        );
+        let evaluation =
+            self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
+        Ok(BrowserCommandResult::InputDispatched(InputDispatchResult {
+            effects: evaluation.effects,
+            navigation_actions: evaluation.navigation_actions,
+        }))
+    }
+
+    fn dispatch_accessibility_action(
+        &mut self,
+        request: AccessibilityActionDispatch,
+    ) -> Result<BrowserCommandResult, BrowserError> {
+        let AccessibilityActionDispatch {
+            context_id,
+            document_id,
+            runtime_context_id,
+            viewport,
+            source_generation,
+            node_id,
+            action,
+        } = request;
+        validate_viewport(viewport)?;
+        let context = self.context_for_document(context_id, document_id)?;
+        if context.runtime_context_id != runtime_context_id {
+            return Err(BrowserError::new(
+                browser_error_codes::STALE_RUNTIME,
+                format!("runtime {runtime_context_id} is no longer active in context {context_id}"),
+            ));
+        }
+        let snapshot = context
+            .page
+            .accessibility_snapshot(context_id, document_id, viewport);
+        if snapshot.source_generation != source_generation {
+            return Err(BrowserError::new(
+                browser_error_codes::STALE_ACCESSIBILITY,
+                "accessibility source generation is no longer current",
+            ));
+        }
+        let supported = snapshot.nodes.iter().any(|node| {
+            node.id == node_id
+                && node
+                    .actions
+                    .iter()
+                    .any(|candidate| candidate == action.as_str())
+        });
+        if !supported {
+            return Err(BrowserError::new(
+                browser_error_codes::INVALID_ARGUMENT,
+                "accessibility node does not advertise the requested action",
+            ));
+        }
+        let action = json_string(action.as_str())?;
+        let source = format!(
+            "globalThis.__vixenDispatchAccessibilityAction ? globalThis.__vixenDispatchAccessibilityAction({node_id}, {action}) : false"
         );
         let evaluation =
             self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
@@ -4687,6 +4769,74 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(stale.code, browser_error_codes::STALE_DOCUMENT);
+    }
+
+    #[test]
+    fn accessibility_focus_action_is_capability_and_generation_checked() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/input");
+        let current = state(&mut handle, context_id);
+        let result = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: (800, 600),
+            })
+            .unwrap();
+        let BrowserCommandResult::AccessibilitySnapshot(snapshot) = result else {
+            panic!("unexpected accessibility result: {result:?}");
+        };
+        let link = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Go")
+            .unwrap();
+        assert!(link.actions.iter().any(|action| action == "focus"));
+
+        let result = handle
+            .dispatch(BrowserCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                viewport: snapshot.viewport,
+                source_generation: snapshot.source_generation,
+                node_id: link.id,
+                action: AccessibilityAction::Focus,
+            })
+            .unwrap();
+        assert!(matches!(result, BrowserCommandResult::InputDispatched(_)));
+
+        let refreshed = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: snapshot.viewport,
+            })
+            .unwrap();
+        let BrowserCommandResult::AccessibilitySnapshot(refreshed) = refreshed else {
+            panic!("unexpected accessibility result: {refreshed:?}");
+        };
+        assert!(
+            refreshed
+                .nodes
+                .iter()
+                .any(|node| node.id == link.id && node.focused)
+        );
+        assert!(refreshed.source_generation > snapshot.source_generation);
+
+        let stale = handle
+            .dispatch(BrowserCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                viewport: snapshot.viewport,
+                source_generation: snapshot.source_generation,
+                node_id: link.id,
+                action: AccessibilityAction::Focus,
+            })
+            .unwrap_err();
+        assert_eq!(stale.code, browser_error_codes::STALE_ACCESSIBILITY);
     }
 
     #[test]

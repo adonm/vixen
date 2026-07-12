@@ -10,9 +10,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 pub use vixen_api::{
-    AccessibilityNode, AccessibilityRect, AccessibilitySnapshot, BrowserError, BrowserEvent,
-    BrowserSnapshot, BrowsingContextId, BrowsingContextState, DocumentId, InputDispatchResult,
-    KeyEventData, MouseEventData, NavigationId, ProfileSessionState, RuntimeContextId,
+    AccessibilityAction, AccessibilityNode, AccessibilityRect, AccessibilitySnapshot, BrowserError,
+    BrowserEvent, BrowserSnapshot, BrowsingContextId, BrowsingContextState, DocumentId,
+    InputDispatchResult, KeyEventData, MouseEventData, NavigationId, ProfileSessionState,
+    RuntimeContextId,
 };
 pub use vixen_engine::browser::BrowserConfig;
 pub use vixen_engine::paint::RgbaFrame;
@@ -22,6 +23,7 @@ use vixen_engine::browser::{EngineBrowserHandle, spawn_browser};
 
 /// Version of the exported C ABI and its JSON wire projections.
 pub const ABI_VERSION: u32 = 1;
+pub(crate) const ACCESSIBILITY_ABI_MAX_NODES: usize = 256;
 
 /// Return the C ABI and JSON wire version from safe Rust.
 pub const fn vixen_abi_version() -> u32 {
@@ -52,6 +54,16 @@ pub enum ControllerCommand {
         context_id: BrowsingContextId,
         document_id: DocumentId,
         viewport: (u32, u32),
+    },
+    DispatchAccessibilityAction {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        runtime_context_id: RuntimeContextId,
+        viewport: (u32, u32),
+        source_generation: u64,
+        generation: u64,
+        node_id: usize,
+        action: AccessibilityAction,
     },
     DispatchMouseEvent {
         context_id: BrowsingContextId,
@@ -99,6 +111,17 @@ struct PrimaryMousePress {
     document_id: DocumentId,
     runtime_context_id: RuntimeContextId,
     node_id: usize,
+}
+
+struct AccessibilityActionDispatch {
+    context_id: BrowsingContextId,
+    document_id: DocumentId,
+    runtime_context_id: RuntimeContextId,
+    viewport: (u32, u32),
+    source_generation: u64,
+    generation: u64,
+    node_id: usize,
+    action: AccessibilityAction,
 }
 
 impl FlutterBrowserController {
@@ -157,6 +180,27 @@ impl FlutterBrowserController {
                 document_id,
                 viewport,
             },
+            ControllerCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id,
+                runtime_context_id,
+                viewport,
+                source_generation,
+                generation,
+                node_id,
+                action,
+            } => {
+                return self.dispatch_accessibility_action(AccessibilityActionDispatch {
+                    context_id,
+                    document_id,
+                    runtime_context_id,
+                    viewport,
+                    source_generation,
+                    generation,
+                    node_id,
+                    action,
+                });
+            }
             ControllerCommand::DispatchMouseEvent {
                 context_id,
                 document_id,
@@ -462,6 +506,62 @@ impl FlutterBrowserController {
         }
     }
 
+    fn dispatch_accessibility_action(
+        &mut self,
+        request: AccessibilityActionDispatch,
+    ) -> Result<ControllerResponse, BrowserError> {
+        let AccessibilityActionDispatch {
+            context_id,
+            document_id,
+            runtime_context_id,
+            viewport,
+            source_generation,
+            generation,
+            node_id,
+            action,
+        } = request;
+        let snapshot = bounded_accessibility_snapshot(self.accessibility_snapshot(
+            context_id,
+            document_id,
+            viewport,
+        )?);
+        if snapshot.source_generation != source_generation || snapshot.generation != generation {
+            return Err(BrowserError::new(
+                browser_error_codes::STALE_ACCESSIBILITY,
+                "accessibility projection is no longer current",
+            ));
+        }
+        let supported = snapshot.nodes.iter().any(|node| {
+            node.id == node_id
+                && node
+                    .actions
+                    .iter()
+                    .any(|candidate| candidate == action.as_str())
+        });
+        if !supported {
+            return Err(BrowserError::new(
+                browser_error_codes::INVALID_ARGUMENT,
+                "accessibility node does not advertise the requested action",
+            ));
+        }
+        match self
+            .handle
+            .dispatch(BrowserCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id,
+                runtime_context_id,
+                viewport,
+                source_generation,
+                node_id,
+                action,
+            })? {
+            BrowserCommandResult::InputDispatched(result) => {
+                Ok(ControllerResponse::InputDispatched(result))
+            }
+            result => Err(unexpected_result(result)),
+        }
+    }
+
     /// Capture the active document through BrowserCore's authoritative paint
     /// snapshot and Vixen's WebRender path using a local offscreen EGL surface.
     pub fn capture_rgba_frame(
@@ -527,6 +627,17 @@ fn empty_input_result() -> InputDispatchResult {
         effects: Default::default(),
         navigation_actions: Vec::new(),
     }
+}
+
+pub(crate) fn bounded_accessibility_snapshot(
+    mut snapshot: AccessibilitySnapshot,
+) -> AccessibilitySnapshot {
+    if snapshot.nodes.len() > ACCESSIBILITY_ABI_MAX_NODES {
+        snapshot.nodes.truncate(ACCESSIBILITY_ABI_MAX_NODES);
+        snapshot.truncated = true;
+    }
+    snapshot.refresh_generation();
+    snapshot
 }
 
 fn unexpected_response(action: &str, response: ControllerResponse) -> BrowserError {
@@ -766,6 +877,71 @@ mod tests {
             .accessibility_snapshot(context_id, stale_document, (320, 240))
             .unwrap_err();
         assert_eq!(error.code, browser_error_codes::STALE_DOCUMENT);
+    }
+
+    #[test]
+    fn controller_requires_exact_wire_generation_for_accessibility_focus() {
+        let profile = TestProfile::new();
+        let url = "https://ffi.test/accessibility-action";
+        let mut config = BrowserConfig::new(&profile.0);
+        config.document_overrides.insert(
+            url.to_owned(),
+            "<!doctype html><button aria-label='Continue'>Ignored</button>".to_owned(),
+        );
+        let mut controller = FlutterBrowserController::from_config(config).unwrap();
+        let context_id = controller.create_context().unwrap();
+        let navigation_id = controller.navigate(context_id, url).unwrap();
+        wait_for_settled(&mut controller, navigation_id);
+        let state = controller.context_state(context_id).unwrap();
+        let snapshot = bounded_accessibility_snapshot(
+            controller
+                .accessibility_snapshot(context_id, state.document_id, (320, 240))
+                .unwrap(),
+        );
+        let button = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Continue")
+            .unwrap();
+        let node_id = button.id;
+        assert!(button.actions.iter().any(|action| action == "focus"));
+
+        let response = controller
+            .dispatch(ControllerCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                viewport: snapshot.viewport,
+                source_generation: snapshot.source_generation,
+                generation: snapshot.generation,
+                node_id,
+                action: AccessibilityAction::Focus,
+            })
+            .unwrap();
+        assert!(matches!(response, ControllerResponse::InputDispatched(_)));
+        let focused = controller
+            .accessibility_snapshot(context_id, state.document_id, snapshot.viewport)
+            .unwrap();
+        assert!(
+            focused
+                .nodes
+                .iter()
+                .any(|node| node.id == node_id && node.focused)
+        );
+
+        let stale = controller
+            .dispatch(ControllerCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                viewport: snapshot.viewport,
+                source_generation: snapshot.source_generation,
+                generation: snapshot.generation,
+                node_id,
+                action: AccessibilityAction::Focus,
+            })
+            .unwrap_err();
+        assert_eq!(stale.code, browser_error_codes::STALE_ACCESSIBILITY);
     }
 
     #[test]

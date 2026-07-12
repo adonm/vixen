@@ -18,17 +18,17 @@ mod browser;
 mod ids;
 
 pub use browser::{
-    ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityNode, AccessibilityRect,
-    AccessibilitySnapshot, AutomationEvaluation, BrowserCommand, BrowserCommandResult,
-    BrowserError, BrowserEvent, BrowserHandle, BrowserSnapshot, BrowsingContextConfig,
-    BrowsingContextState, CrossDocumentNavigationKind, DiagnosticScope, DocumentTextKind,
-    EvaluationResult, FocusEventInfo, FocusProjection, FormEntryInfo, FormEntryValueInfo,
-    FormSubmissionInfo, InputDispatchResult, KeyEventData, MouseEventData, NavigationActionOutcome,
-    NavigationCancellationReason, NavigationHistoryEntry, NavigationHistorySnapshot,
-    NavigationPhase, ProfileDataSelection, ProfileSessionState, RuntimeBindingEvent,
-    RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue, RuntimeDialogEvent,
-    RuntimeEffects, RuntimeExceptionEvent, RuntimeNetworkEvent, RuntimePermissionGrant,
-    ScriptValue, error_codes as browser_error_codes,
+    ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityAction,
+    AccessibilityNode, AccessibilityRect, AccessibilitySnapshot, AutomationEvaluation,
+    BrowserCommand, BrowserCommandResult, BrowserError, BrowserEvent, BrowserHandle,
+    BrowserSnapshot, BrowsingContextConfig, BrowsingContextState, CrossDocumentNavigationKind,
+    DiagnosticScope, DocumentTextKind, EvaluationResult, FocusEventInfo, FocusProjection,
+    FormEntryInfo, FormEntryValueInfo, FormSubmissionInfo, InputDispatchResult, KeyEventData,
+    MouseEventData, NavigationActionOutcome, NavigationCancellationReason, NavigationHistoryEntry,
+    NavigationHistorySnapshot, NavigationPhase, ProfileDataSelection, ProfileSessionState,
+    RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue,
+    RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent, RuntimeNetworkEvent,
+    RuntimePermissionGrant, ScriptValue, error_codes as browser_error_codes,
 };
 pub use ids::{
     BrowserId, BrowsingContextId, DocumentId, DownloadId, FrameId, InvalidId, NavigationId,

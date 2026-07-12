@@ -165,7 +165,7 @@ bounded DTOs where web semantics require it.
 
 The initial accessibility hierarchy is implemented. BrowserCore/Page derives native
 and explicit ARIA roles, bounded names (including `aria-labelledby` and HTML
-labels), values, states, focus, tap actions, and physical layout bounds. Engine
+labels), values, states, focus, tap/focus actions, and physical layout bounds. Engine
 snapshots cap at 1024 nodes and 512 UTF-8 bytes per string; the ABI caps the exact
 wire projection at 256 nodes under 1 MiB. A deterministic nonzero semantic
 generation invalidates document-order ids after mutation. The coordinator
@@ -176,8 +176,12 @@ document-order validation guarantees retained parents precede children, and
 Flutter builds nested Semantics without inferring hierarchy from geometry. Dart
 does not infer meaning from pixels or maintain a second DOM.
 
-Complete accessibility still requires non-tree relationships, descriptions,
-heading levels, mixed states, set-value/increment/decrement and focus actions,
+Semantic focus is dispatched only when the exact context, document, runtime,
+viewport, source generation, capped wire generation, node id, and advertised
+capability still match; BrowserCore executes live focus events/mutation and Dart
+waits for the refreshed projection. Complete accessibility still requires
+non-tree relationships, descriptions, heading levels, mixed states, set-value,
+increment/decrement actions,
 text selection, live regions, incremental updates, the disabled-fieldset
 first-legend exception, full ARIA presentational-role conflict handling, and
 native AT smoke on each platform.

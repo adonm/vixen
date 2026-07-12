@@ -403,12 +403,13 @@ impl Page {
             let selected = aria_bool(element.aria_selected.as_deref()).unwrap_or(element.selected);
             let expanded = aria_bool(element.aria_expanded.as_deref());
             let value = accessibility_value(&element, &role);
-            let actions =
-                if !disabled && matches!(role.as_str(), "button" | "link" | "checkbox" | "radio") {
-                    vec!["tap".to_owned()]
-                } else {
-                    Vec::new()
-                };
+            let mut actions = Vec::new();
+            if !disabled && matches!(role.as_str(), "button" | "link" | "checkbox" | "radio") {
+                actions.push("tap".to_owned());
+            }
+            if focusable {
+                actions.push("focus".to_owned());
+            }
             nodes.push(AccessibilityNode {
                 id: element.node_id,
                 parent_id: element.parent_id,
@@ -833,7 +834,7 @@ mod tests {
         assert_eq!(checkbox.checked, Some(true));
         assert!(checkbox.focused);
         assert!(checkbox.focusable);
-        assert_eq!(checkbox.actions, ["tap"]);
+        assert_eq!(checkbox.actions, ["tap", "focus"]);
 
         let image = snapshot
             .nodes

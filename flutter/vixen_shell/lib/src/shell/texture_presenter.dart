@@ -104,6 +104,7 @@ final class BrowserContentSurface extends StatefulWidget {
     this.onKeyEvent,
     this.accessibility,
     this.onSemanticTap,
+    this.onSemanticFocus,
     this.textureController,
     super.key,
   });
@@ -114,7 +115,16 @@ final class BrowserContentSurface extends StatefulWidget {
   final void Function(String eventType, BrowserMouseEvent event)? onMouseEvent;
   final void Function(String eventType, BrowserKeyEvent event)? onKeyEvent;
   final BrowserAccessibilitySnapshot? accessibility;
-  final void Function(BrowserAccessibilityNode node)? onSemanticTap;
+  final void Function(
+    BrowserAccessibilitySnapshot snapshot,
+    BrowserAccessibilityNode node,
+  )?
+  onSemanticTap;
+  final void Function(
+    BrowserAccessibilitySnapshot snapshot,
+    BrowserAccessibilityNode node,
+  )?
+  onSemanticFocus;
   final BrowserTextureController? textureController;
 
   @override
@@ -516,7 +526,10 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
               image: node.role == 'image',
               textField: node.role == 'textbox' || node.role == 'searchbox',
               onTap: node.actions.contains('tap') && !node.disabled
-                  ? () => widget.onSemanticTap?.call(node)
+                  ? () => widget.onSemanticTap?.call(snapshot, node)
+                  : null,
+              onFocus: node.actions.contains('focus') && !node.disabled
+                  ? () => widget.onSemanticFocus?.call(snapshot, node)
                   : null,
               child: children.isEmpty
                   ? const SizedBox.expand()

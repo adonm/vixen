@@ -15,14 +15,17 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use vixen_api::{
-    AccessibilityNode, AccessibilitySnapshot, BrowserError, BrowserEvent, BrowsingContextId,
-    BrowsingContextState, CrossDocumentNavigationKind, DiagnosticScope, DownloadEvent,
-    EngineDiagnostic, EngineDiagnosticCategory, InputDispatchResult, KeyEventData, MouseEventData,
-    NavigationActionOutcome, NavigationCancellationReason, NavigationPhase, RuntimeConsoleArg,
-    RuntimeConsoleValue, RuntimeEffects, RuntimeNetworkEvent,
+    AccessibilityAction, AccessibilityNode, AccessibilitySnapshot, BrowserError, BrowserEvent,
+    BrowsingContextId, BrowsingContextState, CrossDocumentNavigationKind, DiagnosticScope,
+    DownloadEvent, EngineDiagnostic, EngineDiagnosticCategory, InputDispatchResult, KeyEventData,
+    MouseEventData, NavigationActionOutcome, NavigationCancellationReason, NavigationPhase,
+    RuntimeConsoleArg, RuntimeConsoleValue, RuntimeEffects, RuntimeNetworkEvent,
 };
 
-use crate::{ABI_VERSION, ControllerCommand, ControllerResponse, FlutterBrowserController};
+use crate::{
+    ABI_VERSION, ControllerCommand, ControllerResponse, FlutterBrowserController,
+    bounded_accessibility_snapshot,
+};
 
 pub use crate::c_frame::{
     VIXEN_MAX_FRAME_BYTES, VIXEN_MAX_FRAME_DIMENSION, VIXEN_MAX_OUTSTANDING_FRAMES,
@@ -54,10 +57,6 @@ const MAX_INPUT_VIEWPORT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_KEY_BYTES: usize = 256;
 const MAX_CODE_BYTES: usize = 256;
 const MAX_TEXT_BYTES: usize = 4096;
-// 256 nodes with three maximally escaped 512-byte fields and fixed node JSON
-// remain below VIXEN_MAX_OUTPUT_BYTES.
-const MAX_ACCESSIBILITY_ABI_NODES: usize = 256;
-
 const FFI_INVALID_ARGUMENT: &str = "ffi.invalid-argument";
 const FFI_INVALID_UTF8: &str = "ffi.invalid-utf8";
 const FFI_INPUT_TOO_LARGE: &str = "ffi.input-too-large";
@@ -571,6 +570,50 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
                 viewport: required_viewport(object)?,
             }
         }
+        "dispatch_accessibility_action" => {
+            exact_keys(
+                object,
+                &[
+                    "action",
+                    "context_id",
+                    "document_id",
+                    "generation",
+                    "node_id",
+                    "runtime_context_id",
+                    "source_generation",
+                    "type",
+                    "v",
+                    "viewport",
+                ],
+            )?;
+            let source_generation = required_u64(object, "source_generation")?;
+            let generation = required_u64(object, "generation")?;
+            let node_id = usize::try_from(required_u64(object, "node_id")?)
+                .map_err(|_| AbiError::invalid_command("node_id must fit usize"))?;
+            if source_generation == 0 || generation == 0 || node_id == 0 {
+                return Err(AbiError::invalid_command(
+                    "accessibility generations and node_id must be nonzero",
+                ));
+            }
+            let action = match required_string(object, "action")? {
+                "focus" => AccessibilityAction::Focus,
+                _ => {
+                    return Err(AbiError::invalid_command(
+                        "unsupported accessibility action",
+                    ));
+                }
+            };
+            ControllerCommand::DispatchAccessibilityAction {
+                context_id: required_context_id(object)?,
+                document_id: required_document_id(object)?,
+                runtime_context_id: required_runtime_context_id(object)?,
+                viewport: required_viewport(object)?,
+                source_generation,
+                generation,
+                node_id,
+                action,
+            }
+        }
         "dispatch_mouse_event" => {
             exact_keys(
                 object,
@@ -848,12 +891,8 @@ fn response_json(response: ControllerResponse) -> Value {
     }
 }
 
-fn accessibility_snapshot_json(mut snapshot: AccessibilitySnapshot) -> Value {
-    if snapshot.nodes.len() > MAX_ACCESSIBILITY_ABI_NODES {
-        snapshot.nodes.truncate(MAX_ACCESSIBILITY_ABI_NODES);
-        snapshot.truncated = true;
-    }
-    snapshot.refresh_generation();
+fn accessibility_snapshot_json(snapshot: AccessibilitySnapshot) -> Value {
+    let snapshot = bounded_accessibility_snapshot(snapshot);
     json!({
         "type": "accessibility_snapshot",
         "context_id": snapshot.context_id.get(),
@@ -1851,6 +1890,57 @@ mod tests {
     }
 
     #[test]
+    fn accessibility_action_command_is_strict_and_bounded() {
+        let _scope = test_scope();
+        let value = json!({
+            "v": 1,
+            "type": "dispatch_accessibility_action",
+            "context_id": 2,
+            "document_id": 3,
+            "runtime_context_id": 4,
+            "viewport": {"width": 320, "height": 240},
+            "source_generation": 5,
+            "generation": 6,
+            "node_id": 7,
+            "action": "focus",
+        });
+        let parsed = parse_command(&value.to_string()).unwrap();
+        assert!(matches!(
+            parsed,
+            ControllerCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id,
+                runtime_context_id,
+                viewport: (320, 240),
+                source_generation: 5,
+                generation: 6,
+                node_id: 7,
+                action: AccessibilityAction::Focus,
+            } if context_id.get() == 2
+                && document_id.get() == 3
+                && runtime_context_id.get() == 4
+        ));
+
+        for invalid in [
+            ("source_generation", json!(0)),
+            ("generation", json!(0)),
+            ("node_id", json!(0)),
+            ("action", json!("set_value")),
+            ("viewport", json!({"width": 0, "height": 240})),
+        ] {
+            let mut invalid_value = value.clone();
+            invalid_value[invalid.0] = invalid.1;
+            assert!(
+                parse_command(&invalid_value.to_string()).is_err(),
+                "accepted {invalid_value}"
+            );
+        }
+        let mut extra = value;
+        extra["extra"] = json!(true);
+        assert!(parse_command(&extra.to_string()).is_err());
+    }
+
+    #[test]
     fn accessibility_response_projects_all_fields_and_stays_under_output_cap() {
         let node = AccessibilityNode {
             id: 4,
@@ -1929,13 +2019,13 @@ mod tests {
                 source_generation: 7,
                 generation: 1,
                 viewport: (4096, 4096),
-                nodes: vec![worst; MAX_ACCESSIBILITY_ABI_NODES + 1],
+                nodes: vec![worst; crate::ACCESSIBILITY_ABI_MAX_NODES + 1],
                 truncated: false,
             },
         ));
         assert_eq!(
             bounded["nodes"].as_array().unwrap().len(),
-            MAX_ACCESSIBILITY_ABI_NODES
+            crate::ACCESSIBILITY_ABI_MAX_NODES
         );
         assert_eq!(bounded["truncated"], true);
         assert_eq!(bounded["source_generation"], 7);

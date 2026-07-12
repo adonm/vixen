@@ -176,6 +176,7 @@ final class ScriptedBrowserController extends BrowserController {
             truncated: false,
           ),
         );
+      case 'dispatch_accessibility_action':
       case 'dispatch_mouse_event':
       case 'dispatch_key_event':
         _knownContext(command.contextId);

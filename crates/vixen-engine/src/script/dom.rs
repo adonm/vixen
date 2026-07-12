@@ -2325,6 +2325,19 @@ const DOM_API_BOOTSTRAP: &str = r#"
     configurable: true,
   });
 
+  Object.defineProperty(globalThis, '__vixenDispatchAccessibilityAction', {
+    value(nodeId, action) {
+      const target = wrapElementByNodeId(Number(nodeId));
+      if (target === null) return false;
+      if (String(action) === 'focus') {
+        target.focus();
+        return activeElementNodeId === target.__vixenNodeId;
+      }
+      return false;
+    },
+    configurable: true,
+  });
+
   function keyboardEventTarget() {
     return wrapElementByNodeId(activeElementNodeId) || vixenDocument.body || vixenDocument;
   }

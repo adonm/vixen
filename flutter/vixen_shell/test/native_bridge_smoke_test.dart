@@ -37,6 +37,38 @@ void main() {
           snapshot.contexts.map((context) => context.contextId),
           contains(contextId),
         );
+        final accessibility = await controller.accessibilitySnapshot(
+          contextId: contextId,
+          documentId: state.documentId,
+          viewportWidth: 64,
+          viewportHeight: 48,
+        );
+        final sample = accessibility.nodes.singleWhere(
+          (node) => node.label == 'Vixen sample',
+        );
+        expect(sample.actions, contains('focus'));
+        await controller.dispatchAccessibilityFocus(
+          contextId: contextId,
+          documentId: state.documentId,
+          runtimeContextId: state.runtimeContextId!,
+          viewportWidth: 64,
+          viewportHeight: 48,
+          sourceGeneration: accessibility.sourceGeneration,
+          generation: accessibility.generation,
+          nodeId: sample.id,
+        );
+        final focusedAccessibility = await controller.accessibilitySnapshot(
+          contextId: contextId,
+          documentId: state.documentId,
+          viewportWidth: 64,
+          viewportHeight: 48,
+        );
+        expect(
+          focusedAccessibility.nodes.any(
+            (node) => node.id == sample.id && node.focused,
+          ),
+          isTrue,
+        );
         try {
           final frame = await controller.captureFrame(
             contextId: contextId,
