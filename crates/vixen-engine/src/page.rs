@@ -410,6 +410,9 @@ impl Page {
             if focusable {
                 actions.push("focus".to_owned());
             }
+            if !disabled && accessibility_set_value_supported(&element, &role) {
+                actions.push("set_value".to_owned());
+            }
             nodes.push(AccessibilityNode {
                 id: element.node_id,
                 parent_id: element.parent_id,
@@ -702,6 +705,27 @@ fn accessibility_focusable(element: &AccessibilityElement) -> bool {
         || (element.tag == "a" && element.href)
 }
 
+fn accessibility_set_value_supported(element: &AccessibilityElement, role: &str) -> bool {
+    if element.read_only || !matches!(role, "textbox" | "searchbox") {
+        return false;
+    }
+    if element.tag == "textarea" {
+        return true;
+    }
+    if element.tag != "input" {
+        return false;
+    }
+    matches!(
+        element
+            .input_type
+            .as_deref()
+            .unwrap_or("text")
+            .to_ascii_lowercase()
+            .as_str(),
+        "text" | "search" | "url" | "tel" | "email"
+    )
+}
+
 fn aria_bool(value: Option<&str>) -> Option<bool> {
     match value?.trim().to_ascii_lowercase().as_str() {
         "true" => Some(true),
@@ -903,6 +927,40 @@ mod tests {
                 .iter()
                 .all(|node| { node.parent_id.is_none_or(|parent_id| parent_id < node.id) })
         );
+    }
+
+    #[test]
+    fn accessibility_set_value_is_limited_to_writable_native_text_controls() {
+        let page = Page::from_html(
+            "file:///accessibility-values.html",
+            r#"<!doctype html>
+                <input aria-label="Name">
+                <textarea aria-label="Notes"></textarea>
+                <input aria-label="Read only" readonly>
+                <input aria-label="Secret" type="password">
+                <div role="textbox" aria-label="Authored"></div>"#,
+        )
+        .unwrap();
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(1).unwrap(),
+            DocumentId::new(1).unwrap(),
+            (800, 600),
+        );
+        let supports_set_value = |label: &str| {
+            snapshot
+                .nodes
+                .iter()
+                .find(|node| node.label == label)
+                .unwrap()
+                .actions
+                .iter()
+                .any(|action| action == "set_value")
+        };
+        assert!(supports_set_value("Name"));
+        assert!(supports_set_value("Notes"));
+        assert!(!supports_set_value("Read only"));
+        assert!(!supports_set_value("Secret"));
+        assert!(!supports_set_value("Authored"));
     }
 
     #[test]

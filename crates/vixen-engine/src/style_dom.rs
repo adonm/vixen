@@ -682,6 +682,7 @@ pub(crate) struct AccessibilityElement {
     pub label: String,
     pub href: bool,
     pub disabled: bool,
+    pub read_only: bool,
     pub checked: bool,
     pub selected: bool,
     pub multiple: bool,
@@ -896,6 +897,7 @@ impl Document {
                 label: String::new(),
                 href: false,
                 disabled: inherited_disabled[idx],
+                read_only: false,
                 checked: false,
                 selected: false,
                 multiple: false,
@@ -907,6 +909,7 @@ impl Document {
                 match attr_name {
                     "href" => element.href = true,
                     "disabled" => element.disabled = true,
+                    "readonly" => element.read_only = true,
                     "checked" => element.checked = true,
                     "selected" => element.selected = true,
                     "multiple" => element.multiple = true,

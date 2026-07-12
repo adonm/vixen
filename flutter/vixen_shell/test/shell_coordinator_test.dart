@@ -410,7 +410,7 @@ void main() {
             documentId: documentId,
             viewportWidth: width,
             viewportHeight: height,
-            nodes: [semanticButton(id: 11)],
+            nodes: [semanticButton(id: 11), semanticTextbox(id: 12)],
             truncated: false,
           ),
       onCaptureFrame: (contextId, documentId, width, height) => browserFrame(
@@ -430,10 +430,10 @@ void main() {
     expect(coordinator.accessibility?.generation, 1);
     expect(coordinator.accessibility?.documentId, 500);
     expect(coordinator.accessibility?.viewportWidth, 320);
-    expect(coordinator.accessibility?.nodes.single.label, 'Open');
+    expect(coordinator.accessibility?.nodes.first.label, 'Open');
 
     final semantics = coordinator.accessibility!;
-    await coordinator.dispatchSemanticFocus(semantics, semantics.nodes.single);
+    await coordinator.dispatchSemanticFocus(semantics, semantics.nodes.first);
     final focus = controller.commands
         .where((command) => command.type == 'dispatch_accessibility_action')
         .single
@@ -452,8 +452,21 @@ void main() {
     });
 
     await flushEvents();
+    final focused = coordinator.accessibility!;
+    final textbox = focused.nodes.singleWhere((node) => node.id == 12);
+    await coordinator.dispatchSemanticSetValue(focused, textbox, 'Ada');
+    final setValue = controller.commands
+        .where((command) => command.type == 'dispatch_accessibility_action')
+        .last
+        .toWire();
+    expect(setValue['action'], 'set_value');
+    expect(setValue['node_id'], 12);
+    expect(setValue['value'], 'Ada');
+
+    await flushEvents();
     final refreshed = coordinator.accessibility!;
-    await coordinator.dispatchSemanticTap(refreshed, refreshed.nodes.single);
+    final button = refreshed.nodes.singleWhere((node) => node.id == 11);
+    await coordinator.dispatchSemanticTap(refreshed, button);
     final mouseCommands = controller.commands
         .where((command) => command.type == 'dispatch_mouse_event')
         .map((command) => command.toWire())
@@ -529,6 +542,26 @@ BrowserAccessibilityNode semanticButton({required int id}) =>
       hidden: false,
       focusable: true,
       actions: const ['tap', 'focus'],
+    );
+
+BrowserAccessibilityNode semanticTextbox({required int id}) =>
+    BrowserAccessibilityNode(
+      id: id,
+      role: 'textbox',
+      label: 'Name',
+      value: '',
+      bounds: const BrowserAccessibilityRect(
+        x: 10,
+        y: 70,
+        width: 140,
+        height: 40,
+      ),
+      focused: false,
+      disabled: false,
+      selected: false,
+      hidden: false,
+      focusable: true,
+      actions: const ['focus', 'set_value'],
     );
 
 BrowserFrame browserFrame({

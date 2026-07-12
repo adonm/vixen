@@ -141,6 +141,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     BrowserAccessibilityNode? tapped;
     BrowserAccessibilityNode? focused;
+    (BrowserAccessibilityNode, String)? setValue;
     final parent = BrowserAccessibilityNode(
       id: 7,
       role: 'main',
@@ -176,6 +177,25 @@ void main() {
       focusable: true,
       actions: const ['tap', 'focus'],
     );
+    final textbox = BrowserAccessibilityNode(
+      id: 43,
+      parentId: 7,
+      role: 'textbox',
+      label: 'Name',
+      value: '',
+      bounds: const BrowserAccessibilityRect(
+        x: 10,
+        y: 70,
+        width: 120,
+        height: 40,
+      ),
+      focused: false,
+      disabled: false,
+      selected: false,
+      hidden: false,
+      focusable: true,
+      actions: const ['focus', 'set_value'],
+    );
     final semantics = tester.ensureSemantics();
     await tester.pumpWidget(
       MaterialApp(
@@ -196,11 +216,12 @@ void main() {
                 documentId: 20,
                 viewportWidth: 400,
                 viewportHeight: 300,
-                nodes: [parent, node],
+                nodes: [parent, node, textbox],
                 truncated: false,
               ),
               onSemanticTap: (_, value) => tapped = value,
               onSemanticFocus: (_, value) => focused = value,
+              onSemanticSetValue: (_, node, value) => setValue = (node, value),
             ),
           ),
         ),
@@ -228,6 +249,23 @@ void main() {
     tester.widget<Semantics>(finder).properties.onFocus!();
     expect(tapped?.id, 42);
     expect(focused?.id, 42);
+    final textboxFinder = find.byKey(const ValueKey('semantic-9-43'));
+    expect(
+      tester.getSemantics(textboxFinder),
+      matchesSemantics(
+        label: 'Name',
+        value: '',
+        isTextField: true,
+        hasEnabledState: true,
+        isEnabled: true,
+        isFocusable: true,
+        hasFocusAction: true,
+        hasSetTextAction: true,
+      ),
+    );
+    tester.widget<Semantics>(textboxFinder).properties.onSetText!('Ada');
+    expect(setValue?.$1.id, 43);
+    expect(setValue?.$2, 'Ada');
     semantics.dispose();
   });
 }

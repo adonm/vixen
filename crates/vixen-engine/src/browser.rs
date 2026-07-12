@@ -15,10 +15,10 @@ use std::sync::{Arc, Condvar, Mutex, mpsc};
 use std::time::Duration;
 
 use vixen_api::{
-    AccessibilityAction, AutomationEvaluation, BrowserCommand, BrowserCommandResult, BrowserError,
-    BrowserEvent, BrowserHandle, BrowserId, BrowserSnapshot, BrowsingContextConfig,
-    BrowsingContextId, BrowsingContextState, CrossDocumentNavigationKind, DocumentId,
-    DocumentTextKind, EvaluationResult, FocusEventInfo, FocusProjection, FormEntryInfo,
+    ACCESSIBILITY_MAX_VALUE_BYTES, AccessibilityAction, AutomationEvaluation, BrowserCommand,
+    BrowserCommandResult, BrowserError, BrowserEvent, BrowserHandle, BrowserId, BrowserSnapshot,
+    BrowsingContextConfig, BrowsingContextId, BrowsingContextState, CrossDocumentNavigationKind,
+    DocumentId, DocumentTextKind, EvaluationResult, FocusEventInfo, FocusProjection, FormEntryInfo,
     FormEntryValueInfo, FormSubmissionInfo, FrameId, InputDispatchResult, KeyEventData,
     MouseEventData, NavigationActionOutcome, NavigationCancellationReason, NavigationHistoryEntry,
     NavigationHistorySnapshot, NavigationId, NavigationPhase, ProfileDataSelection, ProfileId,
@@ -2516,9 +2516,21 @@ impl BrowserCore {
                 "accessibility node does not advertise the requested action",
             ));
         }
+        let value = match &action {
+            AccessibilityAction::Focus => "null".to_owned(),
+            AccessibilityAction::SetValue(value) => {
+                if value.len() > ACCESSIBILITY_MAX_VALUE_BYTES {
+                    return Err(BrowserError::new(
+                        browser_error_codes::INVALID_ARGUMENT,
+                        "accessibility value exceeds the browser limit",
+                    ));
+                }
+                json_string(value)?
+            }
+        };
         let action = json_string(action.as_str())?;
         let source = format!(
-            "globalThis.__vixenDispatchAccessibilityAction ? globalThis.__vixenDispatchAccessibilityAction({node_id}, {action}) : false"
+            "globalThis.__vixenDispatchAccessibilityAction ? globalThis.__vixenDispatchAccessibilityAction({node_id}, {action}, {value}) : false"
         );
         let evaluation =
             self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
@@ -3886,7 +3898,7 @@ mod tests {
         );
         config.document_overrides.insert(
             "https://same.test/input".to_owned(),
-            "<!doctype html><button id='same'>Same</button><a id='go' href='https://same.test/b'>Go</a>".to_owned(),
+            "<!doctype html><button id='same'>Same</button><a id='go' href='https://same.test/b'>Go</a><input id='name' aria-label='Name'>".to_owned(),
         );
         config
     }
@@ -4837,6 +4849,42 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(stale.code, browser_error_codes::STALE_ACCESSIBILITY);
+
+        let input = refreshed
+            .nodes
+            .iter()
+            .find(|node| node.label == "Name")
+            .unwrap();
+        let input_id = input.id;
+        assert!(input.actions.iter().any(|action| action == "set_value"));
+        let result = handle
+            .dispatch(BrowserCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                viewport: refreshed.viewport,
+                source_generation: refreshed.source_generation,
+                node_id: input_id,
+                action: AccessibilityAction::SetValue("Ada".to_owned()),
+            })
+            .unwrap();
+        assert!(matches!(result, BrowserCommandResult::InputDispatched(_)));
+        let updated = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: refreshed.viewport,
+            })
+            .unwrap();
+        let BrowserCommandResult::AccessibilitySnapshot(updated) = updated else {
+            panic!("unexpected accessibility result: {updated:?}");
+        };
+        assert!(
+            updated
+                .nodes
+                .iter()
+                .any(|node| node.id == input_id && node.value.as_deref() == Some("Ada"))
+        );
     }
 
     #[test]

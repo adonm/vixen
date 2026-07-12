@@ -105,6 +105,7 @@ final class BrowserContentSurface extends StatefulWidget {
     this.accessibility,
     this.onSemanticTap,
     this.onSemanticFocus,
+    this.onSemanticSetValue,
     this.textureController,
     super.key,
   });
@@ -125,6 +126,12 @@ final class BrowserContentSurface extends StatefulWidget {
     BrowserAccessibilityNode node,
   )?
   onSemanticFocus;
+  final void Function(
+    BrowserAccessibilitySnapshot snapshot,
+    BrowserAccessibilityNode node,
+    String value,
+  )?
+  onSemanticSetValue;
   final BrowserTextureController? textureController;
 
   @override
@@ -530,6 +537,10 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
                   : null,
               onFocus: node.actions.contains('focus') && !node.disabled
                   ? () => widget.onSemanticFocus?.call(snapshot, node)
+                  : null,
+              onSetText: node.actions.contains('set_value') && !node.disabled
+                  ? (value) =>
+                        widget.onSemanticSetValue?.call(snapshot, node, value)
                   : null,
               child: children.isEmpty
                   ? const SizedBox.expand()

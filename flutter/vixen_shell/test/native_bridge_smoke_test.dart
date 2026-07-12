@@ -69,6 +69,33 @@ void main() {
           ),
           isTrue,
         );
+        final name = focusedAccessibility.nodes.singleWhere(
+          (node) => node.label == 'Name',
+        );
+        expect(name.actions, contains('set_value'));
+        await controller.dispatchAccessibilitySetValue(
+          contextId: contextId,
+          documentId: state.documentId,
+          runtimeContextId: state.runtimeContextId!,
+          viewportWidth: 64,
+          viewportHeight: 48,
+          sourceGeneration: focusedAccessibility.sourceGeneration,
+          generation: focusedAccessibility.generation,
+          nodeId: name.id,
+          value: 'Ada',
+        );
+        final valuedAccessibility = await controller.accessibilitySnapshot(
+          contextId: contextId,
+          documentId: state.documentId,
+          viewportWidth: 64,
+          viewportHeight: 48,
+        );
+        expect(
+          valuedAccessibility.nodes.any(
+            (node) => node.id == name.id && node.value == 'Ada',
+          ),
+          isTrue,
+        );
         try {
           final frame = await controller.captureFrame(
             contextId: contextId,

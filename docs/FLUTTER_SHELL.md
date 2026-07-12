@@ -179,9 +179,12 @@ does not infer meaning from pixels or maintain a second DOM.
 Semantic focus is dispatched only when the exact context, document, runtime,
 viewport, source generation, capped wire generation, node id, and advertised
 capability still match; BrowserCore executes live focus events/mutation and Dart
-waits for the refreshed projection. Complete accessibility still requires
-non-tree relationships, descriptions, heading levels, mixed states, set-value,
-increment/decrement actions,
+waits for the refreshed projection. The same boundary exposes a 16 KiB-bounded
+set-value action only for enabled, writable native text inputs/textareas; it
+uses the live control-value and input/change event path, while password,
+readonly, unsupported input types, and authored ARIA-only textboxes remain
+unadvertised. Complete accessibility still requires non-tree relationships,
+descriptions, heading levels, mixed states, increment/decrement actions,
 text selection, live regions, incremental updates, the disabled-fieldset
 first-legend exception, full ARIA presentational-role conflict handling, and
 native AT smoke on each platform.

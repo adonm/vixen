@@ -590,6 +590,27 @@ final class BrowserCommand {
     'node_id': nodeId,
     'action': 'focus',
   });
+  factory BrowserCommand.dispatchAccessibilitySetValue({
+    required int contextId,
+    required int documentId,
+    required int runtimeContextId,
+    required int viewportWidth,
+    required int viewportHeight,
+    required int sourceGeneration,
+    required int generation,
+    required int nodeId,
+    required String value,
+  }) => BrowserCommand._('dispatch_accessibility_action', {
+    'context_id': contextId,
+    'document_id': documentId,
+    'runtime_context_id': runtimeContextId,
+    'viewport': {'width': viewportWidth, 'height': viewportHeight},
+    'source_generation': sourceGeneration,
+    'generation': generation,
+    'node_id': nodeId,
+    'action': 'set_value',
+    'value': value,
+  });
   factory BrowserCommand.dispatchMouseEvent({
     required int contextId,
     required int documentId,

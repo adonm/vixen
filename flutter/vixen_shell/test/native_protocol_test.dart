@@ -194,6 +194,17 @@ void main() {
           generation: 5,
           nodeId: 6,
         ),
+        BrowserCommand.dispatchAccessibilitySetValue(
+          contextId: 1,
+          documentId: 2,
+          runtimeContextId: 3,
+          viewportWidth: 320,
+          viewportHeight: 200,
+          sourceGeneration: 4,
+          generation: 5,
+          nodeId: 6,
+          value: 'Ada',
+        ),
         BrowserCommand.dispatchMouseEvent(
           contextId: 1,
           documentId: 2,
@@ -280,6 +291,21 @@ void main() {
           ...focus,
           'action': 'set_value',
         }),
+        throwsA(isA<NativeBridgeException>()),
+      );
+      final setValue = BrowserCommand.dispatchAccessibilitySetValue(
+        contextId: 1,
+        documentId: 2,
+        runtimeContextId: 3,
+        viewportWidth: 320,
+        viewportHeight: 200,
+        sourceGeneration: 4,
+        generation: 5,
+        nodeId: 6,
+        value: 'x' * (vixenMaxAccessibilityValueBytes + 1),
+      ).toWire();
+      expect(
+        () => normalizeNativeCommand(setValue),
         throwsA(isA<NativeBridgeException>()),
       );
     });

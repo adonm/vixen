@@ -52,7 +52,10 @@ publishes it only with the matching frame/context/document/viewport generation;
 Flutter maps the hierarchy to keyed nested `Semantics` nodes and routes taps back
 through BrowserCore hit testing. Focus requires exact source and capped-wire
 generations and executes through the live runtime before a refreshed projection
-is published. Non-tree relationships, set-value/range actions,
+is published. A 16 KiB-bounded `onSetText` path uses the same generation checks
+and live value/event machinery for enabled writable native text controls;
+passwords, readonly controls, unsupported types, and ARIA-only textboxes are not
+advertised. Non-tree relationships, range actions,
 incremental/live updates, text selection, and native assistive-technology smoke
 remain open.
 

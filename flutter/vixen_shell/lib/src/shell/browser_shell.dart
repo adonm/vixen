@@ -133,6 +133,15 @@ final class _BrowserShellState extends State<BrowserShell> {
                         coordinator.dispatchSemanticFocus(snapshot, node),
                       );
                     },
+                    onSemanticSetValue: (snapshot, node, value) {
+                      unawaited(
+                        coordinator.dispatchSemanticSetValue(
+                          snapshot,
+                          node,
+                          value,
+                        ),
+                      );
+                    },
                   ),
                 ),
                 _StatusBar(status: coordinator.selectedStatus),

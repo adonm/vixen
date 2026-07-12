@@ -212,8 +212,9 @@ dispatch through BrowserCore hit testing. A bounded, mutation-generation-tagged
 BrowserCore projection now maps roles/names/states/bounds and tap/focus into Flutter
 Semantics. Nearest emitted semantic-parent relationships now produce a validated,
 document-order nested Flutter hierarchy. Focus actions are exact source/wire-
-generation checked and execute through the live runtime; non-tree relationships,
-set-value/range actions,
+generation checked and execute through the live runtime. Bounded set-value uses
+the same checks and live native text-control event path; non-tree relationships,
+range actions,
 incremental updates, and native AT remain.
 External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
@@ -505,7 +506,7 @@ correctness. Neither may starve the other.
    continuing font shaping/fallback,
    image decode, and WPT-driven layout/rendering work on the shared core.
 4. Extend the landed bounded hierarchical accessibility projection with non-tree
-   relationships, set-value/range actions, incremental updates, live regions/text
+   relationships, range actions, incremental updates, live regions/text
    selection, and native AT evidence. Add platform host-service UI; both remain
    cross-cutting through every later platform.
 5. Use the landed checked-in hello-Flutter peer, network-disabled release-bundle

@@ -13,6 +13,8 @@ pub const ACCESSIBILITY_MAX_NODES: usize = 1024;
 /// Maximum UTF-8 bytes retained for each accessibility string field and for
 /// the aggregate action strings on one node.
 pub const ACCESSIBILITY_MAX_STRING_BYTES: usize = 512;
+/// Maximum UTF-8 bytes accepted by one accessibility set-value action.
+pub const ACCESSIBILITY_MAX_VALUE_BYTES: usize = 16 * 1024;
 
 /// A bounded projection of the active document's current semantic hierarchy.
 #[derive(Debug, Clone, PartialEq)]
@@ -158,15 +160,17 @@ pub struct AccessibilityRect {
 }
 
 /// A semantic action implemented by the authoritative live document runtime.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccessibilityAction {
     Focus,
+    SetValue(String),
 }
 
 impl AccessibilityAction {
-    pub const fn as_str(self) -> &'static str {
+    pub const fn as_str(&self) -> &'static str {
         match self {
             Self::Focus => "focus",
+            Self::SetValue(_) => "set_value",
         }
     }
 }

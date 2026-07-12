@@ -2326,12 +2326,18 @@ const DOM_API_BOOTSTRAP: &str = r#"
   });
 
   Object.defineProperty(globalThis, '__vixenDispatchAccessibilityAction', {
-    value(nodeId, action) {
+    value(nodeId, action, value = null) {
       const target = wrapElementByNodeId(Number(nodeId));
       if (target === null) return false;
       if (String(action) === 'focus') {
         target.focus();
         return activeElementNodeId === target.__vixenNodeId;
+      }
+      if (String(action) === 'set_value') {
+        if (!isTextEditableControl(target)) return false;
+        const text = String(value === null ? '' : value);
+        applyControlValue(target, text, text.length, text.length, 'insertReplacementText', text, true);
+        return true;
       }
       return false;
     },

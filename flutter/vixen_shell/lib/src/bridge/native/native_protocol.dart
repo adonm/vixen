@@ -9,6 +9,7 @@ const int vixenMaxWaitMilliseconds = 60000;
 const int vixenMaxEventsPerDrain = 64;
 const int vixenMaxFrameDimension = 4096;
 const int vixenMaxFrameBytes = 64 * 1024 * 1024;
+const int vixenMaxAccessibilityValueBytes = 16 * 1024;
 
 enum NativeStatus {
   ok(0, 'ffi.ok'),
@@ -206,18 +207,42 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
       _validateViewport(normalized['viewport']);
       break;
     case 'dispatch_accessibility_action':
-      _expectKeys(normalized, const <String>{
-        'v',
-        'type',
-        'context_id',
-        'document_id',
-        'runtime_context_id',
-        'viewport',
-        'source_generation',
-        'generation',
-        'node_id',
-        'action',
-      });
+      final action = normalized['action'];
+      if (action == 'focus') {
+        _expectKeys(normalized, const <String>{
+          'v',
+          'type',
+          'context_id',
+          'document_id',
+          'runtime_context_id',
+          'viewport',
+          'source_generation',
+          'generation',
+          'node_id',
+          'action',
+        });
+      } else if (action == 'set_value') {
+        _expectKeys(normalized, const <String>{
+          'v',
+          'type',
+          'context_id',
+          'document_id',
+          'runtime_context_id',
+          'viewport',
+          'source_generation',
+          'generation',
+          'node_id',
+          'action',
+          'value',
+        });
+        _validateBoundedString(
+          normalized['value'],
+          'value',
+          vixenMaxAccessibilityValueBytes,
+        );
+      } else {
+        _invalidCommand('unsupported accessibility action');
+      }
       _validateContextId(normalized['context_id']);
       _validatePositiveId(normalized['document_id'], 'document_id');
       _validatePositiveId(
@@ -228,9 +253,6 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
       _validatePositiveId(normalized['source_generation'], 'source_generation');
       _validatePositiveId(normalized['generation'], 'generation');
       _validatePositiveId(normalized['node_id'], 'node_id');
-      if (normalized['action'] != 'focus') {
-        _invalidCommand('unsupported accessibility action');
-      }
       break;
     case 'dispatch_mouse_event':
       _validateInputCommand(normalized);

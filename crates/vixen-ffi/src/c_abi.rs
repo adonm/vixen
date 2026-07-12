@@ -15,11 +15,12 @@ use std::time::Duration;
 
 use serde_json::{Map, Value, json};
 use vixen_api::{
-    AccessibilityAction, AccessibilityNode, AccessibilitySnapshot, BrowserError, BrowserEvent,
-    BrowsingContextId, BrowsingContextState, CrossDocumentNavigationKind, DiagnosticScope,
-    DownloadEvent, EngineDiagnostic, EngineDiagnosticCategory, InputDispatchResult, KeyEventData,
-    MouseEventData, NavigationActionOutcome, NavigationCancellationReason, NavigationPhase,
-    RuntimeConsoleArg, RuntimeConsoleValue, RuntimeEffects, RuntimeNetworkEvent,
+    ACCESSIBILITY_MAX_VALUE_BYTES, AccessibilityAction, AccessibilityNode, AccessibilitySnapshot,
+    BrowserError, BrowserEvent, BrowsingContextId, BrowsingContextState,
+    CrossDocumentNavigationKind, DiagnosticScope, DownloadEvent, EngineDiagnostic,
+    EngineDiagnosticCategory, InputDispatchResult, KeyEventData, MouseEventData,
+    NavigationActionOutcome, NavigationCancellationReason, NavigationPhase, RuntimeConsoleArg,
+    RuntimeConsoleValue, RuntimeEffects, RuntimeNetworkEvent,
 };
 
 use crate::{
@@ -571,21 +572,54 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
             }
         }
         "dispatch_accessibility_action" => {
-            exact_keys(
-                object,
-                &[
-                    "action",
-                    "context_id",
-                    "document_id",
-                    "generation",
-                    "node_id",
-                    "runtime_context_id",
-                    "source_generation",
-                    "type",
-                    "v",
-                    "viewport",
-                ],
-            )?;
+            let action = match required_string(object, "action")? {
+                "focus" => {
+                    exact_keys(
+                        object,
+                        &[
+                            "action",
+                            "context_id",
+                            "document_id",
+                            "generation",
+                            "node_id",
+                            "runtime_context_id",
+                            "source_generation",
+                            "type",
+                            "v",
+                            "viewport",
+                        ],
+                    )?;
+                    AccessibilityAction::Focus
+                }
+                "set_value" => {
+                    exact_keys(
+                        object,
+                        &[
+                            "action",
+                            "context_id",
+                            "document_id",
+                            "generation",
+                            "node_id",
+                            "runtime_context_id",
+                            "source_generation",
+                            "type",
+                            "v",
+                            "value",
+                            "viewport",
+                        ],
+                    )?;
+                    AccessibilityAction::SetValue(bounded_string(
+                        object,
+                        "value",
+                        ACCESSIBILITY_MAX_VALUE_BYTES,
+                    )?)
+                }
+                _ => {
+                    return Err(AbiError::invalid_command(
+                        "unsupported accessibility action",
+                    ));
+                }
+            };
             let source_generation = required_u64(object, "source_generation")?;
             let generation = required_u64(object, "generation")?;
             let node_id = usize::try_from(required_u64(object, "node_id")?)
@@ -595,14 +629,6 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
                     "accessibility generations and node_id must be nonzero",
                 ));
             }
-            let action = match required_string(object, "action")? {
-                "focus" => AccessibilityAction::Focus,
-                _ => {
-                    return Err(AbiError::invalid_command(
-                        "unsupported accessibility action",
-                    ));
-                }
-            };
             ControllerCommand::DispatchAccessibilityAction {
                 context_id: required_context_id(object)?,
                 document_id: required_document_id(object)?,
@@ -1920,6 +1946,19 @@ mod tests {
                 && document_id.get() == 3
                 && runtime_context_id.get() == 4
         ));
+
+        let mut set_value = value.clone();
+        set_value["action"] = json!("set_value");
+        set_value["value"] = json!("Ada");
+        assert!(matches!(
+            parse_command(&set_value.to_string()).unwrap(),
+            ControllerCommand::DispatchAccessibilityAction {
+                action: AccessibilityAction::SetValue(value),
+                ..
+            } if value == "Ada"
+        ));
+        set_value["value"] = json!("x".repeat(ACCESSIBILITY_MAX_VALUE_BYTES + 1));
+        assert!(parse_command(&set_value.to_string()).is_err());
 
         for invalid in [
             ("source_generation", json!(0)),
