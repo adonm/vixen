@@ -28,9 +28,8 @@ use crate::display_list::{
 use crate::doc::{Document, DocumentParser, ParseError};
 use crate::history::{HistoryEntry, SessionHistory};
 use crate::layout_tree::{
-    LayoutFragment, LayoutFragmentKind, LayoutNode, LayoutNodeKind, LayoutPosition, LayoutTree,
-    apply_root_scroll, build_layout_tree, dump_layout_tree, layout_fragments_from_tree,
-    line_boxes_from_tree,
+    LayoutFragment, LayoutFragmentKind, LayoutPosition, LayoutTree, apply_root_scroll,
+    build_layout_tree, dump_layout_tree, layout_fragments_from_tree, line_boxes_from_tree,
 };
 use crate::line_layout::{LineBox, dump_line_boxes};
 use crate::style_cascade::AuthorStylesheet;
@@ -67,6 +66,8 @@ struct FindState {
 struct FindMatch {
     rect: Rect,
     fixed: bool,
+    order: u32,
+    clip: Option<Rect>,
 }
 
 const MAX_FIND_MATCHES: usize = 10_000;
@@ -506,30 +507,19 @@ impl Page {
             self.computed_style_for_viewport(node_id, viewport)
         });
         let mut fixed_subtree = vec![false; tree.nodes.len()];
-        let mut matches = Vec::new();
         for node in &tree.nodes {
             let parent_fixed = node
                 .parent
                 .is_some_and(|parent| fixed_subtree[parent.index()]);
             let fixed = parent_fixed || node.style.position == LayoutPosition::Fixed;
             fixed_subtree[node.id.index()] = fixed;
-            if node.kind != LayoutNodeKind::Text {
-                continue;
-            }
-            let Some(text) = node.text.as_deref() else {
-                continue;
-            };
-            for offset in text_match_offsets(text, query, case_sensitive) {
-                matches.push(FindMatch {
-                    rect: match_rect_for_text(node, text, offset),
-                    fixed,
-                });
-                if matches.len() == MAX_FIND_MATCHES {
-                    return matches;
-                }
-            }
         }
-        matches
+        find_matches_in_fragments(
+            &layout_fragments_from_tree(&tree),
+            query,
+            case_sensitive,
+            |node_id| fixed_subtree[node_id.index()],
+        )
     }
 
     /// Fallback event target for wheel input over unpainted viewport space.
@@ -624,7 +614,19 @@ impl Page {
         let viewport_rect = Rect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32);
         let mut builder = DisplayListBuilder::new();
         builder.push(viewport_background_item(viewport_rect));
-        for fragment in self.layout_fragments(viewport) {
+        let fragments = self.layout_fragments(viewport);
+        if let Some(find) = self.find_state.as_ref()
+            && !find.query.is_empty()
+        {
+            for (index, found) in
+                find_matches_in_fragments(&fragments, &find.query, find.case_sensitive, |_| false)
+                    .into_iter()
+                    .enumerate()
+            {
+                builder.push(find_highlight_draw_item(found, index == find.active_match));
+            }
+        }
+        for fragment in fragments {
             builder.push(fragment_draw_item(&fragment));
         }
         builder.build()
@@ -975,6 +977,29 @@ fn fragment_draw_item(fragment: &LayoutFragment) -> DrawItem {
     }
 }
 
+fn find_highlight_draw_item(found: FindMatch, active: bool) -> DrawItem {
+    DrawItem {
+        order: found.order,
+        z_index: 0,
+        visibility: crate::display_list::Visibility::Visible,
+        opacity: 1.0,
+        clip: found.clip,
+        is_viewport_background: false,
+        border_box: found.rect,
+        padding_box: found.rect,
+        content_box: found.rect,
+        background_clip: BackgroundBox::BorderBox,
+        background_origin: BackgroundBox::ContentBox,
+        background_attachment: BackgroundAttachment::Scroll,
+        background: Some(if active {
+            Color::rgb(255, 152, 0)
+        } else {
+            Color::rgb(255, 235, 59)
+        }),
+        text: None,
+    }
+}
+
 fn layout_bbox_for_node(tree: &LayoutTree, node_id: usize) -> Option<(f64, f64, f64, f64)> {
     tree.nodes
         .iter()
@@ -1211,31 +1236,49 @@ fn text_match_offsets(haystack: &str, needle: &str, case_sensitive: bool) -> Vec
     if case_sensitive {
         return haystack
             .match_indices(needle)
-            .map(|(offset, _)| offset)
+            .map(|(offset, _)| haystack[..offset].chars().count())
             .collect();
     }
     let haystack = haystack.to_lowercase();
     let needle = needle.to_lowercase();
     haystack
         .match_indices(&needle)
-        .map(|(offset, _)| offset)
+        .map(|(offset, _)| haystack[..offset].chars().count())
         .collect()
 }
 
-fn match_rect_for_text(node: &LayoutNode, text: &str, offset: usize) -> Rect {
-    let line_height = 19.2_f32.min(node.rect.h.max(1.0));
-    let line_count = (node.rect.h / line_height).ceil().max(1.0) as usize;
-    let line = offset
-        .saturating_mul(line_count)
-        .checked_div(text.len().max(1))
-        .unwrap_or(0)
-        .min(line_count - 1);
-    Rect::new(
-        node.rect.x,
-        node.rect.y + line as f32 * line_height,
-        node.rect.w.max(1.0),
-        line_height,
-    )
+fn find_matches_in_fragments(
+    fragments: &[LayoutFragment],
+    query: &str,
+    case_sensitive: bool,
+    is_fixed: impl Fn(crate::layout_tree::LayoutNodeId) -> bool,
+) -> Vec<FindMatch> {
+    let mut matches = Vec::new();
+    for fragment in fragments {
+        let LayoutFragmentKind::Text { text, .. } = &fragment.kind else {
+            continue;
+        };
+        let character_count = text.chars().count().max(1);
+        let character_width = fragment.rect.w / character_count as f32;
+        let match_width = query.chars().count() as f32 * character_width;
+        for character_offset in text_match_offsets(text, query, case_sensitive) {
+            matches.push(FindMatch {
+                rect: Rect::new(
+                    fragment.rect.x + character_offset as f32 * character_width,
+                    fragment.rect.y,
+                    match_width.max(1.0),
+                    fragment.rect.h,
+                ),
+                fixed: is_fixed(fragment.node_id),
+                order: fragment.order,
+                clip: fragment.clip,
+            });
+            if matches.len() == MAX_FIND_MATCHES {
+                return matches;
+            }
+        }
+    }
+    matches
 }
 
 fn initial_session_history(url: &str) -> SessionHistory {
@@ -2064,6 +2107,53 @@ mod tests {
                 active_match: None,
             }
         );
+    }
+
+    #[test]
+    fn find_highlights_all_visible_matches_and_distinguishes_active_match() {
+        let mut page = Page::from_html(
+            "file:///find.html",
+            "<style>body{margin:0}</style><p>Rust rust</p>",
+        )
+        .unwrap();
+        let viewport = (300, 100);
+        let active_color = Color::rgb(255, 152, 0);
+        let other_color = Color::rgb(255, 235, 59);
+        let highlight_rects = |page: &Page| {
+            page.display_list(viewport)
+                .into_iter()
+                .filter_map(|command| match command {
+                    PaintCommand::Background { fill, color, .. }
+                        if color == active_color || color == other_color =>
+                    {
+                        Some((fill, color))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            page.find_text("rust", false, true, viewport).active_match,
+            Some(1)
+        );
+        let first = highlight_rects(&page);
+        assert_eq!(first.len(), 2);
+        assert_eq!(first[0].1, active_color);
+        assert_eq!(first[1].1, other_color);
+        assert_eq!(first[0].0.w, 32.0);
+        assert!(first[0].0.x < first[1].0.x);
+
+        assert_eq!(
+            page.find_text("rust", false, true, viewport).active_match,
+            Some(2)
+        );
+        let second = highlight_rects(&page);
+        assert_eq!(second[0].1, other_color);
+        assert_eq!(second[1].1, active_color);
+
+        page.find_text("", false, true, viewport);
+        assert!(highlight_rects(&page).is_empty());
     }
 
     #[test]

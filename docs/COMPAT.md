@@ -288,8 +288,11 @@ advance or reverse with wrapping; Page owns the one-based active match and moves
 the same clamped root offset used by paint, hit testing, and Semantics just enough
 to reveal it. The generation-checked result is exposed through a live region and
 forces a paired frame/Semantics refresh after traversal. Empty queries clear the
-active match; stale documents and queries above 4 KiB fail closed. Exact glyph-
-range highlighting remains open.
+active match; stale documents and queries above 4 KiB fail closed. Range-sized
+highlights are inserted before text in the one display list (orange
+for the active match, yellow for other matches). Their horizontal geometry uses
+the current deterministic text-run metrics; shaped-glyph precision follows the
+font-shaping milestone rather than creating a second find paint path.
 
 Page zoom is BrowserCore-owned per top-level context and bounded to 25–500%.
 Ctrl++/Ctrl+-/Ctrl+0 and menu actions send zoom intent through ABI v1; the core

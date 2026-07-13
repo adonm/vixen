@@ -271,7 +271,9 @@ Ctrl+F now crosses the exact active context/document ABI boundary. Page owns a
 10,000-match-bounded rendered-text result and one-based active match; Enter/F3
 plus Previous/Next traverse with wrapping and move the shared root offset to
 reveal the match before Flutter refreshes the paired frame/Semantics projection.
-Exact glyph-range highlighting remains before find parity.
+Active orange and other yellow range highlights enter the same display list
+before its text runs; horizontal precision currently shares the deterministic
+text metric and improves with font shaping.
 Per-context 25–500% page zoom now remains BrowserCore-owned: it derives a CSS
 viewport, scales the single display list into the physical frame, converts
 physical input back to CSS coordinates, and projects Semantics bounds through
@@ -576,8 +578,8 @@ correctness. Neither may starve the other.
    host-service UI; both remain cross-cutting through every later platform.
 5. Complete the Linux basic-browser gate: visible controlled-site navigation,
    nested/touch/script scrolling, contenteditable plus native IME evidence,
-   back/forward/reload/stop, complete find traversal/highlighting,
-   and bounded navigation/runtime/surface recovery. Keep release-archive smoke
+   back/forward/reload/stop, and bounded navigation/runtime/surface recovery.
+   Keep release-archive smoke
    green, but defer FlatPark submission/review/publishing until this gate passes.
 6. Use the landed checked-in hello-Flutter peer, controlled release-bundle
    build, component/delta analyzer, and initial clean x86_64 size report to

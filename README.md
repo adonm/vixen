@@ -41,7 +41,8 @@ hit testing, and accessibility bounds consume that same offset while fixed-
 position content remains viewport anchored;
 Ctrl+F opens a bounded BrowserCore-backed find bar; Enter/F3 and Previous/Next
 traverse up to 10,000 case-insensitive rendered-text matches, wrap in document
-order, and use the Page-owned root offset to reveal the active match;
+order, use the Page-owned root offset to reveal the active match, and paint
+active/other range highlights through the same display-list/WebRender path;
 per-tab zoom from 25–500% derives a CSS viewport inside BrowserCore and applies
 one matching transform to WebRender commands, hit testing, wheel coordinates,
 and Semantics bounds;
