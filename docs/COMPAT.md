@@ -210,7 +210,11 @@ content), then `aria-description`, then an unused `title`, and map to Flutter's
 semantic hint. Native range min/max/current/step state and enabled
 `input[type=range]` increase/decrease actions execute through the same
 generation-checked BrowserCore/runtime path as focus and set-value. This is
-widget/native-bridge evidence, not native AT or broad ARIA range support.
+widget/native-bridge evidence. Authored `slider`/`spinbutton` roles with a finite
+`aria-valuenow` expose bounded min/max/current state and optional
+`aria-valuetext`; increase/decrease dispatch the orientation-appropriate
+`keydown` to the exact live target so the author remains responsible for
+updating ARIA state. This is not native AT or broad ARIA support.
 
 Flutter also sends one monotonic BrowserCore-owned host-view state for content
 focus, visibility, effective scale, and application lifecycle. Current documents

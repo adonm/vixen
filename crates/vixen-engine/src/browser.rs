@@ -3987,7 +3987,7 @@ mod tests {
         );
         config.document_overrides.insert(
             "https://same.test/input".to_owned(),
-            "<!doctype html><button id='same' aria-controls='name'>Same</button><a id='go' href='https://same.test/b'>Go</a><input id='name' aria-label='Name'><input id='volume' type='range' aria-label='Volume' min='0' max='10' step='2' value='4'>".to_owned(),
+            "<!doctype html><button id='same' aria-controls='name'>Same</button><a id='go' href='https://same.test/b'>Go</a><input id='name' aria-label='Name'><input id='volume' type='range' aria-label='Volume' min='0' max='10' step='2' value='4'><div id='brightness' role='slider' tabindex='0' aria-label='Brightness' aria-valuemin='0' aria-valuemax='10' aria-valuenow='3'></div><script>document.getElementById('brightness').addEventListener('keydown', event => { if (event.key === 'ArrowRight') event.currentTarget.setAttribute('aria-valuenow', '4'); });</script>".to_owned(),
         );
         config
     }
@@ -5105,6 +5105,45 @@ mod tests {
                 .and_then(|node| node.range)
                 .map(|range| range.current),
             Some(6.0)
+        );
+
+        let brightness = adjusted
+            .nodes
+            .iter()
+            .find(|node| node.label == "Brightness")
+            .unwrap();
+        assert_eq!(brightness.range.map(|range| range.current), Some(3.0));
+        let result = handle
+            .dispatch(BrowserCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                viewport: adjusted.viewport,
+                source_generation: adjusted.source_generation,
+                node_id: brightness.id,
+                action: AccessibilityAction::Increase,
+            })
+            .unwrap();
+        assert!(matches!(result, BrowserCommandResult::InputDispatched(_)));
+        let authored_adjusted = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: adjusted.viewport,
+            })
+            .unwrap();
+        let BrowserCommandResult::AccessibilitySnapshot(authored_adjusted) = authored_adjusted
+        else {
+            panic!("unexpected accessibility result: {authored_adjusted:?}");
+        };
+        assert_eq!(
+            authored_adjusted
+                .nodes
+                .iter()
+                .find(|node| node.label == "Brightness")
+                .and_then(|node| node.range)
+                .map(|range| range.current),
+            Some(4.0)
         );
     }
 

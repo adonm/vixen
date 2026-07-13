@@ -34,7 +34,9 @@ the bounded BrowserCore-derived Semantics hierarchy includes parent structure,
 `aria-controls`, text editing, and native range adjustment. Monotonic host-view
 updates also drive document focus/visibility and Flutter lifecycle input policy.
 Bounded accessible descriptions plus retained `aria-describedby` and
-`aria-details` relationships now cross the same BrowserCore/ABI projection. IME,
+`aria-details` relationships now cross the same BrowserCore/ABI projection.
+Authored ARIA sliders/spinbuttons with finite numeric state also expose live,
+generation-checked adjustment actions. IME,
 complete accessibility/native AT, host services, release packaging, and non-Linux runners
 remain open, so the GTK/Relm4 shell is still the temporary Linux compatibility
 baseline rather than the product direction.

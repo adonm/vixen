@@ -2340,7 +2340,9 @@ const DOM_API_BOOTSTRAP: &str = r#"
         return true;
       }
       if (String(action) === 'increase' || String(action) === 'decrease') {
-        return adjustRangeControl(target, String(action) === 'increase' ? 1 : -1);
+        const direction = String(action) === 'increase' ? 1 : -1;
+        if (adjustRangeControl(target, direction)) return true;
+        return dispatchAuthoredRangeAdjustment(target, direction);
       }
       return false;
     },
@@ -2890,6 +2892,24 @@ const DOM_API_BOOTSTRAP: &str = r#"
     if (next === current) return true;
     const text = String(next);
     applyControlValue(element, text, text.length, text.length, 'insertReplacementText', text, true);
+    return true;
+  }
+
+  function dispatchAuthoredRangeAdjustment(element, direction) {
+    const role = (element.getAttribute('role') || '').trim().toLowerCase().split(/\s+/)[0];
+    if ((role !== 'slider' && role !== 'spinbutton') || element.getAttribute('aria-valuenow') === null) return false;
+    element.focus();
+    const vertical = role === 'spinbutton' || (element.getAttribute('aria-orientation') || '').trim().toLowerCase() === 'vertical';
+    const key = vertical
+      ? (direction > 0 ? 'ArrowUp' : 'ArrowDown')
+      : (direction > 0 ? 'ArrowRight' : 'ArrowLeft');
+    element.dispatchEvent(new KeyboardEvent('keydown', {
+      key,
+      code: key,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    }));
     return true;
   }
 

@@ -705,50 +705,78 @@ fn accessibility_value(element: &AccessibilityElement, role: &str) -> Option<Str
     ) {
         return None;
     }
-    element.value.clone().or_else(|| {
-        matches!(element.tag.as_str(), "textarea" | "select")
-            .then(|| element.text.clone())
-            .filter(|value| !value.is_empty())
-    })
+    element
+        .aria_value_text
+        .clone()
+        .or_else(|| element.aria_value_now.clone())
+        .or_else(|| element.value.clone())
+        .or_else(|| {
+            matches!(element.tag.as_str(), "textarea" | "select")
+                .then(|| element.text.clone())
+                .filter(|value| !value.is_empty())
+        })
 }
 
 fn accessibility_range(element: &AccessibilityElement, role: &str) -> Option<AccessibilityRange> {
-    if element.tag != "input"
-        || !element
+    if element.read_only {
+        return None;
+    }
+    let native_range = element.tag == "input"
+        && element
             .input_type
             .as_deref()
             .is_some_and(|value| value.eq_ignore_ascii_case("range"))
-        || role != "slider"
-        || element.read_only
-    {
+        && role == "slider";
+    let authored_current = element
+        .aria_value_now
+        .as_deref()
+        .and_then(|value| value.parse::<f64>().ok())
+        .filter(|value| value.is_finite());
+    let authored_range = matches!(role, "slider" | "spinbutton")
+        && element.role.as_deref() == Some(role)
+        && authored_current.is_some()
+        && accessibility_focusable(element);
+    if !native_range && !authored_range {
         return None;
     }
-    let minimum = element
-        .minimum
-        .as_deref()
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite())
-        .unwrap_or(0.0);
-    let maximum = element
-        .maximum
-        .as_deref()
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite() && *value >= minimum)
-        .unwrap_or(100.0_f64.max(minimum));
-    let step = element
-        .step
-        .as_deref()
-        .filter(|value| !value.eq_ignore_ascii_case("any"))
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite() && *value > 0.0)
-        .unwrap_or(1.0);
-    let current = element
-        .value
-        .as_deref()
-        .and_then(|value| value.parse::<f64>().ok())
-        .filter(|value| value.is_finite())
-        .unwrap_or(minimum + (maximum - minimum) / 2.0)
-        .clamp(minimum, maximum);
+    let minimum = (if authored_range {
+        element.aria_value_min.as_deref()
+    } else {
+        element.minimum.as_deref()
+    })
+    .and_then(|value| value.parse::<f64>().ok())
+    .filter(|value| value.is_finite())
+    .unwrap_or(0.0);
+    let maximum = (if authored_range {
+        element.aria_value_max.as_deref()
+    } else {
+        element.maximum.as_deref()
+    })
+    .and_then(|value| value.parse::<f64>().ok())
+    .filter(|value| value.is_finite() && *value >= minimum)
+    .unwrap_or(100.0_f64.max(minimum));
+    let step = if authored_range {
+        1.0
+    } else {
+        element
+            .step
+            .as_deref()
+            .filter(|value| !value.eq_ignore_ascii_case("any"))
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite() && *value > 0.0)
+            .unwrap_or(1.0)
+    };
+    let current = (if authored_range {
+        authored_current
+    } else {
+        element
+            .value
+            .as_deref()
+            .and_then(|value| value.parse::<f64>().ok())
+            .filter(|value| value.is_finite())
+    })
+    .unwrap_or(minimum + (maximum - minimum) / 2.0)
+    .clamp(minimum, maximum);
     Some(AccessibilityRange {
         current,
         minimum,
@@ -1040,6 +1068,56 @@ mod tests {
             })
         );
         assert_eq!(volume.actions, ["focus", "increase", "decrease"]);
+    }
+
+    #[test]
+    fn accessibility_snapshot_projects_authored_range_state_conservatively() {
+        let page = Page::from_html(
+            "file:///accessibility-authored-range.html",
+            r#"<!doctype html>
+                <div role="slider" tabindex="0" aria-label="Brightness" aria-valuemin="10" aria-valuemax="20" aria-valuenow="14" aria-valuetext="Medium"></div>
+                <div role="spinbutton" tabindex="0" aria-label="Guests" aria-valuenow="3"></div>
+                <div role="slider" tabindex="0" aria-label="Missing value"></div>
+                <div role="slider" tabindex="0" aria-label="Invalid value" aria-valuenow="many"></div>"#,
+        )
+        .unwrap();
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(1).unwrap(),
+            DocumentId::new(1).unwrap(),
+            (800, 600),
+        );
+        let brightness = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Brightness")
+            .unwrap();
+        assert_eq!(brightness.value.as_deref(), Some("Medium"));
+        assert_eq!(
+            brightness.range,
+            Some(AccessibilityRange {
+                current: 14.0,
+                minimum: 10.0,
+                maximum: 20.0,
+                step: 1.0,
+            })
+        );
+        assert_eq!(brightness.actions, ["focus", "increase", "decrease"]);
+        let guests = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Guests")
+            .unwrap();
+        assert_eq!(guests.value.as_deref(), Some("3"));
+        assert_eq!(guests.range.unwrap().current, 3.0);
+        for label in ["Missing value", "Invalid value"] {
+            let node = snapshot
+                .nodes
+                .iter()
+                .find(|node| node.label == label)
+                .unwrap();
+            assert!(node.range.is_none());
+            assert_eq!(node.actions, ["focus"]);
+        }
     }
 
     #[test]

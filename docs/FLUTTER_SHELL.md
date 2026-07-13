@@ -189,10 +189,14 @@ labels), bounded descriptions, values, states, focus, tap/focus actions, and
 physical layout bounds. Bounded `aria-controls`, `aria-describedby`, and
 `aria-details` ID references retain only nodes in the semantic projection;
 controls map to stable Flutter semantic identifiers while resolved description
-text maps to Flutter's hint. Enabled native `input[type=range]` controls expose bounded numeric
-min/max/current/step state plus exact-generation increase/decrease actions through
-the live value/input/change path; authored ARIA sliders are not treated as native
-controls. Engine
+text maps to Flutter's hint. Enabled native `input[type=range]` controls expose
+bounded numeric min/max/current/step state plus exact-generation
+increase/decrease actions through the live value/input/change path. Authored
+`slider` and `spinbutton` roles with finite `aria-valuenow` expose numeric state
+(plus `aria-valuemin`, `aria-valuemax`, and `aria-valuetext`) and
+exact-generation adjustments. Those actions focus the live target and dispatch
+orientation-appropriate arrow-key events; only author script updates authored
+ARIA state. Engine
 snapshots cap at 1024 nodes and 512 UTF-8 bytes per string; the ABI caps the exact
 wire projection at 192 nodes under 1 MiB. A deterministic nonzero semantic
 generation invalidates document-order ids after mutation. The coordinator
@@ -211,8 +215,8 @@ set-value action only for enabled, writable native text inputs/textareas; it
 uses the live control-value and input/change event path, while password,
 readonly, unsupported input types, and authored ARIA-only textboxes remain
 unadvertised. Complete accessibility still requires platform mappings for more
-non-tree relationships, heading levels, mixed states, authored range actions,
-text selection, live regions, incremental updates, the disabled-fieldset
+non-tree relationships, heading levels, mixed states, text selection, live
+regions, incremental updates, broader authored-range keyboard conventions, the disabled-fieldset
 first-legend exception, full ARIA presentational-role conflict handling, and
 native AT smoke on each platform.
 

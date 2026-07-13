@@ -232,8 +232,10 @@ semantic identifiers. Enabled native range inputs expose numeric state and
 exact-generation increase/decrease actions through the live runtime. Additional
 bounded `aria-describedby` and `aria-details` relationships plus resolved
 descriptions now cross the same projection; descriptions map to Flutter hints.
-Authored ranges, incremental/live updates, text selection, broader platform
-relationship mappings, and native AT remain.
+Authored ARIA sliders/spinbuttons with finite numeric state now expose bounded
+range values and exact-generation arrow-key adjustments through the live
+runtime. Incremental/live updates, text selection, broader authored-range and
+platform relationship mappings, and native AT remain.
 External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
 sparse paths. Headless `--incremental` now captures real before/after frames from
@@ -526,8 +528,8 @@ correctness. Neither may starve the other.
    image decode, and WPT-driven layout/rendering work on the shared core.
 4. Extend the landed bounded hierarchical accessibility projection beyond its
    `aria-controls`/`aria-describedby`/`aria-details` relationships, descriptions,
-   and native-range increase/decrease slice: add authored ranges, incremental
-   updates, live regions/text selection, and native AT evidence. Add platform
+   and native/authored-range increase/decrease slice: add incremental updates,
+   live regions/text selection, and native AT evidence. Add platform
    host-service UI; both remain cross-cutting through every later platform.
 5. Use the landed checked-in hello-Flutter peer, controlled release-bundle
    build, component/delta analyzer, initial clean x86_64 size report, and pinned
