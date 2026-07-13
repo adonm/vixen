@@ -372,8 +372,8 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         shiftKey: keyboard.isShiftPressed,
         altKey: keyboard.isAltPressed,
         metaKey: keyboard.isMetaPressed,
-        deltaX: deltaX,
-        deltaY: deltaY,
+        deltaX: deltaX * viewport.width / _logicalViewport.width,
+        deltaY: deltaY * viewport.height / _logicalViewport.height,
       ),
     );
   }

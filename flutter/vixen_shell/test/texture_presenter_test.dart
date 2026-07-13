@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -87,6 +88,8 @@ void main() {
   testWidgets('content surface normalizes pointer and keyboard input', (
     tester,
   ) async {
+    tester.view.devicePixelRatio = 2;
+    addTearDown(tester.view.resetDevicePixelRatio);
     final mouseEvents = <(String, BrowserMouseEvent)>[];
     final keyEvents = <(String, BrowserKeyEvent)>[];
     var viewport = (width: 0, height: 0);
@@ -118,6 +121,12 @@ void main() {
         position: tester.getCenter(find.byKey(const Key('content-surface'))),
       ),
     );
+    await tester.sendEventToBinding(
+      PointerScrollEvent(
+        position: tester.getCenter(find.byKey(const Key('content-surface'))),
+        scrollDelta: const Offset(4, 6),
+      ),
+    );
     await tester.pump();
     final gesture = await tester.startGesture(
       tester.getCenter(find.byKey(const Key('content-surface'))),
@@ -129,12 +138,16 @@ void main() {
     expect(mouseEvents.map((entry) => entry.$1), [
       'mousedown',
       'mouseup',
+      'wheel',
       'mousemove',
       'mousedown',
       'cancel',
     ]);
     expect(mouseEvents.first.$2.x, closeTo(viewport.width / 2, 0.01));
     expect(mouseEvents.first.$2.y, closeTo(viewport.height / 2, 0.01));
+    final wheel = mouseEvents.singleWhere((entry) => entry.$1 == 'wheel').$2;
+    expect(wheel.deltaX, 8);
+    expect(wheel.deltaY, 12);
     expect(keyEvents.map((entry) => entry.$1), ['keydown', 'keyup']);
     expect(keyEvents.first.$2.key, 'a');
     expect(keyEvents.first.$2.code, 'KeyA');

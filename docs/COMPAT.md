@@ -259,6 +259,15 @@ expose the accepted state through `document.hasFocus()`, `hidden`, and
 while inactive. CSS-versus-physical scale correction and platform lifecycle/
 surface recovery are not established by this slice.
 
+The first interactive root-scrolling slice is BrowserCore-owned. Flutter scales
+wheel deltas into the physical frame coordinate space; the live runtime receives
+a cancelable `wheel` event; and only an uncanceled default action updates the
+bounded Page scroll offset. The same translated layout projection drives
+WebRender paint, hit testing, selector/accessibility bounds, while fixed-position
+subtrees remain viewport anchored. Nested scroll containers, keyboard/touch
+scrolling, scroll restoration, smooth scrolling, and JS `scrollTo`/`scrollBy`
+state remain open.
+
 ---
 
 ## WPT target profile

@@ -34,6 +34,9 @@ through a bounded RGBA pixel-buffer texture. Its fake-controller, worker,
 coordinator, texture, input, and live native smoke tests run with
 `just gate-flutter-shell`; a relocatable debug bundle has also compiled. Physical
 viewport plus pointer/wheel/keyboard input are routed through BrowserCore;
+uncanceled wheel input now updates a bounded Page-owned root scroll offset, and
+paint, hit testing, and accessibility bounds consume that same offset while
+fixed-position content remains viewport anchored;
 the bounded BrowserCore-derived Semantics hierarchy includes parent structure,
 `aria-controls`, text editing, and native range adjustment. Monotonic host-view
 updates also drive document focus/visibility and Flutter lifecycle input policy.

@@ -184,11 +184,19 @@ transition, suppresses hidden captures, and cancels pending primary presses at
 the controller boundary. The stored scale does not yet separate CSS layout pixels
 from the bounded physical render target.
 
-The remaining target adds text/IME, gestures and engine-owned scrolling,
+The remaining target adds text/IME, touch/keyboard and nested scrolling,
 CSS/physical scale and zoom correctness, and platform lifecycle/surface recovery.
 BrowserCore continues to own hit testing, selection, DOM event dispatch, and
 navigation effects. Platform-specific raw data may be retained in bounded DTOs
 where web semantics require it.
+
+The first engine-owned scrolling vertical is now implemented for the top-level
+document. Flutter scales wheel deltas into frame coordinates, BrowserCore sends
+the cancelable wheel event to the live target, and only an uncanceled default
+action mutates a clamped Page scroll offset. Paint, hit testing, selector and
+Semantics bounds share the translated layout; fixed-position subtrees stay
+anchored. Nested scrollers, keyboard/touch gestures, restoration, smooth
+scrolling, and script-driven scrolling remain in the target above.
 
 The initial accessibility hierarchy is implemented. BrowserCore/Page derives native
 and explicit ARIA roles, bounded names (including `aria-labelledby` and HTML

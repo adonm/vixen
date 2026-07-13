@@ -44,8 +44,10 @@ matching pending primary press and cannot synthesize a click. A monotonic
 BrowserCore-owned host-view command now carries effective scale, content focus,
 visibility, and Flutter lifecycle; stale updates fail, hidden/inactive views
 reject input, and the live document receives focus/visibility state and events.
-Text/IME, gestures, CSS/physical scale correctness, and lifecycle/surface recovery
-remain follow-up work.
+Uncanceled wheel events apply one bounded Page-owned root scroll offset used by
+paint, hit testing, and accessibility bounds; fixed-position content remains
+anchored. Text/IME, nested and keyboard/touch/script scrolling, CSS/physical
+scale correctness, and lifecycle/surface recovery remain follow-up work.
 
 ## Accessibility contract
 

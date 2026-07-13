@@ -2494,6 +2494,21 @@ impl BrowserCore {
                 "mouse event coordinates and deltas must be finite",
             ));
         }
+        let is_wheel = event_type == "wheel";
+        let node_id = if is_wheel && node_id == 0 {
+            self.context_for_document(context_id, document_id)?
+                .page
+                .default_pointer_event_target_node_id()
+                .unwrap_or(0)
+        } else {
+            node_id
+        };
+        if node_id == 0 {
+            return Ok(BrowserCommandResult::InputDispatched(InputDispatchResult {
+                effects: RuntimeEffects::default(),
+                navigation_actions: Vec::new(),
+            }));
+        }
         let event_type = json_string(&event_type)?;
         let init = deno_core::serde_json::json!({
             "bubbles": event.bubbles,
@@ -2519,6 +2534,16 @@ impl BrowserCore {
         );
         let evaluation =
             self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
+        if is_wheel
+            && !event.ctrl_key
+            && !event.meta_key
+            && evaluation.value == ScriptValue::Bool(true)
+        {
+            let viewport = self.context(context_id)?.host_view.viewport;
+            self.context_mut(context_id)?
+                .page
+                .scroll_root_by(viewport, (event.delta_x, event.delta_y));
+        }
         Ok(BrowserCommandResult::InputDispatched(InputDispatchResult {
             effects: evaluation.effects,
             navigation_actions: evaluation.navigation_actions,

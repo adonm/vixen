@@ -229,7 +229,11 @@ press cancellation. A monotonic BrowserCore host-view state now carries bounded
 viewport/effective scale, content focus, visibility, and Flutter lifecycle;
 stale updates fail, inactive views reject input, and live documents observe
 focus/visibility state and events across navigation. CSS/physical scale
-separation and lifecycle/surface recovery remain. A bounded, mutation-generation-tagged
+separation and lifecycle/surface recovery remain. Uncanceled wheel events now
+apply a clamped Page-owned root scroll offset; the translated layout drives
+paint, hit testing, selector/accessibility bounds, and fixed-position anchoring.
+Nested/keyboard/touch/script scrolling and restoration remain. A bounded,
+mutation-generation-tagged
 BrowserCore projection now maps roles/names/states/bounds and tap/focus into Flutter
 Semantics. Nearest emitted semantic-parent relationships now produce a validated,
 document-order nested Flutter hierarchy. Focus actions are exact source/wire-
@@ -535,8 +539,9 @@ The core ownership and local headless measurement foundations are landed. The
 next work has two interleaved tracks: Flutter shell migration and browser
 correctness. Neither may starve the other.
 
-1. Extend the landed physical viewport, pointer/wheel/keyboard, and monotonic
-   focus/visibility/lifecycle path with IME, gesture/scrolling, CSS/physical
+1. Extend the landed physical viewport, pointer/wheel/keyboard, root-wheel
+   scrolling, and monotonic focus/visibility/lifecycle path with IME,
+   nested/keyboard/touch/script scrolling, CSS/physical
    scale correctness, and lifecycle recovery. In parallel, finish
    navigation-aware runtime/native-host cancellation and preserve one BrowserCore
    terminal outcome.

@@ -25,6 +25,39 @@ pub use dump::dump_layout_tree;
 pub use flow::line_boxes_from_tree;
 pub use fragments::{LayoutFragment, LayoutFragmentKind, layout_fragments_from_tree};
 
+/// Translate the document-scrolling subtree into viewport coordinates while
+/// leaving the viewport and fixed-position subtrees anchored.
+pub fn apply_root_scroll(tree: &mut LayoutTree, offset: (f32, f32)) {
+    if offset == (0.0, 0.0) {
+        return;
+    }
+    let mut fixed_subtree = vec![false; tree.nodes.len()];
+    for index in 0..tree.nodes.len() {
+        let node = &tree.nodes[index];
+        if node.id == tree.root {
+            continue;
+        }
+        let parent_fixed = node
+            .parent
+            .is_some_and(|parent| fixed_subtree[parent.index()]);
+        fixed_subtree[index] = parent_fixed || node.style.position == LayoutPosition::Fixed;
+        if fixed_subtree[index] {
+            continue;
+        }
+        let node = &mut tree.nodes[index];
+        translate_rect_mut(&mut node.rect, -offset.0, -offset.1);
+        translate_rect_mut(&mut node.boxes.margin, -offset.0, -offset.1);
+        translate_rect_mut(&mut node.boxes.border, -offset.0, -offset.1);
+        translate_rect_mut(&mut node.boxes.padding, -offset.0, -offset.1);
+        translate_rect_mut(&mut node.boxes.content, -offset.0, -offset.1);
+    }
+}
+
+fn translate_rect_mut(rect: &mut Rect, x: f32, y: f32) {
+    rect.x += x;
+    rect.y += y;
+}
+
 /// Stable index into a [`LayoutTree`] arena.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct LayoutNodeId(pub usize);

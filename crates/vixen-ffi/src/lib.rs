@@ -335,16 +335,20 @@ impl FlutterBrowserController {
                 return Err(error);
             }
         };
-        let Some(target) = target else {
-            self.primary_mouse_press = None;
-            return Ok(ControllerResponse::InputDispatched(empty_input_result()));
+        let target_node_id = match target.as_ref() {
+            Some(target) => target.node_id,
+            None if event_type == "wheel" => 0,
+            None => {
+                self.primary_mouse_press = None;
+                return Ok(ControllerResponse::InputDispatched(empty_input_result()));
+            }
         };
 
         let mut result = match self.dispatch_mouse_to_node(
             context_id,
             document_id,
             runtime_context_id,
-            target.node_id,
+            target_node_id,
             event_type.clone(),
             event.clone(),
         ) {
@@ -360,7 +364,7 @@ impl FlutterBrowserController {
                 context_id,
                 document_id,
                 runtime_context_id,
-                node_id: target.node_id,
+                node_id: target_node_id,
             });
         } else if event_type == "mouseup"
             && event.button == 0
@@ -369,14 +373,14 @@ impl FlutterBrowserController {
                     context_id,
                     document_id,
                     runtime_context_id,
-                    node_id: target.node_id,
+                    node_id: target_node_id,
                 })
         {
             let clicked = match self.dispatch_mouse_to_node(
                 context_id,
                 document_id,
                 runtime_context_id,
-                target.node_id,
+                target_node_id,
                 "click".to_owned(),
                 event,
             ) {
@@ -1033,6 +1037,80 @@ mod tests {
                 .active_navigation_id,
             None
         );
+    }
+
+    #[test]
+    fn wheel_default_action_scrolls_page_and_honours_prevent_default() {
+        let profile = TestProfile::new();
+        let url = "https://ffi.test/scroll";
+        let mut config = BrowserConfig::new(&profile.0);
+        config.document_overrides.insert(
+            url.to_owned(),
+            r#"<!doctype html>
+                <style>html,body{margin:0}button{display:block;width:160px;height:60px}#space{height:500px}</style>
+                <button>Top</button><div id="space"></div><button>Bottom</button>
+                <script>document.addEventListener('wheel', event => { if (event.shiftKey) event.preventDefault(); });</script>"#
+                .to_owned(),
+        );
+        let mut controller = FlutterBrowserController::from_config(config).unwrap();
+        let context_id = controller.create_context().unwrap();
+        let navigation_id = controller.navigate(context_id, url).unwrap();
+        wait_for_settled(&mut controller, navigation_id);
+        let state = controller.context_state(context_id).unwrap();
+        controller
+            .dispatch(ControllerCommand::UpdateHostViewState {
+                context_id,
+                state: HostViewState {
+                    generation: 1,
+                    viewport: (200, 100),
+                    scale_factor: 1.0,
+                    focused: true,
+                    visible: true,
+                    lifecycle: HostLifecycle::Resumed,
+                },
+            })
+            .unwrap();
+        let bottom_y = |controller: &mut FlutterBrowserController| {
+            controller
+                .accessibility_snapshot(context_id, state.document_id, (200, 100))
+                .unwrap()
+                .nodes
+                .into_iter()
+                .find(|node| node.label == "Bottom")
+                .and_then(|node| node.bbox)
+                .unwrap()
+                .y
+        };
+        let before = bottom_y(&mut controller);
+
+        let mut wheel = mouse_event(20.0, 20.0, 0, 0);
+        wheel.delta_y = 200.0;
+        controller
+            .dispatch(ControllerCommand::DispatchMouseEvent {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                viewport: (200, 100),
+                event_type: "wheel".to_owned(),
+                event: wheel.clone(),
+            })
+            .unwrap();
+        let after = bottom_y(&mut controller);
+        assert_eq!(after, before - 200.0);
+
+        wheel.shift_key = true;
+        wheel.delta_y = 100.0;
+        controller
+            .dispatch(ControllerCommand::DispatchMouseEvent {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                viewport: (200, 100),
+                event_type: "wheel".to_owned(),
+                event: wheel,
+            })
+            .unwrap();
+        assert_eq!(bottom_y(&mut controller), after);
     }
 
     #[test]

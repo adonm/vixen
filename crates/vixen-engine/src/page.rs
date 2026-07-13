@@ -28,8 +28,8 @@ use crate::display_list::{
 use crate::doc::{Document, DocumentParser, ParseError};
 use crate::history::{HistoryEntry, SessionHistory};
 use crate::layout_tree::{
-    LayoutFragment, LayoutFragmentKind, LayoutTree, build_layout_tree, dump_layout_tree,
-    layout_fragments_from_tree, line_boxes_from_tree,
+    LayoutFragment, LayoutFragmentKind, LayoutPosition, LayoutTree, apply_root_scroll,
+    build_layout_tree, dump_layout_tree, layout_fragments_from_tree, line_boxes_from_tree,
 };
 use crate::line_layout::{LineBox, dump_line_boxes};
 use crate::style_cascade::AuthorStylesheet;
@@ -51,6 +51,7 @@ pub struct Page {
     accessibility_mutation_epoch: u64,
     selection: Option<PageSelection>,
     control_selections: std::collections::HashMap<usize, AccessibilityTextSelection>,
+    root_scroll: (f32, f32),
 }
 
 /// Incremental page construction retained on BrowserCore's owner thread.
@@ -114,6 +115,7 @@ impl Page {
             accessibility_mutation_epoch: 1,
             selection: None,
             control_selections: std::collections::HashMap::new(),
+            root_scroll: (0.0, 0.0),
         })
     }
 
@@ -338,6 +340,71 @@ impl Page {
         count_text_matches(&self.text_content(), query, case_sensitive)
     }
 
+    /// Current top-level document scroll offset in layout pixels.
+    pub fn root_scroll(&self) -> (f32, f32) {
+        self.root_scroll
+    }
+
+    /// Apply a bounded top-level default scroll action. Returns whether the
+    /// visible projection changed.
+    pub fn scroll_root_by(&mut self, viewport: (u32, u32), delta: (f64, f64)) -> bool {
+        if !delta.0.is_finite() || !delta.1.is_finite() {
+            return false;
+        }
+        let limits = self.root_scroll_limits(viewport);
+        let next = (
+            (f64::from(self.root_scroll.0) + delta.0).clamp(0.0, f64::from(limits.0)) as f32,
+            (f64::from(self.root_scroll.1) + delta.1).clamp(0.0, f64::from(limits.1)) as f32,
+        );
+        if next == self.root_scroll {
+            return false;
+        }
+        self.root_scroll = next;
+        self.bump_accessibility_mutation_epoch();
+        true
+    }
+
+    /// Fallback event target for wheel input over unpainted viewport space.
+    pub fn default_pointer_event_target_node_id(&self) -> Option<usize> {
+        self.query_selector_all("body")
+            .ok()
+            .and_then(|matches| matches.into_iter().next())
+            .or_else(|| {
+                self.query_selector_all("html")
+                    .ok()
+                    .and_then(|matches| matches.into_iter().next())
+            })
+            .map(|element| element.node_id)
+    }
+
+    fn root_scroll_limits(&self, viewport: (u32, u32)) -> (f32, f32) {
+        let tree = build_layout_tree(&self.document, viewport, |node_id| {
+            self.computed_style_for_viewport(node_id, viewport)
+        });
+        let mut fixed_subtree = vec![false; tree.nodes.len()];
+        let mut right = viewport.0 as f32;
+        let mut bottom = viewport.1 as f32;
+        for node in &tree.nodes {
+            if node.id == tree.root {
+                continue;
+            }
+            let parent_fixed = node
+                .parent
+                .is_some_and(|parent| fixed_subtree[parent.index()]);
+            let fixed = parent_fixed || node.style.position == LayoutPosition::Fixed;
+            fixed_subtree[node.id.index()] = fixed;
+            if fixed {
+                continue;
+            }
+            right = right.max(node.boxes.margin.x + node.boxes.margin.w);
+            bottom = bottom.max(node.boxes.margin.y + node.boxes.margin.h);
+        }
+        (
+            (right - viewport.0 as f32).max(0.0),
+            (bottom - viewport.1 as f32).max(0.0),
+        )
+    }
+
     pub(crate) fn document_base_uri(&self) -> String {
         let Some(base) = self
             .query_selector_all("base[href]")
@@ -353,9 +420,11 @@ impl Page {
     /// First Vixen-owned layout tree slice: styled DOM projected into an
     /// arena-backed tree with stable layout-node ids.
     pub fn layout_tree(&self, viewport: (u32, u32)) -> LayoutTree {
-        build_layout_tree(&self.document, viewport, |node_id| {
+        let mut tree = build_layout_tree(&self.document, viewport, |node_id| {
             self.computed_style_for_viewport(node_id, viewport)
-        })
+        });
+        apply_root_scroll(&mut tree, self.root_scroll);
+        tree
     }
 
     /// Deterministic layout-tree dump (`vixen-headless --dump-layout-tree`).
@@ -1810,6 +1879,47 @@ mod tests {
 
         assert_eq!(narrow[0].bbox.unwrap().2, 200.0);
         assert_eq!(wide[0].bbox.unwrap().2, 400.0);
+    }
+
+    #[test]
+    fn root_scroll_is_bounded_and_moves_document_but_not_fixed_content() {
+        let mut page = Page::from_html(
+            "file:///scroll.html",
+            "<style>body{margin:0}#spacer{height:600px}#fixed{position:fixed;top:4px;height:20px}</style><div id='spacer'>Top</div><button id='bottom'>Bottom</button><div id='fixed'>Fixed</div>",
+        )
+        .unwrap();
+        let viewport = (200, 100);
+        let before_bottom = page
+            .query_selector_all_in_viewport("#bottom", viewport)
+            .unwrap()[0]
+            .bbox
+            .unwrap();
+        let before_fixed = page
+            .query_selector_all_in_viewport("#fixed", viewport)
+            .unwrap()[0]
+            .bbox
+            .unwrap();
+
+        assert!(page.scroll_root_by(viewport, (0.0, 250.0)));
+        assert_eq!(page.root_scroll(), (0.0, 250.0));
+        let after_bottom = page
+            .query_selector_all_in_viewport("#bottom", viewport)
+            .unwrap()[0]
+            .bbox
+            .unwrap();
+        let after_fixed = page
+            .query_selector_all_in_viewport("#fixed", viewport)
+            .unwrap()[0]
+            .bbox
+            .unwrap();
+        assert_eq!(after_bottom.1, before_bottom.1 - 250.0);
+        assert_eq!(after_fixed, before_fixed);
+
+        assert!(page.scroll_root_by(viewport, (0.0, f64::MAX)));
+        let bottom_limit = page.root_scroll().1;
+        assert!(bottom_limit > 250.0);
+        assert!(!page.scroll_root_by(viewport, (0.0, f64::MAX)));
+        assert!(!page.scroll_root_by(viewport, (0.0, f64::NAN)));
     }
 
     #[test]
