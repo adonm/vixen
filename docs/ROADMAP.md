@@ -165,7 +165,7 @@ Alpha freezes an architecture capable of carrying the full goal. Complete these
 in order; later work may proceed in parallel only when it does not create a new
 state owner.
 
-Progress as of 2026-07-13: A1 is routed through the dependency-free typed
+Progress as of 2026-07-14: A1 is routed through the dependency-free typed
 `vixen-api` command/event seam and one `vixen-engine::browser::BrowserCore`.
 BrowserCore owns one engine thread, profile Store/network/cookies, bounded
 context/runtime registries, history, evaluation, inspection, and paint inputs.
@@ -273,11 +273,11 @@ A focused writable native text control or direct contenteditable editing host
 now attaches Flutter's platform `TextInputClient`; bounded full text plus UTF-16
 selection and composing ranges cross exact context/document/runtime ids and
 update the live DOM with composition-shaped plus `beforeinput`/`input` events.
-The semantic projection now distinguishes multiline hosts; Flutter configures
-Newline for those, Search for searchboxes, and Done for other single-line hosts,
+The semantic projection now distinguishes multiline hosts and carries normalized
+standard `inputmode`, supported input-type, and `enterkeyhint` intent. Flutter
+maps those values to the corresponding platform keyboard/action configuration,
 then routes platform actions through exact-generation Enter down/up dispatch.
-Authored `enterkeyhint`/keyboard-type specialization and real Linux IME evidence
-remain.
+Real Linux IME evidence remains.
 Ctrl+F now crosses the exact active context/document ABI boundary. Page owns a
 10,000-match-bounded rendered-text result and one-based active match; Enter/F3
 plus Previous/Next traverse with wrapping and move the shared root offset to
@@ -574,8 +574,8 @@ correctness. Neither may starve the other.
 1. Extend the landed physical viewport, pointer/wheel/keyboard, root
    wheel/key/script scrolling, native text-control IME, and monotonic
    focus/visibility/lifecycle
-   path with `enterkeyhint`/keyboard-type specialization and real native IME evidence,
-   nested/touch scrolling plus scroll events/restoration, CSS/physical
+   path with real native IME evidence, nested/touch scrolling plus scroll
+   events/restoration, CSS/physical
    scale correctness, and lifecycle recovery. In parallel, finish
    navigation-aware runtime/native-host cancellation and preserve one BrowserCore
    terminal outcome.

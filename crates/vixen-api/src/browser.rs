@@ -75,6 +75,11 @@ impl AccessibilitySnapshot {
                 None => hash.byte(0),
             }
             hash.boolean(node.multiline);
+            hash.optional_string(node.text_input_type.map(AccessibilityTextInputType::as_str));
+            hash.optional_string(
+                node.text_input_action
+                    .map(AccessibilityTextInputAction::as_str),
+            );
             match node.range {
                 Some(range) => {
                     hash.byte(1);
@@ -196,6 +201,10 @@ pub struct AccessibilityNode {
     pub text_selection: Option<AccessibilityTextSelection>,
     /// Whether this editable text host accepts line breaks.
     pub multiline: bool,
+    /// Platform keyboard specialization for a writable text host.
+    pub text_input_type: Option<AccessibilityTextInputType>,
+    /// Platform enter-key specialization for a writable text host.
+    pub text_input_action: Option<AccessibilityTextInputAction>,
     pub range: Option<AccessibilityRange>,
     pub bbox: Option<AccessibilityRect>,
     pub focused: bool,
@@ -216,6 +225,62 @@ pub struct AccessibilityNode {
 pub struct AccessibilityTextSelection {
     pub base_offset: u32,
     pub extent_offset: u32,
+}
+
+/// Normalized virtual-keyboard intent from HTML `inputmode` and input type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibilityTextInputType {
+    None,
+    Text,
+    Multiline,
+    Number,
+    Decimal,
+    Telephone,
+    Email,
+    Url,
+    Search,
+}
+
+impl AccessibilityTextInputType {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Text => "text",
+            Self::Multiline => "multiline",
+            Self::Number => "number",
+            Self::Decimal => "decimal",
+            Self::Telephone => "telephone",
+            Self::Email => "email",
+            Self::Url => "url",
+            Self::Search => "search",
+        }
+    }
+}
+
+/// Normalized platform enter-key intent from HTML `enterkeyhint`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AccessibilityTextInputAction {
+    Newline,
+    Done,
+    Go,
+    Next,
+    Previous,
+    Search,
+    Send,
+}
+
+impl AccessibilityTextInputAction {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Newline => "newline",
+            Self::Done => "done",
+            Self::Go => "go",
+            Self::Next => "next",
+            Self::Previous => "previous",
+            Self::Search => "search",
+            Self::Send => "send",
+        }
+    }
 }
 
 /// Numeric state for an adjustable native range control.
@@ -1186,6 +1251,8 @@ mod tests {
                 value: None,
                 text_selection: None,
                 multiline: false,
+                text_input_type: None,
+                text_input_action: None,
                 range: None,
                 bbox: None,
                 focused: false,

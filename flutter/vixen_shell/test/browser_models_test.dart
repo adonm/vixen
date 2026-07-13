@@ -274,6 +274,8 @@ void main() {
           'value': null,
           'text_selection': {'base_offset': 1, 'extent_offset': 3},
           'multiline': false,
+          'text_input_type': 'email',
+          'text_input_action': 'send',
           'range': null,
           'bbox': {'x': 10.0, 'y': 20.0, 'width': 100.0, 'height': 30.0},
           'focused': true,
@@ -299,6 +301,14 @@ void main() {
     );
     expect(response.snapshot.nodes.single.parentId, isNull);
     expect(response.snapshot.nodes.single.multiline, isFalse);
+    expect(
+      response.snapshot.nodes.single.textInputType,
+      BrowserTextInputType.email,
+    );
+    expect(
+      response.snapshot.nodes.single.textInputAction,
+      BrowserTextInputAction.send,
+    );
     expect(response.snapshot.sourceGeneration, 8);
     expect(response.snapshot.generation, 99);
     expect(response.snapshot.nodes.single.checked, isTrue);

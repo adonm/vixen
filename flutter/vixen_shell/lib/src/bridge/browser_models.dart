@@ -343,6 +343,8 @@ final class BrowserAccessibilityNode {
     this.value,
     this.textSelection,
     this.multiline = false,
+    this.textInputType,
+    this.textInputAction,
     this.range,
     this.bounds,
     required this.focused,
@@ -398,6 +400,12 @@ final class BrowserAccessibilityNode {
               _map(wire['text_selection']),
             ),
       multiline: _bool(wire, 'multiline'),
+      textInputType: wire['text_input_type'] == null
+          ? null
+          : BrowserTextInputType.fromWire(_string(wire, 'text_input_type')),
+      textInputAction: wire['text_input_action'] == null
+          ? null
+          : BrowserTextInputAction.fromWire(_string(wire, 'text_input_action')),
       range: wire['range'] == null
           ? null
           : BrowserAccessibilityRange.fromWire(_map(wire['range'])),
@@ -430,6 +438,8 @@ final class BrowserAccessibilityNode {
   final String? value;
   final BrowserAccessibilityTextSelection? textSelection;
   final bool multiline;
+  final BrowserTextInputType? textInputType;
+  final BrowserTextInputAction? textInputAction;
   final BrowserAccessibilityRange? range;
   final BrowserAccessibilityRect? bounds;
   final bool focused;
@@ -457,6 +467,8 @@ final class BrowserAccessibilityNode {
     'value': value,
     'text_selection': textSelection?.toWire(),
     'multiline': multiline,
+    'text_input_type': textInputType?.wireName,
+    'text_input_action': textInputAction?.wireName,
     'range': range?.toWire(),
     'bbox': bounds?.toWire(),
     'focused': focused,
@@ -471,6 +483,46 @@ final class BrowserAccessibilityNode {
     'focusable': focusable,
     'actions': actions,
   };
+}
+
+enum BrowserTextInputType {
+  none('none'),
+  text('text'),
+  multiline('multiline'),
+  number('number'),
+  decimal('decimal'),
+  telephone('telephone'),
+  email('email'),
+  url('url'),
+  search('search');
+
+  const BrowserTextInputType(this.wireName);
+
+  factory BrowserTextInputType.fromWire(String value) => values.firstWhere(
+    (candidate) => candidate.wireName == value,
+    orElse: () => throw FormatException('invalid text input type: $value'),
+  );
+
+  final String wireName;
+}
+
+enum BrowserTextInputAction {
+  newline('newline'),
+  done('done'),
+  go('go'),
+  next('next'),
+  previous('previous'),
+  search('search'),
+  send('send');
+
+  const BrowserTextInputAction(this.wireName);
+
+  factory BrowserTextInputAction.fromWire(String value) => values.firstWhere(
+    (candidate) => candidate.wireName == value,
+    orElse: () => throw FormatException('invalid text input action: $value'),
+  );
+
+  final String wireName;
 }
 
 final class BrowserAccessibilityTextSelection {

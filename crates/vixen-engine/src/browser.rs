@@ -4265,7 +4265,7 @@ mod tests {
         );
         config.document_overrides.insert(
             "https://same.test/input".to_owned(),
-            "<!doctype html><button id='same' aria-controls='name'>Same</button><a id='go' href='https://same.test/b'>Go</a><input id='name' aria-label='Name'><div id='editor' contenteditable aria-label='Editor'>draft</div><input id='volume' type='range' aria-label='Volume' min='0' max='10' step='2' value='4'><div id='brightness' role='slider' tabindex='0' aria-label='Brightness' aria-valuemin='0' aria-valuemax='10' aria-valuenow='3'></div><script>document.getElementById('brightness').addEventListener('keydown', event => { if (event.key === 'ArrowRight') event.currentTarget.setAttribute('aria-valuenow', '4'); });</script>".to_owned(),
+            "<!doctype html><button id='same' aria-controls='name'>Same</button><a id='go' href='https://same.test/b'>Go</a><input id='name' aria-label='Name' inputmode='email' enterkeyhint='send'><div id='editor' contenteditable aria-label='Editor'>draft</div><input id='volume' type='range' aria-label='Volume' min='0' max='10' step='2' value='4'><div id='brightness' role='slider' tabindex='0' aria-label='Brightness' aria-valuemin='0' aria-valuemax='10' aria-valuenow='3'></div><script>document.getElementById('brightness').addEventListener('keydown', event => { if (event.key === 'ArrowRight') event.currentTarget.setAttribute('aria-valuenow', '4'); });</script>".to_owned(),
         );
         config.document_overrides.insert(
             "https://same.test/scroll".to_owned(),
@@ -5482,6 +5482,14 @@ mod tests {
             .unwrap();
         assert_eq!(field.value.as_deref(), Some("に"));
         assert!(!field.multiline);
+        assert_eq!(
+            field.text_input_type,
+            Some(vixen_api::AccessibilityTextInputType::Email)
+        );
+        assert_eq!(
+            field.text_input_action,
+            Some(vixen_api::AccessibilityTextInputAction::Send)
+        );
         assert_eq!(field.text_selection.unwrap().base_offset, 1);
 
         let error = handle
@@ -5534,6 +5542,14 @@ mod tests {
         assert_eq!(editor.role, "textbox");
         assert_eq!(editor.value.as_deref(), Some("draft"));
         assert!(editor.multiline);
+        assert_eq!(
+            editor.text_input_type,
+            Some(vixen_api::AccessibilityTextInputType::Multiline)
+        );
+        assert_eq!(
+            editor.text_input_action,
+            Some(vixen_api::AccessibilityTextInputAction::Newline)
+        );
         assert!(editor.actions.iter().any(|action| action == "set_value"));
         assert_eq!(
             editor.text_selection,

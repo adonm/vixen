@@ -66,15 +66,15 @@ Flutter's platform text-input client and sends bounded full text, UTF-16
 selection, and composing ranges through the exact BrowserCore document/runtime
 generation; the live editing host receives composition-shaped plus
 `beforeinput`/`input` events. BrowserCore also projects single-line versus
-multiline intent so Flutter configures Done/Search/Newline platform actions;
+multiline intent plus normalized `inputmode`, input-type, and `enterkeyhint`
+intent so Flutter configures the corresponding platform keyboard and action;
 performed actions reuse the exact-generation Enter key path.
 `aria-owns` reparenting, heading levels, and mixed checkbox state also map into
 the platform tree. Same-document refreshes replace frame/semantics atomically
 and reconcile only changed semantic nodes. A release-bundle AT-SPI smoke observes
-BrowserCore's `DOM Basic` heading through the native Linux tree. `enterkeyhint`
-and keyboard-type specialization plus real Linux IME evidence, complete
-accessibility/screen-reader coverage, basic-browser parity, and host services
-remain open, so the GTK/Relm4 shell is still the temporary
+BrowserCore's `DOM Basic` heading through the native Linux tree. Real Linux IME
+evidence, complete accessibility/screen-reader coverage, basic-browser parity,
+and host services remain open, so the GTK/Relm4 shell is still the temporary
 Linux compatibility baseline rather than the product direction.
 
 ---

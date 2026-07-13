@@ -240,6 +240,8 @@ void main() {
             baseOffset: 0,
             extentOffset: 0,
           ),
+          textInputType: BrowserTextInputType.email,
+          textInputAction: BrowserTextInputAction.send,
           bounds: const BrowserAccessibilityRect(
             x: 0,
             y: 0,
@@ -278,7 +280,11 @@ void main() {
     expect(tester.testTextInput.isVisible, isTrue);
     expect(
       tester.testTextInput.setClientArgs?['inputAction'],
-      'TextInputAction.done',
+      'TextInputAction.send',
+    );
+    expect(
+      (tester.testTextInput.setClientArgs?['inputType'] as Map)['name'],
+      'TextInputType.emailAddress',
     );
 
     tester.testTextInput.updateEditingValue(
@@ -296,7 +302,7 @@ void main() {
     expect(states.single.composing?.baseOffset, 0);
     expect(states.single.composing?.extentOffset, 1);
 
-    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.testTextInput.receiveAction(TextInputAction.send);
     await tester.pump();
     expect(keyEvents.map((entry) => entry.$1), ['keydown', 'keyup']);
     expect(keyEvents.map((entry) => entry.$2.key), everyElement('Enter'));

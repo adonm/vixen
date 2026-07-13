@@ -16,8 +16,9 @@
 
 use vixen_api::{
     ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityNode, AccessibilityRange,
-    AccessibilityRect, AccessibilitySnapshot, AccessibilityTextSelection, BrowsingContextId,
-    DocumentId, ElementInfo, EngineDiagnostic, EngineInspector, FindTextResult, PageSnapshot,
+    AccessibilityRect, AccessibilitySnapshot, AccessibilityTextInputAction,
+    AccessibilityTextInputType, AccessibilityTextSelection, BrowsingContextId, DocumentId,
+    ElementInfo, EngineDiagnostic, EngineInspector, FindTextResult, PageSnapshot,
 };
 use vixen_net::csp::ContentSecurityPolicy;
 
@@ -803,6 +804,11 @@ impl Page {
             .flatten();
             let multiline = matches!(role.as_str(), "textbox" | "searchbox")
                 && (element.tag == "textarea" || element.contenteditable);
+            let writable_text = !disabled && accessibility_set_value_supported(&element, &role);
+            let text_input_type =
+                writable_text.then(|| accessibility_text_input_type(&element, multiline));
+            let text_input_action =
+                writable_text.then(|| accessibility_text_input_action(&element, &role, multiline));
             let live_region = accessibility_live_region(&element, &role);
             let heading_level = accessibility_heading_level(&element, &role);
             let mut actions = Vec::new();
@@ -812,7 +818,7 @@ impl Page {
             if focusable {
                 actions.push("focus".to_owned());
             }
-            if !disabled && accessibility_set_value_supported(&element, &role) {
+            if writable_text {
                 actions.push("set_value".to_owned());
             }
             if !disabled && range.is_some() {
@@ -832,6 +838,8 @@ impl Page {
                 value,
                 text_selection,
                 multiline,
+                text_input_type,
+                text_input_action,
                 range,
                 bbox: bounds.get(&element.node_id).copied(),
                 focused: self.focused_element_node_id == Some(element.node_id),
@@ -1282,6 +1290,70 @@ fn accessibility_set_value_supported(element: &AccessibilityElement, role: &str)
     )
 }
 
+fn accessibility_text_input_type(
+    element: &AccessibilityElement,
+    multiline: bool,
+) -> AccessibilityTextInputType {
+    match element
+        .input_mode
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "none" => AccessibilityTextInputType::None,
+        "text" => AccessibilityTextInputType::Text,
+        "decimal" => AccessibilityTextInputType::Decimal,
+        "numeric" => AccessibilityTextInputType::Number,
+        "tel" => AccessibilityTextInputType::Telephone,
+        "search" => AccessibilityTextInputType::Search,
+        "email" => AccessibilityTextInputType::Email,
+        "url" => AccessibilityTextInputType::Url,
+        _ if multiline => AccessibilityTextInputType::Multiline,
+        _ => match element
+            .input_type
+            .as_deref()
+            .map(str::trim)
+            .unwrap_or("text")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "search" => AccessibilityTextInputType::Search,
+            "email" => AccessibilityTextInputType::Email,
+            "url" => AccessibilityTextInputType::Url,
+            "tel" => AccessibilityTextInputType::Telephone,
+            _ => AccessibilityTextInputType::Text,
+        },
+    }
+}
+
+fn accessibility_text_input_action(
+    element: &AccessibilityElement,
+    role: &str,
+    multiline: bool,
+) -> AccessibilityTextInputAction {
+    match element
+        .enter_key_hint
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "enter" => AccessibilityTextInputAction::Newline,
+        "done" => AccessibilityTextInputAction::Done,
+        "go" => AccessibilityTextInputAction::Go,
+        "next" => AccessibilityTextInputAction::Next,
+        "previous" => AccessibilityTextInputAction::Previous,
+        "search" => AccessibilityTextInputAction::Search,
+        "send" => AccessibilityTextInputAction::Send,
+        _ if multiline => AccessibilityTextInputAction::Newline,
+        _ if role == "searchbox" => AccessibilityTextInputAction::Search,
+        _ => AccessibilityTextInputAction::Done,
+    }
+}
+
 fn accessibility_live_region(element: &AccessibilityElement, role: &str) -> bool {
     if let Some(value) = element.aria_live.as_deref() {
         return matches!(
@@ -1603,6 +1675,103 @@ mod tests {
         assert_eq!(tab.role, "tab");
         assert!(tab.selected);
         assert!(tab.focusable);
+    }
+
+    #[test]
+    fn accessibility_snapshot_normalizes_text_input_keyboard_and_action_hints() {
+        let page = Page::from_html(
+            "file:///text-input-hints.html",
+            r#"<!doctype html>
+                <input aria-label="none" inputmode="none" enterkeyhint="enter">
+                <input aria-label="number" inputmode="numeric" enterkeyhint="done">
+                <input aria-label="decimal" inputmode="decimal" enterkeyhint="go">
+                <input aria-label="telephone" inputmode="tel" enterkeyhint="next">
+                <input aria-label="email" inputmode="email" enterkeyhint="previous">
+                <input aria-label="url" inputmode="url" enterkeyhint="search">
+                <input aria-label="search" inputmode="search" enterkeyhint="send">
+                <input aria-label="typed search" type="search">
+                <textarea aria-label="multiline"></textarea>"#,
+        )
+        .unwrap();
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(7).unwrap(),
+            DocumentId::new(9).unwrap(),
+            (320, 480),
+        );
+        let hint = |label: &str| {
+            let node = snapshot
+                .nodes
+                .iter()
+                .find(|node| node.label == label)
+                .unwrap();
+            (
+                node.text_input_type.unwrap(),
+                node.text_input_action.unwrap(),
+            )
+        };
+        assert_eq!(
+            hint("none"),
+            (
+                AccessibilityTextInputType::None,
+                AccessibilityTextInputAction::Newline
+            )
+        );
+        assert_eq!(
+            hint("number"),
+            (
+                AccessibilityTextInputType::Number,
+                AccessibilityTextInputAction::Done
+            )
+        );
+        assert_eq!(
+            hint("decimal"),
+            (
+                AccessibilityTextInputType::Decimal,
+                AccessibilityTextInputAction::Go
+            )
+        );
+        assert_eq!(
+            hint("telephone"),
+            (
+                AccessibilityTextInputType::Telephone,
+                AccessibilityTextInputAction::Next
+            )
+        );
+        assert_eq!(
+            hint("email"),
+            (
+                AccessibilityTextInputType::Email,
+                AccessibilityTextInputAction::Previous
+            )
+        );
+        assert_eq!(
+            hint("url"),
+            (
+                AccessibilityTextInputType::Url,
+                AccessibilityTextInputAction::Search
+            )
+        );
+        assert_eq!(
+            hint("search"),
+            (
+                AccessibilityTextInputType::Search,
+                AccessibilityTextInputAction::Send
+            )
+        );
+        assert_eq!(
+            hint("typed search"),
+            (
+                AccessibilityTextInputType::Search,
+                AccessibilityTextInputAction::Search
+            )
+        );
+        assert_eq!(
+            hint("multiline"),
+            (
+                AccessibilityTextInputType::Multiline,
+                AccessibilityTextInputAction::Newline
+            )
+        );
     }
 
     #[test]

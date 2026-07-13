@@ -176,7 +176,8 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   bool _contentFocused = false;
   bool _presentationRecoveryFailed = false;
   (int, int, int)? _presentationFailureKey;
-  (int, int, int)? _textInputTarget;
+  (int, int, int, BrowserTextInputType, BrowserTextInputAction)?
+  _textInputTarget;
 
   @override
   void initState() {
@@ -392,7 +393,9 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
           !candidate.disabled &&
           candidate.actions.contains('set_value') &&
           candidate.textSelection != null &&
-          candidate.value != null) {
+          candidate.value != null &&
+          candidate.textInputType != null &&
+          candidate.textInputAction != null) {
         node = candidate;
         break;
       }
@@ -407,7 +410,13 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
       _textInputClient.close();
       return;
     }
-    final target = (snapshot.contextId, snapshot.documentId, node.id);
+    final target = (
+      snapshot.contextId,
+      snapshot.documentId,
+      node.id,
+      node.textInputType!,
+      node.textInputAction!,
+    );
     final selection = node.textSelection!;
     final text = node.value!;
     final value = TextEditingValue(
@@ -422,12 +431,8 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
       _textInputTarget = target;
       _textInputClient.open(
         value,
-        multiline: node.multiline,
-        action: node.multiline
-            ? TextInputAction.newline
-            : node.role == 'searchbox'
-            ? TextInputAction.search
-            : TextInputAction.done,
+        inputType: _platformTextInputType(node.textInputType!),
+        action: _platformTextInputAction(node.textInputAction!),
       );
     } else {
       _textInputClient.reconcile(value);
@@ -838,7 +843,7 @@ final class _BrowserTextInputClient with TextInputClient {
 
   void open(
     TextEditingValue value, {
-    required bool multiline,
+    required TextInputType inputType,
     required TextInputAction action,
   }) {
     _value = value;
@@ -846,7 +851,7 @@ final class _BrowserTextInputClient with TextInputClient {
     _connection = TextInput.attach(
       this,
       TextInputConfiguration(
-        inputType: multiline ? TextInputType.multiline : TextInputType.text,
+        inputType: inputType,
         inputAction: action,
         enableSuggestions: true,
         autocorrect: true,
@@ -908,6 +913,32 @@ final class _BrowserTextInputClient with TextInputClient {
   @override
   void updateFloatingCursor(RawFloatingCursorPoint point) {}
 }
+
+TextInputType _platformTextInputType(BrowserTextInputType type) =>
+    switch (type) {
+      BrowserTextInputType.none => TextInputType.none,
+      BrowserTextInputType.text => TextInputType.text,
+      BrowserTextInputType.multiline => TextInputType.multiline,
+      BrowserTextInputType.number => TextInputType.number,
+      BrowserTextInputType.decimal => const TextInputType.numberWithOptions(
+        decimal: true,
+      ),
+      BrowserTextInputType.telephone => TextInputType.phone,
+      BrowserTextInputType.email => TextInputType.emailAddress,
+      BrowserTextInputType.url => TextInputType.url,
+      BrowserTextInputType.search => TextInputType.webSearch,
+    };
+
+TextInputAction _platformTextInputAction(BrowserTextInputAction action) =>
+    switch (action) {
+      BrowserTextInputAction.newline => TextInputAction.newline,
+      BrowserTextInputAction.done => TextInputAction.done,
+      BrowserTextInputAction.go => TextInputAction.go,
+      BrowserTextInputAction.next => TextInputAction.next,
+      BrowserTextInputAction.previous => TextInputAction.previous,
+      BrowserTextInputAction.search => TextInputAction.search,
+      BrowserTextInputAction.send => TextInputAction.send,
+    };
 
 final class _TextSelectionSemantics extends SingleChildRenderObjectWidget {
   const _TextSelectionSemantics({

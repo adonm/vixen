@@ -238,13 +238,15 @@ runtime ids. BrowserCore validates every range against the value, applies it to
 the live focused editing host, and emits composition-shaped events plus
 cancelable `beforeinput` and `input`; stale or non-writable targets fail closed.
 Widget/wire tests cover the shared transport, and BrowserCore tests cover native
-non-ASCII plus contenteditable surrogate-pair composition. IME action/keyboard-
-type specialization and a real Linux desktop-IME smoke or language matrix remain
-open. Basic platform actions are live: BrowserCore marks textarea/contenteditable
-hosts as multiline, Flutter configures Newline for those hosts, Search for a
-searchbox, and Done for other single-line hosts, and `performAction` dispatches
-Enter down/up through the existing exact-generation key path. Authored
-`enterkeyhint` values are not yet specialized.
+non-ASCII plus contenteditable surrogate-pair composition. A real Linux desktop-
+IME smoke or language matrix remains open. BrowserCore normalizes all standard
+`inputmode` values plus supported native input types into bounded keyboard
+intent and all standard `enterkeyhint` values into action intent. Flutter maps
+those values to its none/text/multiline/numeric/decimal/telephone/email/URL/search
+keyboard configurations and Newline/Done/Go/Next/Previous/Search/Send actions.
+`performAction` dispatches Enter down/up through the existing exact-generation
+key path; invalid or absent hints retain the multiline/search/single-line
+defaults.
 
 Top-level script scrolling now shares the Page-owned offset used by wheel/key
 defaults, paint, hit testing, find, and Semantics. The live runtime exposes

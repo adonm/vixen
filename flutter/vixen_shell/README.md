@@ -61,11 +61,11 @@ clamp on host-view and page-zoom changes.
 Focused writable native text controls and contenteditable editing hosts attach
 Flutter's platform text-input client; bounded full values and UTF-16 selection/
 composing ranges cross the exact BrowserCore generation and update the live DOM.
-BrowserCore's multiline bit configures Newline versus single-line Search/Done
-platform actions, and performed actions reuse exact-generation Enter down/up.
-`enterkeyhint`/keyboard-type specialization and real native IME evidence, nested/touch
-scrolling, CSS/physical scale correctness, and broader lifecycle/native
-surface-loss recovery remain follow-up work.
+BrowserCore projects normalized `inputmode`, input-type, and `enterkeyhint`
+intent for writable hosts; Flutter maps it to platform keyboard and action
+configuration, and performed actions reuse exact-generation Enter down/up. Real
+native IME evidence, nested/touch scrolling, CSS/physical scale correctness, and
+broader lifecycle/native surface-loss recovery remain follow-up work.
 
 Ctrl+F and the browser menu expose a find bar backed by an exact active-
 document BrowserCore command. The query is bounded to 4 KiB at the native

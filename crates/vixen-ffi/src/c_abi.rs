@@ -1131,6 +1131,8 @@ fn accessibility_node_json(node: AccessibilityNode) -> Value {
             "extent_offset": selection.extent_offset,
         })),
         "multiline": node.multiline,
+        "text_input_type": node.text_input_type.map(|value| value.as_str()),
+        "text_input_action": node.text_input_action.map(|value| value.as_str()),
         "range": node.range.map(|range| json!({
             "current": range.current,
             "minimum": range.minimum,
@@ -2251,6 +2253,8 @@ mod tests {
                 extent_offset: 3,
             }),
             multiline: false,
+            text_input_type: Some(vixen_api::AccessibilityTextInputType::Email),
+            text_input_action: Some(vixen_api::AccessibilityTextInputAction::Send),
             range: None,
             bbox: Some(vixen_api::AccessibilityRect {
                 x: 1.5,
@@ -2305,6 +2309,8 @@ mod tests {
                     "value": "yes",
                     "text_selection": {"base_offset": 1, "extent_offset": 3},
                     "multiline": false,
+                    "text_input_type": "email",
+                    "text_input_action": "send",
                     "range": null,
                     "bbox": {"x": 1.5, "y": 2.5, "width": 30.0, "height": 40.0},
                     "focused": true,
