@@ -216,6 +216,14 @@ widget/native-bridge evidence. Authored `slider`/`spinbutton` roles with a finit
 `keydown` to the exact live target so the author remains responsible for
 updating ARIA state. This is not native AT or broad ARIA support.
 
+Explicit `aria-live="polite"`/`"assertive"` and the implicit `alert`, `log`,
+`marquee`, `status`, and `timer` roles map to Flutter live regions; explicit
+`aria-live="off"` disables the implicit mapping. Runtime-effect events for the
+active context force a fresh generation-paired frame and full semantics
+snapshot, so same-document live mutations are not suppressed by the normal
+same-key capture coalescing. This is event-driven full-projection refresh, not a
+delta protocol or native assistive-technology proof.
+
 Flutter also sends one monotonic BrowserCore-owned host-view state for content
 focus, visibility, effective scale, and application lifecycle. Current documents
 expose the accepted state through `document.hasFocus()`, `hidden`, and

@@ -569,6 +569,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
                   ? node.selected
                   : null,
               expanded: node.expanded,
+              liveRegion: node.liveRegion,
               focusable: node.focusable,
               focused: node.focused,
               button: node.role == 'button',

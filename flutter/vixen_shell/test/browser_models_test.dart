@@ -221,6 +221,7 @@ void main() {
           'selected': false,
           'expanded': null,
           'hidden': false,
+          'live_region': true,
           'focusable': true,
           'actions': ['tap'],
         },
@@ -237,6 +238,7 @@ void main() {
     expect(response.snapshot.sourceGeneration, 8);
     expect(response.snapshot.generation, 99);
     expect(response.snapshot.nodes.single.checked, isTrue);
+    expect(response.snapshot.nodes.single.liveRegion, isTrue);
     expect(response.snapshot.nodes.single.bounds?.width, 100);
     expect(
       BrowserCommand.dispatchAccessibilityFocus(

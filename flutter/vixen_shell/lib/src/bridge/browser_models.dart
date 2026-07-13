@@ -337,6 +337,7 @@ final class BrowserAccessibilityNode {
     required this.selected,
     this.expanded,
     required this.hidden,
+    this.liveRegion = false,
     required this.focusable,
     required List<String> actions,
   }) : controlsIds = List.unmodifiable(controlsIds),
@@ -383,6 +384,7 @@ final class BrowserAccessibilityNode {
       selected: _bool(wire, 'selected'),
       expanded: _optionalBool(wire, 'expanded'),
       hidden: _bool(wire, 'hidden'),
+      liveRegion: _bool(wire, 'live_region'),
       focusable: _bool(wire, 'focusable'),
       actions: actions.cast<String>(),
     );
@@ -405,6 +407,7 @@ final class BrowserAccessibilityNode {
   final bool selected;
   final bool? expanded;
   final bool hidden;
+  final bool liveRegion;
   final bool focusable;
   final List<String> actions;
 
@@ -426,6 +429,7 @@ final class BrowserAccessibilityNode {
     'selected': selected,
     'expanded': expanded,
     'hidden': hidden,
+    'live_region': liveRegion,
     'focusable': focusable,
     'actions': actions,
   };

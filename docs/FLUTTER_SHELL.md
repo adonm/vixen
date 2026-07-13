@@ -207,6 +207,14 @@ document-order validation guarantees retained parents precede children, and
 Flutter builds nested Semantics without inferring hierarchy from geometry. Dart
 does not infer meaning from pixels or maintain a second DOM.
 
+Explicit polite/assertive `aria-live` and the implicit live-region roles map to
+Flutter's live-region flag, with explicit `aria-live="off"` taking precedence.
+An active-context `runtime_effects` event forces a new paired frame and full
+semantic snapshot even when context/document/viewport keys are unchanged. The
+existing one-in-flight/one-replacement bounds still apply. This prevents live
+same-document changes from being hidden by key coalescing; it is not yet a
+semantic delta transport or native AT announcement smoke.
+
 Semantic focus is dispatched only when the exact context, document, runtime,
 viewport, source generation, capped wire generation, node id, and advertised
 capability still match; BrowserCore executes live focus events/mutation and Dart
@@ -215,8 +223,8 @@ set-value action only for enabled, writable native text inputs/textareas; it
 uses the live control-value and input/change event path, while password,
 readonly, unsupported input types, and authored ARIA-only textboxes remain
 unadvertised. Complete accessibility still requires platform mappings for more
-non-tree relationships, heading levels, mixed states, text selection, live
-regions, incremental updates, broader authored-range keyboard conventions, the disabled-fieldset
+non-tree relationships, heading levels, mixed states, text selection, semantic
+delta updates, broader authored-range keyboard conventions, the disabled-fieldset
 first-legend exception, full ARIA presentational-role conflict handling, and
 native AT smoke on each platform.
 

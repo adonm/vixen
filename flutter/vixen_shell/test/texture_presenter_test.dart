@@ -183,6 +183,7 @@ void main() {
       disabled: false,
       selected: false,
       hidden: false,
+      liveRegion: true,
       focusable: true,
       actions: const ['tap', 'focus'],
     );
@@ -278,6 +279,7 @@ void main() {
         isEnabled: true,
         isFocusable: true,
         isFocused: true,
+        isLiveRegion: true,
         hasTapAction: true,
         hasFocusAction: true,
       ),

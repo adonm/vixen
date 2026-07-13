@@ -519,7 +519,10 @@ final class ShellCoordinator extends ChangeNotifier {
     }
     _lastEventSequence = envelope.sequence;
     _reduce(envelope.event);
-    _scheduleFrameCapture();
+    final refreshRuntimeProjection =
+        envelope.event.type == 'runtime_effects' &&
+        envelope.event.contextId == _activeContextId;
+    _scheduleFrameCapture(force: refreshRuntimeProjection);
     _notify();
   }
 

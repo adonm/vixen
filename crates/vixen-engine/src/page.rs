@@ -404,6 +404,7 @@ impl Page {
             let expanded = aria_bool(element.aria_expanded.as_deref());
             let value = accessibility_value(&element, &role);
             let range = accessibility_range(&element, &role);
+            let live_region = accessibility_live_region(&element, &role);
             let mut actions = Vec::new();
             if !disabled && matches!(role.as_str(), "button" | "link" | "checkbox" | "radio") {
                 actions.push("tap".to_owned());
@@ -436,6 +437,7 @@ impl Page {
                 selected,
                 expanded,
                 hidden: false,
+                live_region,
                 focusable,
                 actions,
             });
@@ -821,6 +823,16 @@ fn accessibility_set_value_supported(element: &AccessibilityElement, role: &str)
     )
 }
 
+fn accessibility_live_region(element: &AccessibilityElement, role: &str) -> bool {
+    if let Some(value) = element.aria_live.as_deref() {
+        return matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "polite" | "assertive"
+        );
+    }
+    matches!(role, "alert" | "log" | "marquee" | "status" | "timer")
+}
+
 fn aria_bool(value: Option<&str>) -> Option<bool> {
     match value?.trim().to_ascii_lowercase().as_str() {
         "true" => Some(true),
@@ -1174,6 +1186,36 @@ mod tests {
                 .description,
             "Opens the print dialog"
         );
+    }
+
+    #[test]
+    fn accessibility_snapshot_projects_explicit_and_implicit_live_regions() {
+        let page = Page::from_html(
+            "file:///accessibility-live.html",
+            r#"<!doctype html>
+                <p aria-live="polite">Saved</p>
+                <div role="alert">Connection lost</div>
+                <div role="status" aria-live="off">Idle</div>
+                <p aria-live="invalid">Ignored</p>"#,
+        )
+        .unwrap();
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(1).unwrap(),
+            DocumentId::new(1).unwrap(),
+            (800, 600),
+        );
+        let live = |label: &str| {
+            snapshot
+                .nodes
+                .iter()
+                .find(|node| node.label == label)
+                .unwrap()
+                .live_region
+        };
+        assert!(live("Saved"));
+        assert!(live("Connection lost"));
+        assert!(!live("Idle"));
+        assert!(!live("Ignored"));
     }
 
     #[test]

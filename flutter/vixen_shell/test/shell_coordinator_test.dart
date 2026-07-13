@@ -588,6 +588,69 @@ void main() {
       await coordinator.close();
     },
   );
+
+  test(
+    'runtime effects refresh the current frame and semantic projection',
+    () async {
+      var nextFrameId = 0;
+      var sourceGeneration = 0;
+      final controller = ScriptedBrowserController(
+        snapshot: BrowserSnapshot(
+          activeContextId: 8,
+          contexts: [contextState(id: 8, url: 'https://live.test')],
+        ),
+        onAccessibilitySnapshot: (contextId, documentId, width, height) =>
+            BrowserAccessibilitySnapshot(
+              sourceGeneration: ++sourceGeneration,
+              generation: sourceGeneration,
+              contextId: contextId,
+              documentId: documentId,
+              viewportWidth: width,
+              viewportHeight: height,
+              nodes: [semanticButton(id: 1)],
+              truncated: false,
+            ),
+        onCaptureFrame: (contextId, documentId, width, height) => browserFrame(
+          width: width,
+          height: height,
+          frameId: ++nextFrameId,
+          contextId: contextId,
+          documentId: documentId,
+        ),
+      );
+      final coordinator = ShellCoordinator(controller);
+      await coordinator.start();
+      coordinator.updatePhysicalViewport(320, 180);
+      await flushEvents();
+      expect(controller.frameRequests, hasLength(1));
+      final firstGeneration = coordinator.accessibility!.sourceGeneration;
+
+      controller.emitEvent(
+        BrowserEvent.fromWire({
+          'type': 'runtime_effects',
+          'context_id': 8,
+          'document_id': 800,
+          'runtime_context_id': 8000,
+          'effects': {
+            'console': <Object?>[],
+            'dialogs': <Object?>[],
+            'bindings': <Object?>[],
+            'network': <Object?>[],
+            'exceptions': <Object?>[],
+          },
+        }),
+      );
+      await flushEvents();
+
+      expect(controller.frameRequests, hasLength(2));
+      expect(coordinator.frame?.frameId, 2);
+      expect(
+        coordinator.accessibility!.sourceGeneration,
+        greaterThan(firstGeneration),
+      );
+      await coordinator.close();
+    },
+  );
 }
 
 BrowserAccessibilityNode semanticButton({required int id}) =>

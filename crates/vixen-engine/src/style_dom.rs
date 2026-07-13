@@ -692,6 +692,7 @@ pub(crate) struct AccessibilityElement {
     pub aria_checked: Option<String>,
     pub aria_selected: Option<String>,
     pub aria_expanded: Option<String>,
+    pub aria_live: Option<String>,
     pub tabindex: Option<String>,
     pub text: String,
     pub label: String,
@@ -923,6 +924,7 @@ impl Document {
                 aria_checked: None,
                 aria_selected: None,
                 aria_expanded: None,
+                aria_live: None,
                 tabindex: None,
                 text: String::new(),
                 label: String::new(),
@@ -1082,6 +1084,12 @@ impl Document {
                     ),
                     "aria-expanded" => copy_accessibility_attr(
                         &mut element.aria_expanded,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "aria-live" => copy_accessibility_attr(
+                        &mut element.aria_live,
                         attr.value.as_ref(),
                         max_string_bytes,
                         &mut truncated,
@@ -1662,6 +1670,11 @@ fn accessibility_name_from_content(element: &AccessibilityElement) -> bool {
                 | "menuitem"
                 | "option"
                 | "tab"
+                | "alert"
+                | "log"
+                | "marquee"
+                | "status"
+                | "timer"
         );
     }
     matches!(

@@ -88,6 +88,7 @@ impl AccessibilitySnapshot {
             hash.boolean(node.selected);
             hash.optional_bool(node.expanded);
             hash.boolean(node.hidden);
+            hash.boolean(node.live_region);
             hash.boolean(node.focusable);
             hash.u64(node.actions.len() as u64);
             for action in &node.actions {
@@ -177,6 +178,7 @@ pub struct AccessibilityNode {
     pub selected: bool,
     pub expanded: Option<bool>,
     pub hidden: bool,
+    pub live_region: bool,
     pub focusable: bool,
     pub actions: Vec<String>,
 }
@@ -1118,6 +1120,7 @@ mod tests {
                 selected: false,
                 expanded: None,
                 hidden: false,
+                live_region: false,
                 focusable: true,
                 actions: vec!["tap".to_owned()],
             }],

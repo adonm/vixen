@@ -36,7 +36,9 @@ updates also drive document focus/visibility and Flutter lifecycle input policy.
 Bounded accessible descriptions plus retained `aria-describedby` and
 `aria-details` relationships now cross the same BrowserCore/ABI projection.
 Authored ARIA sliders/spinbuttons with finite numeric state also expose live,
-generation-checked adjustment actions. IME,
+generation-checked adjustment actions. Explicit `aria-live` plus implicit live
+roles project into Flutter live regions, and runtime-effect events trigger a
+fresh frame/semantics pair for the active document. IME,
 complete accessibility/native AT, host services, release packaging, and non-Linux runners
 remain open, so the GTK/Relm4 shell is still the temporary Linux compatibility
 baseline rather than the product direction.

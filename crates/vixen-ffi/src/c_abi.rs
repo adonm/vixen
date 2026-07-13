@@ -1035,6 +1035,7 @@ fn accessibility_node_json(node: AccessibilityNode) -> Value {
         "selected": node.selected,
         "expanded": node.expanded,
         "hidden": node.hidden,
+        "live_region": node.live_region,
         "focusable": node.focusable,
         "actions": node.actions,
     })
@@ -2140,6 +2141,7 @@ mod tests {
             selected: true,
             expanded: Some(false),
             hidden: false,
+            live_region: true,
             focusable: true,
             actions: vec!["tap".to_owned()],
         };
@@ -2183,6 +2185,7 @@ mod tests {
                     "selected": true,
                     "expanded": false,
                     "hidden": false,
+                    "live_region": true,
                     "focusable": true,
                     "actions": ["tap"],
                 }],
