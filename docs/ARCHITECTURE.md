@@ -51,7 +51,8 @@ The packaged Linux GUI composition root is the Flutter runner plus the narrow
 `vixen-ffi` bridge into BrowserCore. The thin root `vixen` binary remains the
 in-tree GTK compatibility-shell composition root for parity comparison, but is
 not installed by the Flatpak. The Linux runner is under `flutter/vixen_shell`;
-other platform runners remain targets. `data/` contains application metadata;
+its locked Yaru/Adwaita-blue chrome and in-scene titlebar remain presentation
+above the same bridge. Other platform runners remain targets. `data/` contains application metadata;
 `scripts/package-linux-release.py` creates the official archive consumed by FlatPark;
 `fixtures/` contains the hermetic compatibility suite and external-profile
 descriptors.

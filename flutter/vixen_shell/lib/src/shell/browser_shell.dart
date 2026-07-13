@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:yaru/yaru.dart';
 
 import '../bridge/browser_models.dart';
 import 'shell_coordinator.dart';
@@ -120,7 +121,9 @@ final class _BrowserShellState extends State<BrowserShell>
       child: Focus(
         autofocus: true,
         child: Scaffold(
+          appBar: BrowserWindowTitleBar(coordinator: coordinator),
           body: SafeArea(
+            top: false,
             child: Column(
               children: [
                 if (coordinator.errorMessage case final message?)
@@ -128,7 +131,6 @@ final class _BrowserShellState extends State<BrowserShell>
                     message: message,
                     onDismiss: coordinator.clearError,
                   ),
-                _TabStrip(coordinator: coordinator),
                 _Toolbar(
                   coordinator: coordinator,
                   addressController: _addressController,
@@ -272,6 +274,31 @@ final class _BrowserShellState extends State<BrowserShell>
   }
 }
 
+final class BrowserWindowTitleBar extends StatelessWidget
+    implements PreferredSizeWidget {
+  const BrowserWindowTitleBar({required this.coordinator, super.key});
+
+  final ShellCoordinator coordinator;
+
+  @override
+  Size get preferredSize => const Size.fromHeight(kYaruTitleBarHeight);
+
+  @override
+  Widget build(BuildContext context) {
+    return YaruWindowTitleBar(
+      key: const Key('window-title-bar'),
+      style: YaruTitleBarStyle.normal,
+      centerTitle: false,
+      titleSpacing: 0,
+      closeSemanticLabel: 'Close Vixen',
+      maximizeSemanticLabel: 'Maximize Vixen',
+      minimizeSemanticLabel: 'Minimize Vixen',
+      restoreSemanticLabel: 'Restore Vixen',
+      title: _TabStrip(coordinator: coordinator),
+    );
+  }
+}
+
 final class _TabStrip extends StatelessWidget {
   const _TabStrip({required this.coordinator});
 
@@ -280,54 +307,51 @@ final class _TabStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: colors.surfaceContainer,
-      child: SizedBox(
-        height: 44,
-        child: Row(
-          children: [
-            Expanded(
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: coordinator.contexts.length,
-                itemBuilder: (context, index) {
-                  final tab = coordinator.contexts[index];
-                  final selected = tab.contextId == coordinator.activeContextId;
-                  return Semantics(
-                    selected: selected,
-                    button: true,
-                    label: 'Tab ${tab.displayTitle}',
+    return SizedBox(
+      height: kYaruTitleBarHeight,
+      child: Row(
+        children: [
+          Expanded(
+            child: ListView.builder(
+              scrollDirection: Axis.horizontal,
+              itemCount: coordinator.contexts.length,
+              itemBuilder: (context, index) {
+                final tab = coordinator.contexts[index];
+                final selected = tab.contextId == coordinator.activeContextId;
+                return Semantics(
+                  selected: selected,
+                  button: true,
+                  label: 'Tab ${tab.displayTitle}',
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 5),
                     child: InkWell(
                       key: ValueKey('tab-${tab.contextId}'),
+                      borderRadius: BorderRadius.circular(kYaruButtonRadius),
                       onTap: () =>
                           unawaited(coordinator.activateTab(tab.contextId)),
-                      child: Container(
-                        width: 210,
-                        padding: const EdgeInsets.only(left: 14),
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 100),
+                        width: 200,
+                        padding: const EdgeInsets.only(left: 12),
                         decoration: BoxDecoration(
                           color: selected
-                              ? colors.surface
-                              : colors.surfaceContainer,
-                          border: Border(
-                            bottom: BorderSide(
-                              color: selected
-                                  ? colors.primary
-                                  : Colors.transparent,
-                              width: 2,
-                            ),
+                              ? colors.onSurface.withValues(alpha: 0.1)
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(
+                            kYaruButtonRadius,
                           ),
                         ),
                         child: Row(
                           children: [
                             if (tab.isLoading)
                               const SizedBox.square(
-                                dimension: 14,
-                                child: CircularProgressIndicator(
+                                dimension: 16,
+                                child: YaruCircularProgressIndicator(
                                   strokeWidth: 2,
                                 ),
                               )
                             else
-                              const Icon(Icons.public, size: 16),
+                              const Icon(YaruIcons.globe, size: 16),
                             const SizedBox(width: 8),
                             Expanded(
                               child: Text(
@@ -336,11 +360,14 @@ final class _TabStrip extends StatelessWidget {
                                 overflow: TextOverflow.ellipsis,
                               ),
                             ),
-                            IconButton(
+                            YaruIconButton(
                               key: ValueKey('close-tab-${tab.contextId}'),
                               tooltip: 'Close tab',
-                              visualDensity: VisualDensity.compact,
-                              icon: const Icon(Icons.close, size: 17),
+                              iconSize: 30,
+                              icon: const Icon(
+                                YaruIcons.window_close,
+                                size: 16,
+                              ),
                               onPressed: () => unawaited(
                                 coordinator.closeTab(tab.contextId),
                               ),
@@ -349,19 +376,20 @@ final class _TabStrip extends StatelessWidget {
                         ),
                       ),
                     ),
-                  );
-                },
-              ),
+                  ),
+                );
+              },
             ),
-            IconButton(
-              key: const Key('new-tab'),
-              tooltip: 'New tab',
-              onPressed: () => unawaited(coordinator.newTab()),
-              icon: const Icon(Icons.add),
-            ),
-            const SizedBox(width: 4),
-          ],
-        ),
+          ),
+          YaruIconButton(
+            key: const Key('new-tab'),
+            tooltip: 'New tab',
+            iconSize: 36,
+            onPressed: () => unawaited(coordinator.newTab()),
+            icon: const Icon(YaruIcons.tab_new, size: 20),
+          ),
+          const SizedBox(width: 6),
+        ],
       ),
     );
   }
@@ -395,33 +423,38 @@ final class _Toolbar extends StatelessWidget {
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
         child: Row(
           children: [
-            IconButton(
+            YaruIconButton(
               key: const Key('back'),
               tooltip: 'Back (Alt+Left)',
+              iconSize: 40,
               onPressed: tab?.canGoBack == true
                   ? () => unawaited(coordinator.goBack())
                   : null,
-              icon: const Icon(Icons.arrow_back),
+              icon: const Icon(YaruIcons.go_previous),
             ),
-            IconButton(
+            YaruIconButton(
               key: const Key('forward'),
               tooltip: 'Forward (Alt+Right)',
+              iconSize: 40,
               onPressed: tab?.canGoForward == true
                   ? () => unawaited(coordinator.goForward())
                   : null,
-              icon: const Icon(Icons.arrow_forward),
+              icon: const Icon(YaruIcons.go_next),
             ),
-            IconButton(
+            YaruIconButton(
               key: const Key('reload-stop'),
               tooltip: tab?.isLoading == true
                   ? 'Stop (Escape)'
                   : 'Reload (Ctrl+R)',
+              iconSize: 40,
               onPressed: tab == null
                   ? null
                   : () => unawaited(
                       tab.isLoading ? coordinator.stop() : coordinator.reload(),
                     ),
-              icon: Icon(tab?.isLoading == true ? Icons.close : Icons.refresh),
+              icon: Icon(
+                tab?.isLoading == true ? YaruIcons.stop : YaruIcons.refresh,
+              ),
             ),
             const SizedBox(width: 6),
             Expanded(
@@ -434,7 +467,7 @@ final class _Toolbar extends StatelessWidget {
                 textInputAction: TextInputAction.go,
                 decoration: InputDecoration(
                   hintText: 'Search or enter address',
-                  prefixIcon: const Icon(Icons.language, size: 19),
+                  prefixIcon: const Icon(YaruIcons.globe, size: 19),
                   isDense: true,
                   filled: true,
                   fillColor: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -446,9 +479,11 @@ final class _Toolbar extends StatelessWidget {
               ),
             ),
             const SizedBox(width: 6),
-            PopupMenuButton<_MenuAction>(
+            YaruPopupMenuButton<_MenuAction>(
               key: const Key('main-menu'),
               tooltip: 'Vixen menu',
+              showArrow: false,
+              child: const Icon(YaruIcons.menu),
               onSelected: (action) {
                 switch (action) {
                   case _MenuAction.find:
@@ -560,22 +595,25 @@ final class _FindBar extends StatelessWidget {
               liveRegion: true,
               child: Text(result, key: const Key('find-result')),
             ),
-            IconButton(
+            YaruIconButton(
               key: const Key('find-previous'),
               tooltip: 'Previous match (Shift+F3)',
+              iconSize: 40,
               onPressed: matches != null && matches! > 0 ? onPrevious : null,
-              icon: const Icon(Icons.keyboard_arrow_up),
+              icon: const Icon(YaruIcons.pan_up),
             ),
-            IconButton(
+            YaruIconButton(
               key: const Key('find-next'),
               tooltip: 'Next match (F3)',
+              iconSize: 40,
               onPressed: matches != null && matches! > 0 ? onNext : null,
-              icon: const Icon(Icons.keyboard_arrow_down),
+              icon: const Icon(YaruIcons.pan_down),
             ),
-            IconButton(
+            YaruIconButton(
               tooltip: 'Close find',
+              iconSize: 40,
               onPressed: onClose,
-              icon: const Icon(Icons.close),
+              icon: const Icon(YaruIcons.window_close),
             ),
           ],
         ),
@@ -593,9 +631,10 @@ final class _SelectedProgress extends StatelessWidget {
     final state = this.context;
     if (state?.isLoading != true) return const SizedBox(height: 2);
     final progress = state!.loadProgress;
-    return LinearProgressIndicator(
+    return YaruLinearProgressIndicator(
       key: const Key('page-progress'),
-      minHeight: 2,
+      strokeWidth: 2,
+      trackStrokeWidth: 2,
       value: progress > 0 && progress <= 1 ? progress : null,
     );
   }
@@ -630,17 +669,25 @@ final class _ErrorBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    return Material(
-      key: const Key('error-banner'),
-      color: colors.errorContainer,
-      child: ListTile(
-        dense: true,
-        leading: Icon(Icons.error_outline, color: colors.onErrorContainer),
-        title: Text(message),
-        trailing: IconButton(
-          tooltip: 'Dismiss error',
-          onPressed: onDismiss,
-          icon: const Icon(Icons.close),
+    return SizedBox(
+      height: 52,
+      child: YaruBanner(
+        key: const Key('error-banner'),
+        color: colors.errorContainer,
+        elevation: 0,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        child: Row(
+          children: [
+            Icon(Icons.error_outline, color: colors.onErrorContainer),
+            const SizedBox(width: 12),
+            Expanded(child: Text(message)),
+            YaruIconButton(
+              tooltip: 'Dismiss error',
+              iconSize: 36,
+              onPressed: onDismiss,
+              icon: const Icon(YaruIcons.window_close),
+            ),
+          ],
         ),
       ),
     );

@@ -5,11 +5,12 @@ import 'package:vixen_shell/src/app/vixen_app.dart';
 import 'package:vixen_shell/src/bridge/browser_models.dart';
 import 'package:vixen_shell/src/bridge/fake/scripted_browser_controller.dart';
 import 'package:vixen_shell/src/shell/shell_coordinator.dart';
+import 'package:yaru/yaru.dart';
 
 import 'browser_models_test.dart' show contextState;
 
 void main() {
-  testWidgets('renders Material browser chrome and honest empty frame seam', (
+  testWidgets('renders Yaru browser chrome and honest empty frame seam', (
     tester,
   ) async {
     final controller = ScriptedBrowserController(
@@ -28,6 +29,8 @@ void main() {
     expect(find.byKey(const Key('reload-stop')), findsOneWidget);
     expect(find.byKey(const Key('new-tab')), findsOneWidget);
     expect(find.byKey(const Key('address-field')), findsOneWidget);
+    expect(find.byType(YaruWindowTitleBar), findsOneWidget);
+    expect(find.byType(YaruIconButton), findsWidgets);
     expect(find.byKey(const Key('content-surface')), findsOneWidget);
     expect(find.text('Renderer frame unavailable'), findsOneWidget);
     expect(find.byKey(const Key('status-bar')), findsOneWidget);

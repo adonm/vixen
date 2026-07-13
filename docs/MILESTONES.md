@@ -14,7 +14,7 @@ which layer today?”
 | `just gate-architecture` | leaf-crate dependency rules plus frontend rules that forbid the former shell/headless direct composition; production frontends may use only `vixen-api` and `vixen-engine` |
 | `just test-flutter-controller` | Safe controller and native boundary crate tests: one non-clone BrowserCore/event owner, immediate navigation acceptance, exact terminal events, active-load stop, contexts/profile session, and C ABI unit/integration coverage; not Dart or Flutter proof |
 | `just gate-native-abi` | Builds `vixen-ffi` library forms and runs focused ABI v1 layout/header, opaque handle, bounded UTF-8/JSON command, stable response/event/error, event-sequence, output-buffer ownership, and panic-containment tests; native C ABI evidence only |
-| `just gate-flutter-shell` | Exact mise-managed Flutter 3.46.0-0.3.pre beta framework/engine revisions, Dart formatting/analysis, 60 shell/coordinator/worker/texture/input/Semantics tests, including monotonic host focus/visibility/lifecycle state, physical wheel normalization and slop-gated single-touch dragging through BrowserCore-owned cancelable root scrolling, bounded native/contenteditable platform text/selection/composition routing, normalized `inputmode`/input-type/`enterkeyhint` keyboard and action configuration over the Enter key path, bounded BrowserCore-backed find traversal/scroll/highlighting, two-retry current-generation frame/Semantics capture and texture recreation, per-context BrowserCore-owned zoom across paint/input/Semantics, bounded descriptions and `aria-controls`/`aria-describedby`/`aria-details`/`aria-owns` relationships, heading/mixed-state mapping, native/authored range adjustment, live-region mapping, native/contenteditable text selection, atomic frame/semantics replacement, and node-level incremental reconciliation, live process-adjacent native bridge smoke, and focused native ABI/frame/input/accessibility tests; Linux source/test evidence, not a real native IME or screen-reader interaction, native surface-loss/lifecycle recovery, package, release, or non-Linux proof |
+| `just gate-flutter-shell` | Exact mise-managed Flutter 3.46.0-0.3.pre beta framework/engine revisions, locked Yaru 10.2.0 Adwaita-blue chrome/in-scene titlebar, Dart formatting/analysis, 60 shell/coordinator/worker/texture/input/Semantics tests, including monotonic host focus/visibility/lifecycle state, physical wheel normalization and slop-gated single-touch dragging through BrowserCore-owned cancelable root scrolling, bounded native/contenteditable platform text/selection/composition routing, normalized `inputmode`/input-type/`enterkeyhint` keyboard and action configuration over the Enter key path, bounded BrowserCore-backed find traversal/scroll/highlighting, two-retry current-generation frame/Semantics capture and texture recreation, per-context BrowserCore-owned zoom across paint/input/Semantics, bounded descriptions and `aria-controls`/`aria-describedby`/`aria-details`/`aria-owns` relationships, heading/mixed-state mapping, native/authored range adjustment, live-region mapping, native/contenteditable text selection, atomic frame/semantics replacement, and node-level incremental reconciliation, live process-adjacent native bridge smoke, and focused native ABI/frame/input/accessibility tests; Linux source/test evidence, not a real native IME or screen-reader interaction, native surface-loss/lifecycle recovery, release/package, or non-Linux proof |
 | `just gate-smoke` | reviewer baseline: formatting, clippy, host checks, and all host-runnable tests |
 | `just gate-push` | hk pre-push integration point: alpha, phase-6 runtime, smoke, and diff checks |
 | `just gate-webidl` | generated WebIDL constructor/prototype coverage plus headless/CDP runtime-host integration |
@@ -33,7 +33,7 @@ which layer today?”
 | `just compat-report` | current BrowserCore-backed committed fixture/profile counts and per-source/category output |
 | `just fuzz-security` | URL, CSP, cookie, and HTML parser fuzz targets at the configured run count |
 | `just audit` | `cargo audit` plus `cargo deny check` |
-| `just linux-release-smoke` | pinned x86_64 Flutter 3.46.0-0.3.pre beta release/AOT plus Rust bridge build; deterministic archive creation, clean extraction, and Impeller-aware Xvfb launch smoke |
+| `just linux-release-smoke` | pinned x86_64 Flutter 3.46.0-0.3.pre beta release/AOT plus Rust bridge/Yaru window-plugin build; stripped runner/plugin ELFs, deterministic archive creation, clean extraction, and Impeller-aware Xvfb launch smoke |
 | `just linux-at-spi-smoke` | real release/AOT Flutter bundle on Xvfb with a fresh BrowserCore profile and local fixture; bounded process-filtered AT-SPI traversal must observe the BrowserCore-derived `DOM Basic` heading; Linux native AT evidence, not a screen-reader matrix |
 | `just size-headless` | structured logical/allocated size, file count, and SHA-256 for the headless release binary |
 | `just size-flutter-linux` | controlled release/AOT build and component-attributed raw-bundle comparison against the checked-in hello-Flutter peer; measurement-only and not FlatPark package evidence |
@@ -80,9 +80,10 @@ which layer today?”
 
 - Compatibility baseline: **269 fixtures / 2,015 checks / 100% passing** as of
   2026-07-10. `COMPAT.md` is authoritative.
-- Clean Linux x86_64 Flutter raw-bundle reference: **22,778,750-byte hello /
-  85,509,520-byte Vixen / 62,730,770-byte delta**, measurement-only and not
-  FlatPark package evidence; see `BASELINES.md`.
+- Historical pre-Yaru Linux x86_64 Flutter raw-bundle reference:
+  **22,778,750-byte hello / 85,509,520-byte Vixen / 62,730,770-byte delta**,
+  measurement-only and not a current dependency-graph or FlatPark package
+  claim; see `BASELINES.md`.
 - External automation contract: [`CDP_PLAYWRIGHT_SMOKE.md`](CDP_PLAYWRIGHT_SMOKE.md).
 - Browser ownership/cancellation vertical: `just test-browser-core` (engine,
   headless, and GTK-free shell adapters through the production command/event

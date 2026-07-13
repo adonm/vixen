@@ -144,7 +144,8 @@ linux-release-check-inputs: _flutter-sdk-present
     test -f {{RUSTY_V8_ARCHIVE}} || { printf '%s\n' "rusty_v8 archive missing; run 'just linux-release-prefetch'" >&2; exit 1; }
     printf '%s  %s\n' {{RUSTY_V8_SHA256}} {{RUSTY_V8_ARCHIVE}} | sha256sum --check
 
-# Build the official release/AOT bundle consumed unchanged by FlatPark.
+# Build the official release/AOT bundle consumed unchanged by FlatPark. Flutter
+# does not strip bundled Linux plugin ELFs, so strip those beside the runner.
 build-flutter-release-linux: linux-release-check-inputs
     cd flutter/vixen_shell && flutter clean
     mkdir -p .tmp/linux-release/bin && ln -sf /usr/sbin/g++ .tmp/linux-release/bin/clang++ && ln -sf /usr/sbin/gcc .tmp/linux-release/bin/clang
@@ -162,6 +163,8 @@ build-flutter-release-linux: linux-release-check-inputs
          cd /workspace/flutter/vixen_shell && flutter pub get --enforce-lockfile && flutter build linux --release --no-pub'
     cd flutter/vixen_shell && flutter pub get --offline --enforce-lockfile
     strip --strip-unneeded {{LINUX_RELEASE_BUNDLE}}/vixen_shell
+    find {{LINUX_RELEASE_BUNDLE}}/lib -maxdepth 1 -type f -name '*_plugin.so' \
+        -exec strip --strip-unneeded {} +
 
 # Deterministic upstream archive for GitHub Releases and FlatPark extra-data.
 linux-release-archive: build-flutter-release-linux

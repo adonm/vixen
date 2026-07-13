@@ -29,6 +29,16 @@ ordered event stream, and a generated GTK-backed Linux runner. Production fails
 closed when its process-adjacent `lib/libvixen_ffi.so` or ABI v1 is unavailable;
 it never substitutes the scripted controller.
 
+The locked Yaru 10.2.0 widget suite now supplies the Adwaita-blue light/dark/high-
+contrast themes, icons, desktop controls, progress indicators, error banner, and
+an in-scene `YaruWindowTitleBar`. BrowserCore-backed tabs occupy that titlebar;
+the Yaru window plugin hides the runner's native GTK headerbar after startup and
+provides drag/minimize/maximize/restore/close behavior. The native headerbar is
+retained as a startup fallback. Address and find inputs remain Material text
+fields under the Yaru theme because the Yaru search widget cannot preserve their
+enabled, input-action, and byte-bound behavior. Modal dialogs intentionally
+block titlebar interaction because the titlebar is the browser scaffold app bar.
+
 The same additive ABI v1 now exports bounded retained RGBA frames. BrowserCore
 captures one authoritative document generation through WebRender/EGL; Dart
 copies the frame through `TransferableTypedData`; and the Linux runner publishes
@@ -98,7 +108,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key/script/single-touch scrolling, native/contenteditable text-input state plus normalized `inputmode`/input-type/`enterkeyhint` keyboard and action intent, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; native IME evidence, nested/richer gesture scrolling, native lifecycle/surface recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Locked Yaru/Adwaita-blue chrome with an integrated native-window titlebar, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key/script/single-touch scrolling, native/contenteditable text-input state plus normalized `inputmode`/input-type/`enterkeyhint` keyboard and action intent, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; native IME evidence, nested/richer gesture scrolling, native lifecycle/surface recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -453,8 +463,9 @@ Flutter engine/ICU files. The recipes use the local GNOME 50 builder container
 for CMake/Ninja/GTK while mounting the pinned Rust toolchain read-only. They
 intentionally report `flatpak_evidence: false`.
 The first clean x86_64 raw-bundle report is linked from `BASELINES.md`;
-independent reproduction, compressed/install accounting, finer native linker
-attribution, and a reviewed baseline for the FlatPark package remain
+it predates the Yaru/native-window plugin graph and is now historical.
+Independent post-Yaru reproduction, compressed/install accounting, finer native
+linker attribution, and a reviewed baseline for the FlatPark package remain
 required.
 
 ## Cross-cutting acceptance
@@ -490,6 +501,8 @@ improvements to every shell rather than shell-only feature breadth.
   Dart FFI; [Flutter `Texture`](https://api.flutter.dev/flutter/widgets/Texture-class.html)
   and [Semantics](https://api.flutter.dev/flutter/widgets/Semantics-class.html)
   are the presentation integration points.
+- [Yaru 10.2.0](https://pub.dev/packages/yaru) documents the GNOME-oriented
+  themes/widgets and in-scene native window titlebar used by the Linux chrome.
 - [FlatPark's publishing guide](https://flatpark.org/contributing/) documents
   checksum-pinned repackaging of official release archives and package review.
 - [Current rusty_v8 source-build guidance](https://github.com/denoland/rusty_v8#build-v8-from-source)

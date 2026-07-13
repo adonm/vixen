@@ -221,7 +221,9 @@ Cross-cutting delivery work has also advanced without widening browser claims.
 The safe Flutter controller now has a versioned handwritten C ABI with opaque
 process tokens, bounded JSON messages and retained output/frame allocations,
 stable tagged responses/events/errors, polling-only event delivery, and panic
-containment. The Linux shell adds handwritten Dart bindings, deterministic fake
+containment. The Linux shell now uses locked Yaru 10.2.0 Adwaita-blue themes,
+icons, controls, and an in-scene native-window titlebar containing the tab strip;
+the GTK headerbar remains a hidden startup fallback. It also adds handwritten Dart bindings, deterministic fake
 tests, a production worker isolate, bounded RGBA `FlPixelBufferTexture`
 transport, physical viewport mapping, and generation-checked pointer/wheel/key
 dispatch through BrowserCore hit testing, including matching-generation primary-

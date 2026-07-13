@@ -9,6 +9,22 @@ handwritten `vixen-ffi` C ABI. It fails closed if the bundled native library or
 ABI is unavailable. Unit and widget tests inject a scripted controller; the
 production binary never silently falls back to it.
 
+## Chrome and window contract
+
+The locked Yaru 10.2.0 suite supplies Adwaita-blue light, dark, and high-contrast
+themes plus the compatible icon buttons, menu, progress, banner, and window
+controls. BrowserCore-backed tabs are embedded in `YaruWindowTitleBar`; its Linux
+plugin hides the native GTK headerbar and provides drag/minimize/maximize/
+restore/close operations. The runner creates that GTK headerbar first as a
+fallback if Dart/plugin startup fails. The titlebar lives in the browser
+`Scaffold`, so modal routes block it normally.
+
+Address and find fields intentionally remain Material `TextField`s under the
+Yaru theme. Yaru's search field does not expose all Vixen requirements: disabled
+state, the exact Go/Search input actions, and the find query's 4096-byte UI cap.
+This is Yaru with an Adwaita accent/style target, not a claim that Yaru is
+pixel-identical to libadwaita.
+
 ## Linux frame texture contract
 
 The native worker captures only the selected, settled BrowserCore

@@ -6,7 +6,9 @@ enforce budgets or claim complete real-site behavior. The repository now has a
 checked-in hello-Flutter peer plus controlled Linux release/AOT raw-bundle build
 and comparison commands. No accepted Flutter report or FlatPark package
 size/performance baseline has been recorded yet; one clean
-measurement-only raw-bundle reference is checked in for reproduction.
+measurement-only raw-bundle reference is checked in for reproduction. That
+reference predates the Yaru chrome/titlebar dependency added on 2026-07-14 and
+is historical until a clean post-Yaru report is reviewed.
 
 ## Commands
 
@@ -75,6 +77,8 @@ Vixen code. The current local build uses the GNOME 50 builder image, its
 CMake/Ninja/GTK toolchain, the mise Rust/Flutter toolchains, locked Cargo/Pub
 dependencies, and the SHA-256-pinned rusty_v8 archive. The mutable builder-image
 tag remains a limitation until the release path pins an immutable digest.
+The Vixen dependency graph now also includes locked Yaru 10.2.0 and its native
+window plugins; do not use the recorded pre-Yaru delta as a current size claim.
 
 The analyzer requires release bundle structure (`libapp.so`, Flutter engine,
 and ICU), requires exactly one `libvixen_ffi.so` only in Vixen, rejects debug and

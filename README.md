@@ -30,7 +30,11 @@ Dart owns only chrome, presentation, and host-service UI. See
 
 The checked-in Linux Flutter alpha shell uses handwritten Dart FFI over the
 one-owner `vixen-ffi` controller and presents real BrowserCore/WebRender output
-through a bounded RGBA pixel-buffer texture. Its fake-controller, worker,
+through a bounded RGBA pixel-buffer texture. Its chrome uses the locked Yaru
+widget suite with the Adwaita-blue variant, Yaru icons/controls, and a
+Flutter-rendered titlebar containing the BrowserCore-backed tab strip. The
+native GTK headerbar remains only as a startup fallback and is hidden after the
+Yaru window plugin initializes. Its fake-controller, worker,
 coordinator, texture, input, and live native smoke tests run with
 `just gate-flutter-shell`; a relocatable debug bundle has also compiled. Physical
 viewport plus pointer/wheel/keyboard input are routed through BrowserCore;

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:yaru/yaru.dart';
 
 import '../shell/browser_shell.dart';
 import '../shell/shell_coordinator.dart';
@@ -21,23 +22,25 @@ final class _VixenAppState extends State<VixenApp> {
 
   @override
   Widget build(BuildContext context) {
+    const theme = YaruThemeData(
+      variant: YaruVariant.adwaitaBlue,
+      useMaterial3: true,
+      visualDensity: VisualDensity.standard,
+    );
+    const highContrastTheme = YaruThemeData(
+      variant: YaruVariant.adwaitaBlue,
+      highContrast: true,
+      useMaterial3: true,
+      visualDensity: VisualDensity.standard,
+    );
     return MaterialApp(
       title: 'Vixen',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xff6957c2),
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-      ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xff9e8cff),
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-      ),
+      theme: theme.theme,
+      darkTheme: theme.darkTheme,
+      highContrastTheme: highContrastTheme.theme,
+      highContrastDarkTheme: highContrastTheme.darkTheme,
+      themeMode: ThemeMode.system,
       home: BrowserShell(coordinator: widget.coordinator),
     );
   }

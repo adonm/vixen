@@ -185,6 +185,8 @@ jobs:
           flutter pub get --enforce-lockfile
           flutter build linux --release --no-pub
           strip --strip-unneeded build/linux/x64/release/bundle/vixen_shell
+          find build/linux/x64/release/bundle/lib -maxdepth 1 -type f \
+            -name '*_plugin.so' -exec strip --strip-unneeded {} +
 
       - name: Create deterministic release archive
         run: |
