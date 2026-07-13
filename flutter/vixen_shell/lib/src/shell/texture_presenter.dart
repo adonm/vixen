@@ -105,6 +105,7 @@ final class BrowserContentSurface extends StatefulWidget {
     this.onFocusChanged,
     this.onMouseEvent,
     this.onKeyEvent,
+    this.onTextInput,
     this.accessibility,
     this.onSemanticTap,
     this.onSemanticFocus,
@@ -121,6 +122,7 @@ final class BrowserContentSurface extends StatefulWidget {
   final ValueChanged<bool>? onFocusChanged;
   final void Function(String eventType, BrowserMouseEvent event)? onMouseEvent;
   final void Function(String eventType, BrowserKeyEvent event)? onKeyEvent;
+  final ValueChanged<BrowserTextInputState>? onTextInput;
   final BrowserAccessibilitySnapshot? accessibility;
   final void Function(
     BrowserAccessibilitySnapshot snapshot,
@@ -160,6 +162,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   final FocusNode _contentFocus = FocusNode(debugLabel: 'browser-content');
   final Map<int, int> _pressedButtons = {};
   final Set<PhysicalKeyboardKey> _suppressedShortcutKeys = {};
+  late final _BrowserTextInputClient _textInputClient;
   Size _logicalViewport = Size.zero;
   PointerEvent? _pendingMouseMove;
   bool _mouseMoveScheduled = false;
@@ -167,11 +170,14 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   int _controllerEpoch = 0;
   bool _presenting = false;
   bool _disposed = false;
+  bool _contentFocused = false;
+  (int, int, int)? _textInputTarget;
 
   @override
   void initState() {
     super.initState();
     _controller = widget.textureController ?? LinuxTextureController();
+    _textInputClient = _BrowserTextInputClient(_handleTextInput);
     _queueFrame(widget.frame);
   }
 
@@ -188,6 +194,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
       _displayedFrame = null;
     }
     _queueFrame(widget.frame);
+    _syncTextInput();
   }
 
   void _queueFrame(BrowserFrame? frame) {
@@ -266,7 +273,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         }
         return Focus(
           focusNode: _contentFocus,
-          onFocusChange: widget.onFocusChanged,
+          onFocusChange: _handleFocusChanged,
           onKeyEvent: _handleKeyEvent,
           child: Listener(
             behavior: HitTestBehavior.opaque,
@@ -285,6 +292,79 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         );
       },
     );
+  }
+
+  void _handleFocusChanged(bool focused) {
+    _contentFocused = focused;
+    widget.onFocusChanged?.call(focused);
+    _syncTextInput();
+  }
+
+  void _handleTextInput(TextEditingValue value) {
+    final callback = widget.onTextInput;
+    if (callback == null || !_contentFocused || _textInputTarget == null) {
+      return;
+    }
+    final composing = value.composing.isValid
+        ? BrowserAccessibilityTextSelection(
+            baseOffset: value.composing.start,
+            extentOffset: value.composing.end,
+          )
+        : null;
+    callback(
+      BrowserTextInputState(
+        text: value.text,
+        selection: BrowserAccessibilityTextSelection(
+          baseOffset: value.selection.baseOffset,
+          extentOffset: value.selection.extentOffset,
+        ),
+        composing: composing,
+      ),
+    );
+  }
+
+  void _syncTextInput() {
+    final contextState = widget.contextState;
+    final snapshot = widget.accessibility;
+    BrowserAccessibilityNode? node;
+    for (final candidate
+        in snapshot?.nodes ?? const <BrowserAccessibilityNode>[]) {
+      if (candidate.focused &&
+          !candidate.disabled &&
+          candidate.actions.contains('set_value') &&
+          candidate.textSelection != null &&
+          candidate.value != null) {
+        node = candidate;
+        break;
+      }
+    }
+    if (!_contentFocused ||
+        contextState == null ||
+        snapshot == null ||
+        snapshot.contextId != contextState.contextId ||
+        snapshot.documentId != contextState.documentId ||
+        node == null) {
+      _textInputTarget = null;
+      _textInputClient.close();
+      return;
+    }
+    final target = (snapshot.contextId, snapshot.documentId, node.id);
+    final selection = node.textSelection!;
+    final text = node.value!;
+    final value = TextEditingValue(
+      text: text,
+      selection: TextSelection(
+        baseOffset: selection.baseOffset.clamp(0, text.length),
+        extentOffset: selection.extentOffset.clamp(0, text.length),
+      ),
+    );
+    if (_textInputTarget != target) {
+      _textInputClient.close();
+      _textInputTarget = target;
+      _textInputClient.open(value);
+    } else {
+      _textInputClient.reconcile(value);
+    }
   }
 
   void _handlePointerDown(PointerDownEvent event) {
@@ -644,10 +724,88 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   @override
   void dispose() {
     _disposed = true;
+    _textInputClient.close();
     _contentFocus.dispose();
     unawaited(_controller.dispose());
     super.dispose();
   }
+}
+
+final class _BrowserTextInputClient with TextInputClient {
+  _BrowserTextInputClient(this._onChanged);
+
+  final ValueChanged<TextEditingValue> _onChanged;
+  TextInputConnection? _connection;
+  TextEditingValue _value = TextEditingValue.empty;
+
+  @override
+  TextEditingValue get currentTextEditingValue => _value;
+
+  @override
+  AutofillScope? get currentAutofillScope => null;
+
+  void open(TextEditingValue value) {
+    _value = value;
+    _connection = TextInput.attach(
+      this,
+      const TextInputConfiguration(
+        inputType: TextInputType.text,
+        inputAction: TextInputAction.none,
+        enableSuggestions: true,
+        autocorrect: true,
+      ),
+    );
+    _connection!.setEditingState(value);
+    _connection!.show();
+  }
+
+  void reconcile(TextEditingValue value) {
+    final next = _value.text == value.text
+        ? value.copyWith(composing: _value.composing)
+        : value;
+    if (_value == next) return;
+    _value = next;
+    _connection?.setEditingState(next);
+  }
+
+  void close() {
+    _connection?.close();
+    _connection = null;
+  }
+
+  @override
+  void updateEditingValue(TextEditingValue value) {
+    if (utf8.encode(value.text).length > browserMaxTextInputBytes ||
+        !value.selection.isValid ||
+        value.selection.baseOffset > value.text.length ||
+        value.selection.extentOffset > value.text.length ||
+        (value.composing.isValid && value.composing.end > value.text.length)) {
+      _connection?.setEditingState(_value);
+      return;
+    }
+    _value = value;
+    _onChanged(value);
+  }
+
+  @override
+  void connectionClosed() {
+    _connection = null;
+  }
+
+  @override
+  bool onFocusReceived() => _connection != null;
+
+  @override
+  void performAction(TextInputAction action) {}
+
+  @override
+  void performPrivateCommand(String action, Map<String, dynamic> data) {}
+
+  @override
+  void showAutocorrectionPromptRect(int start, int end) {}
+
+  @override
+  void updateFloatingCursor(RawFloatingCursorPoint point) {}
 }
 
 final class _TextSelectionSemantics extends SingleChildRenderObjectWidget {

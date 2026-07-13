@@ -35,13 +35,13 @@ copies the frame through `TransferableTypedData`; and the Linux runner publishes
 it through one `FlPixelBufferTexture` with a mutex-protected three-buffer pool.
 Dimensions are capped at 4096 per axis and 64 MiB per frame, with at most three
 retained native frames and one in-flight Dart capture plus one newest
-replacement. `just gate-flutter-shell` runs format, analysis, 48 Dart/widget/
+replacement. `just gate-flutter-shell` runs format, analysis, 55 Dart/widget/
 native smoke tests, and the native ABI gate. A Fedora 43 container build also
 produced a relocatable debug bundle containing the executable, Flutter embedder,
 and `libvixen_ffi.so`.
 
-This does not establish Linux parity: text/IME/gesture input, complete lifecycle
-recovery and scale handling, complete
+This does not establish Linux parity: contenteditable/IME action and gesture
+input, real native IME evidence, complete lifecycle recovery and scale handling, complete
 semantic relationships/actions and native AT smoke, complete find traversal,
 downloads/permissions,
 host services, broader FlatPark host/portal coverage, release size/performance,
@@ -98,7 +98,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key scrolling, find count UI, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; IME, nested/touch/script scrolling, complete find traversal, recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key scrolling, native text-control IME state, find count UI, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; contenteditable/IME actions and native evidence, nested/touch/script scrolling, complete find traversal, recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -185,11 +185,23 @@ transition, suppresses hidden captures, and cancels pending primary presses at
 the controller boundary. The stored scale does not yet separate CSS layout pixels
 from the bounded physical render target.
 
-The remaining target adds text/IME, touch and nested scrolling,
+The remaining target adds contenteditable/IME action handling and native IME
+evidence, touch and nested scrolling,
 CSS/device-scale correctness, and platform lifecycle/surface recovery.
 BrowserCore continues to own hit testing, selection, DOM event dispatch, and
 navigation effects. Platform-specific raw data may be retained in bounded DTOs
 where web semantics require it.
+
+The first platform text-input vertical is implemented for focused writable
+native text inputs and textareas. BrowserCore's semantic projection selects the
+eligible control, Flutter attaches one `TextInputClient`, and every platform
+update sends a value bounded to 16 KiB plus UTF-16 selection and optional
+composing ranges through exact context/document/runtime ids. BrowserCore
+revalidates the ranges and focused target before applying the state to the live
+control and dispatching composition-shaped, cancelable `beforeinput`, and
+`input` events. Stale targets and inactive host views fail closed. Widget/wire/
+core tests exercise non-ASCII composition; contenteditable, IME action and
+keyboard-type specialization, and real desktop-IME evidence remain.
 
 The first engine-owned scrolling vertical is now implemented for the top-level
 document. Flutter scales wheel deltas into frame coordinates, BrowserCore sends
@@ -302,8 +314,8 @@ session restore, shortcuts, visible WebRender content, input, viewport changes,
 error recovery, and accessibility projection.
 
 FlatPark is sequenced after the smaller basic-browser gate, not alongside its
-implementation. Until broader scrolling, IME text entry, complete find, core navigation
-controls, visible rendering, and bounded recovery are proven, maintain archive
+implementation. Until broader scrolling, native IME evidence, complete find,
+core navigation controls, visible rendering, and bounded recovery are proven, maintain archive
 reproducibility and launch smoke only; do not prioritize registry descriptor,
 review, publication, or update-channel work.
 

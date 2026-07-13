@@ -16,11 +16,12 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 use vixen_api::{
     ACCESSIBILITY_MAX_VALUE_BYTES, AccessibilityAction, AccessibilityNode, AccessibilitySnapshot,
-    BrowserError, BrowserEvent, BrowsingContextId, BrowsingContextState,
-    CrossDocumentNavigationKind, DiagnosticScope, DownloadEvent, EngineDiagnostic,
-    EngineDiagnosticCategory, HostLifecycle, HostViewState, InputDispatchResult, KeyEventData,
-    MouseEventData, NavigationActionOutcome, NavigationCancellationReason, NavigationPhase,
-    RuntimeConsoleArg, RuntimeConsoleValue, RuntimeEffects, RuntimeNetworkEvent,
+    AccessibilityTextSelection, BrowserError, BrowserEvent, BrowsingContextId,
+    BrowsingContextState, CrossDocumentNavigationKind, DiagnosticScope, DownloadEvent,
+    EngineDiagnostic, EngineDiagnosticCategory, HostLifecycle, HostViewState, InputDispatchResult,
+    KeyEventData, MouseEventData, NavigationActionOutcome, NavigationCancellationReason,
+    NavigationPhase, RuntimeConsoleArg, RuntimeConsoleValue, RuntimeEffects, RuntimeNetworkEvent,
+    TextInputState,
 };
 
 use crate::{
@@ -58,6 +59,7 @@ const MAX_INPUT_VIEWPORT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_KEY_BYTES: usize = 256;
 const MAX_CODE_BYTES: usize = 256;
 const MAX_TEXT_BYTES: usize = 4096;
+const MAX_TEXT_INPUT_BYTES: usize = 16 * 1024;
 const FFI_INVALID_ARGUMENT: &str = "ffi.invalid-argument";
 const FFI_INVALID_UTF8: &str = "ffi.invalid-utf8";
 const FFI_INPUT_TOO_LARGE: &str = "ffi.input-too-large";
@@ -796,6 +798,27 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
                 event: required_key_event(object)?,
             }
         }
+        "dispatch_text_input" => {
+            exact_keys(
+                object,
+                &[
+                    "context_id",
+                    "document_id",
+                    "runtime_context_id",
+                    "state",
+                    "type",
+                    "v",
+                    "viewport",
+                ],
+            )?;
+            ControllerCommand::DispatchTextInput {
+                context_id: required_context_id(object)?,
+                document_id: required_document_id(object)?,
+                runtime_context_id: required_runtime_context_id(object)?,
+                viewport: required_viewport(object)?,
+                state: required_text_input_state(object)?,
+            }
+        }
         _ => return Err(AbiError::invalid_command("unknown command type")),
     };
     Ok(command)
@@ -968,6 +991,58 @@ fn required_key_event(object: &Map<String, Value>) -> Result<KeyEventData, AbiEr
         repeat: required_bool(event, "repeat")?,
         location: required_i64(event, "location")?,
     })
+}
+
+fn required_text_input_state(object: &Map<String, Value>) -> Result<TextInputState, AbiError> {
+    let state = required_object(object, "state")?;
+    exact_keys(state, &["composing", "selection", "text"])?;
+    let text = bounded_string(state, "text", MAX_TEXT_INPUT_BYTES)?;
+    let selection = required_text_range(state, "selection")?
+        .ok_or_else(|| AbiError::invalid_command("text input selection must be an object"))?;
+    let composing = required_text_range(state, "composing")?;
+    let utf16_len = u32::try_from(text.encode_utf16().count())
+        .map_err(|_| AbiError::invalid_command("text input exceeds the UTF-16 range limit"))?;
+    if selection.base_offset > utf16_len || selection.extent_offset > utf16_len {
+        return Err(AbiError::invalid_command(
+            "text input selection exceeds the value",
+        ));
+    }
+    if composing.is_some_and(|range| {
+        range.base_offset > range.extent_offset || range.extent_offset > utf16_len
+    }) {
+        return Err(AbiError::invalid_command(
+            "text input composing range is invalid",
+        ));
+    }
+    Ok(TextInputState {
+        text,
+        selection,
+        composing,
+    })
+}
+
+fn required_text_range(
+    object: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<AccessibilityTextSelection>, AbiError> {
+    let Some(value) = object.get(field) else {
+        return Err(AbiError::invalid_command(format!("{field} is required")));
+    };
+    if value.is_null() {
+        return Ok(None);
+    }
+    let range = value
+        .as_object()
+        .ok_or_else(|| AbiError::invalid_command(format!("{field} must be an object or null")))?;
+    exact_keys(range, &["base_offset", "extent_offset"])?;
+    let base_offset = u32::try_from(required_u64(range, "base_offset")?)
+        .map_err(|_| AbiError::invalid_command("text range offset must fit unsigned 32 bits"))?;
+    let extent_offset = u32::try_from(required_u64(range, "extent_offset")?)
+        .map_err(|_| AbiError::invalid_command("text range offset must fit unsigned 32 bits"))?;
+    Ok(Some(AccessibilityTextSelection {
+        base_offset,
+        extent_offset,
+    }))
 }
 
 fn bounded_string(
@@ -2385,6 +2460,52 @@ mod tests {
     }
 
     #[test]
+    fn text_input_json_is_strict_bounded_and_utf16_checked() {
+        let _scope = test_scope();
+        let parsed = parse_command(&text_input_command().to_string()).unwrap();
+        assert!(matches!(
+            parsed,
+            ControllerCommand::DispatchTextInput {
+                viewport: (800, 600),
+                state: TextInputState {
+                    ref text,
+                    selection: AccessibilityTextSelection {
+                        base_offset: 2,
+                        extent_offset: 2,
+                    },
+                    composing: Some(AccessibilityTextSelection {
+                        base_offset: 0,
+                        extent_offset: 2,
+                    }),
+                },
+                ..
+            } if text == "🦊"
+        ));
+
+        let mut cases = Vec::new();
+        let mut value = text_input_command();
+        value["state"]["text"] = json!("x".repeat(MAX_TEXT_INPUT_BYTES + 1));
+        cases.push(value);
+        let mut value = text_input_command();
+        value["state"]["selection"]["extent_offset"] = json!(3);
+        cases.push(value);
+        let mut value = text_input_command();
+        value["state"]["composing"]["base_offset"] = json!(2);
+        value["state"]["composing"]["extent_offset"] = json!(1);
+        cases.push(value);
+        let mut value = text_input_command();
+        value["state"]["extra"] = json!(true);
+        cases.push(value);
+
+        for value in cases {
+            assert!(
+                parse_command(&value.to_string()).is_err(),
+                "accepted invalid text input command: {value}"
+            );
+        }
+    }
+
+    #[test]
     fn find_text_json_is_strict_bounded_and_exact() {
         let _scope = test_scope();
         let command = json!({
@@ -2537,6 +2658,22 @@ mod tests {
                 "meta_key": false,
                 "repeat": false,
                 "location": 0,
+            },
+        })
+    }
+
+    fn text_input_command() -> Value {
+        json!({
+            "v": 1,
+            "type": "dispatch_text_input",
+            "context_id": 1,
+            "document_id": 2,
+            "runtime_context_id": 3,
+            "viewport": {"width": 800, "height": 600},
+            "state": {
+                "text": "🦊",
+                "selection": {"base_offset": 2, "extent_offset": 2},
+                "composing": {"base_offset": 0, "extent_offset": 2},
             },
         })
     }

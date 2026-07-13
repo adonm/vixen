@@ -10,6 +10,7 @@ const int vixenMaxEventsPerDrain = 64;
 const int vixenMaxFrameDimension = 4096;
 const int vixenMaxFrameBytes = 64 * 1024 * 1024;
 const int vixenMaxAccessibilityValueBytes = 16 * 1024;
+const int vixenMaxTextInputBytes = 16 * 1024;
 
 enum NativeStatus {
   ok(0, 'ffi.ok'),
@@ -340,6 +341,25 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
       }
       _validateKeyEvent(normalized['event']);
       break;
+    case 'dispatch_text_input':
+      _expectKeys(normalized, const <String>{
+        'v',
+        'type',
+        'context_id',
+        'document_id',
+        'runtime_context_id',
+        'viewport',
+        'state',
+      });
+      _validateContextId(normalized['context_id']);
+      _validatePositiveId(normalized['document_id'], 'document_id');
+      _validatePositiveId(
+        normalized['runtime_context_id'],
+        'runtime_context_id',
+      );
+      _validateViewport(normalized['viewport']);
+      _validateTextInputState(normalized['state']);
+      break;
     default:
       _invalidCommand('unknown command type');
   }
@@ -459,6 +479,45 @@ void _validateViewport(Object? value) {
       'viewport must have positive bounded dimensions and RGBA byte length',
     );
   }
+}
+
+void _validateTextInputState(Object? value) {
+  final state = _commandObject(value, 'state');
+  _expectKeys(state, const <String>{'text', 'selection', 'composing'});
+  _validateBoundedString(state['text'], 'text', vixenMaxTextInputBytes);
+  final text = state['text']! as String;
+  _validateTextRange(state['selection'], 'selection', text.codeUnits.length);
+  final composing = state['composing'];
+  if (composing != null) {
+    final range = _validateTextRange(
+      composing,
+      'composing',
+      text.codeUnits.length,
+    );
+    if (range.base > range.extent) {
+      _invalidCommand('composing range must be ordered');
+    }
+  }
+}
+
+({int base, int extent}) _validateTextRange(
+  Object? value,
+  String name,
+  int textLength,
+) {
+  final range = _commandObject(value, name);
+  _expectKeys(range, const <String>{'base_offset', 'extent_offset'});
+  final base = range['base_offset'];
+  final extent = range['extent_offset'];
+  if (base is! int ||
+      extent is! int ||
+      base < 0 ||
+      extent < 0 ||
+      base > textLength ||
+      extent > textLength) {
+    _invalidCommand('$name offsets must be within the UTF-16 text length');
+  }
+  return (base: base, extent: extent);
 }
 
 void _validateMouseEvent(Object? value) {

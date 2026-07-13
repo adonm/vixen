@@ -186,6 +186,7 @@ final class ScriptedBrowserController extends BrowserController {
       case 'dispatch_accessibility_action':
       case 'dispatch_mouse_event':
       case 'dispatch_key_event':
+      case 'dispatch_text_input':
         _knownContext(command.contextId);
         return InputDispatchedResponse.empty();
       default:

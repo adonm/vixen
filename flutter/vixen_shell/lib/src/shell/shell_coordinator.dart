@@ -367,6 +367,18 @@ final class ShellCoordinator extends ChangeNotifier {
         );
       });
 
+  Future<void> dispatchTextInput(BrowserTextInputState state) =>
+      _enqueueInput((generation) async {
+        _lastInputResult = await controller.dispatchTextInput(
+          contextId: generation.contextId,
+          documentId: generation.documentId,
+          runtimeContextId: generation.runtimeContextId,
+          viewportWidth: generation.viewportWidth,
+          viewportHeight: generation.viewportHeight,
+          state: state,
+        );
+      });
+
   Future<void> dispatchSemanticTap(
     BrowserAccessibilitySnapshot snapshot,
     BrowserAccessibilityNode node,

@@ -247,6 +247,24 @@ void main() {
             applyText: true,
           ),
         ),
+        BrowserCommand.dispatchTextInput(
+          contextId: 1,
+          documentId: 2,
+          runtimeContextId: 3,
+          viewportWidth: 320,
+          viewportHeight: 200,
+          state: const BrowserTextInputState(
+            text: 'に',
+            selection: BrowserAccessibilityTextSelection(
+              baseOffset: 1,
+              extentOffset: 1,
+            ),
+            composing: BrowserAccessibilityTextSelection(
+              baseOffset: 0,
+              extentOffset: 1,
+            ),
+          ),
+        ),
         BrowserCommand.findText(contextId: 1, documentId: 2, query: 'Vixen'),
         BrowserCommand.setPageZoom(1, 1.25),
       ];
@@ -270,6 +288,30 @@ void main() {
         () => normalizeNativeCommand(<String, Object?>{
           ...mouse,
           'event_type': 'pointerdown',
+        }),
+        throwsA(isA<NativeBridgeException>()),
+      );
+      final textInput = BrowserCommand.dispatchTextInput(
+        contextId: 1,
+        documentId: 2,
+        runtimeContextId: 3,
+        viewportWidth: 320,
+        viewportHeight: 200,
+        state: const BrowserTextInputState(
+          text: 'x',
+          selection: BrowserAccessibilityTextSelection(
+            baseOffset: 1,
+            extentOffset: 1,
+          ),
+        ),
+      ).toWire();
+      expect(
+        () => normalizeNativeCommand({
+          ...textInput,
+          'state': {
+            ...(textInput['state']! as Map<String, Object?>),
+            'selection': {'base_offset': 2, 'extent_offset': 2},
+          },
         }),
         throwsA(isA<NativeBridgeException>()),
       );

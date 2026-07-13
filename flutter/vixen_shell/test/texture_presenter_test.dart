@@ -157,6 +157,84 @@ void main() {
     expect(keyEvents.where((entry) => entry.$2.key == 'f'), isEmpty);
   });
 
+  testWidgets('focused BrowserCore text controls accept platform IME state', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final states = <BrowserTextInputState>[];
+    final context = BrowsingContextState.initial(
+      10,
+    ).copyWith(documentId: 20, runtimeContextId: 30);
+    final snapshot = BrowserAccessibilitySnapshot(
+      sourceGeneration: 1,
+      generation: 1,
+      contextId: 10,
+      documentId: 20,
+      viewportWidth: 320,
+      viewportHeight: 200,
+      nodes: [
+        BrowserAccessibilityNode(
+          id: 5,
+          role: 'textbox',
+          label: 'Name',
+          value: '',
+          textSelection: const BrowserAccessibilityTextSelection(
+            baseOffset: 0,
+            extentOffset: 0,
+          ),
+          bounds: const BrowserAccessibilityRect(
+            x: 0,
+            y: 0,
+            width: 320,
+            height: 40,
+          ),
+          focused: true,
+          disabled: false,
+          selected: false,
+          hidden: false,
+          focusable: true,
+          actions: const ['focus', 'set_value'],
+        ),
+      ],
+      truncated: false,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 320,
+          height: 200,
+          child: BrowserContentSurface(
+            contextState: context,
+            frame: sizedTestFrame(frameId: 9, width: 320, height: 200),
+            accessibility: snapshot,
+            textureController: _TestTextureController(),
+            onTextInput: states.add,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('content-surface')));
+    await tester.pump();
+    expect(tester.testTextInput.isVisible, isTrue);
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'に',
+        selection: TextSelection.collapsed(offset: 1),
+        composing: TextRange(start: 0, end: 1),
+      ),
+    );
+    await tester.pump();
+
+    expect(states, hasLength(1));
+    expect(states.single.text, 'に');
+    expect(states.single.selection.baseOffset, 1);
+    expect(states.single.composing?.baseOffset, 0);
+    expect(states.single.composing?.extentOffset, 1);
+  });
+
   testWidgets('BrowserCore nodes project into actionable Flutter Semantics', (
     tester,
   ) async {

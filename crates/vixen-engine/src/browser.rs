@@ -25,7 +25,7 @@ use vixen_api::{
     NavigationPhase, ProfileDataSelection, ProfileId, ProfileSessionState, RequestId,
     RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue,
     RuntimeContextId, RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent,
-    RuntimeNetworkEvent, ScriptValue, browser_error_codes,
+    RuntimeNetworkEvent, ScriptValue, TextInputState, browser_error_codes,
 };
 use vixen_net::{
     CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent, RedirectMode,
@@ -63,6 +63,7 @@ const MIN_PAGE_ZOOM: f64 = 0.25;
 const MAX_PAGE_ZOOM: f64 = 5.0;
 const KEYBOARD_SCROLL_LINE_PX: f64 = 40.0;
 const KEYBOARD_SCROLL_PAGE_FRACTION: f64 = 0.875;
+const MAX_TEXT_INPUT_BYTES: usize = 16 * 1024;
 const MAX_URL_BYTES: usize = 16 * 1024;
 const MAX_VIEWPORT_DIMENSION: u32 = 16_384;
 const MAX_RUNTIME_SLOTS: usize = 512;
@@ -871,6 +872,12 @@ impl BrowserCore {
                 event_type,
                 event,
             ),
+            BrowserCommand::DispatchTextInput {
+                context_id,
+                document_id,
+                runtime_context_id,
+                state,
+            } => self.dispatch_text_input(context_id, document_id, runtime_context_id, state),
             BrowserCommand::FindText {
                 context_id,
                 document_id,
@@ -2679,6 +2686,39 @@ impl BrowserCore {
         }))
     }
 
+    fn dispatch_text_input(
+        &mut self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        runtime_context_id: RuntimeContextId,
+        state: TextInputState,
+    ) -> Result<BrowserCommandResult, BrowserError> {
+        self.ensure_host_accepts_input(context_id)?;
+        validate_text_input_state(&state)?;
+        let source = format!(
+            "globalThis.__vixenApplyTextInputState ? globalThis.__vixenApplyTextInputState({}) : false",
+            deno_core::serde_json::json!({
+                "text": state.text,
+                "selectionBase": state.selection.base_offset,
+                "selectionExtent": state.selection.extent_offset,
+                "composingBase": state.composing.map(|range| range.base_offset),
+                "composingExtent": state.composing.map(|range| range.extent_offset),
+            })
+        );
+        let evaluation =
+            self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
+        if evaluation.value != ScriptValue::Bool(true) {
+            return Err(BrowserError::new(
+                browser_error_codes::INVALID_ARGUMENT,
+                "text input requires a focused writable native text control",
+            ));
+        }
+        Ok(BrowserCommandResult::InputDispatched(InputDispatchResult {
+            effects: evaluation.effects,
+            navigation_actions: evaluation.navigation_actions,
+        }))
+    }
+
     fn dispatch_accessibility_action(
         &mut self,
         request: AccessibilityActionDispatch,
@@ -3715,6 +3755,36 @@ fn validate_viewport(viewport: (u32, u32)) -> Result<(), BrowserError> {
             format!(
                 "viewport must be within 1x1 and {MAX_VIEWPORT_DIMENSION}x{MAX_VIEWPORT_DIMENSION}"
             ),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_text_input_state(state: &TextInputState) -> Result<(), BrowserError> {
+    if state.text.len() > MAX_TEXT_INPUT_BYTES {
+        return Err(BrowserError::new(
+            browser_error_codes::INVALID_ARGUMENT,
+            "text input value exceeds the browser limit",
+        ));
+    }
+    let utf16_len = u32::try_from(state.text.encode_utf16().count()).map_err(|_| {
+        BrowserError::new(
+            browser_error_codes::INVALID_ARGUMENT,
+            "text input value exceeds the UTF-16 range limit",
+        )
+    })?;
+    if state.selection.base_offset > utf16_len || state.selection.extent_offset > utf16_len {
+        return Err(BrowserError::new(
+            browser_error_codes::INVALID_ARGUMENT,
+            "text input selection exceeds the value",
+        ));
+    }
+    if let Some(composing) = state.composing
+        && (composing.base_offset > composing.extent_offset || composing.extent_offset > utf16_len)
+    {
+        return Err(BrowserError::new(
+            browser_error_codes::INVALID_ARGUMENT,
+            "text input composing range is invalid",
         ));
     }
     Ok(())
@@ -5233,6 +5303,108 @@ mod tests {
             element_y(&mut handle, &current, "#marker", viewport),
             initial_y
         );
+    }
+
+    #[test]
+    fn text_input_commits_bounded_ime_composition_to_the_focused_control() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/input");
+        let current = state(&mut handle, context_id);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "const field = document.querySelector('#name'); field.focus(); globalThis.imeEvents = []; for (const type of ['compositionstart', 'beforeinput', 'input', 'compositionupdate', 'compositionend']) field.addEventListener(type, event => imeEvents.push(type + ':' + (event.data || '') + ':' + Boolean(event.isComposing))); field.value"
+            ),
+            ScriptValue::String(String::new())
+        );
+
+        let composing = vixen_api::AccessibilityTextSelection {
+            base_offset: 0,
+            extent_offset: 1,
+        };
+        let result = handle
+            .dispatch(BrowserCommand::DispatchTextInput {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                state: TextInputState {
+                    text: "に".to_owned(),
+                    selection: vixen_api::AccessibilityTextSelection {
+                        base_offset: 1,
+                        extent_offset: 1,
+                    },
+                    composing: Some(composing),
+                },
+            })
+            .unwrap();
+        assert!(matches!(result, BrowserCommandResult::InputDispatched(_)));
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "document.querySelector('#name').value + '|' + imeEvents.join('>')"
+            ),
+            ScriptValue::String(
+                "に|compositionstart::false>beforeinput:に:true>input:に:true>compositionupdate:に:false"
+                    .to_owned()
+            )
+        );
+
+        handle
+            .dispatch(BrowserCommand::DispatchTextInput {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                state: TextInputState {
+                    text: "に".to_owned(),
+                    selection: vixen_api::AccessibilityTextSelection {
+                        base_offset: 1,
+                        extent_offset: 1,
+                    },
+                    composing: None,
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            eval(&mut handle, &current, "imeEvents.at(-1)"),
+            ScriptValue::String("compositionend:に:false".to_owned())
+        );
+        let BrowserCommandResult::AccessibilitySnapshot(snapshot) = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: (800, 600),
+            })
+            .unwrap()
+        else {
+            panic!("expected accessibility snapshot");
+        };
+        let field = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Name")
+            .unwrap();
+        assert_eq!(field.value.as_deref(), Some("に"));
+        assert_eq!(field.text_selection.unwrap().base_offset, 1);
+
+        let error = handle
+            .dispatch(BrowserCommand::DispatchTextInput {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                state: TextInputState {
+                    text: "x".to_owned(),
+                    selection: vixen_api::AccessibilityTextSelection {
+                        base_offset: 2,
+                        extent_offset: 2,
+                    },
+                    composing: None,
+                },
+            })
+            .unwrap_err();
+        assert_eq!(error.code, browser_error_codes::INVALID_ARGUMENT);
     }
 
     #[test]

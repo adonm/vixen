@@ -265,6 +265,26 @@ abstract class BrowserController {
       ),
     ),
   );
+
+  Future<InputDispatchedResponse> dispatchTextInput({
+    required int contextId,
+    required int documentId,
+    required int runtimeContextId,
+    required int viewportWidth,
+    required int viewportHeight,
+    required BrowserTextInputState state,
+  }) async => _expect<InputDispatchedResponse>(
+    await dispatch(
+      BrowserCommand.dispatchTextInput(
+        contextId: contextId,
+        documentId: documentId,
+        runtimeContextId: runtimeContextId,
+        viewportWidth: viewportWidth,
+        viewportHeight: viewportHeight,
+        state: state,
+      ),
+    ),
+  );
 }
 
 T _expect<T extends BrowserResponse>(BrowserResponse response) {

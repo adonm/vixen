@@ -433,6 +433,12 @@ pub enum BrowserCommand {
         event_type: String,
         event: KeyEventData,
     },
+    DispatchTextInput {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        runtime_context_id: RuntimeContextId,
+        state: TextInputState,
+    },
     FindText {
         context_id: BrowsingContextId,
         document_id: DocumentId,
@@ -719,6 +725,15 @@ pub struct KeyEventData {
     pub meta_key: bool,
     pub repeat: bool,
     pub location: i64,
+}
+
+/// Full platform text-editing state delivered by an IME. Offsets are UTF-16
+/// code-unit positions, matching Flutter, DOM text controls, and accessibility.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextInputState {
+    pub text: String,
+    pub selection: AccessibilityTextSelection,
+    pub composing: Option<AccessibilityTextSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

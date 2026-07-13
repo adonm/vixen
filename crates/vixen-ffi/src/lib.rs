@@ -13,7 +13,7 @@ pub use vixen_api::{
     AccessibilityAction, AccessibilityNode, AccessibilityRect, AccessibilitySnapshot, BrowserError,
     BrowserEvent, BrowserSnapshot, BrowsingContextId, BrowsingContextState, DocumentId,
     FindTextResult, HostLifecycle, HostViewState, InputDispatchResult, KeyEventData,
-    MouseEventData, NavigationId, ProfileSessionState, RuntimeContextId,
+    MouseEventData, NavigationId, ProfileSessionState, RuntimeContextId, TextInputState,
 };
 pub use vixen_engine::browser::BrowserConfig;
 pub use vixen_engine::paint::RgbaFrame;
@@ -88,6 +88,13 @@ pub enum ControllerCommand {
         viewport: (u32, u32),
         event_type: String,
         event: KeyEventData,
+    },
+    DispatchTextInput {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        runtime_context_id: RuntimeContextId,
+        viewport: (u32, u32),
+        state: TextInputState,
     },
     FindText {
         context_id: BrowsingContextId,
@@ -258,6 +265,18 @@ impl FlutterBrowserController {
                     _ => event_type,
                 },
                 event,
+            },
+            ControllerCommand::DispatchTextInput {
+                context_id,
+                document_id,
+                runtime_context_id,
+                viewport: _,
+                state,
+            } => BrowserCommand::DispatchTextInput {
+                context_id,
+                document_id,
+                runtime_context_id,
+                state,
             },
             ControllerCommand::FindText {
                 context_id,

@@ -393,12 +393,25 @@ void main() {
           applyText: true,
         ),
       );
+      await coordinator.dispatchTextInput(
+        const BrowserTextInputState(
+          text: 'に',
+          selection: BrowserAccessibilityTextSelection(
+            baseOffset: 1,
+            extentOffset: 1,
+          ),
+          composing: BrowserAccessibilityTextSelection(
+            baseOffset: 0,
+            extentOffset: 1,
+          ),
+        ),
+      );
 
       final input = controller.commands
           .where((command) => command.type.startsWith('dispatch_'))
           .map((command) => command.toWire())
           .toList();
-      expect(input, hasLength(2));
+      expect(input, hasLength(3));
       for (final command in input) {
         expect(command['context_id'], 4);
         expect(command['document_id'], 400);

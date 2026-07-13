@@ -231,6 +231,16 @@ generation, while unfocused controls and authored ARIA-only textboxes do not
 fabricate caret state. Document-range and contenteditable selection remain
 outside this slice.
 
+Focused writable native text inputs and textareas also attach Flutter's platform
+text-input client. Each update carries a value capped at 16 KiB plus selection
+and optional composing ranges in UTF-16 units through exact context/document/
+runtime ids. BrowserCore validates every range against the value, applies it to
+the live focused control, and emits composition-shaped events plus cancelable
+`beforeinput` and `input`; stale or non-writable targets fail closed. Widget,
+wire, and BrowserCore tests cover a non-ASCII composing update. Contenteditable,
+IME action/keyboard-type specialization, and a real Linux desktop-IME smoke or
+language matrix remain open.
+
 Bounded `aria-owns` references now reparent only retained later semantic nodes;
 the first valid owner wins, parent-before-child ordering remains enforced, and
 cycles/backward ownership are ignored. Native `h1`–`h6` and valid authored

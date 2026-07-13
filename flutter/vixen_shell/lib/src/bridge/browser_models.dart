@@ -7,6 +7,7 @@ const String vixenStartUrl = 'about:vixen';
 const int browserMaxFrameDimension = 4096;
 const int browserMaxFrameBytes = 64 * 1024 * 1024;
 const int browserMaxAccessibilityNodes = 192;
+const int browserMaxTextInputBytes = 16 * 1024;
 
 enum BrowserHostLifecycle {
   resumed('resumed'),
@@ -701,6 +702,24 @@ final class BrowserKeyEvent {
   };
 }
 
+final class BrowserTextInputState {
+  const BrowserTextInputState({
+    required this.text,
+    required this.selection,
+    this.composing,
+  });
+
+  final String text;
+  final BrowserAccessibilityTextSelection selection;
+  final BrowserAccessibilityTextSelection? composing;
+
+  Map<String, Object?> toWire() => {
+    'text': text,
+    'selection': selection.toWire(),
+    'composing': composing?.toWire(),
+  };
+}
+
 final class BrowserCommand {
   BrowserCommand._(this.type, Map<String, Object?> fields)
     : _fields = Map.unmodifiable(fields);
@@ -865,6 +884,20 @@ final class BrowserCommand {
     'viewport': {'width': viewportWidth, 'height': viewportHeight},
     'event_type': eventType,
     'event': event.toWire(),
+  });
+  factory BrowserCommand.dispatchTextInput({
+    required int contextId,
+    required int documentId,
+    required int runtimeContextId,
+    required int viewportWidth,
+    required int viewportHeight,
+    required BrowserTextInputState state,
+  }) => BrowserCommand._('dispatch_text_input', {
+    'context_id': contextId,
+    'document_id': documentId,
+    'runtime_context_id': runtimeContextId,
+    'viewport': {'width': viewportWidth, 'height': viewportHeight},
+    'state': state.toWire(),
   });
 
   final String type;

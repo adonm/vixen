@@ -2390,6 +2390,79 @@ const DOM_API_BOOTSTRAP: &str = r#"
     return wrapElementByNodeId(activeElementNodeId) || vixenDocument.body || vixenDocument;
   }
 
+  let activeTextComposition = null;
+
+  function dispatchTextCompositionEvent(target, type, data) {
+    const event = new Event(type, {
+      bubbles: true,
+      cancelable: false,
+      composed: true,
+    });
+    Object.defineProperty(event, 'data', {
+      value: String(data || ''),
+      enumerable: true,
+      configurable: true,
+    });
+    target.dispatchEvent(event);
+  }
+
+  Object.defineProperty(globalThis, '__vixenApplyTextInputState', {
+    value(state = {}) {
+      const target = keyboardEventTarget();
+      if (!isTextEditableControl(target)) return false;
+      const text = String(state.text || '');
+      const selectionBase = Number(state.selectionBase);
+      const selectionExtent = Number(state.selectionExtent);
+      const composing = Number.isInteger(state.composingBase) && Number.isInteger(state.composingExtent)
+        ? [state.composingBase, state.composingExtent]
+        : null;
+      const priorComposition = activeTextComposition;
+      const compositionText = composing === null ? '' : text.slice(composing[0], composing[1]);
+      if (composing !== null && (priorComposition === null || priorComposition.nodeId !== target.__vixenNodeId)) {
+        dispatchTextCompositionEvent(target, 'compositionstart', '');
+      }
+
+      const previous = controlValue(target);
+      if (previous !== text) {
+        const inputType = composing !== null
+          ? 'insertCompositionText'
+          : priorComposition !== null && priorComposition.nodeId === target.__vixenNodeId
+          ? 'insertFromComposition'
+          : 'insertText';
+        const dataValue = composing === null ? null : compositionText;
+        const beforeInput = new InputEvent('beforeinput', {
+          bubbles: true,
+          cancelable: true,
+          composed: true,
+          data: dataValue,
+          inputType,
+          isComposing: composing !== null,
+        });
+        if (!target.dispatchEvent(beforeInput)) return true;
+        applyControlValue(target, text, selectionBase, selectionExtent);
+        target.dispatchEvent(new InputEvent('input', {
+          bubbles: true,
+          composed: true,
+          data: dataValue,
+          inputType,
+          isComposing: composing !== null,
+        }));
+      } else {
+        setControlSelection(target, selectionBase, selectionExtent);
+      }
+
+      if (composing !== null) {
+        activeTextComposition = { nodeId: target.__vixenNodeId, data: compositionText };
+        dispatchTextCompositionEvent(target, 'compositionupdate', compositionText);
+      } else if (priorComposition !== null && priorComposition.nodeId === target.__vixenNodeId) {
+        activeTextComposition = null;
+        dispatchTextCompositionEvent(target, 'compositionend', priorComposition.data);
+      }
+      return true;
+    },
+    configurable: true,
+  });
+
   Object.defineProperty(globalThis, '__vixenDispatchKeyEvent', {
     value(type, init = {}) {
       const target = keyboardEventTarget();

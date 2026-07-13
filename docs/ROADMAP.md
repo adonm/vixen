@@ -65,7 +65,7 @@ As of 2026-07-10 the repository has these building blocks:
   comparison. The packaged Linux composition root is now Flutter: chrome, real
   BrowserCore FFI, visible WebRender output through a bounded RGBA texture,
   input/accessibility projection, and a deterministic release/AOT archive with
-  clean extraction and Impeller Xvfb launch smoke. FlatPark review, IME, host services, complete accessibility, and
+  clean extraction and Impeller Xvfb launch smoke. FlatPark review, broader/native IME evidence, host services, complete accessibility, and
   compatibility-shell parity remain open.
 
 These are substantial components now routed through one initial browser owner,
@@ -262,6 +262,11 @@ semantics identities; the bounded ABI remains full-snapshot rather than making
 Dart own a delta graph. The real Linux release bundle now has process-filtered,
 bounded AT-SPI evidence that the BrowserCore-derived `DOM Basic` heading reaches
 the native tree; broader screen-reader/platform matrices remain.
+A focused writable native text control now attaches Flutter's platform
+`TextInputClient`; bounded full text plus UTF-16 selection and composing ranges
+cross exact context/document/runtime ids and update the live control with
+composition-shaped plus `beforeinput`/`input` events. Contenteditable, IME action
+specialization, and real Linux IME evidence remain.
 Ctrl+F now crosses the exact active context/document ABI boundary and reports a
 bounded Page-owned visible-text match count in a Flutter live region. Highlight,
 match traversal, and scroll-to-match remain before find parity.
@@ -550,7 +555,8 @@ next work has two interleaved tracks: Flutter shell migration and browser
 correctness. Neither may starve the other.
 
 1. Extend the landed physical viewport, pointer/wheel/keyboard, root wheel/key
-   scrolling, and monotonic focus/visibility/lifecycle path with IME,
+   scrolling, native text-control IME, and monotonic focus/visibility/lifecycle
+   path with contenteditable/IME action handling and real native IME evidence,
    nested/touch/script scrolling, CSS/physical
    scale correctness, and lifecycle recovery. In parallel, finish
    navigation-aware runtime/native-host cancellation and preserve one BrowserCore
@@ -567,7 +573,7 @@ correctness. Neither may starve the other.
    and broader native AT/screen-reader evidence. Add platform
    host-service UI; both remain cross-cutting through every later platform.
 5. Complete the Linux basic-browser gate: visible controlled-site navigation,
-   nested/touch/script scrolling, text/IME input,
+   nested/touch/script scrolling, contenteditable plus native IME evidence,
    back/forward/reload/stop, complete find traversal/highlighting,
    and bounded navigation/runtime/surface recovery. Keep release-archive smoke
    green, but defer FlatPark submission/review/publishing until this gate passes.

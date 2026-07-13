@@ -30,7 +30,7 @@ pub use browser::{
     NavigationPhase, ProfileDataSelection, ProfileSessionState, RuntimeBindingEvent,
     RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue, RuntimeDialogEvent,
     RuntimeEffects, RuntimeExceptionEvent, RuntimeNetworkEvent, RuntimePermissionGrant,
-    ScriptValue, error_codes as browser_error_codes,
+    ScriptValue, TextInputState, error_codes as browser_error_codes,
 };
 pub use ids::{
     BrowserId, BrowsingContextId, DocumentId, DownloadId, FrameId, InvalidId, NavigationId,

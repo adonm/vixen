@@ -185,6 +185,31 @@ void main() {
         'location': 0,
       },
     );
+    expect(
+      BrowserCommand.dispatchTextInput(
+        contextId: 7,
+        documentId: 70,
+        runtimeContextId: 700,
+        viewportWidth: 800,
+        viewportHeight: 600,
+        state: const BrowserTextInputState(
+          text: 'に',
+          selection: BrowserAccessibilityTextSelection(
+            baseOffset: 1,
+            extentOffset: 1,
+          ),
+          composing: BrowserAccessibilityTextSelection(
+            baseOffset: 0,
+            extentOffset: 1,
+          ),
+        ),
+      ).toWire()['state'],
+      {
+        'text': 'に',
+        'selection': {'base_offset': 1, 'extent_offset': 1},
+        'composing': {'base_offset': 0, 'extent_offset': 1},
+      },
+    );
   });
 
   test(

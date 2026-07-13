@@ -48,8 +48,12 @@ Uncanceled wheel and navigation-key defaults apply one bounded Page-owned root
 scroll offset used by paint, hit testing, and accessibility bounds; fixed-
 position content remains anchored. Arrow, Page Up/Down, Home/End, and Space
 scrolling respects focused controls and page `preventDefault()` handlers.
-Text/IME, nested/touch/script scrolling, CSS/physical scale correctness, and
-lifecycle/surface recovery remain follow-up work.
+Focused writable native text controls attach Flutter's platform text-input
+client; bounded full values and UTF-16 selection/composing ranges cross the
+exact BrowserCore generation and update the live runtime control. Contenteditable,
+IME action specialization and real native IME evidence, nested/touch/script
+scrolling, CSS/physical scale correctness, and lifecycle/surface recovery remain
+follow-up work.
 
 Ctrl+F and the browser menu expose a find bar backed by an exact active-
 document BrowserCore command. The query is bounded to 4 KiB at the native
@@ -120,8 +124,8 @@ the deterministic GitHub Release archive, and requires an Impeller launch log.
 FlatPark repackages the released archive unchanged; broader host-matrix, native
 AT, portal, and accepted size-baseline gates remain separate. FlatPark
 submission and publishing are deferred until visible navigation/rendering,
-engine-owned scrolling, text/IME, core navigation controls, find/zoom, and
-bounded recovery make this a basic usable browser.
+engine-owned scrolling, native IME evidence, core navigation controls,
+find/zoom, and bounded recovery make this a basic usable browser.
 
 Set `VIXEN_FFI_LIBRARY` to an absolute `libvixen_ffi.so` path only for the
 native bridge smoke test. Normal Linux bundles load `lib/libvixen_ffi.so`

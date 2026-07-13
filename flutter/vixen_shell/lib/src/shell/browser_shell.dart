@@ -165,6 +165,9 @@ final class _BrowserShellState extends State<BrowserShell>
                     onKeyEvent: (eventType, event) {
                       unawaited(coordinator.dispatchKeyEvent(eventType, event));
                     },
+                    onTextInput: (state) {
+                      unawaited(coordinator.dispatchTextInput(state));
+                    },
                     onSemanticTap: (snapshot, node) {
                       unawaited(
                         coordinator.dispatchSemanticTap(snapshot, node),
