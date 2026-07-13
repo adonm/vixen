@@ -37,6 +37,8 @@ viewport plus pointer/wheel/keyboard input are routed through BrowserCore;
 uncanceled wheel input now updates a bounded Page-owned root scroll offset, and
 paint, hit testing, and accessibility bounds consume that same offset while
 fixed-position content remains viewport anchored;
+Ctrl+F opens a bounded BrowserCore-backed find bar that reports exact
+case-insensitive visible-text match counts for the active document;
 the bounded BrowserCore-derived Semantics hierarchy includes parent structure,
 `aria-controls`, text editing, and native range adjustment. Monotonic host-view
 updates also drive document focus/visibility and Flutter lifecycle input policy.

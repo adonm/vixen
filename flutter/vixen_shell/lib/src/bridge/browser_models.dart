@@ -720,6 +720,17 @@ final class BrowserCommand {
       });
   factory BrowserCommand.contextState(int contextId) =>
       BrowserCommand._('context_state', {'context_id': contextId});
+  factory BrowserCommand.findText({
+    required int contextId,
+    required int documentId,
+    required String query,
+    bool caseSensitive = false,
+  }) => BrowserCommand._('find_text', {
+    'context_id': contextId,
+    'document_id': documentId,
+    'query': query,
+    'case_sensitive': caseSensitive,
+  });
   factory BrowserCommand.updateHostViewState({
     required int contextId,
     required int generation,
@@ -889,6 +900,9 @@ sealed class BrowserResponse {
           'navigation_actions',
         ).map(_map).toList(growable: false),
       ),
+      'find_text' => FindTextResponse(
+        matches: _nonNegativeInt(wire, 'matches'),
+      ),
       final type => throw FormatException('Unknown browser response: $type'),
     };
   }
@@ -996,6 +1010,15 @@ final class InputDispatchedResponse extends BrowserResponse {
     'effects': effects,
     'navigation_actions': navigationActions,
   };
+}
+
+final class FindTextResponse extends BrowserResponse {
+  const FindTextResponse({required this.matches});
+
+  final int matches;
+
+  @override
+  Map<String, Object?> toWire() => {'type': 'find_text', 'matches': matches};
 }
 
 final class BrowserEvent {

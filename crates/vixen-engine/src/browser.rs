@@ -18,14 +18,14 @@ use vixen_api::{
     ACCESSIBILITY_MAX_VALUE_BYTES, AccessibilityAction, AutomationEvaluation, BrowserCommand,
     BrowserCommandResult, BrowserError, BrowserEvent, BrowserHandle, BrowserId, BrowserSnapshot,
     BrowsingContextConfig, BrowsingContextId, BrowsingContextState, CrossDocumentNavigationKind,
-    DocumentId, DocumentTextKind, EvaluationResult, FocusEventInfo, FocusProjection, FormEntryInfo,
-    FormEntryValueInfo, FormSubmissionInfo, FrameId, HostViewState, InputDispatchResult,
-    KeyEventData, MouseEventData, NavigationActionOutcome, NavigationCancellationReason,
-    NavigationHistoryEntry, NavigationHistorySnapshot, NavigationId, NavigationPhase,
-    ProfileDataSelection, ProfileId, ProfileSessionState, RequestId, RuntimeBindingEvent,
-    RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue, RuntimeContextId,
-    RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent, RuntimeNetworkEvent, ScriptValue,
-    browser_error_codes,
+    DocumentId, DocumentTextKind, EvaluationResult, FindTextResult, FocusEventInfo,
+    FocusProjection, FormEntryInfo, FormEntryValueInfo, FormSubmissionInfo, FrameId, HostViewState,
+    InputDispatchResult, KeyEventData, MouseEventData, NavigationActionOutcome,
+    NavigationCancellationReason, NavigationHistoryEntry, NavigationHistorySnapshot, NavigationId,
+    NavigationPhase, ProfileDataSelection, ProfileId, ProfileSessionState, RequestId,
+    RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue,
+    RuntimeContextId, RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent,
+    RuntimeNetworkEvent, ScriptValue, browser_error_codes,
 };
 use vixen_net::{
     CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent, RedirectMode,
@@ -58,6 +58,7 @@ const DEFAULT_COMMAND_CAPACITY: usize = 256;
 const DEFAULT_EVENT_CAPACITY: usize = 2048;
 const MAX_SCRIPT_BYTES: usize = 1024 * 1024;
 const MAX_SELECTOR_BYTES: usize = 64 * 1024;
+const MAX_FIND_QUERY_BYTES: usize = 4 * 1024;
 const MAX_URL_BYTES: usize = 16 * 1024;
 const MAX_VIEWPORT_DIMENSION: u32 = 16_384;
 const MAX_RUNTIME_SLOTS: usize = 512;
@@ -846,6 +847,23 @@ impl BrowserCore {
                 event_type,
                 event,
             ),
+            BrowserCommand::FindText {
+                context_id,
+                document_id,
+                query,
+                case_sensitive,
+            } => {
+                if query.len() > MAX_FIND_QUERY_BYTES {
+                    return Err(BrowserError::new(
+                        browser_error_codes::INVALID_ARGUMENT,
+                        "find query exceeds the browser limit",
+                    ));
+                }
+                let context = self.context_for_document(context_id, document_id)?;
+                Ok(BrowserCommandResult::FindText(FindTextResult {
+                    matches: context.page.find_text_count(&query, case_sensitive),
+                }))
+            }
             BrowserCommand::Snapshot {
                 context_id,
                 document_id,

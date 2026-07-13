@@ -83,6 +83,22 @@ abstract class BrowserController {
     return _expect<ContextStateResponse>(response).state;
   }
 
+  Future<int> findText({
+    required int contextId,
+    required int documentId,
+    required String query,
+    bool caseSensitive = false,
+  }) async => _expect<FindTextResponse>(
+    await dispatch(
+      BrowserCommand.findText(
+        contextId: contextId,
+        documentId: documentId,
+        query: query,
+        caseSensitive: caseSensitive,
+      ),
+    ),
+  ).matches;
+
   Future<InputDispatchedResponse> updateHostViewState({
     required int contextId,
     required int generation,

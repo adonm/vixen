@@ -198,6 +198,13 @@ Semantics bounds share the translated layout; fixed-position subtrees stay
 anchored. Nested scrollers, keyboard/touch gestures, restoration, smooth
 scrolling, and script-driven scrolling remain in the target above.
 
+The first find-in-page vertical is also implemented. Ctrl+F and the menu open a
+Flutter-owned find bar, while an exact context/document command asks BrowserCore
+for a bounded case-insensitive visible-text match count. Results are
+generation-checked before presentation and announced through a live region;
+Dart does not inspect page text. Highlighting, match traversal, and
+scroll-to-match remain before find parity is complete.
+
 The initial accessibility hierarchy is implemented. BrowserCore/Page derives native
 and explicit ARIA roles, bounded names (including `aria-labelledby` and HTML
 labels), bounded descriptions, values, states, focus, tap/focus actions, and

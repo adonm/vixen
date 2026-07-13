@@ -74,6 +74,21 @@ void main() {
       'context_id': 7,
     });
     expect(
+      BrowserCommand.findText(
+        contextId: 7,
+        documentId: 70,
+        query: 'Vixen',
+      ).toWire(),
+      {
+        'v': 1,
+        'type': 'find_text',
+        'context_id': 7,
+        'document_id': 70,
+        'query': 'Vixen',
+        'case_sensitive': false,
+      },
+    );
+    expect(
       BrowserCommand.updateHostViewState(
         contextId: 7,
         generation: 3,
@@ -193,6 +208,15 @@ void main() {
       );
     },
   );
+
+  test('find response preserves the bounded match count', () {
+    final response = BrowserResponse.fromWire({
+      'type': 'find_text',
+      'matches': 3,
+    });
+    expect(response, isA<FindTextResponse>());
+    expect((response as FindTextResponse).matches, 3);
+  });
 
   test('accessibility snapshot preserves bounded semantic fields', () {
     final response = BrowserResponse.fromWire({

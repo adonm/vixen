@@ -560,6 +560,25 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
             exact_keys(object, &["context_id", "type", "v"])?;
             ControllerCommand::ContextState(required_context_id(object)?)
         }
+        "find_text" => {
+            exact_keys(
+                object,
+                &[
+                    "case_sensitive",
+                    "context_id",
+                    "document_id",
+                    "query",
+                    "type",
+                    "v",
+                ],
+            )?;
+            ControllerCommand::FindText {
+                context_id: required_context_id(object)?,
+                document_id: required_document_id(object)?,
+                query: bounded_string(object, "query", MAX_TEXT_BYTES)?,
+                case_sensitive: required_bool(object, "case_sensitive")?,
+            }
+        }
         "update_host_view_state" => {
             exact_keys(
                 object,
@@ -986,6 +1005,10 @@ fn response_json(response: ControllerResponse) -> Value {
             accessibility_snapshot_json(snapshot)
         }
         ControllerResponse::InputDispatched(result) => input_dispatch_result_json(result),
+        ControllerResponse::FindText(result) => json!({
+            "type": "find_text",
+            "matches": result.matches,
+        }),
     }
 }
 
@@ -2351,6 +2374,39 @@ mod tests {
                 "accepted invalid key command: {value}"
             );
         }
+    }
+
+    #[test]
+    fn find_text_json_is_strict_bounded_and_exact() {
+        let _scope = test_scope();
+        let command = json!({
+            "v": 1,
+            "type": "find_text",
+            "context_id": 1,
+            "document_id": 2,
+            "query": "Vixen",
+            "case_sensitive": false,
+        });
+        assert!(matches!(
+            parse_command(&command.to_string()).unwrap(),
+            ControllerCommand::FindText {
+                ref query,
+                case_sensitive: false,
+                ..
+            } if query == "Vixen"
+        ));
+        let mut oversized = command.clone();
+        oversized["query"] = json!("x".repeat(MAX_TEXT_BYTES + 1));
+        assert!(parse_command(&oversized.to_string()).is_err());
+        let mut extra = command;
+        extra["extra"] = json!(true);
+        assert!(parse_command(&extra.to_string()).is_err());
+        assert_eq!(
+            response_json(ControllerResponse::FindText(vixen_api::FindTextResult {
+                matches: 3,
+            })),
+            json!({"type": "find_text", "matches": 3})
+        );
     }
 
     #[test]

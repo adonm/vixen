@@ -39,6 +39,9 @@ final class ShellCoordinator extends ChangeNotifier {
   int _inputGeneration = 0;
   int _hostViewGeneration = 0;
   int _pendingInputEvents = 0;
+  int _findRequestGeneration = 0;
+  String _findQuery = '';
+  int? _findMatches;
   String? _errorMessage;
   BrowserFrame? _frame;
   BrowserAccessibilitySnapshot? _accessibility;
@@ -74,6 +77,8 @@ final class ShellCoordinator extends ChangeNotifier {
   BrowserAccessibilitySnapshot? get accessibility => _accessibility;
   InputDispatchedResponse? get lastInputResult => _lastInputResult;
   int? get lastEventSequence => _lastEventSequence;
+  String get findQuery => _findQuery;
+  int? get findMatches => _findMatches;
   String get selectedStatus {
     final selected = selectedContext;
     if (selected == null) return _isStarting ? 'Starting Vixen...' : 'No tab';
@@ -166,6 +171,39 @@ final class ShellCoordinator extends ChangeNotifier {
 
   Future<void> goBack() => _traverse(-1);
   Future<void> goForward() => _traverse(1);
+
+  Future<void> findText(String query, {bool caseSensitive = false}) async {
+    final selected = selectedContext;
+    final generation = ++_findRequestGeneration;
+    _findQuery = query;
+    if (selected == null || query.isEmpty) {
+      _findMatches = query.isEmpty ? 0 : null;
+      _notify();
+      return;
+    }
+    _findMatches = null;
+    _notify();
+    try {
+      final matches = await controller.findText(
+        contextId: selected.contextId,
+        documentId: selected.documentId,
+        query: query,
+        caseSensitive: caseSensitive,
+      );
+      final current = selectedContext;
+      if (generation == _findRequestGeneration &&
+          current?.contextId == selected.contextId &&
+          current?.documentId == selected.documentId &&
+          _findQuery == query) {
+        _findMatches = matches;
+        _notify();
+      }
+    } catch (error) {
+      if (generation == _findRequestGeneration && _findQuery == query) {
+        _showError('Unable to find text', error);
+      }
+    }
+  }
 
   Future<void> _traverse(int delta) => _withSelected((context) async {
     final navigationId = await controller.traverseHistory(
@@ -852,6 +890,9 @@ final class ShellCoordinator extends ChangeNotifier {
     _accessibilityGeneration++;
     _inputGeneration++;
     _lastInputResult = null;
+    _findRequestGeneration++;
+    _findQuery = '';
+    _findMatches = null;
   }
 
   void _showError(String prefix, Object error) {

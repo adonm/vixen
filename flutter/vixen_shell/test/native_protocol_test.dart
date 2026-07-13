@@ -247,6 +247,7 @@ void main() {
             applyText: true,
           ),
         ),
+        BrowserCommand.findText(contextId: 1, documentId: 2, query: 'Vixen'),
       ];
 
       for (final command in commands) {

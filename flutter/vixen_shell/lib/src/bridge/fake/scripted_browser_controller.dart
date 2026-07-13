@@ -147,6 +147,9 @@ final class ScriptedBrowserController extends BrowserController {
         return ContextStateResponse(
           _contexts[_knownContext(command.contextId)]!,
         );
+      case 'find_text':
+        _knownContext(command.contextId);
+        return const FindTextResponse(matches: 0);
       case 'accessibility_snapshot':
         final contextId = _knownContext(command.contextId);
         final wire = command.toWire();

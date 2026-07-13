@@ -21,7 +21,10 @@ final class BrowserShell extends StatefulWidget {
 final class _BrowserShellState extends State<BrowserShell>
     with WidgetsBindingObserver {
   final TextEditingController _addressController = TextEditingController();
+  final TextEditingController _findController = TextEditingController();
   final FocusNode _addressFocus = FocusNode();
+  final FocusNode _findFocus = FocusNode();
+  bool _findVisible = false;
 
   @override
   void initState() {
@@ -58,7 +61,9 @@ final class _BrowserShellState extends State<BrowserShell>
     WidgetsBinding.instance.removeObserver(this);
     widget.coordinator.removeListener(_coordinatorChanged);
     _addressController.dispose();
+    _findController.dispose();
     _addressFocus.dispose();
+    _findFocus.dispose();
     super.dispose();
   }
 
@@ -90,6 +95,8 @@ final class _BrowserShellState extends State<BrowserShell>
         const SingleActivator(LogicalKeyboardKey.keyR, control: true): () {
           unawaited(coordinator.reload());
         },
+        const SingleActivator(LogicalKeyboardKey.keyF, control: true):
+            _showFind,
         const SingleActivator(LogicalKeyboardKey.escape): _escape,
         const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true): () {
           unawaited(coordinator.goBack());
@@ -120,7 +127,18 @@ final class _BrowserShellState extends State<BrowserShell>
                   },
                   onShowAbout: () => _showAbout(context),
                   onShowShortcuts: () => _showShortcuts(context),
+                  onShowFind: _showFind,
                 ),
+                if (_findVisible)
+                  _FindBar(
+                    controller: _findController,
+                    focusNode: _findFocus,
+                    matches: coordinator.findMatches,
+                    onChanged: (query) {
+                      unawaited(coordinator.findText(query));
+                    },
+                    onClose: _closeFind,
+                  ),
                 _SelectedProgress(context: coordinator.selectedContext),
                 Expanded(
                   child: BrowserContentSurface(
@@ -186,13 +204,35 @@ final class _BrowserShellState extends State<BrowserShell>
   }
 
   void _escape() {
-    if (_addressFocus.hasFocus) {
+    if (_findVisible) {
+      _closeFind();
+    } else if (_addressFocus.hasFocus) {
       final url = widget.coordinator.selectedContext?.url ?? '';
       _addressController.text = url;
       _addressFocus.unfocus();
     } else {
       unawaited(widget.coordinator.stop());
     }
+  }
+
+  void _showFind() {
+    if (!_findVisible) setState(() => _findVisible = true);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_findVisible) return;
+      _findFocus.requestFocus();
+      _findController.selection = TextSelection(
+        baseOffset: 0,
+        extentOffset: _findController.text.length,
+      );
+    });
+  }
+
+  void _closeFind() {
+    if (!_findVisible) return;
+    setState(() => _findVisible = false);
+    _findController.clear();
+    _findFocus.unfocus();
+    unawaited(widget.coordinator.findText(''));
   }
 }
 
@@ -299,6 +339,7 @@ final class _Toolbar extends StatelessWidget {
     required this.onSubmitted,
     required this.onShowAbout,
     required this.onShowShortcuts,
+    required this.onShowFind,
   });
 
   final ShellCoordinator coordinator;
@@ -307,6 +348,7 @@ final class _Toolbar extends StatelessWidget {
   final ValueChanged<String> onSubmitted;
   final VoidCallback onShowAbout;
   final VoidCallback onShowShortcuts;
+  final VoidCallback onShowFind;
 
   @override
   Widget build(BuildContext context) {
@@ -373,6 +415,8 @@ final class _Toolbar extends StatelessWidget {
               tooltip: 'Vixen menu',
               onSelected: (action) {
                 switch (action) {
+                  case _MenuAction.find:
+                    onShowFind();
                   case _MenuAction.shortcuts:
                     onShowShortcuts();
                   case _MenuAction.about:
@@ -380,6 +424,10 @@ final class _Toolbar extends StatelessWidget {
                 }
               },
               itemBuilder: (context) => const [
+                PopupMenuItem(
+                  value: _MenuAction.find,
+                  child: Text('Find in page'),
+                ),
                 PopupMenuItem(
                   value: _MenuAction.shortcuts,
                   child: Text('Keyboard shortcuts'),
@@ -397,7 +445,69 @@ final class _Toolbar extends StatelessWidget {
   }
 }
 
-enum _MenuAction { shortcuts, about }
+enum _MenuAction { find, shortcuts, about }
+
+final class _FindBar extends StatelessWidget {
+  const _FindBar({
+    required this.controller,
+    required this.focusNode,
+    required this.matches,
+    required this.onChanged,
+    required this.onClose,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final int? matches;
+  final ValueChanged<String> onChanged;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    final query = controller.text;
+    final result = query.isEmpty
+        ? 'Type to find'
+        : matches == null
+        ? 'Searching…'
+        : '$matches ${matches == 1 ? 'match' : 'matches'}';
+    return Material(
+      key: const Key('find-bar'),
+      color: Theme.of(context).colorScheme.surfaceContainerLow,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 6, 8, 6),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextField(
+                key: const Key('find-field'),
+                controller: controller,
+                focusNode: focusNode,
+                maxLength: 4096,
+                onChanged: onChanged,
+                textInputAction: TextInputAction.search,
+                decoration: const InputDecoration(
+                  hintText: 'Find in page',
+                  isDense: true,
+                  counterText: '',
+                ),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Semantics(
+              liveRegion: true,
+              child: Text(result, key: const Key('find-result')),
+            ),
+            IconButton(
+              tooltip: 'Close find',
+              onPressed: onClose,
+              icon: const Icon(Icons.close),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
 final class _SelectedProgress extends StatelessWidget {
   const _SelectedProgress({required this.context});
@@ -482,6 +592,7 @@ void _showShortcuts(BuildContext context) {
         'Ctrl+T  New tab\n'
         'Ctrl+W  Close tab\n'
         'Ctrl+R  Reload\n'
+        'Ctrl+F  Find in page\n'
         'Escape  Stop or leave address\n'
         'Alt+Left  Back\n'
         'Alt+Right  Forward',

@@ -429,6 +429,12 @@ pub enum BrowserCommand {
         event_type: String,
         event: KeyEventData,
     },
+    FindText {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        query: String,
+        case_sensitive: bool,
+    },
     Snapshot {
         context_id: BrowsingContextId,
         document_id: DocumentId,
@@ -507,6 +513,7 @@ pub enum BrowserCommandResult {
     Evaluation(EvaluationResult),
     AutomationEvaluation(AutomationEvaluation),
     InputDispatched(InputDispatchResult),
+    FindText(FindTextResult),
     Snapshot(crate::PageSnapshot),
     AccessibilitySnapshot(AccessibilitySnapshot),
     SelectorMatches(Vec<crate::ElementInfo>),
@@ -517,6 +524,12 @@ pub enum BrowserCommandResult {
     HitTest(Option<crate::ElementInfo>),
     FocusProjection(FocusProjection),
     FormSubmission(FormSubmissionInfo),
+}
+
+/// Bounded visible-text match count for browser chrome find UI.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FindTextResult {
+    pub matches: u32,
 }
 
 /// Inspector/runtime settings applied by BrowserCore to exactly one browsing

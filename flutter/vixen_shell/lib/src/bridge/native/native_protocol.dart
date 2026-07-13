@@ -194,6 +194,22 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
         _invalidCommand('delta must fit signed 32 bits');
       }
       break;
+    case 'find_text':
+      _expectKeys(normalized, const <String>{
+        'v',
+        'type',
+        'context_id',
+        'document_id',
+        'query',
+        'case_sensitive',
+      });
+      _validateContextId(normalized['context_id']);
+      _validatePositiveId(normalized['document_id'], 'document_id');
+      _validateBoundedString(normalized['query'], 'query', 4096);
+      if (normalized['case_sensitive'] is! bool) {
+        _invalidCommand('case_sensitive must be a boolean');
+      }
+      break;
     case 'accessibility_snapshot':
       _expectKeys(normalized, const <String>{
         'v',

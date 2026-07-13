@@ -12,8 +12,8 @@ use std::time::Duration;
 pub use vixen_api::{
     AccessibilityAction, AccessibilityNode, AccessibilityRect, AccessibilitySnapshot, BrowserError,
     BrowserEvent, BrowserSnapshot, BrowsingContextId, BrowsingContextState, DocumentId,
-    HostLifecycle, HostViewState, InputDispatchResult, KeyEventData, MouseEventData, NavigationId,
-    ProfileSessionState, RuntimeContextId,
+    FindTextResult, HostLifecycle, HostViewState, InputDispatchResult, KeyEventData,
+    MouseEventData, NavigationId, ProfileSessionState, RuntimeContextId,
 };
 pub use vixen_engine::browser::BrowserConfig;
 pub use vixen_engine::paint::RgbaFrame;
@@ -85,6 +85,12 @@ pub enum ControllerCommand {
         event_type: String,
         event: KeyEventData,
     },
+    FindText {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        query: String,
+        case_sensitive: bool,
+    },
 }
 
 /// Immediate, typed acknowledgement of a [`ControllerCommand`].
@@ -98,6 +104,7 @@ pub enum ControllerResponse {
     ContextState(BrowsingContextState),
     AccessibilitySnapshot(AccessibilitySnapshot),
     InputDispatched(InputDispatchResult),
+    FindText(FindTextResult),
 }
 
 /// One browser/profile owner and the sole consumer of its ordered event queue.
@@ -244,6 +251,17 @@ impl FlutterBrowserController {
                 },
                 event,
             },
+            ControllerCommand::FindText {
+                context_id,
+                document_id,
+                query,
+                case_sensitive,
+            } => BrowserCommand::FindText {
+                context_id,
+                document_id,
+                query,
+                case_sensitive,
+            },
         };
 
         match self.handle.dispatch(command)? {
@@ -269,6 +287,7 @@ impl FlutterBrowserController {
             BrowserCommandResult::InputDispatched(result) => {
                 Ok(ControllerResponse::InputDispatched(result))
             }
+            BrowserCommandResult::FindText(result) => Ok(ControllerResponse::FindText(result)),
             result => Err(unexpected_result(result)),
         }
     }
@@ -526,6 +545,24 @@ impl FlutterBrowserController {
         })? {
             ControllerResponse::AccessibilitySnapshot(snapshot) => Ok(snapshot),
             response => Err(unexpected_response("get accessibility snapshot", response)),
+        }
+    }
+
+    pub fn find_text(
+        &mut self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        query: impl Into<String>,
+        case_sensitive: bool,
+    ) -> Result<FindTextResult, BrowserError> {
+        match self.dispatch(ControllerCommand::FindText {
+            context_id,
+            document_id,
+            query: query.into(),
+            case_sensitive,
+        })? {
+            ControllerResponse::FindText(result) => Ok(result),
+            response => Err(unexpected_response("find text", response)),
         }
     }
 
@@ -1111,6 +1148,52 @@ mod tests {
             })
             .unwrap();
         assert_eq!(bottom_y(&mut controller), after);
+    }
+
+    #[test]
+    fn controller_find_text_uses_exact_document_and_bounded_query() {
+        let profile = TestProfile::new();
+        let url = "https://ffi.test/find";
+        let mut config = BrowserConfig::new(&profile.0);
+        config.document_overrides.insert(
+            url.to_owned(),
+            "<!doctype html><title>Hidden Vixen</title><main>Vixen vixen river</main>".to_owned(),
+        );
+        let mut controller = FlutterBrowserController::from_config(config).unwrap();
+        let context_id = controller.create_context().unwrap();
+        let navigation_id = controller.navigate(context_id, url).unwrap();
+        wait_for_settled(&mut controller, navigation_id);
+        let state = controller.context_state(context_id).unwrap();
+
+        assert_eq!(
+            controller
+                .find_text(context_id, state.document_id, "Vixen", true)
+                .unwrap()
+                .matches,
+            1
+        );
+        assert_eq!(
+            controller
+                .find_text(context_id, state.document_id, "vixen", false)
+                .unwrap()
+                .matches,
+            2
+        );
+        let stale_document = DocumentId::new(state.document_id.get() + 1).unwrap();
+        assert_eq!(
+            controller
+                .find_text(context_id, stale_document, "Vixen", false)
+                .unwrap_err()
+                .code,
+            browser_error_codes::STALE_DOCUMENT
+        );
+        assert_eq!(
+            controller
+                .find_text(context_id, state.document_id, "x".repeat(4097), false)
+                .unwrap_err()
+                .code,
+            browser_error_codes::INVALID_ARGUMENT
+        );
     }
 
     #[test]

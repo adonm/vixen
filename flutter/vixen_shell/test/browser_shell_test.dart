@@ -109,6 +109,48 @@ void main() {
     await tester.pump();
   });
 
+  testWidgets('Ctrl+F opens BrowserCore-backed find bar', (tester) async {
+    final controller = ScriptedBrowserController(
+      snapshot: BrowserSnapshot(
+        activeContextId: 1,
+        contexts: [contextState(id: 1, url: 'https://example.test')],
+      ),
+    );
+    final coordinator = ShellCoordinator(controller);
+    await tester.pumpWidget(VixenApp(coordinator: coordinator));
+    await pumpStartup(tester);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    expect(find.byKey(const Key('find-bar')), findsOneWidget);
+
+    await tester.enterText(find.byKey(const Key('find-field')), 'Vixen');
+    await tester.pump();
+    await tester.pump();
+    expect(find.text('0 matches'), findsOneWidget);
+    final command = controller.commands.lastWhere(
+      (command) => command.type == 'find_text',
+    );
+    expect(command.toWire(), {
+      'v': 1,
+      'type': 'find_text',
+      'context_id': 1,
+      'document_id': 100,
+      'query': 'Vixen',
+      'case_sensitive': false,
+    });
+
+    await tester.tap(find.byTooltip('Close find'));
+    await tester.pump();
+    expect(find.byKey(const Key('find-bar')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    coordinator.dispose();
+    await tester.pump();
+  });
+
   testWidgets('navigation failure displays dismissible error banner', (
     tester,
   ) async {

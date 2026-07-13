@@ -49,6 +49,12 @@ paint, hit testing, and accessibility bounds; fixed-position content remains
 anchored. Text/IME, nested and keyboard/touch/script scrolling, CSS/physical
 scale correctness, and lifecycle/surface recovery remain follow-up work.
 
+Ctrl+F and the browser menu expose a find bar backed by an exact active-
+document BrowserCore command. The query is bounded to 4 KiB at the native
+boundary and returns a Page-owned visible-text match count; stale responses are
+discarded and the result is a Flutter live region. Highlighting, traversal, and
+scroll-to-match remain open.
+
 ## Accessibility contract
 
 BrowserCore supplies a bounded projection of authoritative roles, names, values,

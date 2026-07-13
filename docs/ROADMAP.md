@@ -259,6 +259,9 @@ semantics identities; the bounded ABI remains full-snapshot rather than making
 Dart own a delta graph. The real Linux release bundle now has process-filtered,
 bounded AT-SPI evidence that the BrowserCore-derived `DOM Basic` heading reaches
 the native tree; broader screen-reader/platform matrices remain.
+Ctrl+F now crosses the exact active context/document ABI boundary and reports a
+bounded Page-owned visible-text match count in a Flutter live region. Highlight,
+match traversal, and scroll-to-match remain before find parity.
 External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
 sparse paths. Headless `--incremental` now captures real before/after frames from
@@ -557,7 +560,8 @@ correctness. Neither may starve the other.
    and broader native AT/screen-reader evidence. Add platform
    host-service UI; both remain cross-cutting through every later platform.
 5. Complete the Linux basic-browser gate: visible controlled-site navigation,
-   engine-owned scrolling, text/IME input, back/forward/reload/stop, find/zoom,
+   nested/keyboard/touch/script scrolling, text/IME input,
+   back/forward/reload/stop, complete find traversal/highlighting, zoom,
    and bounded navigation/runtime/surface recovery. Keep release-archive smoke
    green, but defer FlatPark submission/review/publishing until this gate passes.
 6. Use the landed checked-in hello-Flutter peer, controlled release-bundle

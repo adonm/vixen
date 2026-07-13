@@ -268,6 +268,13 @@ subtrees remain viewport anchored. Nested scroll containers, keyboard/touch
 scrolling, scroll restoration, smooth scrolling, and JS `scrollTo`/`scrollBy`
 state remain open.
 
+Flutter Ctrl+F now sends a UTF-8-byte-bounded query with the exact active context
+and document generation through ABI v1. BrowserCore counts non-overlapping
+matches from Page's visible body text (excluding title/head content), and the
+find bar exposes the result through a live region. Empty queries return zero;
+stale documents and queries above 4 KiB fail closed. Match highlighting,
+next/previous navigation, and scroll-to-match remain open.
+
 ---
 
 ## WPT target profile
