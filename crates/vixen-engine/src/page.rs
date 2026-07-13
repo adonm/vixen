@@ -28,8 +28,9 @@ use crate::display_list::{
 use crate::doc::{Document, DocumentParser, ParseError};
 use crate::history::{HistoryEntry, SessionHistory};
 use crate::layout_tree::{
-    LayoutFragment, LayoutFragmentKind, LayoutPosition, LayoutTree, apply_root_scroll,
-    build_layout_tree, dump_layout_tree, layout_fragments_from_tree, line_boxes_from_tree,
+    LayoutFragment, LayoutFragmentKind, LayoutNodeKind, LayoutPosition, LayoutTree,
+    apply_root_scroll, build_layout_tree, dump_layout_tree, layout_fragments_from_tree,
+    line_boxes_from_tree,
 };
 use crate::line_layout::{LineBox, dump_line_boxes};
 use crate::style_cascade::AuthorStylesheet;
@@ -62,15 +63,22 @@ struct FindState {
     active_match: usize,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct FindMatch {
     rect: Rect,
     fixed: bool,
+    highlights: Vec<FindHighlight>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FindHighlight {
+    rect: Rect,
     order: u32,
     clip: Option<Rect>,
 }
 
 const MAX_FIND_MATCHES: usize = 10_000;
+const MAX_FIND_HIGHLIGHTS_PER_MATCH: usize = 64;
 
 /// Incremental page construction retained on BrowserCore's owner thread.
 pub(crate) struct PageParser {
@@ -415,7 +423,7 @@ impl Page {
             case_sensitive,
             active_match,
         });
-        let selected = matches[active_match];
+        let selected = &matches[active_match];
         if !selected.fixed {
             self.scroll_root_to_rect(viewport, selected.rect);
         }
@@ -514,12 +522,9 @@ impl Page {
             let fixed = parent_fixed || node.style.position == LayoutPosition::Fixed;
             fixed_subtree[node.id.index()] = fixed;
         }
-        find_matches_in_fragments(
-            &layout_fragments_from_tree(&tree),
-            query,
-            case_sensitive,
-            |node_id| fixed_subtree[node_id.index()],
-        )
+        find_matches_in_tree(&tree, query, case_sensitive, |node_id| {
+            fixed_subtree[node_id.index()]
+        })
     }
 
     /// Fallback event target for wheel input over unpainted viewport space.
@@ -614,16 +619,17 @@ impl Page {
         let viewport_rect = Rect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32);
         let mut builder = DisplayListBuilder::new();
         builder.push(viewport_background_item(viewport_rect));
-        let fragments = self.layout_fragments(viewport);
+        let tree = self.layout_tree(viewport);
+        let fragments = layout_fragments_from_tree(&tree);
         if let Some(find) = self.find_state.as_ref()
             && !find.query.is_empty()
         {
-            for (index, found) in
-                find_matches_in_fragments(&fragments, &find.query, find.case_sensitive, |_| false)
-                    .into_iter()
-                    .enumerate()
-            {
-                builder.push(find_highlight_draw_item(found, index == find.active_match));
+            let matches = find_matches_in_tree(&tree, &find.query, find.case_sensitive, |_| false);
+            let active_match = find.active_match.min(matches.len().saturating_sub(1));
+            for (index, found) in matches.into_iter().enumerate() {
+                for highlight in found.highlights {
+                    builder.push(find_highlight_draw_item(highlight, index == active_match));
+                }
             }
         }
         for fragment in fragments {
@@ -977,7 +983,7 @@ fn fragment_draw_item(fragment: &LayoutFragment) -> DrawItem {
     }
 }
 
-fn find_highlight_draw_item(found: FindMatch, active: bool) -> DrawItem {
+fn find_highlight_draw_item(found: FindHighlight, active: bool) -> DrawItem {
     DrawItem {
         order: found.order,
         z_index: 0,
@@ -1229,49 +1235,122 @@ fn aria_mixed(value: Option<&str>) -> bool {
     value.is_some_and(|value| value.trim().eq_ignore_ascii_case("mixed"))
 }
 
-fn text_match_offsets(haystack: &str, needle: &str, case_sensitive: bool) -> Vec<usize> {
+fn text_match_ranges(haystack: &str, needle: &str, case_sensitive: bool) -> Vec<(usize, usize)> {
     if needle.is_empty() {
         return Vec::new();
     }
-    if case_sensitive {
-        return haystack
-            .match_indices(needle)
-            .map(|(offset, _)| haystack[..offset].chars().count())
-            .collect();
+    let (search_haystack, character_map) = if case_sensitive {
+        (
+            haystack.to_owned(),
+            (0..haystack.chars().count()).collect::<Vec<_>>(),
+        )
+    } else {
+        fold_case_with_character_map(haystack)
+    };
+    let search_needle = if case_sensitive {
+        needle.to_owned()
+    } else {
+        needle.to_lowercase()
+    };
+    if search_needle.is_empty() {
+        return Vec::new();
     }
-    let haystack = haystack.to_lowercase();
-    let needle = needle.to_lowercase();
-    haystack
-        .match_indices(&needle)
-        .map(|(offset, _)| haystack[..offset].chars().count())
+    let byte_starts = character_byte_starts(&search_haystack);
+    search_haystack
+        .match_indices(&search_needle)
+        .take(MAX_FIND_MATCHES)
+        .filter_map(|(start, matched)| {
+            let start_index = byte_starts.binary_search(&start).ok()?;
+            let end_index = byte_starts.binary_search(&(start + matched.len())).ok()?;
+            let original_start = *character_map.get(start_index)?;
+            let original_end = character_map.get(end_index.checked_sub(1)?)? + 1;
+            Some((original_start, original_end))
+        })
         .collect()
 }
 
-fn find_matches_in_fragments(
-    fragments: &[LayoutFragment],
+fn fold_case_with_character_map(value: &str) -> (String, Vec<usize>) {
+    let mut folded = String::new();
+    let mut map = Vec::new();
+    for (index, character) in value.chars().enumerate() {
+        for folded_character in character.to_lowercase() {
+            folded.push(folded_character);
+            map.push(index);
+        }
+    }
+    (folded, map)
+}
+
+fn character_byte_starts(value: &str) -> Vec<usize> {
+    value
+        .char_indices()
+        .map(|(offset, _)| offset)
+        .chain(std::iter::once(value.len()))
+        .collect()
+}
+
+fn find_matches_in_tree(
+    tree: &LayoutTree,
     query: &str,
     case_sensitive: bool,
     is_fixed: impl Fn(crate::layout_tree::LayoutNodeId) -> bool,
 ) -> Vec<FindMatch> {
+    let fragments = layout_fragments_from_tree(tree);
+    let mut fragments_by_node = std::collections::HashMap::<_, Vec<_>>::new();
+    for fragment in &fragments {
+        if matches!(fragment.kind, LayoutFragmentKind::Text { .. }) {
+            fragments_by_node
+                .entry(fragment.node_id)
+                .or_default()
+                .push(fragment);
+        }
+    }
     let mut matches = Vec::new();
-    for fragment in fragments {
-        let LayoutFragmentKind::Text { text, .. } = &fragment.kind else {
+    for node in &tree.nodes {
+        if node.kind != LayoutNodeKind::Text {
+            continue;
+        }
+        let Some(text) = node.text.as_deref() else {
             continue;
         };
-        let character_count = text.chars().count().max(1);
-        let character_width = fragment.rect.w / character_count as f32;
-        let match_width = query.chars().count() as f32 * character_width;
-        for character_offset in text_match_offsets(text, query, case_sensitive) {
+        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+        let Some(node_fragments) = fragments_by_node.get(&node.id) else {
+            continue;
+        };
+        let line_ranges = find_line_ranges(&normalized, node_fragments);
+        for (match_start, match_end) in text_match_ranges(&normalized, query, case_sensitive) {
+            let mut highlights = Vec::new();
+            for (fragment, line_start, line_end) in &line_ranges {
+                let start = match_start.max(*line_start);
+                let end = match_end.min(*line_end);
+                if start >= end {
+                    continue;
+                }
+                let LayoutFragmentKind::Text { text, .. } = &fragment.kind else {
+                    continue;
+                };
+                let character_width = fragment.rect.w / text.chars().count().max(1) as f32;
+                highlights.push(FindHighlight {
+                    rect: Rect::new(
+                        fragment.rect.x + (start - *line_start) as f32 * character_width,
+                        fragment.rect.y,
+                        ((end - start) as f32 * character_width).max(1.0),
+                        fragment.rect.h,
+                    ),
+                    order: fragment.order,
+                    clip: fragment.clip,
+                });
+                if highlights.len() == MAX_FIND_HIGHLIGHTS_PER_MATCH {
+                    break;
+                }
+            }
+            let Some(first) = highlights.first() else {
+                continue;
+            };
             matches.push(FindMatch {
-                rect: Rect::new(
-                    fragment.rect.x + character_offset as f32 * character_width,
-                    fragment.rect.y,
-                    match_width.max(1.0),
-                    fragment.rect.h,
-                ),
-                fixed: is_fixed(fragment.node_id),
-                order: fragment.order,
-                clip: fragment.clip,
+                rect: first.rect,
+                fixed: is_fixed(node.id),
+                highlights,
             });
             if matches.len() == MAX_FIND_MATCHES {
                 return matches;
@@ -1279,6 +1358,34 @@ fn find_matches_in_fragments(
         }
     }
     matches
+}
+
+fn find_line_ranges<'a>(
+    normalized: &str,
+    fragments: &[&'a LayoutFragment],
+) -> Vec<(&'a LayoutFragment, usize, usize)> {
+    let byte_starts = character_byte_starts(normalized);
+    let mut cursor = 0;
+    let mut ranges = Vec::new();
+    for fragment in fragments {
+        let LayoutFragmentKind::Text { text, .. } = &fragment.kind else {
+            continue;
+        };
+        let Some(relative_start) = normalized[cursor..].find(text) else {
+            continue;
+        };
+        let start_byte = cursor + relative_start;
+        let end_byte = start_byte + text.len();
+        let Ok(start) = byte_starts.binary_search(&start_byte) else {
+            continue;
+        };
+        let Ok(end) = byte_starts.binary_search(&end_byte) else {
+            continue;
+        };
+        ranges.push((*fragment, start, end));
+        cursor = end_byte;
+    }
+    ranges
 }
 
 fn initial_session_history(url: &str) -> SessionHistory {
@@ -2154,6 +2261,31 @@ mod tests {
 
         page.find_text("", false, true, viewport);
         assert!(highlight_rects(&page).is_empty());
+
+        let mut wrapped = Page::from_html(
+            "file:///wrapped-find.html",
+            "<style>body{margin:0}</style><p>alpha beta</p>",
+        )
+        .unwrap();
+        let narrow_viewport = (60, 100);
+        assert_eq!(
+            wrapped.find_text("alpha beta", false, true, narrow_viewport),
+            FindTextResult {
+                matches: 1,
+                active_match: Some(1),
+            }
+        );
+        assert_eq!(
+            wrapped
+                .display_list(narrow_viewport)
+                .into_iter()
+                .filter(|command| matches!(
+                    command,
+                    PaintCommand::Background { color, .. } if *color == active_color
+                ))
+                .count(),
+            2
+        );
     }
 
     #[test]

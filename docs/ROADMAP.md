@@ -276,7 +276,8 @@ plus Previous/Next traverse with wrapping and move the shared root offset to
 reveal the match before Flutter refreshes the paired frame/Semantics projection.
 Active orange and other yellow range highlights enter the same display list
 before its text runs; horizontal precision currently shares the deterministic
-text metric and improves with font shaping.
+text metric and improves with font shaping. Soft-wrapped phrases remain one
+logical match with a highlight fragment on each intersected text run.
 Per-context 25–500% page zoom now remains BrowserCore-owned: it derives a CSS
 viewport, scales the single display list into the physical frame, converts
 physical input back to CSS coordinates, and projects Semantics bounds through

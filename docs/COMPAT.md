@@ -295,7 +295,8 @@ non-overlapping matches from rendered Page text nodes, excluding hidden,
 `display:none`, and title/head content. Enter/F3 and the Previous/Next controls
 advance or reverse with wrapping; Page owns the one-based active match and moves
 the same clamped root offset used by paint, hit testing, and Semantics just enough
-to reveal it. The generation-checked result is exposed through a live region and
+to reveal it. Soft-wrapped phrases remain one logical match while each intersected
+text run receives a highlight. The generation-checked result is exposed through a live region and
 forces a paired frame/Semantics refresh after traversal. Empty queries clear the
 active match; stale documents and queries above 4 KiB fail closed. Range-sized
 highlights are inserted before text in the one display list (orange

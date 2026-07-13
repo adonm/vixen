@@ -69,7 +69,8 @@ region. Enter/F3 and Previous/Next traverse with wrapping, while BrowserCore
 updates the shared root scroll offset to reveal the active match and Flutter
 requests a fresh paired frame/Semantics projection. BrowserCore paints orange
 active and yellow other range highlights in the same display list consumed by
-WebRender; precision remains limited by the current deterministic text metrics.
+WebRender. Soft-wrapped phrases remain one logical match with per-run
+highlights; precision remains limited by the current deterministic text metrics.
 
 Ctrl++/Ctrl+-/Ctrl+0 and menu actions adjust a 25–500% per-context zoom owned by
 BrowserCore. The core derives the CSS viewport, scales the single display list
