@@ -9,6 +9,7 @@ import 'address.dart';
 
 final class ShellCoordinator extends ChangeNotifier {
   static const int maxPendingInputEvents = 64;
+  static const int maxCaptureRetries = 2;
 
   ShellCoordinator(this.controller, {this.initialUrl = vixenStartUrl});
 
@@ -40,6 +41,8 @@ final class ShellCoordinator extends ChangeNotifier {
   int _hostViewGeneration = 0;
   int _pendingInputEvents = 0;
   int _findRequestGeneration = 0;
+  int _frameCaptureFailures = 0;
+  int _accessibilityCaptureFailures = 0;
   String _findQuery = '';
   int? _findMatches;
   int? _findActiveMatch;
@@ -55,6 +58,8 @@ final class ShellCoordinator extends ChangeNotifier {
   double _scaleFactor = 1;
   BrowserHostLifecycle _hostLifecycle = BrowserHostLifecycle.resumed;
   _HostViewKey? _lastHostViewKey;
+  _FrameCaptureKey? _frameCaptureFailureKey;
+  _FrameCaptureKey? _accessibilityCaptureFailureKey;
   bool _isStarting = false;
   bool _isReady = false;
   bool _disposed = false;
@@ -839,13 +844,22 @@ final class ShellCoordinator extends ChangeNotifier {
               _frame!.contextId != captured.contextId ||
               _frame!.documentId != captured.documentId ||
               captured.frameId > _frame!.frameId)) {
+        _clearFrameCaptureFailures(key);
         _pendingFrame = _PendingFrame(request.projectionGeneration, captured);
         _publishAccessibilityIfPaired();
       }
     } catch (error) {
       if (request.generation == _captureGeneration &&
           _isCurrentCapture(request.key)) {
-        _showError('Unable to capture browser frame', error);
+        if (_shouldRetryFrameCapture(request.key)) {
+          _replacementCapture = _FrameCaptureRequest(
+            ++_captureGeneration,
+            request.projectionGeneration,
+            request.key,
+          );
+        } else {
+          _showError('Unable to capture browser frame after recovery', error);
+        }
       }
     } finally {
       _captureInFlight = false;
@@ -895,6 +909,7 @@ final class ShellCoordinator extends ChangeNotifier {
           snapshot.documentId == key.documentId &&
           snapshot.viewportWidth == key.width &&
           snapshot.viewportHeight == key.height) {
+        _clearAccessibilityCaptureFailures(key);
         _pendingAccessibility = _PendingAccessibility(
           request.projectionGeneration,
           snapshot,
@@ -904,7 +919,18 @@ final class ShellCoordinator extends ChangeNotifier {
     } catch (error) {
       if (request.generation == _accessibilityGeneration &&
           _isCurrentCapture(request.key)) {
-        _showError('Unable to capture browser accessibility', error);
+        if (_shouldRetryAccessibilityCapture(request.key)) {
+          _replacementAccessibilityCapture = _AccessibilityCaptureRequest(
+            ++_accessibilityGeneration,
+            request.projectionGeneration,
+            request.key,
+          );
+        } else {
+          _showError(
+            'Unable to capture browser accessibility after recovery',
+            error,
+          );
+        }
       }
     } finally {
       _accessibilityCaptureInFlight = false;
@@ -939,6 +965,36 @@ final class ShellCoordinator extends ChangeNotifier {
     _notify();
   }
 
+  bool _shouldRetryFrameCapture(_FrameCaptureKey key) {
+    if (_frameCaptureFailureKey != key) {
+      _frameCaptureFailureKey = key;
+      _frameCaptureFailures = 0;
+    }
+    _frameCaptureFailures++;
+    return _frameCaptureFailures <= maxCaptureRetries;
+  }
+
+  void _clearFrameCaptureFailures(_FrameCaptureKey key) {
+    if (_frameCaptureFailureKey != key) return;
+    _frameCaptureFailureKey = null;
+    _frameCaptureFailures = 0;
+  }
+
+  bool _shouldRetryAccessibilityCapture(_FrameCaptureKey key) {
+    if (_accessibilityCaptureFailureKey != key) {
+      _accessibilityCaptureFailureKey = key;
+      _accessibilityCaptureFailures = 0;
+    }
+    _accessibilityCaptureFailures++;
+    return _accessibilityCaptureFailures <= maxCaptureRetries;
+  }
+
+  void _clearAccessibilityCaptureFailures(_FrameCaptureKey key) {
+    if (_accessibilityCaptureFailureKey != key) return;
+    _accessibilityCaptureFailureKey = null;
+    _accessibilityCaptureFailures = 0;
+  }
+
   bool _isCurrentCapture(_FrameCaptureKey key) {
     final selected = selectedContext;
     return selected != null &&
@@ -963,6 +1019,10 @@ final class ShellCoordinator extends ChangeNotifier {
     _accessibilityGeneration++;
     _inputGeneration++;
     _lastInputResult = null;
+    _frameCaptureFailureKey = null;
+    _frameCaptureFailures = 0;
+    _accessibilityCaptureFailureKey = null;
+    _accessibilityCaptureFailures = 0;
     _findRequestGeneration++;
     _findQuery = '';
     _findMatches = null;

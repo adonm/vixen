@@ -32,6 +32,12 @@ to Flutter is not overwritten before a later render tick. Unsupported platforms
 and channel failures show the renderer-unavailable placeholder; they never
 synthesize a frame.
 
+Current-generation BrowserCore frame and Semantics captures each retry at most
+twice. The presenter likewise disposes and recreates the texture after at most
+two failed create/publish attempts; exhaustion shows `Surface recovery failed`
+and a newer frame gets a fresh bounded attempt. Tests use deterministic failures;
+native compositor/surface-loss evidence and full app-lifecycle recovery remain.
+
 ## Input contract
 
 The content surface maps Flutter logical pointer/wheel coordinates into the exact
@@ -52,8 +58,8 @@ Focused writable native text controls attach Flutter's platform text-input
 client; bounded full values and UTF-16 selection/composing ranges cross the
 exact BrowserCore generation and update the live runtime control. Contenteditable,
 IME action specialization and real native IME evidence, nested/touch/script
-scrolling, CSS/physical scale correctness, and lifecycle/surface recovery remain
-follow-up work.
+scrolling, CSS/physical scale correctness, and broader lifecycle/native
+surface-loss recovery remain follow-up work.
 
 Ctrl+F and the browser menu expose a find bar backed by an exact active-
 document BrowserCore command. The query is bounded to 4 KiB at the native
@@ -69,7 +75,7 @@ Ctrl++/Ctrl+-/Ctrl+0 and menu actions adjust a 25–500% per-context zoom owned 
 BrowserCore. The core derives the CSS viewport, scales the single display list
 to the physical texture, converts hit testing/wheel input to CSS coordinates,
 and emits matching physical Semantics bounds. Flutter does not rescale pixels or
-own page zoom state. Profile persistence and device-scale/surface recovery
+own page zoom state. Profile persistence and device-scale/native surface recovery
 remain open.
 
 ## Accessibility contract

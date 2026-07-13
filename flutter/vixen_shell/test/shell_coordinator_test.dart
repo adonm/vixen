@@ -342,6 +342,117 @@ void main() {
     await coordinator.close();
   });
 
+  test(
+    'current frame capture retries twice and recovers without an error',
+    () async {
+      var attempts = 0;
+      final controller = ScriptedBrowserController(
+        snapshot: BrowserSnapshot(
+          activeContextId: 6,
+          contexts: [contextState(id: 6, url: 'https://recovery.test')],
+        ),
+        onCaptureFrame: (contextId, documentId, width, height) {
+          attempts++;
+          if (attempts <= ShellCoordinator.maxCaptureRetries) {
+            throw const BrowserFailure('renderer.surface', 'surface lost');
+          }
+          return browserFrame(
+            width: width,
+            height: height,
+            frameId: 1,
+            contextId: contextId,
+            documentId: documentId,
+          );
+        },
+      );
+      final coordinator = ShellCoordinator(controller);
+      await coordinator.start();
+
+      coordinator.updatePhysicalViewport(320, 180);
+      await flushEvents();
+      await flushEvents();
+
+      expect(controller.frameRequests, hasLength(3));
+      expect(coordinator.frame?.frameId, 1);
+      expect(coordinator.errorMessage, isNull);
+      await coordinator.close();
+    },
+  );
+
+  test('current frame capture stops after the bounded retry budget', () async {
+    final controller = ScriptedBrowserController(
+      snapshot: BrowserSnapshot(
+        activeContextId: 7,
+        contexts: [contextState(id: 7, url: 'https://failed-recovery.test')],
+      ),
+      onCaptureFrame: (_, _, _, _) =>
+          throw const BrowserFailure('renderer.surface', 'surface lost'),
+    );
+    final coordinator = ShellCoordinator(controller);
+    await coordinator.start();
+
+    coordinator.updatePhysicalViewport(320, 180);
+    await flushEvents();
+    await flushEvents();
+
+    expect(
+      controller.frameRequests,
+      hasLength(ShellCoordinator.maxCaptureRetries + 1),
+    );
+    expect(coordinator.frame, isNull);
+    expect(coordinator.errorMessage, contains('after recovery'));
+    await coordinator.close();
+  });
+
+  test('paired accessibility capture retries twice and recovers', () async {
+    var accessibilityAttempts = 0;
+    var frameId = 0;
+    final controller = ScriptedBrowserController(
+      snapshot: BrowserSnapshot(
+        activeContextId: 8,
+        contexts: [contextState(id: 8, url: 'https://a11y-recovery.test')],
+      ),
+      onCaptureFrame: (contextId, documentId, width, height) => browserFrame(
+        width: width,
+        height: height,
+        frameId: ++frameId,
+        contextId: contextId,
+        documentId: documentId,
+      ),
+      onAccessibilitySnapshot: (contextId, documentId, width, height) {
+        accessibilityAttempts++;
+        if (accessibilityAttempts <= ShellCoordinator.maxCaptureRetries) {
+          throw const BrowserFailure(
+            'renderer.accessibility',
+            'projection unavailable',
+          );
+        }
+        return BrowserAccessibilitySnapshot(
+          sourceGeneration: 1,
+          generation: 1,
+          contextId: contextId,
+          documentId: documentId,
+          viewportWidth: width,
+          viewportHeight: height,
+          nodes: const [],
+          truncated: false,
+        );
+      },
+    );
+    final coordinator = ShellCoordinator(controller);
+    await coordinator.start();
+
+    coordinator.updatePhysicalViewport(320, 180);
+    await flushEvents();
+    await flushEvents();
+
+    expect(accessibilityAttempts, 3);
+    expect(coordinator.frame?.frameId, 1);
+    expect(coordinator.accessibility, isNotNull);
+    expect(coordinator.errorMessage, isNull);
+    await coordinator.close();
+  });
+
   test('physical viewport is bounded before capture', () async {
     final controller = ScriptedBrowserController(
       snapshot: BrowserSnapshot(

@@ -229,8 +229,11 @@ press cancellation. A monotonic BrowserCore host-view state now carries bounded
 viewport/effective scale, content focus, visibility, and Flutter lifecycle;
 stale updates fail, inactive views reject input, and live documents observe
 focus/visibility state and events across navigation. CSS/physical scale
-separation and lifecycle/surface recovery remain. Uncanceled wheel events now
-apply a clamped Page-owned root scroll offset; the translated layout drives
+separation and full lifecycle/native surface recovery remain. Current-generation
+frame and Semantics capture failures now retry twice with exact keys, and texture
+create/publish failures dispose and recreate the controller twice before a
+recovery-failed placeholder; newer frames get a fresh bounded attempt.
+Uncanceled wheel events now apply a clamped Page-owned root scroll offset; the translated layout drives
 paint, hit testing, selector/accessibility bounds, and fixed-position anchoring.
 Unmodified Arrow, Page Up/Down, Home/End, and Space defaults now use the same
 zoom-derived CSS viewport and Page offset; page `preventDefault()` cancels the
@@ -277,7 +280,8 @@ text metric and improves with font shaping.
 Per-context 25–500% page zoom now remains BrowserCore-owned: it derives a CSS
 viewport, scales the single display list into the physical frame, converts
 physical input back to CSS coordinates, and projects Semantics bounds through
-the same transform. Profile persistence and device-scale/surface recovery remain.
+the same transform. Profile persistence, device-scale correctness, and native
+surface-loss evidence remain.
 External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
 sparse paths. Headless `--incremental` now captures real before/after frames from
@@ -578,9 +582,10 @@ correctness. Neither may starve the other.
    host-service UI; both remain cross-cutting through every later platform.
 5. Complete the Linux basic-browser gate: visible controlled-site navigation,
    nested/touch/script scrolling, contenteditable plus native IME evidence,
-   back/forward/reload/stop, and bounded navigation/runtime/surface recovery.
-   Keep release-archive smoke
-   green, but defer FlatPark submission/review/publishing until this gate passes.
+   back/forward/reload/stop, and finish bounded navigation/runtime plus native
+   surface recovery beyond the landed capture/texture retry policy. Keep
+   release-archive smoke green, but defer FlatPark submission/review/publishing
+   until this gate passes.
 6. Use the landed checked-in hello-Flutter peer, controlled release-bundle
    build, component/delta analyzer, and initial clean x86_64 size report to
    reproduce and review Linux size/performance baselines. Add compressed/install

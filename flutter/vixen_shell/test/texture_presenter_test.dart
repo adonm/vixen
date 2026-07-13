@@ -85,6 +85,62 @@ void main() {
     expect(controller.create, throwsUnsupportedError);
   });
 
+  testWidgets('texture presentation recreates twice after transient loss', (
+    tester,
+  ) async {
+    final controller = _FlakyTextureController(failuresRemaining: 2);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: BrowserContentSurface(
+          contextState: null,
+          frame: testFrame(frameId: 6),
+          textureController: controller,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(controller.createCount, 3);
+    expect(controller.publishCount, 3);
+    expect(controller.disposeCount, 2);
+    expect(find.byKey(const Key('browser-texture')), findsOneWidget);
+    expect(find.byKey(const Key('surface-recovery-failed')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+  });
+
+  testWidgets('texture presentation bounds failure and accepts a newer frame', (
+    tester,
+  ) async {
+    final controller = _FlakyTextureController(failuresRemaining: 10);
+    Widget surface(BrowserFrame frame) => MaterialApp(
+      home: BrowserContentSurface(
+        contextState: null,
+        frame: frame,
+        textureController: controller,
+      ),
+    );
+
+    await tester.pumpWidget(surface(testFrame(frameId: 7)));
+    await tester.pumpAndSettle();
+
+    expect(controller.publishCount, 3);
+    expect(find.byKey(const Key('surface-recovery-failed')), findsOneWidget);
+
+    controller.failuresRemaining = 0;
+    await tester.pumpWidget(surface(testFrame(frameId: 8)));
+    await tester.pumpAndSettle();
+
+    expect(controller.publishCount, 4);
+    expect(find.byKey(const Key('browser-texture')), findsOneWidget);
+    expect(find.byKey(const Key('surface-recovery-failed')), findsNothing);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+  });
+
   testWidgets('content surface normalizes pointer and keyboard input', (
     tester,
   ) async {
@@ -622,4 +678,30 @@ final class _TestTextureController implements BrowserTextureController {
 
   @override
   Future<void> dispose() async {}
+}
+
+final class _FlakyTextureController implements BrowserTextureController {
+  _FlakyTextureController({required this.failuresRemaining});
+
+  int failuresRemaining;
+  int createCount = 0;
+  int publishCount = 0;
+  int disposeCount = 0;
+
+  @override
+  Future<int> create() async => ++createCount;
+
+  @override
+  Future<void> publish(BrowserFrame frame) async {
+    publishCount++;
+    if (failuresRemaining > 0) {
+      failuresRemaining--;
+      throw StateError('surface lost');
+    }
+  }
+
+  @override
+  Future<void> dispose() async {
+    disposeCount++;
+  }
 }

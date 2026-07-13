@@ -35,7 +35,7 @@ copies the frame through `TransferableTypedData`; and the Linux runner publishes
 it through one `FlPixelBufferTexture` with a mutex-protected three-buffer pool.
 Dimensions are capped at 4096 per axis and 64 MiB per frame, with at most three
 retained native frames and one in-flight Dart capture plus one newest
-replacement. `just gate-flutter-shell` runs format, analysis, 55 Dart/widget/
+replacement. `just gate-flutter-shell` runs format, analysis, 60 Dart/widget/
 native smoke tests, and the native ABI gate. A Fedora 43 container build also
 produced a relocatable debug bundle containing the executable, Flutter embedder,
 and `libvixen_ffi.so`.
@@ -98,7 +98,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key scrolling, native text-control IME state, bounded find traversal/scroll/highlighting, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; contenteditable/IME actions and native evidence, nested/touch/script scrolling, recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key scrolling, native text-control IME state, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; contenteditable/IME actions and native evidence, nested/touch/script scrolling, native lifecycle/surface recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -160,6 +160,15 @@ a Flutter external texture:
 
 This is one WebRender path with a transport copy, not a second renderer. Flutter
 must not repaint or reinterpret Vixen's display list.
+
+The first bounded presentation-recovery slice is implemented. The coordinator
+retries a failing current-generation BrowserCore frame or Semantics capture
+twice with unchanged context/document/viewport/projection keys. A texture
+create/publish failure disposes and recreates the controller, also with two
+retries per frame. Exhaustion produces a visible recovery-failed placeholder
+instead of a loop; a newer frame receives a fresh bounded attempt. This is
+deterministic Dart/fake-controller evidence, not native compositor surface-loss,
+GPU-reset, or full application-lifecycle recovery proof.
 
 ### 3. Input, viewport, accessibility, and host services
 

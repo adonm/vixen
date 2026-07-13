@@ -267,7 +267,16 @@ focus, visibility, effective scale, and application lifecycle. Current documents
 expose the accepted state through `document.hasFocus()`, `hidden`, and
 `visibilityState`, dispatch focus/blur and `visibilitychange`, and reject input
 while inactive. CSS-versus-physical scale correction and platform lifecycle/
-surface recovery are not established by this slice.
+native surface recovery are not established by this slice.
+
+The Flutter coordinator now retries a failing current-generation BrowserCore
+frame or Semantics capture twice while preserving the exact context/document/
+viewport/projection keys. The texture presenter also disposes and recreates its
+controller after a failed create/publish, with two retries per frame; exhaustion
+shows a recovery-failed placeholder rather than looping, and a newer frame gets
+a fresh bounded attempt. Deterministic fake-controller/widget tests prove this
+policy. Real compositor surface loss, GPU reset, application lifecycle recovery,
+and native runner evidence remain open.
 
 The first interactive root-scrolling slice is BrowserCore-owned. Flutter scales
 wheel deltas into the physical frame coordinate space; the live runtime receives
@@ -300,8 +309,8 @@ derives the CSS layout viewport from the physical frame, scales the same display
 list into that frame, maps physical hit-test/wheel coordinates back to CSS
 pixels, and scales accessibility bounds into the displayed coordinate space.
 Zoom survives document navigation in the context but is not yet persisted in
-the profile session. Text shaping quality, nested scrolling, and device-scale/
-surface recovery remain separate gaps.
+the profile session. Text shaping quality, nested scrolling, device-scale
+correctness, and native surface-loss evidence remain separate gaps.
 
 ---
 

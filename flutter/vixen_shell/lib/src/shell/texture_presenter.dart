@@ -153,6 +153,8 @@ final class BrowserContentSurface extends StatefulWidget {
 }
 
 final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
+  static const int _maxPresentationRetries = 2;
+
   late BrowserTextureController _controller;
   Future<int>? _createOperation;
   BrowserFrame? _pendingFrame;
@@ -168,9 +170,12 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   bool _mouseMoveScheduled = false;
   int? _textureId;
   int _controllerEpoch = 0;
+  int _presentationFailures = 0;
   bool _presenting = false;
   bool _disposed = false;
   bool _contentFocused = false;
+  bool _presentationRecoveryFailed = false;
+  (int, int, int)? _presentationFailureKey;
   (int, int, int)? _textInputTarget;
 
   @override
@@ -192,6 +197,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
       _textureId = null;
       _publishedFrame = null;
       _displayedFrame = null;
+      _clearPresentationFailures();
     }
     _queueFrame(widget.frame);
     _syncTextInput();
@@ -203,19 +209,31 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
       _displayedFrame = null;
       return;
     }
+    final key = _frameKey(frame);
+    if (_presentationFailureKey != key) {
+      _clearPresentationFailures();
+    } else if (_presentationFailures > _maxPresentationRetries) {
+      return;
+    }
     _pendingFrame = frame;
     if (!_presenting) unawaited(_presentFrames());
   }
 
   Future<void> _presentFrames() async {
     _presenting = true;
+    BrowserFrame? attemptedFrame;
+    BrowserTextureController? attemptedController;
+    int? attemptedControllerEpoch;
     try {
       while (!_disposed && _pendingFrame != null) {
         final frame = _pendingFrame!;
+        attemptedFrame = frame;
         _pendingFrame = null;
         if (!_isNewer(frame, _publishedFrame)) continue;
         final controller = _controller;
         final controllerEpoch = _controllerEpoch;
+        attemptedController = controller;
+        attemptedControllerEpoch = controllerEpoch;
         final textureId = await (_createOperation ??= controller.create());
         if (_disposed) return;
         if (controllerEpoch != _controllerEpoch) {
@@ -233,6 +251,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         }
         _textureId = textureId;
         _publishedFrame = frame;
+        _clearPresentationFailures();
         if (_sameFrame(widget.frame, frame)) {
           _displayedFrame = frame;
           if (mounted) setState(() {});
@@ -240,6 +259,29 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
       }
     } catch (_) {
       _displayedFrame = null;
+      _publishedFrame = null;
+      _textureId = null;
+      _createOperation = null;
+      if (attemptedControllerEpoch == _controllerEpoch) {
+        _controllerEpoch++;
+      }
+      try {
+        await attemptedController?.dispose();
+      } catch (_) {
+        // The original create/publish failure remains the recovery signal.
+      }
+      final newer = _pendingFrame;
+      final retry = newer ?? attemptedFrame;
+      if (!_disposed && retry != null) {
+        if (newer != null && _frameKey(newer) != _frameKey(attemptedFrame!)) {
+          _clearPresentationFailures();
+          _pendingFrame = newer;
+        } else if (_shouldRetryPresentation(retry)) {
+          _pendingFrame = retry;
+        } else {
+          _presentationRecoveryFailed = true;
+        }
+      }
       if (mounted) setState(() {});
     } finally {
       _presenting = false;
@@ -556,6 +598,13 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
                 'Renderer frame unavailable',
                 key: Key('renderer-unavailable'),
               ),
+              if (_presentationRecoveryFailed) ...[
+                const SizedBox(height: 4),
+                const Text(
+                  'Surface recovery failed',
+                  key: Key('surface-recovery-failed'),
+                ),
+              ],
               const SizedBox(height: 4),
               Text(
                 widget.contextState?.url ?? 'No browsing context',
@@ -567,6 +616,22 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
       );
     }
     return _withAccessibility(visual);
+  }
+
+  bool _shouldRetryPresentation(BrowserFrame frame) {
+    final key = _frameKey(frame);
+    if (_presentationFailureKey != key) {
+      _presentationFailureKey = key;
+      _presentationFailures = 0;
+    }
+    _presentationFailures++;
+    return _presentationFailures <= _maxPresentationRetries;
+  }
+
+  void _clearPresentationFailures() {
+    _presentationFailureKey = null;
+    _presentationFailures = 0;
+    _presentationRecoveryFailed = false;
   }
 
   Widget _withAccessibility(Widget visual) {
@@ -1003,3 +1068,6 @@ bool _sameFrame(BrowserFrame? first, BrowserFrame second) =>
     first.contextId == second.contextId &&
     first.documentId == second.documentId &&
     first.frameId == second.frameId;
+
+(int, int, int) _frameKey(BrowserFrame frame) =>
+    (frame.contextId, frame.documentId, frame.frameId);

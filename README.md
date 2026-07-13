@@ -46,6 +46,9 @@ active/other range highlights through the same display-list/WebRender path;
 per-tab zoom from 25–500% derives a CSS viewport inside BrowserCore and applies
 one matching transform to WebRender commands, hit testing, wheel coordinates,
 and Semantics bounds;
+current-generation frame and Semantics captures retry twice before surfacing a
+structured error, while texture create/publish failures dispose and recreate
+the bounded Linux texture twice before showing a recovery-failed placeholder;
 the bounded BrowserCore-derived Semantics hierarchy includes parent structure,
 `aria-controls`, text editing, and native range adjustment. Monotonic host-view
 updates also drive document focus/visibility and Flutter lifecycle input policy.
