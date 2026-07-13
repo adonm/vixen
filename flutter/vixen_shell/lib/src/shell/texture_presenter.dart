@@ -430,7 +430,11 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
             (key == LogicalKeyboardKey.keyL ||
                 key == LogicalKeyboardKey.keyT ||
                 key == LogicalKeyboardKey.keyW ||
-                key == LogicalKeyboardKey.keyR) ||
+                key == LogicalKeyboardKey.keyR ||
+                key == LogicalKeyboardKey.keyF ||
+                key == LogicalKeyboardKey.equal ||
+                key == LogicalKeyboardKey.minus ||
+                key == LogicalKeyboardKey.digit0) ||
         keyboard.isAltPressed &&
             (key == LogicalKeyboardKey.arrowLeft ||
                 key == LogicalKeyboardKey.arrowRight) ||

@@ -134,6 +134,9 @@ void main() {
     await gesture.cancel();
     await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyF);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
 
     expect(mouseEvents.map((entry) => entry.$1), [
       'mousedown',
@@ -148,9 +151,10 @@ void main() {
     final wheel = mouseEvents.singleWhere((entry) => entry.$1 == 'wheel').$2;
     expect(wheel.deltaX, 8);
     expect(wheel.deltaY, 12);
-    expect(keyEvents.map((entry) => entry.$1), ['keydown', 'keyup']);
-    expect(keyEvents.first.$2.key, 'a');
-    expect(keyEvents.first.$2.code, 'KeyA');
+    final aEvents = keyEvents.where((entry) => entry.$2.key == 'a').toList();
+    expect(aEvents.map((entry) => entry.$1), ['keydown', 'keyup']);
+    expect(aEvents.first.$2.code, 'KeyA');
+    expect(keyEvents.where((entry) => entry.$2.key == 'f'), isEmpty);
   });
 
   testWidgets('BrowserCore nodes project into actionable Flutter Semantics', (
