@@ -32,7 +32,9 @@ coordinator, texture, input, and live native smoke tests run with
 viewport plus pointer/wheel/keyboard input are routed through BrowserCore;
 the bounded BrowserCore-derived Semantics hierarchy includes parent structure,
 `aria-controls`, text editing, and native range adjustment. Monotonic host-view
-updates also drive document focus/visibility and Flutter lifecycle input policy. IME,
+updates also drive document focus/visibility and Flutter lifecycle input policy.
+Bounded accessible descriptions plus retained `aria-describedby` and
+`aria-details` relationships now cross the same BrowserCore/ABI projection. IME,
 complete accessibility/native AT, host services, release packaging, and non-Linux runners
 remain open, so the GTK/Relm4 shell is still the temporary Linux compatibility
 baseline rather than the product direction.

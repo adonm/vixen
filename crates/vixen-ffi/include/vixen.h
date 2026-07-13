@@ -18,6 +18,7 @@ extern "C" {
 #define VIXEN_MAX_FRAME_DIMENSION 4096u
 #define VIXEN_MAX_FRAME_BYTES 67108864u
 #define VIXEN_MAX_OUTSTANDING_FRAMES 3u
+#define VIXEN_MAX_ACCESSIBILITY_NODES 192u
 
 /* Stable return statuses. Only VIXEN_STATUS_OK means an operation succeeded. */
 #define VIXEN_STATUS_OK 0u

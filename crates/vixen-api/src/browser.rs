@@ -50,8 +50,17 @@ impl AccessibilitySnapshot {
             for controls_id in &node.controls_ids {
                 hash.u64(*controls_id as u64);
             }
+            hash.u64(node.described_by_ids.len() as u64);
+            for described_by_id in &node.described_by_ids {
+                hash.u64(*described_by_id as u64);
+            }
+            hash.u64(node.details_ids.len() as u64);
+            for details_id in &node.details_ids {
+                hash.u64(*details_id as u64);
+            }
             hash.string(&node.role);
             hash.string(&node.label);
+            hash.string(&node.description);
             hash.optional_string(node.value.as_deref());
             match node.range {
                 Some(range) => {
@@ -152,8 +161,13 @@ pub struct AccessibilityNode {
     pub parent_id: Option<usize>,
     /// Emitted semantic nodes referenced by this element's `aria-controls`.
     pub controls_ids: Vec<usize>,
+    /// Emitted semantic nodes referenced by this element's `aria-describedby`.
+    pub described_by_ids: Vec<usize>,
+    /// Emitted semantic nodes referenced by this element's `aria-details`.
+    pub details_ids: Vec<usize>,
     pub role: String,
     pub label: String,
+    pub description: String,
     pub value: Option<String>,
     pub range: Option<AccessibilityRange>,
     pub bbox: Option<AccessibilityRect>,
@@ -1090,8 +1104,11 @@ mod tests {
                 id: 1,
                 parent_id: None,
                 controls_ids: vec![],
+                described_by_ids: vec![],
+                details_ids: vec![],
                 role: "button".to_owned(),
                 label: "Before".to_owned(),
+                description: String::new(),
                 value: None,
                 range: None,
                 bbox: None,
@@ -1123,6 +1140,10 @@ mod tests {
         snapshot.nodes[0].controls_ids.push(9);
         snapshot.refresh_generation();
         assert_ne!(snapshot.generation, without_controls);
+        let without_description = snapshot.generation;
+        snapshot.nodes[0].description = "More context".to_owned();
+        snapshot.refresh_generation();
+        assert_ne!(snapshot.generation, without_description);
         let without_range = snapshot.generation;
         snapshot.nodes[0].range = Some(AccessibilityRange {
             current: 4.0,

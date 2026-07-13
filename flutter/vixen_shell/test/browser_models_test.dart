@@ -207,8 +207,11 @@ void main() {
           'id': 9,
           'parent_id': null,
           'controls_ids': [],
+          'described_by_ids': [],
+          'details_ids': [],
           'role': 'checkbox',
           'label': 'Remember me',
+          'description': 'Stores this preference',
           'value': null,
           'range': null,
           'bbox': {'x': 10.0, 'y': 20.0, 'width': 100.0, 'height': 30.0},
@@ -226,6 +229,10 @@ void main() {
     }) as AccessibilitySnapshotResponse;
 
     expect(response.snapshot.nodes.single.role, 'checkbox');
+    expect(
+      response.snapshot.nodes.single.description,
+      'Stores this preference',
+    );
     expect(response.snapshot.nodes.single.parentId, isNull);
     expect(response.snapshot.sourceGeneration, 8);
     expect(response.snapshot.generation, 99);
@@ -328,10 +335,14 @@ void main() {
       int id, {
       int? parentId,
       List<int> controlsIds = const [],
+      List<int> describedByIds = const [],
+      List<int> detailsIds = const [],
     }) => BrowserAccessibilityNode(
       id: id,
       parentId: parentId,
       controlsIds: controlsIds,
+      describedByIds: describedByIds,
+      detailsIds: detailsIds,
       role: 'generic',
       label: 'node $id',
       focused: false,
@@ -395,6 +406,22 @@ void main() {
         ],
         truncated: false,
       ).nodes.last.controlsIds,
+      [1],
+    );
+    expect(
+      BrowserAccessibilitySnapshot(
+        sourceGeneration: 1,
+        generation: 1,
+        contextId: 1,
+        documentId: 1,
+        viewportWidth: 100,
+        viewportHeight: 100,
+        nodes: [
+          node(1),
+          node(2, describedByIds: const [1], detailsIds: const [1]),
+        ],
+        truncated: false,
+      ).nodes.last.describedByIds,
       [1],
     );
   });

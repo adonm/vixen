@@ -6,7 +6,7 @@ const int browserAbiVersion = 1;
 const String vixenStartUrl = 'about:vixen';
 const int browserMaxFrameDimension = 4096;
 const int browserMaxFrameBytes = 64 * 1024 * 1024;
-const int browserMaxAccessibilityNodes = 256;
+const int browserMaxAccessibilityNodes = 192;
 
 enum BrowserHostLifecycle {
   resumed('resumed'),
@@ -323,8 +323,11 @@ final class BrowserAccessibilityNode {
     required this.id,
     this.parentId,
     List<int> controlsIds = const [],
+    List<int> describedByIds = const [],
+    List<int> detailsIds = const [],
     required this.role,
     required this.label,
+    this.description = '',
     this.value,
     this.range,
     this.bounds,
@@ -337,6 +340,8 @@ final class BrowserAccessibilityNode {
     required this.focusable,
     required List<String> actions,
   }) : controlsIds = List.unmodifiable(controlsIds),
+       describedByIds = List.unmodifiable(describedByIds),
+       detailsIds = List.unmodifiable(detailsIds),
        actions = List.unmodifiable(actions);
 
   factory BrowserAccessibilityNode.fromWire(Map<String, Object?> wire) {
@@ -345,17 +350,26 @@ final class BrowserAccessibilityNode {
       throw const FormatException('accessibility actions must be strings');
     }
     final controlsIds = _list(wire, 'controls_ids');
-    if (controlsIds.any((id) => id is! int || id <= 0)) {
+    final describedByIds = _list(wire, 'described_by_ids');
+    final detailsIds = _list(wire, 'details_ids');
+    if ([
+      ...controlsIds,
+      ...describedByIds,
+      ...detailsIds,
+    ].any((id) => id is! int || id <= 0)) {
       throw const FormatException(
-        'accessibility controls ids must be positive integers',
+        'accessibility relationship ids must be positive integers',
       );
     }
     return BrowserAccessibilityNode(
       id: _positiveInt(wire, 'id'),
       parentId: _optionalPositiveInt(wire, 'parent_id'),
       controlsIds: controlsIds.cast<int>(),
+      describedByIds: describedByIds.cast<int>(),
+      detailsIds: detailsIds.cast<int>(),
       role: _string(wire, 'role'),
       label: _string(wire, 'label'),
+      description: _string(wire, 'description'),
       value: _optionalString(wire, 'value'),
       range: wire['range'] == null
           ? null
@@ -377,8 +391,11 @@ final class BrowserAccessibilityNode {
   final int id;
   final int? parentId;
   final List<int> controlsIds;
+  final List<int> describedByIds;
+  final List<int> detailsIds;
   final String role;
   final String label;
+  final String description;
   final String? value;
   final BrowserAccessibilityRange? range;
   final BrowserAccessibilityRect? bounds;
@@ -395,8 +412,11 @@ final class BrowserAccessibilityNode {
     'id': id,
     'parent_id': parentId,
     'controls_ids': controlsIds,
+    'described_by_ids': describedByIds,
+    'details_ids': detailsIds,
     'role': role,
     'label': label,
+    'description': description,
     'value': value,
     'range': range?.toWire(),
     'bbox': bounds?.toWire(),
@@ -479,11 +499,17 @@ final class BrowserAccessibilitySnapshot {
       }
     }
     for (final node in nodes) {
-      if (node.controlsIds.toSet().length != node.controlsIds.length ||
-          node.controlsIds.any((id) => id == node.id || !seen.contains(id))) {
-        throw const FormatException(
-          'accessibility controls ids must be unique emitted nodes',
-        );
+      for (final ids in [
+        node.controlsIds,
+        node.describedByIds,
+        node.detailsIds,
+      ]) {
+        if (ids.toSet().length != ids.length ||
+            ids.any((id) => id == node.id || !seen.contains(id))) {
+          throw const FormatException(
+            'accessibility relationship ids must be unique emitted nodes',
+          );
+        }
       }
     }
   }

@@ -422,8 +422,11 @@ impl Page {
                 id: element.node_id,
                 parent_id: element.parent_id,
                 controls_ids: element.controls_ids,
+                described_by_ids: element.described_by_ids,
+                details_ids: element.details_ids,
                 role,
                 label: element.label,
+                description: element.description,
                 value,
                 range,
                 bbox: bounds.get(&element.node_id).copied(),
@@ -443,6 +446,10 @@ impl Page {
             .collect::<std::collections::HashSet<_>>();
         for node in &mut nodes {
             node.controls_ids
+                .retain(|target| emitted_ids.contains(target));
+            node.described_by_ids
+                .retain(|target| emitted_ids.contains(target));
+            node.details_ids
                 .retain(|target| emitted_ids.contains(target));
         }
         let mut snapshot = AccessibilitySnapshot {
@@ -1033,6 +1040,62 @@ mod tests {
             })
         );
         assert_eq!(volume.actions, ["focus", "increase", "decrease"]);
+    }
+
+    #[test]
+    fn accessibility_snapshot_projects_descriptions_and_detail_relationships() {
+        let page = Page::from_html(
+            "file:///accessibility-descriptions.html",
+            r#"<!doctype html>
+                <button aria-label="Save" aria-describedby="help hidden help" aria-details="details missing" title="Fallback title">Go</button>
+                <p id="help">Writes the document</p>
+                <p id="hidden" hidden>Hidden description</p>
+                <section id="details" aria-label="Save details">Extended help</section>
+                <button aria-label="Share" aria-description="Sends a private link"></button>
+                <button aria-label="Print" title="Opens the print dialog"></button>"#,
+        )
+        .unwrap();
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(1).unwrap(),
+            DocumentId::new(1).unwrap(),
+            (800, 600),
+        );
+        let save = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Save")
+            .unwrap();
+        let help = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Writes the document")
+            .unwrap();
+        let details = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Save details")
+            .unwrap();
+        assert_eq!(save.description, "Writes the document Hidden description");
+        assert_eq!(save.described_by_ids, [help.id]);
+        assert_eq!(save.details_ids, [details.id]);
+        assert_eq!(
+            snapshot
+                .nodes
+                .iter()
+                .find(|node| node.label == "Share")
+                .unwrap()
+                .description,
+            "Sends a private link"
+        );
+        assert_eq!(
+            snapshot
+                .nodes
+                .iter()
+                .find(|node| node.label == "Print")
+                .unwrap()
+                .description,
+            "Opens the print dialog"
+        );
     }
 
     #[test]

@@ -172,6 +172,7 @@ void main() {
       parentId: 7,
       role: 'button',
       label: 'Open settings',
+      description: 'Opens browser preferences',
       bounds: const BrowserAccessibilityRect(
         x: 10,
         y: 20,
@@ -271,6 +272,7 @@ void main() {
       tester.getSemantics(finder),
       matchesSemantics(
         label: 'Open settings',
+        hint: 'Opens browser preferences',
         isButton: true,
         hasEnabledState: true,
         isEnabled: true,

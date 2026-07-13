@@ -185,15 +185,16 @@ where web semantics require it.
 
 The initial accessibility hierarchy is implemented. BrowserCore/Page derives native
 and explicit ARIA roles, bounded names (including `aria-labelledby` and HTML
-labels), values, states, focus, tap/focus actions, and physical layout bounds. The
-first non-tree relationship resolves bounded `aria-controls` ID references only to
-nodes retained in the semantic projection and maps them to stable Flutter semantic
-identifiers. Enabled native `input[type=range]` controls expose bounded numeric
+labels), bounded descriptions, values, states, focus, tap/focus actions, and
+physical layout bounds. Bounded `aria-controls`, `aria-describedby`, and
+`aria-details` ID references retain only nodes in the semantic projection;
+controls map to stable Flutter semantic identifiers while resolved description
+text maps to Flutter's hint. Enabled native `input[type=range]` controls expose bounded numeric
 min/max/current/step state plus exact-generation increase/decrease actions through
 the live value/input/change path; authored ARIA sliders are not treated as native
 controls. Engine
 snapshots cap at 1024 nodes and 512 UTF-8 bytes per string; the ABI caps the exact
-wire projection at 256 nodes under 1 MiB. A deterministic nonzero semantic
+wire projection at 192 nodes under 1 MiB. A deterministic nonzero semantic
 generation invalidates document-order ids after mutation. The coordinator
 publishes Semantics only when its context, document, viewport, and capture
 generation match the displayed frame, and Flutter keys nodes by semantic
@@ -209,8 +210,8 @@ waits for the refreshed projection. The same boundary exposes a 16 KiB-bounded
 set-value action only for enabled, writable native text inputs/textareas; it
 uses the live control-value and input/change event path, while password,
 readonly, unsupported input types, and authored ARIA-only textboxes remain
-unadvertised. Complete accessibility still requires additional non-tree
-relationships, descriptions, heading levels, mixed states, authored range actions,
+unadvertised. Complete accessibility still requires platform mappings for more
+non-tree relationships, heading levels, mixed states, authored range actions,
 text selection, live regions, incremental updates, the disabled-fieldset
 first-legend exception, full ARIA presentational-role conflict handling, and
 native AT smoke on each platform.

@@ -1011,8 +1011,11 @@ fn accessibility_node_json(node: AccessibilityNode) -> Value {
         "id": node.id,
         "parent_id": node.parent_id,
         "controls_ids": node.controls_ids,
+        "described_by_ids": node.described_by_ids,
+        "details_ids": node.details_ids,
         "role": node.role,
         "label": node.label,
+        "description": node.description,
         "value": node.value,
         "range": node.range.map(|range| json!({
             "current": range.current,
@@ -2118,8 +2121,11 @@ mod tests {
             id: 4,
             parent_id: Some(2),
             controls_ids: vec![],
+            described_by_ids: vec![],
+            details_ids: vec![],
             role: "checkbox".to_owned(),
             label: "Remember me".to_owned(),
+            description: "Account preference".to_owned(),
             value: Some("yes".to_owned()),
             range: None,
             bbox: Some(vixen_api::AccessibilityRect {
@@ -2163,8 +2169,11 @@ mod tests {
                     "id": 4,
                     "parent_id": 2,
                     "controls_ids": [],
+                    "described_by_ids": [],
+                    "details_ids": [],
                     "role": "checkbox",
                     "label": "Remember me",
+                    "description": "Account preference",
                     "value": "yes",
                     "range": null,
                     "bbox": {"x": 1.5, "y": 2.5, "width": 30.0, "height": 40.0},
@@ -2184,6 +2193,7 @@ mod tests {
         let worst = AccessibilityNode {
             role: "\\".repeat(512),
             label: "\\".repeat(512),
+            description: "\\".repeat(512),
             value: Some("\\".repeat(512)),
             actions: vec!["tap".to_owned()],
             ..node

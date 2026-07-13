@@ -203,10 +203,13 @@ bounded by the profile store. Native `gtk-shell` checks may be host-package
 blocked; use `just gate-flutter-shell` and `just linux-release-smoke` for the
 released GUI path.
 
-The Flutter semantics projection additionally carries bounded `aria-controls`
-relationships to retained semantic nodes and native range min/max/current/step
-state. Enabled `input[type=range]` increase/decrease actions execute through the
-same generation-checked BrowserCore/runtime path as focus and set-value. This is
+The Flutter semantics projection additionally carries bounded `aria-controls`,
+`aria-describedby`, and `aria-details` relationships to retained semantic nodes.
+Descriptions resolve bounded referenced text (including hidden referenced
+content), then `aria-description`, then an unused `title`, and map to Flutter's
+semantic hint. Native range min/max/current/step state and enabled
+`input[type=range]` increase/decrease actions execute through the same
+generation-checked BrowserCore/runtime path as focus and set-value. This is
 widget/native-bridge evidence, not native AT or broad ARIA range support.
 
 Flutter also sends one monotonic BrowserCore-owned host-view state for content

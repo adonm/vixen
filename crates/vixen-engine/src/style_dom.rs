@@ -666,10 +666,15 @@ pub(crate) struct AccessibilityElement {
     pub node_id: usize,
     pub parent_id: Option<usize>,
     pub controls_ids: Vec<usize>,
+    pub described_by_ids: Vec<usize>,
+    pub details_ids: Vec<usize>,
     pub tag: String,
     pub role: Option<String>,
     pub aria_labelledby: Option<String>,
     pub aria_controls: Option<String>,
+    pub aria_describedby: Option<String>,
+    pub aria_description: Option<String>,
+    pub aria_details: Option<String>,
     pub aria_label: Option<String>,
     pub title: Option<String>,
     pub alt: Option<String>,
@@ -685,6 +690,7 @@ pub(crate) struct AccessibilityElement {
     pub tabindex: Option<String>,
     pub text: String,
     pub label: String,
+    pub description: String,
     pub href: bool,
     pub disabled: bool,
     pub read_only: bool,
@@ -886,10 +892,15 @@ impl Document {
                 node_id,
                 parent_id,
                 controls_ids: Vec::new(),
+                described_by_ids: Vec::new(),
+                details_ids: Vec::new(),
                 tag: name.local.as_ref().to_owned(),
                 role: None,
                 aria_labelledby: None,
                 aria_controls: None,
+                aria_describedby: None,
+                aria_description: None,
+                aria_details: None,
                 aria_label: None,
                 title: None,
                 alt: None,
@@ -905,6 +916,7 @@ impl Document {
                 tabindex: None,
                 text: String::new(),
                 label: String::new(),
+                description: String::new(),
                 href: false,
                 disabled: inherited_disabled[idx],
                 read_only: false,
@@ -940,6 +952,24 @@ impl Document {
                     ),
                     "aria-controls" => copy_accessibility_attr(
                         &mut element.aria_controls,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "aria-describedby" => copy_accessibility_attr(
+                        &mut element.aria_describedby,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "aria-description" => copy_accessibility_attr(
+                        &mut element.aria_description,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "aria-details" => copy_accessibility_attr(
+                        &mut element.aria_details,
                         attr.value.as_ref(),
                         max_string_bytes,
                         &mut truncated,
@@ -1102,7 +1132,7 @@ impl Document {
                 truncated = true;
                 break;
             }
-            element.label = AccessibilityNameResolver {
+            let mut resolver = AccessibilityNameResolver {
                 arena: &arena,
                 rendered: &rendered,
                 ids: &ids,
@@ -1110,24 +1140,27 @@ impl Document {
                 maximum: max_string_bytes,
                 remaining_work: &mut remaining_name_work,
                 truncated: &mut truncated,
-            }
-            .resolve(idx, &element);
-            if let Some(controls) = element.aria_controls.as_deref() {
-                const MAX_CONTROLS: usize = 32;
-                for token in controls.split_ascii_whitespace() {
-                    let Some(target) = ids.get(token).copied().map(|target| target + 1) else {
-                        continue;
-                    };
-                    if element.controls_ids.contains(&target) {
-                        continue;
-                    }
-                    if element.controls_ids.len() == MAX_CONTROLS {
-                        truncated = true;
-                        break;
-                    }
-                    element.controls_ids.push(target);
-                }
-            }
+            };
+            element.label = resolver.resolve(idx, &element);
+            element.description = resolver.resolve_description(idx, &element);
+            resolve_accessibility_idrefs(
+                element.aria_controls.as_deref(),
+                &ids,
+                &mut element.controls_ids,
+                &mut truncated,
+            );
+            resolve_accessibility_idrefs(
+                element.aria_describedby.as_deref(),
+                &ids,
+                &mut element.described_by_ids,
+                &mut truncated,
+            );
+            resolve_accessibility_idrefs(
+                element.aria_details.as_deref(),
+                &ids,
+                &mut element.details_ids,
+                &mut truncated,
+            );
             nearest_semantic_ancestor[idx] = Some(node_id);
             out.push(element);
         }
@@ -1482,6 +1515,30 @@ impl AccessibilityNameResolver<'_> {
         name
     }
 
+    fn resolve_description(&mut self, idx: usize, element: &AccessibilityElement) -> String {
+        let mut visited = HashSet::new();
+        visited.insert(idx);
+        if let Some(describedby) = element.aria_describedby.as_deref() {
+            let description = self.labelledby_name(describedby, &mut visited);
+            if !description.is_empty() {
+                return description;
+            }
+        }
+        if let Some(description) = element
+            .aria_description
+            .as_deref()
+            .filter(|description| !description.is_empty())
+        {
+            return description.to_owned();
+        }
+        element
+            .title
+            .as_deref()
+            .filter(|title| !title.is_empty() && *title != element.label)
+            .unwrap_or("")
+            .to_owned()
+    }
+
     fn reference_name(&mut self, idx: usize, visited: &mut HashSet<usize>) -> String {
         if idx >= self.rendered.len() || !visited.insert(idx) {
             return String::new();
@@ -1522,6 +1579,29 @@ impl AccessibilityNameResolver<'_> {
                 self.truncated,
             )
         }
+    }
+}
+
+fn resolve_accessibility_idrefs(
+    value: Option<&str>,
+    ids: &HashMap<String, usize>,
+    targets: &mut Vec<usize>,
+    truncated: &mut bool,
+) {
+    const MAX_RELATION_TARGETS: usize = 32;
+    let Some(value) = value else { return };
+    for token in value.split_ascii_whitespace() {
+        let Some(target) = ids.get(token).copied().map(|target| target + 1) else {
+            continue;
+        };
+        if targets.contains(&target) {
+            continue;
+        }
+        if targets.len() == MAX_RELATION_TARGETS {
+            *truncated = true;
+            break;
+        }
+        targets.push(target);
     }
 }
 

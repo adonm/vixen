@@ -544,6 +544,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
                       ),
                     ),
               label: node.label,
+              hint: node.description.isEmpty ? null : node.description,
               value: node.value,
               slider: range != null,
               minValue: range == null

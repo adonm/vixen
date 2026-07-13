@@ -23,7 +23,7 @@ use vixen_engine::browser::{EngineBrowserHandle, spawn_browser};
 
 /// Version of the exported C ABI and its JSON wire projections.
 pub const ABI_VERSION: u32 = 1;
-pub(crate) const ACCESSIBILITY_ABI_MAX_NODES: usize = 256;
+pub(crate) const ACCESSIBILITY_ABI_MAX_NODES: usize = 192;
 
 /// Return the C ABI and JSON wire version from safe Rust.
 pub const fn vixen_abi_version() -> u32 {
@@ -661,10 +661,15 @@ pub(crate) fn bounded_accessibility_snapshot(
         .map(|node| node.id)
         .collect::<std::collections::HashSet<_>>();
     for node in &mut snapshot.nodes {
-        let before = node.controls_ids.len();
+        let before = node.controls_ids.len() + node.described_by_ids.len() + node.details_ids.len();
         node.controls_ids
             .retain(|target| retained_ids.contains(target));
-        snapshot.truncated |= node.controls_ids.len() != before;
+        node.described_by_ids
+            .retain(|target| retained_ids.contains(target));
+        node.details_ids
+            .retain(|target| retained_ids.contains(target));
+        let after = node.controls_ids.len() + node.described_by_ids.len() + node.details_ids.len();
+        snapshot.truncated |= after != before;
     }
     snapshot.refresh_generation();
     snapshot
