@@ -107,8 +107,9 @@ Rules:
   `FlPixelBufferTexture` runner, and strict generation-tagged pointer/wheel/key
   commands that hit-test only in BrowserCore. BrowserCore also exposes a bounded,
   mutation-generation-tagged semantic projection that Flutter maps without a
-  second DOM. Complete semantics/native AT, IME/gesture/lifecycle, packages,
-  release builds, and non-Linux runners remain open.
+  second DOM. Single-touch root dragging reuses the bounded cancelable wheel
+  path. Complete semantics/native AT, native IME/richer gesture/lifecycle,
+  packages, release builds, and non-Linux runners remain open.
 
 `just gate-architecture` now enforces these frontend boundaries in addition to
 the stable leaf-crate rules. Remaining migration debt is inside the document

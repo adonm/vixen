@@ -188,6 +188,12 @@ void main() {
       tester.getCenter(find.byKey(const Key('content-surface'))),
     );
     await gesture.cancel();
+    final touchScroll = await tester.startGesture(
+      tester.getCenter(find.byKey(const Key('content-surface'))),
+      pointer: 2,
+    );
+    await touchScroll.moveBy(const Offset(-20, -30));
+    await touchScroll.up();
     await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA);
     await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
     await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
@@ -201,12 +207,20 @@ void main() {
       'mousemove',
       'mousedown',
       'cancel',
+      'mousedown',
+      'cancel',
+      'wheel',
     ]);
     expect(mouseEvents.first.$2.x, closeTo(viewport.width / 2, 0.01));
     expect(mouseEvents.first.$2.y, closeTo(viewport.height / 2, 0.01));
-    final wheel = mouseEvents.singleWhere((entry) => entry.$1 == 'wheel').$2;
-    expect(wheel.deltaX, 8);
-    expect(wheel.deltaY, 12);
+    final wheels = mouseEvents
+        .where((entry) => entry.$1 == 'wheel')
+        .map((entry) => entry.$2)
+        .toList();
+    expect(wheels.first.deltaX, 8);
+    expect(wheels.first.deltaY, 12);
+    expect(wheels.last.deltaX, 40);
+    expect(wheels.last.deltaY, 60);
     final aEvents = keyEvents.where((entry) => entry.$2.key == 'a').toList();
     expect(aEvents.map((entry) => entry.$1), ['keydown', 'keyup']);
     expect(aEvents.first.$2.code, 'KeyA');

@@ -237,8 +237,11 @@ Uncanceled wheel events now apply a clamped Page-owned root scroll offset; the t
 paint, hit testing, selector/accessibility bounds, and fixed-position anchoring.
 Unmodified Arrow, Page Up/Down, Home/End, and Space defaults now use the same
 zoom-derived CSS viewport and Page offset; page `preventDefault()` cancels the
-action and focused native/editing controls retain their key handling. Nested,
-touch, smooth scrolling, scroll events, and restoration remain. Live page
+action and focused native/editing controls retain their key handling. Flutter
+single-touch drags now cross platform touch slop, cancel the pending synthetic
+press, and reuse that cancelable physical-delta root path. Nested scrolling,
+DOM touch/pointer events, inertia/multi-touch, smooth scrolling, scroll events,
+and restoration remain. Live page
 scripts now use the same clamped offset through numeric/options
 `scroll()`/`scrollTo()`/`scrollBy()`, synchronized window offsets, and root/body
 `scrollTop`/`scrollLeft`; host-view and page-zoom changes refresh the live CSS
@@ -574,8 +577,8 @@ correctness. Neither may starve the other.
 1. Extend the landed physical viewport, pointer/wheel/keyboard, root
    wheel/key/script scrolling, native text-control IME, and monotonic
    focus/visibility/lifecycle
-   path with real native IME evidence, nested/touch scrolling plus scroll
-   events/restoration, CSS/physical
+   path with real native IME evidence, nested scrolling plus richer gesture/DOM
+   event fidelity and scroll events/restoration, CSS/physical
    scale correctness, and lifecycle recovery. In parallel, finish
    navigation-aware runtime/native-host cancellation and preserve one BrowserCore
    terminal outcome.
@@ -591,7 +594,7 @@ correctness. Neither may starve the other.
    and broader native AT/screen-reader evidence. Add platform
    host-service UI; both remain cross-cutting through every later platform.
 5. Complete the Linux basic-browser gate: visible controlled-site navigation,
-   nested/touch scrolling plus native IME evidence,
+   nested scrolling plus native IME evidence,
    back/forward/reload/stop, and finish bounded navigation/runtime plus native
    surface recovery beyond the landed capture/texture retry policy. Keep
    release-archive smoke green, but defer FlatPark submission/review/publishing

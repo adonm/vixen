@@ -164,6 +164,10 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   final FocusNode _contentFocus = FocusNode(debugLabel: 'browser-content');
   final Map<int, int> _pressedButtons = {};
   final Set<PhysicalKeyboardKey> _suppressedShortcutKeys = {};
+  int? _activeTouchPointer;
+  Offset? _touchOrigin;
+  Offset? _touchLastPosition;
+  bool _touchScrolling = false;
   late final _BrowserTextInputClient _textInputClient;
   Size _logicalViewport = Size.zero;
   PointerEvent? _pendingMouseMove;
@@ -342,6 +346,10 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
 
   void _handleFocusChanged(bool focused) {
     _contentFocused = focused;
+    if (!focused) {
+      _pressedButtons.clear();
+      _clearTouchGesture();
+    }
     widget.onFocusChanged?.call(focused);
     _syncTextInput();
   }
@@ -440,6 +448,13 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   }
 
   void _handlePointerDown(PointerDownEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      if (_activeTouchPointer != null) return;
+      _activeTouchPointer = event.pointer;
+      _touchOrigin = event.localPosition;
+      _touchLastPosition = event.localPosition;
+      _touchScrolling = false;
+    }
     _contentFocus.requestFocus();
     final button = _domButton(event.buttons);
     _pressedButtons[event.pointer] = button;
@@ -447,7 +462,40 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   }
 
   void _handlePointerMove(PointerMoveEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      _handleTouchMove(event);
+      return;
+    }
     _scheduleMouseMove(event);
+  }
+
+  void _handleTouchMove(PointerMoveEvent event) {
+    if (_activeTouchPointer != event.pointer ||
+        _touchOrigin == null ||
+        _touchLastPosition == null) {
+      return;
+    }
+    final origin = _touchOrigin!;
+    final last = _touchLastPosition!;
+    final current = event.localPosition;
+    _touchLastPosition = current;
+    var delta = last - current;
+    if (!_touchScrolling) {
+      if ((current - origin).distance < kTouchSlop) return;
+      _touchScrolling = true;
+      delta = origin - current;
+      final button = _pressedButtons.remove(event.pointer) ?? 0;
+      _emitMouse('cancel', event, button: button, buttons: 0);
+    }
+    if (delta == Offset.zero) return;
+    _emitMouse(
+      'wheel',
+      event,
+      button: 0,
+      buttons: 0,
+      deltaX: delta.dx,
+      deltaY: delta.dy,
+    );
   }
 
   void _scheduleMouseMove(PointerEvent event) {
@@ -468,13 +516,38 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   }
 
   void _handlePointerUp(PointerUpEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      if (_activeTouchPointer != event.pointer) return;
+      final wasScrolling = _touchScrolling;
+      _clearTouchGesture();
+      if (wasScrolling) {
+        _pressedButtons.remove(event.pointer);
+        return;
+      }
+    }
     final button = _pressedButtons.remove(event.pointer) ?? 0;
     _emitMouse('mouseup', event, button: button, buttons: 0, detail: 1);
   }
 
   void _handlePointerCancel(PointerCancelEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      if (_activeTouchPointer != event.pointer) return;
+      final wasScrolling = _touchScrolling;
+      _clearTouchGesture();
+      if (wasScrolling) {
+        _pressedButtons.remove(event.pointer);
+        return;
+      }
+    }
     final button = _pressedButtons.remove(event.pointer) ?? 0;
     _emitMouse('cancel', event, button: button, buttons: 0);
+  }
+
+  void _clearTouchGesture() {
+    _activeTouchPointer = null;
+    _touchOrigin = null;
+    _touchLastPosition = null;
+    _touchScrolling = false;
   }
 
   void _handlePointerSignal(PointerSignalEvent event) {

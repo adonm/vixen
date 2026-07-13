@@ -157,8 +157,10 @@ Flutter alpha additionally requires the browser-scoped Rust bridge contract, a
 Linux fake and real shell, bounded RGBA external-texture transport, input and
 viewport routing, and the accessibility projection shape. The bridge, shell, and
 RGBA texture, physical viewport, pointer/wheel/keyboard routing, and the first
-bounded BrowserCore-to-Flutter Semantics shape are landed. IME/gesture input,
-scale/lifecycle recovery, and complete semantics/native AT behavior remain open.
+bounded BrowserCore-to-Flutter Semantics shape are landed. Platform text-input
+state, authored keyboard/action hints, and single-touch root dragging are also
+landed. Native IME evidence, richer gesture/DOM event input, scale/lifecycle
+recovery, and complete semantics/native AT behavior remain open.
 
 Alpha also requires a production browser core: one profile service, one context
 registry, one generational navigation/document lifecycle, and one command/event

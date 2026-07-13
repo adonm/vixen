@@ -255,7 +255,9 @@ numeric and options-object `scroll()`/`scrollTo()`/`scrollBy()`, synchronized
 `scrollTop`/`scrollLeft`; BrowserCore refreshes the CSS viewport and clamps the
 offset to current layout overflow on host-view and page-zoom changes. Nested
 element scrolling remains runtime-local, and smooth scrolling, scroll events,
-touch gestures, and restoration are not claimed.
+DOM touch/pointer events, inertia/multi-touch gestures, and restoration are not
+claimed. Flutter single-touch drags do cross platform touch slop, cancel the
+pending synthetic press, and reuse the cancelable physical-delta root wheel path.
 
 Bounded `aria-owns` references now reparent only retained later semantic nodes;
 the first valid owner wins, parent-before-child ordering remains enforced, and
@@ -302,8 +304,12 @@ keydown defaults use the same CSS viewport and offset, including page zoom;
 `preventDefault()` blocks the scroll and focused native/editing controls retain
 their own key handling. The same translated layout projection drives WebRender
 paint, hit testing, selector/accessibility bounds, while fixed-position subtrees
-remain viewport anchored. Nested scroll containers, touch scrolling, scroll
-restoration, smooth scrolling, and JS `scrollTo`/`scrollBy` state remain open.
+remain viewport anchored. A single Flutter touch drag crosses platform touch
+slop, cancels the pending synthetic press, and feeds physical deltas into that
+same cancelable root path; taps remain clicks and secondary touches are ignored.
+Nested scroll containers, DOM touch/pointer-event fidelity, inertia/multi-touch,
+scroll events, and restoration remain open. Script `scrollTo`/`scrollBy` uses
+the shared offset as described above.
 
 Flutter Ctrl+F sends a UTF-8-byte-bounded query with the exact active context and
 document generation through ABI v1. BrowserCore derives up to 10,000

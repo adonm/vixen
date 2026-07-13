@@ -64,8 +64,11 @@ composing ranges cross the exact BrowserCore generation and update the live DOM.
 BrowserCore projects normalized `inputmode`, input-type, and `enterkeyhint`
 intent for writable hosts; Flutter maps it to platform keyboard and action
 configuration, and performed actions reuse exact-generation Enter down/up. Real
-native IME evidence, nested/touch scrolling, CSS/physical scale correctness, and
-broader lifecycle/native surface-loss recovery remain follow-up work.
+native IME evidence, nested/richer gesture scrolling, CSS/physical scale
+correctness, and broader lifecycle/native surface-loss recovery remain follow-up
+work. Single-touch drags already cross platform touch slop, cancel the pending
+synthetic press, and reuse the cancelable BrowserCore root-wheel path; taps remain
+taps and secondary touches are ignored.
 
 Ctrl+F and the browser menu expose a find bar backed by an exact active-
 document BrowserCore command. The query is bounded to 4 KiB at the native

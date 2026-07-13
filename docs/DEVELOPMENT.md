@@ -133,9 +133,10 @@ just gate-architecture
 behavior, opaque registry ownership, stable errors/events, and release over the
 one-owner controller. `just gate-flutter-shell` adds the Dart binding, injected
 fake tests, production worker, Linux texture/input presenter, and live native
-smoke. It proves physical viewport and pointer/wheel/key routing, but not
-complete semantics/native AT, IME/gesture/lifecycle, a platform package, or a
-release build. The bounded BrowserCore-to-Flutter Semantics hierarchy is covered.
+smoke. It proves physical viewport, pointer/wheel/key routing, and single-touch
+root dragging through the cancelable wheel path, but not complete semantics/
+native AT, native IME/richer gesture/lifecycle, a platform package, or a release
+build. The bounded BrowserCore-to-Flutter Semantics hierarchy is covered.
 
 ## Larger alpha batches
 
