@@ -45,7 +45,10 @@ scrolling respect focused controls and page `preventDefault()` handlers; paint,
 hit testing, and accessibility bounds consume that same offset while fixed-
 position content remains viewport anchored. Live page scripts use that same
 offset through bounded `scroll()`/`scrollTo()`/`scrollBy()`, `scrollX`/`scrollY`,
-and root-element `scrollTop`/`scrollLeft` projections;
+and root-element `scrollTop`/`scrollLeft` projections; actual offset changes from
+script, input defaults, find traversal, viewport clamps, and zoom clamps emit a
+non-cancelable document `scroll` event observable at `window`, while canceled
+and clamped no-ops stay silent;
 Ctrl+F opens a bounded BrowserCore-backed find bar; Enter/F3 and Previous/Next
 traverse up to 10,000 case-insensitive rendered-text matches, wrap in document
 order, use the Page-owned root offset to reveal the active match, and paint

@@ -244,12 +244,15 @@ zoom-derived CSS viewport and Page offset; page `preventDefault()` cancels the
 action and focused native/editing controls retain their key handling. Flutter
 single-touch drags now cross platform touch slop, cancel the pending synthetic
 press, and reuse that cancelable physical-delta root path. Nested scrolling,
-DOM touch/pointer events, inertia/multi-touch, smooth scrolling, scroll events,
-and restoration remain. Live page
-scripts now use the same clamped offset through numeric/options
-`scroll()`/`scrollTo()`/`scrollBy()`, synchronized window offsets, and root/body
-`scrollTop`/`scrollLeft`; host-view and page-zoom changes refresh the live CSS
-viewport and overflow clamp. A bounded,
+DOM touch/pointer events, inertia/multi-touch, smooth scrolling, nested-element
+scroll events, and restoration remain. Live page scripts now use the same
+clamped offset through numeric/options `scroll()`/`scrollTo()`/`scrollBy()`,
+synchronized window offsets, and root/body `scrollTop`/`scrollLeft`; host-view
+and page-zoom changes refresh the live CSS viewport and overflow clamp. Actual
+top-level changes from script, uncanceled input defaults, find traversal,
+viewport clamps, and zoom clamps now emit a non-cancelable bubbling document
+`scroll` event after the current script evaluation with synchronized offsets;
+canceled and clamped no-ops stay silent. A bounded,
 mutation-generation-tagged
 BrowserCore projection now maps roles/names/states/bounds and tap/focus into Flutter
 Semantics. Nearest emitted semantic-parent relationships now produce a validated,
@@ -582,7 +585,7 @@ correctness. Neither may starve the other.
    wheel/key/script scrolling, native text-control IME, and monotonic
    focus/visibility/lifecycle
    path with real native IME evidence, nested scrolling plus richer gesture/DOM
-   event fidelity and scroll events/restoration, CSS/physical
+   event fidelity and scroll restoration, CSS/physical
    scale correctness, and lifecycle recovery. In parallel, finish
    navigation-aware runtime/native-host cancellation and preserve one BrowserCore
    terminal outcome.

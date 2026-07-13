@@ -253,11 +253,18 @@ defaults, paint, hit testing, find, and Semantics. The live runtime exposes
 numeric and options-object `scroll()`/`scrollTo()`/`scrollBy()`, synchronized
 `scrollX`/`scrollY` and `pageXOffset`/`pageYOffset`, and root/body
 `scrollTop`/`scrollLeft`; BrowserCore refreshes the CSS viewport and clamps the
-offset to current layout overflow on host-view and page-zoom changes. Nested
-element scrolling remains runtime-local, and smooth scrolling, scroll events,
-DOM touch/pointer events, inertia/multi-touch gestures, and restoration are not
+offset to current layout overflow on host-view and page-zoom changes. Actual
+top-level changes from script, uncanceled input defaults, find traversal,
+viewport changes, and zoom changes emit one non-cancelable bubbling document
+`scroll` event, coalesced after the current script evaluation, with synchronized
+offsets; document and window listeners observe the new value. Canceled defaults
+and clamped no-ops stay silent, and recursive synchronous dispatch is
+suppressed. Nested element scrolling remains
+runtime-local, and smooth scrolling, nested-element scroll events, DOM
+touch/pointer events, inertia/multi-touch gestures, and restoration are not
 claimed. Flutter single-touch drags do cross platform touch slop, cancel the
-pending synthetic press, and reuse the cancelable physical-delta root wheel path.
+pending synthetic press, and reuse the cancelable physical-delta root wheel
+path.
 
 Bounded `aria-owns` references now reparent only retained later semantic nodes;
 the first valid owner wins, parent-before-child ordering remains enforced, and
@@ -310,8 +317,8 @@ remain viewport anchored. A single Flutter touch drag crosses platform touch
 slop, cancels the pending synthetic press, and feeds physical deltas into that
 same cancelable root path; taps remain clicks and secondary touches are ignored.
 Nested scroll containers, DOM touch/pointer-event fidelity, inertia/multi-touch,
-scroll events, and restoration remain open. Script `scrollTo`/`scrollBy` uses
-the shared offset as described above.
+nested-element scroll events, and restoration remain open. Top-level scroll
+events and script `scrollTo`/`scrollBy` use the shared offset as described above.
 
 Flutter Ctrl+F sends a UTF-8-byte-bounded query with the exact active context and
 document generation through ABI v1. BrowserCore derives up to 10,000

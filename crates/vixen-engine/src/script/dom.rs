@@ -1157,6 +1157,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
   let topLevelScrollY = Math.max(0, Number(data.scrollY) || 0);
   let topLevelScrollMaxX = Math.max(0, Number(data.scrollMaxX) || 0);
   let topLevelScrollMaxY = Math.max(0, Number(data.scrollMaxY) || 0);
+  let rootScrollEventQueued = false;
   const navigationActions = [];
   const maxNavigationActions = 64;
 
@@ -2273,7 +2274,24 @@ const DOM_API_BOOTSTRAP: &str = r#"
     if (nextX === topLevelScrollX && nextY === topLevelScrollY) return;
     topLevelScrollX = nextX;
     topLevelScrollY = nextY;
+    if (globalThis.visualViewport) {
+      globalThis.visualViewport.pageLeft = topLevelScrollX;
+      globalThis.visualViewport.pageTop = topLevelScrollY;
+    }
     unwrapDomOp(op_vixen_dom_set_root_scroll(nextX, nextY));
+    dispatchRootScrollEvent();
+  }
+
+  function dispatchRootScrollEvent() {
+    if (rootScrollEventQueued) return;
+    rootScrollEventQueued = true;
+    queueMicrotask(() => {
+      try {
+        vixenDocument.dispatchEvent(new Event('scroll', { bubbles: true }));
+      } finally {
+        rootScrollEventQueued = false;
+      }
+    });
   }
 
   function windowScrollTo(leftOrOptions = 0, top = 0) {
@@ -2900,7 +2918,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   function eventPathForTarget(target, _event) {
-    if (target === vixenDocument) return [vixenDocument];
+    if (target === vixenDocument) return [vixenDocument, globalThis];
     if (!target || typeof target.__vixenNodeId !== 'number') return [target];
     const path = [];
     let current = target;
@@ -5654,19 +5672,23 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   const vixenDocument = new VixenDocument();
   Object.defineProperty(globalThis, '__vixenApplyHostViewState', {
-    value(focused, visible, viewportWidth, viewportHeight, maxScrollX, maxScrollY, scrollX, scrollY) {
+    value(focused, visible, viewportWidth, viewportHeight, maxScrollX, maxScrollY, scrollX, scrollY, emitScroll) {
       globalThis.innerWidth = Math.max(1, Number(viewportWidth) || 1);
       globalThis.innerHeight = Math.max(1, Number(viewportHeight) || 1);
       topLevelScrollMaxX = Math.max(0, Number(maxScrollX) || 0);
       topLevelScrollMaxY = Math.max(0, Number(maxScrollY) || 0);
-      topLevelScrollX = Math.min(topLevelScrollMaxX, Math.max(0, Number(scrollX) || 0));
-      topLevelScrollY = Math.min(topLevelScrollMaxY, Math.max(0, Number(scrollY) || 0));
+      const nextScrollX = Math.min(topLevelScrollMaxX, Math.max(0, Number(scrollX) || 0));
+      const nextScrollY = Math.min(topLevelScrollMaxY, Math.max(0, Number(scrollY) || 0));
+      const scrollChanged = nextScrollX !== topLevelScrollX || nextScrollY !== topLevelScrollY;
+      topLevelScrollX = nextScrollX;
+      topLevelScrollY = nextScrollY;
       if (globalThis.visualViewport) {
         globalThis.visualViewport.width = globalThis.innerWidth;
         globalThis.visualViewport.height = globalThis.innerHeight;
         globalThis.visualViewport.pageLeft = topLevelScrollX;
         globalThis.visualViewport.pageTop = topLevelScrollY;
       }
+      if (emitScroll && scrollChanged) dispatchRootScrollEvent();
       const nextVisibility = visible ? 'visible' : 'hidden';
       if (documentVisibilityState !== nextVisibility) {
         documentVisibilityState = nextVisibility;

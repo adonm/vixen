@@ -245,11 +245,15 @@ Semantics bounds share the translated layout; fixed-position subtrees stay
 anchored. A single Flutter touch drag crosses platform touch slop, cancels the
 pending synthetic press, and sends physical deltas through that same cancelable
 root path; taps remain taps and secondary touches are ignored. Nested scrollers,
-DOM touch/pointer events, inertia/multi-touch, restoration, smooth scrolling,
-and scroll events remain open. Page scripts now drive the same clamped root offset
-through numeric/options `scroll()`/`scrollTo()`/`scrollBy()`, synchronized window
-offset properties, and root/body `scrollTop`/`scrollLeft`. BrowserCore refreshes
-the live CSS viewport and overflow clamp when host viewport or page zoom changes.
+DOM touch/pointer events, inertia/multi-touch, restoration, smooth scrolling, and
+nested-element scroll events remain open. Page scripts now drive the same clamped
+root offset through numeric/options `scroll()`/`scrollTo()`/`scrollBy()`,
+synchronized window offset properties, and root/body `scrollTop`/`scrollLeft`.
+Actual top-level changes from script, input defaults, find traversal, viewport
+clamps, and zoom clamps emit a non-cancelable bubbling document `scroll` event
+after the current script evaluation with synchronized live offsets; canceled and
+clamped no-ops do not. BrowserCore refreshes the live CSS viewport and overflow
+clamp when host viewport or page zoom changes.
 
 The find-in-page vertical now includes traversal and scroll-to-match. Ctrl+F and
 the menu open a Flutter-owned find bar, while exact context/document commands ask

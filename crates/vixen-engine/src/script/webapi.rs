@@ -2217,6 +2217,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
       if (state.bubbles && !state.stopped) {
         for (let i = 1; i < path.length; i++) {
           invokeEventListeners(path[i], event, BUBBLING_PHASE, false);
+          if (!state.immediateStopped) invokeEventHandlerAttribute(path[i], event);
           if (state.stopped) break;
         }
       }

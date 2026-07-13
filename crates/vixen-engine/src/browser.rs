@@ -792,14 +792,33 @@ impl BrowserCore {
                         ),
                     ));
                 }
-                let context = self.context_mut(context_id)?;
-                context.page_zoom = zoom;
-                let layout_viewport = page_layout_viewport(context.host_view.viewport, zoom);
-                context.page.set_layout_viewport(layout_viewport);
-                let document_id = context.document_id;
-                let runtime_context_id = context.runtime_context_id;
-                let source = host_view_runtime_source(&context.page, context.host_view);
-                self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
+                let (document_id, runtime_context_id, frame_id, url, source) = {
+                    let context = self.context_mut(context_id)?;
+                    context.page_zoom = zoom;
+                    let layout_viewport = page_layout_viewport(context.host_view.viewport, zoom);
+                    context.page.set_layout_viewport(layout_viewport);
+                    (
+                        context.document_id,
+                        context.runtime_context_id,
+                        context.frame_id,
+                        context.page.url().to_owned(),
+                        host_view_runtime_source(&context.page, context.host_view, true),
+                    )
+                };
+                let evaluation = self.automation_evaluation(
+                    context_id,
+                    document_id,
+                    runtime_context_id,
+                    source,
+                )?;
+                self.emit_runtime_effects_event(
+                    context_id,
+                    frame_id,
+                    document_id,
+                    runtime_context_id,
+                    url,
+                    evaluation.effects,
+                );
                 let state = self.context_state(context_id)?;
                 Ok(BrowserCommandResult::BrowsingContextState(state))
             }
@@ -892,14 +911,41 @@ impl BrowserCore {
                         "find query exceeds the browser limit",
                     ));
                 }
-                let context = self.context_for_document_mut(context_id, document_id)?;
-                let viewport = page_layout_viewport(context.host_view.viewport, context.page_zoom);
-                Ok(BrowserCommandResult::FindText(context.page.find_text(
-                    &query,
-                    case_sensitive,
-                    forward,
-                    viewport,
-                )))
+                let (result, scroll_sync) = {
+                    let context = self.context_for_document_mut(context_id, document_id)?;
+                    let viewport =
+                        page_layout_viewport(context.host_view.viewport, context.page_zoom);
+                    let previous_scroll = context.page.root_scroll();
+                    let result = context
+                        .page
+                        .find_text(&query, case_sensitive, forward, viewport);
+                    let scroll_sync = (context.page.root_scroll() != previous_scroll).then(|| {
+                        (
+                            context.runtime_context_id,
+                            context.frame_id,
+                            context.page.url().to_owned(),
+                            host_view_runtime_source(&context.page, context.host_view, true),
+                        )
+                    });
+                    (result, scroll_sync)
+                };
+                if let Some((runtime_context_id, frame_id, url, source)) = scroll_sync {
+                    let evaluation = self.automation_evaluation(
+                        context_id,
+                        document_id,
+                        runtime_context_id,
+                        source,
+                    )?;
+                    self.emit_runtime_effects_event(
+                        context_id,
+                        frame_id,
+                        document_id,
+                        runtime_context_id,
+                        url,
+                        evaluation.effects,
+                    );
+                }
+                Ok(BrowserCommandResult::FindText(result))
             }
             BrowserCommand::Snapshot {
                 context_id,
@@ -1694,7 +1740,7 @@ impl BrowserCore {
             }
         };
         apply_runtime_config(&mut runtime, &context_config);
-        let host_view_source = host_view_runtime_source(&page, host_view);
+        let host_view_source = host_view_runtime_source(&page, host_view, false);
         if let Err(error) = runtime.with_entered_isolate(|runtime| {
             runtime.evaluate_with_page_mut(&host_view_source, &mut page)
         }) {
@@ -2459,7 +2505,7 @@ impl BrowserCore {
             context
                 .page
                 .set_layout_viewport(page_layout_viewport(state.viewport, context.page_zoom));
-            host_view_runtime_source(&context.page, state)
+            host_view_runtime_source(&context.page, state, true)
         };
         let evaluation =
             self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
@@ -2513,6 +2559,23 @@ impl BrowserCore {
         runtime_context_id: RuntimeContextId,
         source: String,
     ) -> Result<AutomationEvaluation, BrowserError> {
+        self.automation_evaluation_with_root_scroll_default(
+            context_id,
+            document_id,
+            runtime_context_id,
+            source,
+            None,
+        )
+    }
+
+    fn automation_evaluation_with_root_scroll_default(
+        &mut self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        runtime_context_id: RuntimeContextId,
+        source: String,
+        root_scroll_default: Option<((u32, u32), (f64, f64))>,
+    ) -> Result<AutomationEvaluation, BrowserError> {
         if source.len() > MAX_SCRIPT_BYTES {
             return Err(BrowserError::new(
                 browser_error_codes::INVALID_ARGUMENT,
@@ -2546,6 +2609,16 @@ impl BrowserCore {
                         return Err(error);
                     }
                 };
+                if matches!(&value, JsValue::Bool(true))
+                    && let Some((viewport, delta)) = root_scroll_default
+                    && context.page.scroll_root_by(viewport, delta)
+                {
+                    let source = host_view_runtime_source(&context.page, context.host_view, true);
+                    if let Err(error) = runtime.evaluate_with_page_mut(&source, &mut context.page) {
+                        discard_runtime_outputs(runtime);
+                        return Err(error);
+                    }
+                }
                 let effects = drain_runtime_effects(runtime);
                 let actions = runtime.drain_navigation_actions();
                 match (effects, actions) {
@@ -2565,6 +2638,28 @@ impl BrowserCore {
             effects,
             navigation_actions,
         })
+    }
+
+    fn emit_runtime_effects_event(
+        &mut self,
+        context_id: BrowsingContextId,
+        frame_id: FrameId,
+        document_id: DocumentId,
+        runtime_context_id: RuntimeContextId,
+        url: String,
+        effects: RuntimeEffects,
+    ) {
+        if effects.is_empty() {
+            return;
+        }
+        self.emit(BrowserEvent::RuntimeEffects {
+            context_id,
+            frame_id,
+            document_id,
+            runtime_context_id,
+            url,
+            effects,
+        });
     }
 
     fn dispatch_mouse_event(
@@ -2635,19 +2730,21 @@ impl BrowserCore {
         let source = format!(
             "globalThis.__vixenDispatchMouseEvent ? globalThis.__vixenDispatchMouseEvent({node_id}, {event_type}, {init}) : false"
         );
-        let evaluation =
-            self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
-        if is_wheel
-            && !event.ctrl_key
-            && !event.meta_key
-            && evaluation.value == ScriptValue::Bool(true)
-        {
-            let viewport =
-                page_layout_viewport(self.context(context_id)?.host_view.viewport, page_zoom);
-            self.context_mut(context_id)?
-                .page
-                .scroll_root_by(viewport, (event.delta_x, event.delta_y));
-        }
+        let root_scroll_default = if is_wheel && !event.ctrl_key && !event.meta_key {
+            Some((
+                page_layout_viewport(self.context(context_id)?.host_view.viewport, page_zoom),
+                (event.delta_x, event.delta_y),
+            ))
+        } else {
+            None
+        };
+        let evaluation = self.automation_evaluation_with_root_scroll_default(
+            context_id,
+            document_id,
+            runtime_context_id,
+            source,
+            root_scroll_default,
+        )?;
         Ok(BrowserCommandResult::InputDispatched(InputDispatchResult {
             effects: evaluation.effects,
             navigation_actions: evaluation.navigation_actions,
@@ -2686,15 +2783,22 @@ impl BrowserCore {
         let source = format!(
             "globalThis.__vixenDispatchKeyEvent ? globalThis.__vixenDispatchKeyEvent({event_type}, {init}) : false"
         );
-        let evaluation =
-            self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
-        if evaluation.value == ScriptValue::Bool(true)
-            && let Some(delta) = default_scroll
-        {
-            let context = self.context_mut(context_id)?;
-            let viewport = page_layout_viewport(context.host_view.viewport, context.page_zoom);
-            context.page.scroll_root_by(viewport, delta);
-        }
+        let root_scroll_default = if let Some(delta) = default_scroll {
+            let context = self.context(context_id)?;
+            Some((
+                page_layout_viewport(context.host_view.viewport, context.page_zoom),
+                delta,
+            ))
+        } else {
+            None
+        };
+        let evaluation = self.automation_evaluation_with_root_scroll_default(
+            context_id,
+            document_id,
+            runtime_context_id,
+            source,
+            root_scroll_default,
+        )?;
         Ok(BrowserCommandResult::InputDispatched(InputDispatchResult {
             effects: evaluation.effects,
             navigation_actions: evaluation.navigation_actions,
@@ -4142,13 +4246,13 @@ fn json_string(value: &str) -> Result<String, BrowserError> {
     })
 }
 
-fn host_view_runtime_source(page: &Page, state: HostViewState) -> String {
+fn host_view_runtime_source(page: &Page, state: HostViewState, emit_scroll: bool) -> String {
     let (viewport_width, viewport_height) = page.layout_viewport();
     let (max_scroll_x, max_scroll_y) = page.root_scroll_max();
     let (scroll_x, scroll_y) = page.root_scroll();
     format!(
-        "globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}, {viewport_width}, {viewport_height}, {max_scroll_x}, {max_scroll_y}, {scroll_x}, {scroll_y}) : false",
-        state.focused, state.visible
+        "globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}, {viewport_width}, {viewport_height}, {max_scroll_x}, {max_scroll_y}, {scroll_x}, {scroll_y}, {emit_scroll}) : false",
+        state.focused, state.visible,
     )
 }
 
@@ -4902,6 +5006,38 @@ mod tests {
         assert!(matches!(result, BrowserCommandResult::InputDispatched(_)));
     }
 
+    fn dispatch_test_wheel(
+        handle: &mut EngineBrowserHandle,
+        state: &BrowsingContextState,
+        delta_y: f64,
+    ) {
+        let result = handle
+            .dispatch(BrowserCommand::DispatchMouseEvent {
+                context_id: state.context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                node_id: 0,
+                event_type: "wheel".to_owned(),
+                event: MouseEventData {
+                    x: 10.0,
+                    y: 10.0,
+                    button: 0,
+                    buttons: 0,
+                    detail: 0,
+                    related_node_id: None,
+                    bubbles: true,
+                    ctrl_key: false,
+                    shift_key: false,
+                    alt_key: false,
+                    meta_key: false,
+                    delta_x: 0.0,
+                    delta_y,
+                },
+            })
+            .unwrap();
+        assert!(matches!(result, BrowserCommandResult::InputDispatched(_)));
+    }
+
     fn element_y(
         handle: &mut EngineBrowserHandle,
         state: &BrowsingContextState,
@@ -5396,6 +5532,197 @@ mod tests {
                 "scrollTo(0, 1e9); scrollY === pageYOffset && scrollY === document.scrollingElement.scrollTop && scrollY < 1e9"
             ),
             ScriptValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn root_scroll_events_cover_script_input_find_and_viewport_clamping() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/scroll");
+        let current = state(&mut handle, context_id);
+        handle
+            .dispatch(BrowserCommand::UpdateHostViewState {
+                context_id,
+                state: HostViewState {
+                    generation: 1,
+                    viewport: (200, 100),
+                    ..HostViewState::default()
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "globalThis.scrollEvents = []; document.addEventListener('scroll', event => scrollEvents.push('document-listener:' + event.bubbles + ':' + event.cancelable + ':' + (event.target === document) + ':' + (event.currentTarget === document) + ':' + scrollY)); document.onscroll = () => scrollEvents.push('document-handler:' + scrollY); globalThis.addEventListener('scroll', event => scrollEvents.push('window-listener:' + (event.target === document) + ':' + (event.currentTarget === globalThis) + ':' + scrollY)); globalThis.onscroll = () => scrollEvents.push('window-handler:' + scrollY); 'ready'"
+            ),
+            ScriptValue::String("ready".to_owned())
+        );
+
+        assert_eq!(
+            eval(&mut handle, &current, "scrollTo(0, 150); scrollY"),
+            ScriptValue::Int32(150)
+        );
+        assert_eq!(
+            eval(&mut handle, &current, "scrollEvents.join('>')"),
+            ScriptValue::String(
+                "document-listener:true:false:true:true:150>document-handler:150>window-listener:true:true:150>window-handler:150"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "scrollTo(0, 150); scrollEvents.length"
+            ),
+            ScriptValue::Int32(4)
+        );
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "scrollEvents = []; globalThis.nestedScrollEvents = 0; document.addEventListener('scroll', () => { nestedScrollEvents += 1; scrollBy(0, 1); }, { once: true }); scrollTo(0, 160); scrollY"
+            ),
+            ScriptValue::Int32(160)
+        );
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "nestedScrollEvents + ':' + scrollEvents.length + ':' + scrollY"
+            ),
+            ScriptValue::String("1:4:161".to_owned())
+        );
+
+        assert_eq!(
+            eval(&mut handle, &current, "scrollTo(0, 150); scrollY"),
+            ScriptValue::Int32(150)
+        );
+        eval(
+            &mut handle,
+            &current,
+            "scrollEvents = []; document.body.addEventListener('wheel', event => event.preventDefault(), { once: true }); 0",
+        );
+        dispatch_test_wheel(&mut handle, &current, 25.0);
+        assert_eq!(
+            eval(&mut handle, &current, "scrollEvents.length + ':' + scrollY"),
+            ScriptValue::String("0:150".to_owned())
+        );
+        dispatch_test_wheel(&mut handle, &current, 25.0);
+        assert_eq!(
+            eval(&mut handle, &current, "scrollEvents.length + ':' + scrollY"),
+            ScriptValue::String("4:175".to_owned())
+        );
+
+        assert_eq!(
+            eval(&mut handle, &current, "scrollEvents = []; scrollY"),
+            ScriptValue::Int32(175)
+        );
+        dispatch_test_key(&mut handle, &current, "PageUp", false);
+        assert_eq!(
+            eval(&mut handle, &current, "scrollEvents.length + ':' + scrollY"),
+            ScriptValue::String("0:175".to_owned())
+        );
+        dispatch_test_key(&mut handle, &current, "PageDown", false);
+        assert_eq!(
+            eval(&mut handle, &current, "scrollEvents.length + ':' + scrollY"),
+            ScriptValue::String("4:262.5".to_owned())
+        );
+
+        eval(&mut handle, &current, "scrollEvents = []; 0");
+        let result = handle
+            .dispatch(BrowserCommand::FindText {
+                context_id,
+                document_id: current.document_id,
+                query: "Bottom".to_owned(),
+                case_sensitive: false,
+                forward: true,
+            })
+            .unwrap();
+        assert!(matches!(result, BrowserCommandResult::FindText(_)));
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "scrollEvents.length + ':' + (scrollY > 262.5)"
+            ),
+            ScriptValue::String("4:true".to_owned())
+        );
+        let result = handle
+            .dispatch(BrowserCommand::FindText {
+                context_id,
+                document_id: current.document_id,
+                query: "Bottom".to_owned(),
+                case_sensitive: false,
+                forward: true,
+            })
+            .unwrap();
+        assert!(matches!(result, BrowserCommandResult::FindText(_)));
+        assert_eq!(
+            eval(&mut handle, &current, "scrollEvents.length"),
+            ScriptValue::Int32(4)
+        );
+
+        eval(&mut handle, &current, "scrollEvents = []; 0");
+        handle
+            .dispatch(BrowserCommand::UpdateHostViewState {
+                context_id,
+                state: HostViewState {
+                    generation: 2,
+                    viewport: (200, 700),
+                    ..HostViewState::default()
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "scrollEvents.length + ':' + (scrollY < 262.5)"
+            ),
+            ScriptValue::String("4:true".to_owned())
+        );
+        handle
+            .dispatch(BrowserCommand::UpdateHostViewState {
+                context_id,
+                state: HostViewState {
+                    generation: 3,
+                    viewport: (200, 700),
+                    ..HostViewState::default()
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            eval(&mut handle, &current, "scrollEvents.length"),
+            ScriptValue::Int32(4)
+        );
+
+        eval(&mut handle, &current, "scrollEvents = []; 0");
+        let result = handle
+            .dispatch(BrowserCommand::SetPageZoom {
+                context_id,
+                zoom: 0.5,
+            })
+            .unwrap();
+        assert!(matches!(
+            result,
+            BrowserCommandResult::BrowsingContextState(_)
+        ));
+        assert_eq!(
+            eval(&mut handle, &current, "scrollEvents.length + ':' + scrollY"),
+            ScriptValue::String("4:0".to_owned())
+        );
+        handle
+            .dispatch(BrowserCommand::SetPageZoom {
+                context_id,
+                zoom: 0.5,
+            })
+            .unwrap();
+        assert_eq!(
+            eval(&mut handle, &current, "scrollEvents.length"),
+            ScriptValue::Int32(4)
         );
     }
 
