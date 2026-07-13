@@ -39,8 +39,9 @@ bounded Page-owned root scroll offset. Arrow, Page Up/Down, Home/End, and Space
 scrolling respect focused controls and page `preventDefault()` handlers; paint,
 hit testing, and accessibility bounds consume that same offset while fixed-
 position content remains viewport anchored;
-Ctrl+F opens a bounded BrowserCore-backed find bar that reports exact
-case-insensitive visible-text match counts for the active document;
+Ctrl+F opens a bounded BrowserCore-backed find bar; Enter/F3 and Previous/Next
+traverse up to 10,000 case-insensitive rendered-text matches, wrap in document
+order, and use the Page-owned root offset to reveal the active match;
 per-tab zoom from 25–500% derives a CSS viewport inside BrowserCore and applies
 one matching transform to WebRender commands, hit testing, wheel coordinates,
 and Semantics bounds;

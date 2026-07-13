@@ -267,9 +267,11 @@ A focused writable native text control now attaches Flutter's platform
 cross exact context/document/runtime ids and update the live control with
 composition-shaped plus `beforeinput`/`input` events. Contenteditable, IME action
 specialization, and real Linux IME evidence remain.
-Ctrl+F now crosses the exact active context/document ABI boundary and reports a
-bounded Page-owned visible-text match count in a Flutter live region. Highlight,
-match traversal, and scroll-to-match remain before find parity.
+Ctrl+F now crosses the exact active context/document ABI boundary. Page owns a
+10,000-match-bounded rendered-text result and one-based active match; Enter/F3
+plus Previous/Next traverse with wrapping and move the shared root offset to
+reveal the match before Flutter refreshes the paired frame/Semantics projection.
+Exact glyph-range highlighting remains before find parity.
 Per-context 25–500% page zoom now remains BrowserCore-owned: it derives a CSS
 viewport, scales the single display list into the physical frame, converts
 physical input back to CSS coordinates, and projects Semantics bounds through

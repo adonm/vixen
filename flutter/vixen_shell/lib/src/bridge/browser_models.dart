@@ -754,11 +754,13 @@ final class BrowserCommand {
     required int documentId,
     required String query,
     bool caseSensitive = false,
+    bool forward = true,
   }) => BrowserCommand._('find_text', {
     'context_id': contextId,
     'document_id': documentId,
     'query': query,
     'case_sensitive': caseSensitive,
+    'forward': forward,
   });
   factory BrowserCommand.setPageZoom(int contextId, double zoom) =>
       BrowserCommand._('set_page_zoom', {
@@ -950,6 +952,9 @@ sealed class BrowserResponse {
       ),
       'find_text' => FindTextResponse(
         matches: _nonNegativeInt(wire, 'matches'),
+        activeMatch: wire['active_match'] == null
+            ? null
+            : _positiveInt(wire, 'active_match'),
       ),
       final type => throw FormatException('Unknown browser response: $type'),
     };
@@ -1061,12 +1066,17 @@ final class InputDispatchedResponse extends BrowserResponse {
 }
 
 final class FindTextResponse extends BrowserResponse {
-  const FindTextResponse({required this.matches});
+  const FindTextResponse({required this.matches, required this.activeMatch});
 
   final int matches;
+  final int? activeMatch;
 
   @override
-  Map<String, Object?> toWire() => {'type': 'find_text', 'matches': matches};
+  Map<String, Object?> toWire() => {
+    'type': 'find_text',
+    'matches': matches,
+    'active_match': activeMatch,
+  };
 }
 
 final class BrowserEvent {

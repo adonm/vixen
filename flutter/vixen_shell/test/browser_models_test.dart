@@ -86,6 +86,7 @@ void main() {
         'document_id': 70,
         'query': 'Vixen',
         'case_sensitive': false,
+        'forward': true,
       },
     );
     expect(BrowserCommand.setPageZoom(7, 1.25).toWire(), {
@@ -244,9 +245,11 @@ void main() {
     final response = BrowserResponse.fromWire({
       'type': 'find_text',
       'matches': 3,
+      'active_match': 2,
     });
     expect(response, isA<FindTextResponse>());
     expect((response as FindTextResponse).matches, 3);
+    expect(response.activeMatch, 2);
   });
 
   test('accessibility snapshot preserves bounded semantic fields', () {

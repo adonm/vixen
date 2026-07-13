@@ -17,7 +17,7 @@
 use vixen_api::{
     ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityNode, AccessibilityRange,
     AccessibilityRect, AccessibilitySnapshot, AccessibilityTextSelection, BrowsingContextId,
-    DocumentId, ElementInfo, EngineDiagnostic, EngineInspector, PageSnapshot,
+    DocumentId, ElementInfo, EngineDiagnostic, EngineInspector, FindTextResult, PageSnapshot,
 };
 use vixen_net::csp::ContentSecurityPolicy;
 
@@ -28,8 +28,9 @@ use crate::display_list::{
 use crate::doc::{Document, DocumentParser, ParseError};
 use crate::history::{HistoryEntry, SessionHistory};
 use crate::layout_tree::{
-    LayoutFragment, LayoutFragmentKind, LayoutPosition, LayoutTree, apply_root_scroll,
-    build_layout_tree, dump_layout_tree, layout_fragments_from_tree, line_boxes_from_tree,
+    LayoutFragment, LayoutFragmentKind, LayoutNode, LayoutNodeKind, LayoutPosition, LayoutTree,
+    apply_root_scroll, build_layout_tree, dump_layout_tree, layout_fragments_from_tree,
+    line_boxes_from_tree,
 };
 use crate::line_layout::{LineBox, dump_line_boxes};
 use crate::style_cascade::AuthorStylesheet;
@@ -52,7 +53,23 @@ pub struct Page {
     selection: Option<PageSelection>,
     control_selections: std::collections::HashMap<usize, AccessibilityTextSelection>,
     root_scroll: (f32, f32),
+    find_state: Option<FindState>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FindState {
+    query: String,
+    case_sensitive: bool,
+    active_match: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct FindMatch {
+    rect: Rect,
+    fixed: bool,
+}
+
+const MAX_FIND_MATCHES: usize = 10_000;
 
 /// Incremental page construction retained on BrowserCore's owner thread.
 pub(crate) struct PageParser {
@@ -116,6 +133,7 @@ impl Page {
             selection: None,
             control_selections: std::collections::HashMap::new(),
             root_scroll: (0.0, 0.0),
+            find_state: None,
         })
     }
 
@@ -337,7 +355,73 @@ impl Page {
     /// Empty queries deliberately return zero so UI callers can clear find state
     /// without special-casing at the trust boundary.
     pub fn find_text_count(&self, query: &str, case_sensitive: bool) -> u32 {
-        count_text_matches(&self.text_content(), query, case_sensitive)
+        self.find_text_matches(query, case_sensitive, (800, 600))
+            .len() as u32
+    }
+
+    /// Select a visible-text match in document order and scroll the top-level
+    /// viewport just enough to reveal it. Repeating the same query advances or
+    /// reverses with wrapping; a changed query starts at the first/last match.
+    pub fn find_text(
+        &mut self,
+        query: &str,
+        case_sensitive: bool,
+        forward: bool,
+        viewport: (u32, u32),
+    ) -> FindTextResult {
+        if query.is_empty() {
+            self.find_state = None;
+            return FindTextResult {
+                matches: 0,
+                active_match: None,
+            };
+        }
+
+        let matches = self.find_text_matches(query, case_sensitive, viewport);
+        if matches.is_empty() {
+            self.find_state = Some(FindState {
+                query: query.to_owned(),
+                case_sensitive,
+                active_match: 0,
+            });
+            return FindTextResult {
+                matches: 0,
+                active_match: None,
+            };
+        }
+
+        let same_query = self
+            .find_state
+            .as_ref()
+            .is_some_and(|state| state.query == query && state.case_sensitive == case_sensitive);
+        let active_match = if same_query {
+            let current = self
+                .find_state
+                .as_ref()
+                .map_or(0, |state| state.active_match.min(matches.len() - 1));
+            if forward {
+                (current + 1) % matches.len()
+            } else {
+                current.checked_sub(1).unwrap_or(matches.len() - 1)
+            }
+        } else if forward {
+            0
+        } else {
+            matches.len() - 1
+        };
+        self.find_state = Some(FindState {
+            query: query.to_owned(),
+            case_sensitive,
+            active_match,
+        });
+        let selected = matches[active_match];
+        if !selected.fixed {
+            self.scroll_root_to_rect(viewport, selected.rect);
+        }
+        FindTextResult {
+            matches: matches.len() as u32,
+            active_match: Some(active_match as u32 + 1),
+        }
     }
 
     /// Current top-level document scroll offset in layout pixels.
@@ -380,6 +464,72 @@ impl Page {
         self.root_scroll = next;
         self.bump_accessibility_mutation_epoch();
         true
+    }
+
+    fn scroll_root_to_rect(&mut self, viewport: (u32, u32), rect: Rect) -> bool {
+        let (current_x, current_y) = self.root_scroll;
+        let viewport_width = viewport.0 as f32;
+        let viewport_height = viewport.1 as f32;
+        let target_x = if rect.x < current_x {
+            rect.x
+        } else if rect.x + rect.w > current_x + viewport_width {
+            rect.x + rect.w - viewport_width
+        } else {
+            current_x
+        };
+        let target_y = if rect.y < current_y {
+            rect.y
+        } else if rect.y + rect.h > current_y + viewport_height {
+            rect.y + rect.h - viewport_height
+        } else {
+            current_y
+        };
+        self.scroll_root_by(
+            viewport,
+            (
+                f64::from(target_x - current_x),
+                f64::from(target_y - current_y),
+            ),
+        )
+    }
+
+    fn find_text_matches(
+        &self,
+        query: &str,
+        case_sensitive: bool,
+        viewport: (u32, u32),
+    ) -> Vec<FindMatch> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let tree = build_layout_tree(&self.document, viewport, |node_id| {
+            self.computed_style_for_viewport(node_id, viewport)
+        });
+        let mut fixed_subtree = vec![false; tree.nodes.len()];
+        let mut matches = Vec::new();
+        for node in &tree.nodes {
+            let parent_fixed = node
+                .parent
+                .is_some_and(|parent| fixed_subtree[parent.index()]);
+            let fixed = parent_fixed || node.style.position == LayoutPosition::Fixed;
+            fixed_subtree[node.id.index()] = fixed;
+            if node.kind != LayoutNodeKind::Text {
+                continue;
+            }
+            let Some(text) = node.text.as_deref() else {
+                continue;
+            };
+            for offset in text_match_offsets(text, query, case_sensitive) {
+                matches.push(FindMatch {
+                    rect: match_rect_for_text(node, text, offset),
+                    fixed,
+                });
+                if matches.len() == MAX_FIND_MATCHES {
+                    return matches;
+                }
+            }
+        }
+        matches
     }
 
     /// Fallback event target for wheel input over unpainted viewport space.
@@ -1054,16 +1204,38 @@ fn aria_mixed(value: Option<&str>) -> bool {
     value.is_some_and(|value| value.trim().eq_ignore_ascii_case("mixed"))
 }
 
-fn count_text_matches(haystack: &str, needle: &str, case_sensitive: bool) -> u32 {
+fn text_match_offsets(haystack: &str, needle: &str, case_sensitive: bool) -> Vec<usize> {
     if needle.is_empty() {
-        return 0;
+        return Vec::new();
     }
     if case_sensitive {
-        return haystack.matches(needle).count().min(u32::MAX as usize) as u32;
+        return haystack
+            .match_indices(needle)
+            .map(|(offset, _)| offset)
+            .collect();
     }
     let haystack = haystack.to_lowercase();
     let needle = needle.to_lowercase();
-    haystack.matches(&needle).count().min(u32::MAX as usize) as u32
+    haystack
+        .match_indices(&needle)
+        .map(|(offset, _)| offset)
+        .collect()
+}
+
+fn match_rect_for_text(node: &LayoutNode, text: &str, offset: usize) -> Rect {
+    let line_height = 19.2_f32.min(node.rect.h.max(1.0));
+    let line_count = (node.rect.h / line_height).ceil().max(1.0) as usize;
+    let line = offset
+        .saturating_mul(line_count)
+        .checked_div(text.len().max(1))
+        .unwrap_or(0)
+        .min(line_count - 1);
+    Rect::new(
+        node.rect.x,
+        node.rect.y + line as f32 * line_height,
+        node.rect.w.max(1.0),
+        line_height,
+    )
 }
 
 fn initial_session_history(url: &str) -> SessionHistory {
@@ -1854,9 +2026,9 @@ mod tests {
 
     #[test]
     fn page_counts_visible_text_matches_for_find() {
-        let page = Page::from_html(
+        let mut page = Page::from_html(
             "file:///fixture.html",
-            "<html><head><title>Rust hidden</title></head><body><p>Rust rust rustic</p><p>Trust Rust</p></body></html>",
+            "<html><head><title>Rust hidden</title><style>.gone{display:none}#space{height:600px}</style></head><body><p>Rust rust rustic</p><p hidden>Rust hidden</p><p class='gone'>Rust gone</p><div id='space'></div><p>Trust Rust</p></body></html>",
         )
         .unwrap();
 
@@ -1864,6 +2036,34 @@ mod tests {
         assert_eq!(page.find_text_count("rust", false), 5);
         assert_eq!(page.find_text_count("hidden", false), 0);
         assert_eq!(page.find_text_count("", false), 0);
+
+        let viewport = (200, 100);
+        let first = page.find_text("Rust", true, true, viewport);
+        assert_eq!(first.matches, 2);
+        assert_eq!(first.active_match, Some(1));
+        let first_scroll = page.root_scroll();
+
+        let second = page.find_text("Rust", true, true, viewport);
+        assert_eq!(second.active_match, Some(2));
+        let second_scroll = page.root_scroll().1;
+        assert!(second_scroll > first_scroll.1);
+
+        let wrapped = page.find_text("Rust", true, true, viewport);
+        assert_eq!(wrapped.active_match, Some(1));
+        let wrapped_scroll = page.root_scroll();
+        assert!(wrapped_scroll.1 < second_scroll);
+
+        let reversed = page.find_text("Rust", true, false, viewport);
+        assert_eq!(reversed.active_match, Some(2));
+        assert!(page.root_scroll().1 > wrapped_scroll.1);
+
+        assert_eq!(
+            page.find_text("", false, true, viewport),
+            FindTextResult {
+                matches: 0,
+                active_match: None,
+            }
+        );
     }
 
     #[test]

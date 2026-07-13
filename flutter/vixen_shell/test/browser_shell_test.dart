@@ -115,6 +115,7 @@ void main() {
         activeContextId: 1,
         contexts: [contextState(id: 1, url: 'https://example.test')],
       ),
+      findTextResponse: const FindTextResponse(matches: 3, activeMatch: 1),
     );
     final coordinator = ShellCoordinator(controller);
     await tester.pumpWidget(VixenApp(coordinator: coordinator));
@@ -129,7 +130,7 @@ void main() {
     await tester.enterText(find.byKey(const Key('find-field')), 'Vixen');
     await tester.pump();
     await tester.pump();
-    expect(find.text('0 matches'), findsOneWidget);
+    expect(find.text('1 of 3'), findsOneWidget);
     final command = controller.commands.lastWhere(
       (command) => command.type == 'find_text',
     );
@@ -140,7 +141,18 @@ void main() {
       'document_id': 100,
       'query': 'Vixen',
       'case_sensitive': false,
+      'forward': true,
     });
+
+    await tester.tap(find.byKey(const Key('find-previous')));
+    await tester.pump();
+    await tester.pump();
+    expect(
+      controller.commands
+          .lastWhere((command) => command.type == 'find_text')
+          .toWire()['forward'],
+      isFalse,
+    );
 
     await tester.tap(find.byTooltip('Close find'));
     await tester.pump();

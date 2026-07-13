@@ -280,12 +280,16 @@ paint, hit testing, selector/accessibility bounds, while fixed-position subtrees
 remain viewport anchored. Nested scroll containers, touch scrolling, scroll
 restoration, smooth scrolling, and JS `scrollTo`/`scrollBy` state remain open.
 
-Flutter Ctrl+F now sends a UTF-8-byte-bounded query with the exact active context
-and document generation through ABI v1. BrowserCore counts non-overlapping
-matches from Page's visible body text (excluding title/head content), and the
-find bar exposes the result through a live region. Empty queries return zero;
-stale documents and queries above 4 KiB fail closed. Match highlighting,
-next/previous navigation, and scroll-to-match remain open.
+Flutter Ctrl+F sends a UTF-8-byte-bounded query with the exact active context and
+document generation through ABI v1. BrowserCore derives up to 10,000
+non-overlapping matches from rendered Page text nodes, excluding hidden,
+`display:none`, and title/head content. Enter/F3 and the Previous/Next controls
+advance or reverse with wrapping; Page owns the one-based active match and moves
+the same clamped root offset used by paint, hit testing, and Semantics just enough
+to reveal it. The generation-checked result is exposed through a live region and
+forces a paired frame/Semantics refresh after traversal. Empty queries clear the
+active match; stale documents and queries above 4 KiB fail closed. Exact glyph-
+range highlighting remains open.
 
 Page zoom is BrowserCore-owned per top-level context and bounded to 25–500%.
 Ctrl++/Ctrl+-/Ctrl+0 and menu actions send zoom intent through ABI v1; the core

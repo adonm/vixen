@@ -42,7 +42,7 @@ and `libvixen_ffi.so`.
 
 This does not establish Linux parity: contenteditable/IME action and gesture
 input, real native IME evidence, complete lifecycle recovery and scale handling, complete
-semantic relationships/actions and native AT smoke, complete find traversal,
+semantic relationships/actions and native AT smoke, exact find highlighting,
 downloads/permissions,
 host services, broader FlatPark host/portal coverage, release size/performance,
 and non-Linux runners remain open. The current
@@ -98,7 +98,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key scrolling, native text-control IME state, find count UI, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; contenteditable/IME actions and native evidence, nested/touch/script scrolling, complete find traversal, recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key scrolling, native text-control IME state, bounded find traversal/scroll-to-match, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; contenteditable/IME actions and native evidence, nested/touch/script scrolling, exact find highlighting, recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -213,12 +213,15 @@ Semantics bounds share the translated layout; fixed-position subtrees stay
 anchored. Nested scrollers, touch gestures, restoration, smooth scrolling, and
 script-driven scrolling remain in the target above.
 
-The first find-in-page vertical is also implemented. Ctrl+F and the menu open a
-Flutter-owned find bar, while an exact context/document command asks BrowserCore
-for a bounded case-insensitive visible-text match count. Results are
-generation-checked before presentation and announced through a live region;
-Dart does not inspect page text. Highlighting, match traversal, and
-scroll-to-match remain before find parity is complete.
+The find-in-page vertical now includes traversal and scroll-to-match. Ctrl+F and
+the menu open a Flutter-owned find bar, while exact context/document commands ask
+BrowserCore for a 10,000-match-bounded case-insensitive rendered-text result.
+Page owns the active match; Enter/F3 and Previous/Next advance or reverse with
+wrapping and update the same clamped root offset consumed by paint, hit testing,
+and Semantics. Results are generation-checked before presentation, announced
+through a live region, and trigger a paired frame/Semantics refresh; Dart never
+inspects page text. Exact glyph-range highlighting remains before find parity is
+complete.
 
 Per-context page zoom is now core-owned and bounded from 25% through 500%.
 Flutter shortcuts/menu actions carry only zoom intent. BrowserCore derives a
@@ -314,7 +317,7 @@ session restore, shortcuts, visible WebRender content, input, viewport changes,
 error recovery, and accessibility projection.
 
 FlatPark is sequenced after the smaller basic-browser gate, not alongside its
-implementation. Until broader scrolling, native IME evidence, complete find,
+implementation. Until broader scrolling, native IME evidence, exact find highlighting,
 core navigation controls, visible rendering, and bounded recovery are proven, maintain archive
 reproducibility and launch smoke only; do not prioritize registry descriptor,
 review, publication, or update-channel work.

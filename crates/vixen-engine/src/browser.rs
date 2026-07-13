@@ -18,14 +18,14 @@ use vixen_api::{
     ACCESSIBILITY_MAX_VALUE_BYTES, AccessibilityAction, AutomationEvaluation, BrowserCommand,
     BrowserCommandResult, BrowserError, BrowserEvent, BrowserHandle, BrowserId, BrowserSnapshot,
     BrowsingContextConfig, BrowsingContextId, BrowsingContextState, CrossDocumentNavigationKind,
-    DocumentId, DocumentTextKind, EvaluationResult, FindTextResult, FocusEventInfo,
-    FocusProjection, FormEntryInfo, FormEntryValueInfo, FormSubmissionInfo, FrameId, HostViewState,
-    InputDispatchResult, KeyEventData, MouseEventData, NavigationActionOutcome,
-    NavigationCancellationReason, NavigationHistoryEntry, NavigationHistorySnapshot, NavigationId,
-    NavigationPhase, ProfileDataSelection, ProfileId, ProfileSessionState, RequestId,
-    RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue,
-    RuntimeContextId, RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent,
-    RuntimeNetworkEvent, ScriptValue, TextInputState, browser_error_codes,
+    DocumentId, DocumentTextKind, EvaluationResult, FocusEventInfo, FocusProjection, FormEntryInfo,
+    FormEntryValueInfo, FormSubmissionInfo, FrameId, HostViewState, InputDispatchResult,
+    KeyEventData, MouseEventData, NavigationActionOutcome, NavigationCancellationReason,
+    NavigationHistoryEntry, NavigationHistorySnapshot, NavigationId, NavigationPhase,
+    ProfileDataSelection, ProfileId, ProfileSessionState, RequestId, RuntimeBindingEvent,
+    RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue, RuntimeContextId,
+    RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent, RuntimeNetworkEvent, ScriptValue,
+    TextInputState, browser_error_codes,
 };
 use vixen_net::{
     CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent, RedirectMode,
@@ -883,6 +883,7 @@ impl BrowserCore {
                 document_id,
                 query,
                 case_sensitive,
+                forward,
             } => {
                 if query.len() > MAX_FIND_QUERY_BYTES {
                     return Err(BrowserError::new(
@@ -890,10 +891,14 @@ impl BrowserCore {
                         "find query exceeds the browser limit",
                     ));
                 }
-                let context = self.context_for_document(context_id, document_id)?;
-                Ok(BrowserCommandResult::FindText(FindTextResult {
-                    matches: context.page.find_text_count(&query, case_sensitive),
-                }))
+                let context = self.context_for_document_mut(context_id, document_id)?;
+                let viewport = page_layout_viewport(context.host_view.viewport, context.page_zoom);
+                Ok(BrowserCommandResult::FindText(context.page.find_text(
+                    &query,
+                    case_sensitive,
+                    forward,
+                    viewport,
+                )))
             }
             BrowserCommand::Snapshot {
                 context_id,
@@ -3234,6 +3239,21 @@ impl BrowserCore {
         document_id: DocumentId,
     ) -> Result<&BrowsingContext, BrowserError> {
         let context = self.context(context_id)?;
+        if context.document_id != document_id {
+            return Err(BrowserError::new(
+                browser_error_codes::STALE_DOCUMENT,
+                format!("document {document_id} is no longer active in context {context_id}"),
+            ));
+        }
+        Ok(context)
+    }
+
+    fn context_for_document_mut(
+        &mut self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+    ) -> Result<&mut BrowsingContext, BrowserError> {
+        let context = self.context_mut(context_id)?;
         if context.document_id != document_id {
             return Err(BrowserError::new(
                 browser_error_codes::STALE_DOCUMENT,

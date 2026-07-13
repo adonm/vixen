@@ -444,6 +444,7 @@ pub enum BrowserCommand {
         document_id: DocumentId,
         query: String,
         case_sensitive: bool,
+        forward: bool,
     },
     Snapshot {
         context_id: BrowsingContextId,
@@ -536,10 +537,12 @@ pub enum BrowserCommandResult {
     FormSubmission(FormSubmissionInfo),
 }
 
-/// Bounded visible-text match count for browser chrome find UI.
+/// Bounded visible-text find state for browser chrome.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FindTextResult {
     pub matches: u32,
+    /// One-based active match, or `None` when the query is empty or unmatched.
+    pub active_match: Option<u32>,
 }
 
 /// Inspector/runtime settings applied by BrowserCore to exactly one browsing

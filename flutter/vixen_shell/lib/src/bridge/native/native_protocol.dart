@@ -203,12 +203,16 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
         'document_id',
         'query',
         'case_sensitive',
+        'forward',
       });
       _validateContextId(normalized['context_id']);
       _validatePositiveId(normalized['document_id'], 'document_id');
       _validateBoundedString(normalized['query'], 'query', 4096);
       if (normalized['case_sensitive'] is! bool) {
         _invalidCommand('case_sensitive must be a boolean');
+      }
+      if (normalized['forward'] is! bool) {
+        _invalidCommand('forward must be a boolean');
       }
       break;
     case 'set_page_zoom':

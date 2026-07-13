@@ -97,6 +97,9 @@ final class _BrowserShellState extends State<BrowserShell>
         },
         const SingleActivator(LogicalKeyboardKey.keyF, control: true):
             _showFind,
+        const SingleActivator(LogicalKeyboardKey.f3): _findNext,
+        const SingleActivator(LogicalKeyboardKey.f3, shift: true):
+            _findPrevious,
         const SingleActivator(LogicalKeyboardKey.equal, control: true): () {
           unawaited(coordinator.zoomIn());
         },
@@ -143,9 +146,12 @@ final class _BrowserShellState extends State<BrowserShell>
                     controller: _findController,
                     focusNode: _findFocus,
                     matches: coordinator.findMatches,
+                    activeMatch: coordinator.findActiveMatch,
                     onChanged: (query) {
                       unawaited(coordinator.findText(query));
                     },
+                    onNext: _findNext,
+                    onPrevious: _findPrevious,
                     onClose: _closeFind,
                   ),
                 _SelectedProgress(context: coordinator.selectedContext),
@@ -245,6 +251,24 @@ final class _BrowserShellState extends State<BrowserShell>
     _findController.clear();
     _findFocus.unfocus();
     unawaited(widget.coordinator.findText(''));
+  }
+
+  void _findNext() {
+    if (!_findVisible) {
+      _showFind();
+      return;
+    }
+    unawaited(widget.coordinator.findText(_findController.text));
+  }
+
+  void _findPrevious() {
+    if (!_findVisible) {
+      _showFind();
+      return;
+    }
+    unawaited(
+      widget.coordinator.findText(_findController.text, forward: false),
+    );
   }
 }
 
@@ -482,14 +506,20 @@ final class _FindBar extends StatelessWidget {
     required this.controller,
     required this.focusNode,
     required this.matches,
+    required this.activeMatch,
     required this.onChanged,
+    required this.onNext,
+    required this.onPrevious,
     required this.onClose,
   });
 
   final TextEditingController controller;
   final FocusNode focusNode;
   final int? matches;
+  final int? activeMatch;
   final ValueChanged<String> onChanged;
+  final VoidCallback onNext;
+  final VoidCallback onPrevious;
   final VoidCallback onClose;
 
   @override
@@ -499,7 +529,9 @@ final class _FindBar extends StatelessWidget {
         ? 'Type to find'
         : matches == null
         ? 'Searching…'
-        : '$matches ${matches == 1 ? 'match' : 'matches'}';
+        : matches == 0
+        ? '0 matches'
+        : '$activeMatch of $matches';
     return Material(
       key: const Key('find-bar'),
       color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -514,6 +546,7 @@ final class _FindBar extends StatelessWidget {
                 focusNode: focusNode,
                 maxLength: 4096,
                 onChanged: onChanged,
+                onSubmitted: (_) => onNext(),
                 textInputAction: TextInputAction.search,
                 decoration: const InputDecoration(
                   hintText: 'Find in page',
@@ -526,6 +559,18 @@ final class _FindBar extends StatelessWidget {
             Semantics(
               liveRegion: true,
               child: Text(result, key: const Key('find-result')),
+            ),
+            IconButton(
+              key: const Key('find-previous'),
+              tooltip: 'Previous match (Shift+F3)',
+              onPressed: matches != null && matches! > 0 ? onPrevious : null,
+              icon: const Icon(Icons.keyboard_arrow_up),
+            ),
+            IconButton(
+              key: const Key('find-next'),
+              tooltip: 'Next match (F3)',
+              onPressed: matches != null && matches! > 0 ? onNext : null,
+              icon: const Icon(Icons.keyboard_arrow_down),
             ),
             IconButton(
               tooltip: 'Close find',

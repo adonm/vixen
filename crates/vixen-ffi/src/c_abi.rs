@@ -569,6 +569,7 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
                     "case_sensitive",
                     "context_id",
                     "document_id",
+                    "forward",
                     "query",
                     "type",
                     "v",
@@ -579,6 +580,7 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
                 document_id: required_document_id(object)?,
                 query: bounded_string(object, "query", MAX_TEXT_BYTES)?,
                 case_sensitive: required_bool(object, "case_sensitive")?,
+                forward: required_bool(object, "forward")?,
             }
         }
         "set_page_zoom" => {
@@ -1090,6 +1092,7 @@ fn response_json(response: ControllerResponse) -> Value {
         ControllerResponse::FindText(result) => json!({
             "type": "find_text",
             "matches": result.matches,
+            "active_match": result.active_match,
         }),
     }
 }
@@ -2515,12 +2518,14 @@ mod tests {
             "document_id": 2,
             "query": "Vixen",
             "case_sensitive": false,
+            "forward": true,
         });
         assert!(matches!(
             parse_command(&command.to_string()).unwrap(),
             ControllerCommand::FindText {
                 ref query,
                 case_sensitive: false,
+                forward: true,
                 ..
             } if query == "Vixen"
         ));
@@ -2533,8 +2538,9 @@ mod tests {
         assert_eq!(
             response_json(ControllerResponse::FindText(vixen_api::FindTextResult {
                 matches: 3,
+                active_match: Some(2),
             })),
-            json!({"type": "find_text", "matches": 3})
+            json!({"type": "find_text", "matches": 3, "active_match": 2})
         );
     }
 

@@ -42,6 +42,7 @@ final class ShellCoordinator extends ChangeNotifier {
   int _findRequestGeneration = 0;
   String _findQuery = '';
   int? _findMatches;
+  int? _findActiveMatch;
   String? _errorMessage;
   BrowserFrame? _frame;
   BrowserAccessibilitySnapshot? _accessibility;
@@ -79,6 +80,7 @@ final class ShellCoordinator extends ChangeNotifier {
   int? get lastEventSequence => _lastEventSequence;
   String get findQuery => _findQuery;
   int? get findMatches => _findMatches;
+  int? get findActiveMatch => _findActiveMatch;
   String get selectedStatus {
     final selected = selectedContext;
     if (selected == null) return _isStarting ? 'Starting Vixen...' : 'No tab';
@@ -220,30 +222,41 @@ final class ShellCoordinator extends ChangeNotifier {
     _scheduleFrameCapture(force: true);
   });
 
-  Future<void> findText(String query, {bool caseSensitive = false}) async {
+  Future<void> findText(
+    String query, {
+    bool caseSensitive = false,
+    bool forward = true,
+  }) async {
     final selected = selectedContext;
     final generation = ++_findRequestGeneration;
     _findQuery = query;
     if (selected == null || query.isEmpty) {
       _findMatches = query.isEmpty ? 0 : null;
+      _findActiveMatch = null;
       _notify();
       return;
     }
     _findMatches = null;
+    _findActiveMatch = null;
     _notify();
     try {
-      final matches = await controller.findText(
+      final result = await controller.findText(
         contextId: selected.contextId,
         documentId: selected.documentId,
         query: query,
         caseSensitive: caseSensitive,
+        forward: forward,
       );
       final current = selectedContext;
       if (generation == _findRequestGeneration &&
           current?.contextId == selected.contextId &&
           current?.documentId == selected.documentId &&
           _findQuery == query) {
-        _findMatches = matches;
+        _findMatches = result.matches;
+        _findActiveMatch = result.activeMatch;
+        if (result.activeMatch != null) {
+          _scheduleFrameCapture(force: true);
+        }
         _notify();
       }
     } catch (error) {
@@ -953,6 +966,7 @@ final class ShellCoordinator extends ChangeNotifier {
     _findRequestGeneration++;
     _findQuery = '';
     _findMatches = null;
+    _findActiveMatch = null;
   }
 
   void _showError(String prefix, Object error) {

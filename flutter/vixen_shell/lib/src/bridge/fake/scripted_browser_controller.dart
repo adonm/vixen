@@ -29,6 +29,10 @@ final class ScriptedBrowserController extends BrowserController {
     this.onCommand,
     this.onCaptureFrame,
     this.onAccessibilitySnapshot,
+    this.findTextResponse = const FindTextResponse(
+      matches: 0,
+      activeMatch: null,
+    ),
   }) : _activeContextId = snapshot.activeContextId,
        _contexts = {
          for (final context in snapshot.contexts) context.contextId: context,
@@ -41,6 +45,7 @@ final class ScriptedBrowserController extends BrowserController {
   final BrowserCommandHandler? onCommand;
   final BrowserFrameHandler? onCaptureFrame;
   final BrowserAccessibilityHandler? onAccessibilitySnapshot;
+  final FindTextResponse findTextResponse;
   final StreamController<SequencedBrowserEvent> _events =
       StreamController<SequencedBrowserEvent>.broadcast();
   final List<BrowserCommand> commands = [];
@@ -149,7 +154,7 @@ final class ScriptedBrowserController extends BrowserController {
         );
       case 'find_text':
         _knownContext(command.contextId);
-        return const FindTextResponse(matches: 0);
+        return findTextResponse;
       case 'set_page_zoom':
         final contextId = _knownContext(command.contextId);
         final zoom = (command.toWire()['zoom']! as num).toDouble();

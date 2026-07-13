@@ -101,6 +101,7 @@ pub enum ControllerCommand {
         document_id: DocumentId,
         query: String,
         case_sensitive: bool,
+        forward: bool,
     },
 }
 
@@ -283,11 +284,13 @@ impl FlutterBrowserController {
                 document_id,
                 query,
                 case_sensitive,
+                forward,
             } => BrowserCommand::FindText {
                 context_id,
                 document_id,
                 query,
                 case_sensitive,
+                forward,
             },
         };
 
@@ -592,12 +595,14 @@ impl FlutterBrowserController {
         document_id: DocumentId,
         query: impl Into<String>,
         case_sensitive: bool,
+        forward: bool,
     ) -> Result<FindTextResult, BrowserError> {
         match self.dispatch(ControllerCommand::FindText {
             context_id,
             document_id,
             query: query.into(),
             case_sensitive,
+            forward,
         })? {
             ControllerResponse::FindText(result) => Ok(result),
             response => Err(unexpected_response("find text", response)),
@@ -1205,29 +1210,37 @@ mod tests {
 
         assert_eq!(
             controller
-                .find_text(context_id, state.document_id, "Vixen", true)
+                .find_text(context_id, state.document_id, "Vixen", true, true)
                 .unwrap()
                 .matches,
             1
         );
         assert_eq!(
             controller
-                .find_text(context_id, state.document_id, "vixen", false)
+                .find_text(context_id, state.document_id, "vixen", false, true)
                 .unwrap()
                 .matches,
             2
         );
+        let next = controller
+            .find_text(context_id, state.document_id, "vixen", false, true)
+            .unwrap();
+        assert_eq!(next.active_match, Some(2));
+        let previous = controller
+            .find_text(context_id, state.document_id, "vixen", false, false)
+            .unwrap();
+        assert_eq!(previous.active_match, Some(1));
         let stale_document = DocumentId::new(state.document_id.get() + 1).unwrap();
         assert_eq!(
             controller
-                .find_text(context_id, stale_document, "Vixen", false)
+                .find_text(context_id, stale_document, "Vixen", false, true)
                 .unwrap_err()
                 .code,
             browser_error_codes::STALE_DOCUMENT
         );
         assert_eq!(
             controller
-                .find_text(context_id, state.document_id, "x".repeat(4097), false)
+                .find_text(context_id, state.document_id, "x".repeat(4097), false, true,)
                 .unwrap_err()
                 .code,
             browser_error_codes::INVALID_ARGUMENT

@@ -57,9 +57,12 @@ follow-up work.
 
 Ctrl+F and the browser menu expose a find bar backed by an exact active-
 document BrowserCore command. The query is bounded to 4 KiB at the native
-boundary and returns a Page-owned visible-text match count; stale responses are
-discarded and the result is a Flutter live region. Highlighting, traversal, and
-scroll-to-match remain open.
+boundary and traverses a Page-owned, 10,000-match-bounded rendered-text result;
+stale responses are discarded and the active/total result is a Flutter live
+region. Enter/F3 and Previous/Next traverse with wrapping, while BrowserCore
+updates the shared root scroll offset to reveal the active match and Flutter
+requests a fresh paired frame/Semantics projection. Exact glyph-range
+highlighting remains open.
 
 Ctrl++/Ctrl+-/Ctrl+0 and menu actions adjust a 25–500% per-context zoom owned by
 BrowserCore. The core derives the CSS viewport, scales the single display list
