@@ -33,6 +33,11 @@
     </screenshot>
   </screenshots>
   <releases>
+    <release version="0.1.6" date="2026-07-13">
+      <description>
+        <p>Extend the BrowserCore-to-Flutter accessibility path with bounded relationships, authored ranges, text selection, live and incremental semantics, and native Linux AT-SPI evidence.</p>
+      </description>
+    </release>
     <release version="0.1.5" date="2026-07-13">
       <description>
         <p>Ship the BrowserCore-backed Flutter shell with the pinned 3.46 beta, Linux Impeller, and an official archive for FlatPark packaging.</p>

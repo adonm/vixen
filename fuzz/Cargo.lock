@@ -1991,6 +1991,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "psl"
+version = "2.1.218"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f558d33d882cb296fb65dbe0246b98b90e761fbe00c552701d2030eb5bbce63a"
+dependencies = [
+ "psl-types",
+]
+
+[[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
+
+[[package]]
 name = "quinn"
 version = "0.11.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3289,11 +3304,11 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vixen-api"
-version = "0.1.4"
+version = "0.1.6"
 
 [[package]]
 name = "vixen-engine"
-version = "0.1.4"
+version = "0.1.6"
 dependencies = [
  "base64",
  "cssparser",
@@ -3329,9 +3344,10 @@ dependencies = [
 
 [[package]]
 name = "vixen-net"
-version = "0.1.4"
+version = "0.1.6"
 dependencies = [
  "base64",
+ "psl",
  "reqwest",
  "sha1",
  "sha2",
@@ -3343,7 +3359,7 @@ dependencies = [
 
 [[package]]
 name = "vixen-store"
-version = "0.1.4"
+version = "0.1.6"
 dependencies = [
  "redb",
  "serde",

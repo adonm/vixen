@@ -542,7 +542,9 @@ final class BrowserAccessibilitySnapshot {
       }
       final headingLevel = node.headingLevel;
       if (headingLevel != null && (headingLevel < 1 || headingLevel > 6)) {
-        throw const FormatException('accessibility heading level must be 1 to 6');
+        throw const FormatException(
+          'accessibility heading level must be 1 to 6',
+        );
       }
       final parentId = node.parentId;
       if (parentId != null && !seen.contains(parentId)) {

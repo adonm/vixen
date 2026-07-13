@@ -2,7 +2,7 @@
 # ADR-014 uses deno_core/V8 directly behind vixen-engine::script's product seam.
 [package]
 name = "vixen-engine"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 rust-version = "1.88"
 description = "Vixen engine integration glue"
