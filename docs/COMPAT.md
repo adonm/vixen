@@ -224,6 +224,13 @@ snapshot, so same-document live mutations are not suppressed by the normal
 same-key capture coalescing. This is event-driven full-projection refresh, not a
 delta protocol or native assistive-technology proof.
 
+Focused writable native text inputs and textareas project the live runtime's
+bounded UTF-16 selection base/extent through BrowserCore and ABI v1 into
+Flutter's semantics configuration. Selection changes participate in the source
+generation, while unfocused controls and authored ARIA-only textboxes do not
+fabricate caret state. Document-range and contenteditable selection remain
+outside this slice.
+
 Flutter also sends one monotonic BrowserCore-owned host-view state for content
 focus, visibility, effective scale, and application lifecycle. Current documents
 expose the accepted state through `document.hasFocus()`, `hidden`, and

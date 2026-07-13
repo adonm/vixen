@@ -5038,13 +5038,34 @@ mod tests {
             .unwrap();
         let input_id = input.id;
         assert!(input.actions.iter().any(|action| action == "set_value"));
-        let result = handle
+        handle
             .dispatch(BrowserCommand::DispatchAccessibilityAction {
                 context_id,
                 document_id: current.document_id,
                 runtime_context_id: current.runtime_context_id.unwrap(),
                 viewport: refreshed.viewport,
                 source_generation: refreshed.source_generation,
+                node_id: input_id,
+                action: AccessibilityAction::Focus,
+            })
+            .unwrap();
+        let input_focused = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: refreshed.viewport,
+            })
+            .unwrap();
+        let BrowserCommandResult::AccessibilitySnapshot(input_focused) = input_focused else {
+            panic!("unexpected accessibility result: {input_focused:?}");
+        };
+        let result = handle
+            .dispatch(BrowserCommand::DispatchAccessibilityAction {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                viewport: input_focused.viewport,
+                source_generation: input_focused.source_generation,
                 node_id: input_id,
                 action: AccessibilityAction::SetValue("Ada".to_owned()),
             })
@@ -5054,7 +5075,7 @@ mod tests {
             .dispatch(BrowserCommand::AccessibilitySnapshot {
                 context_id,
                 document_id: current.document_id,
-                viewport: refreshed.viewport,
+                viewport: input_focused.viewport,
             })
             .unwrap();
         let BrowserCommandResult::AccessibilitySnapshot(updated) = updated else {
@@ -5065,6 +5086,15 @@ mod tests {
                 .nodes
                 .iter()
                 .any(|node| node.id == input_id && node.value.as_deref() == Some("Ada"))
+        );
+        assert_eq!(
+            updated
+                .nodes
+                .iter()
+                .find(|node| node.id == input_id)
+                .and_then(|node| node.text_selection)
+                .map(|selection| (selection.base_offset, selection.extent_offset)),
+            Some((3, 3))
         );
 
         let volume = updated

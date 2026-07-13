@@ -16,8 +16,8 @@
 
 use vixen_api::{
     ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityNode, AccessibilityRange,
-    AccessibilityRect, AccessibilitySnapshot, BrowsingContextId, DocumentId, ElementInfo,
-    EngineDiagnostic, EngineInspector, PageSnapshot,
+    AccessibilityRect, AccessibilitySnapshot, AccessibilityTextSelection, BrowsingContextId,
+    DocumentId, ElementInfo, EngineDiagnostic, EngineInspector, PageSnapshot,
 };
 use vixen_net::csp::ContentSecurityPolicy;
 
@@ -50,6 +50,7 @@ pub struct Page {
     focused_element_node_id: Option<usize>,
     accessibility_mutation_epoch: u64,
     selection: Option<PageSelection>,
+    control_selections: std::collections::HashMap<usize, AccessibilityTextSelection>,
 }
 
 /// Incremental page construction retained on BrowserCore's owner thread.
@@ -112,6 +113,7 @@ impl Page {
             focused_element_node_id: None,
             accessibility_mutation_epoch: 1,
             selection: None,
+            control_selections: std::collections::HashMap::new(),
         })
     }
 
@@ -183,6 +185,7 @@ impl Page {
     pub fn set_element_text_content(&mut self, node_id: usize, value: &str) -> Result<(), String> {
         self.document.set_element_text_content(node_id, value)?;
         self.focused_element_node_id = None;
+        self.control_selections.clear();
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
         Ok(())
@@ -222,8 +225,36 @@ impl Page {
     pub fn set_element_inner_html(&mut self, node_id: usize, html: &str) -> Result<(), String> {
         self.document.set_element_inner_html(node_id, html)?;
         self.focused_element_node_id = None;
+        self.control_selections.clear();
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
+        Ok(())
+    }
+
+    /// Persist UTF-16 selection offsets from the live native text-control
+    /// runtime so the accessibility projection does not infer caret state.
+    pub fn set_form_control_selection(
+        &mut self,
+        node_id: usize,
+        base_offset: u32,
+        extent_offset: u32,
+    ) -> Result<(), String> {
+        let element = self
+            .document
+            .element_by_node_id(node_id)
+            .ok_or_else(|| format!("element node {node_id} is missing"))?;
+        if !matches!(element.tag.as_str(), "input" | "textarea") {
+            return Err("text selection target is not a native text control".to_owned());
+        }
+        let selection = AccessibilityTextSelection {
+            base_offset,
+            extent_offset,
+        };
+        if self.control_selections.get(&node_id) == Some(&selection) {
+            return Ok(());
+        }
+        self.control_selections.insert(node_id, selection);
+        self.bump_accessibility_mutation_epoch();
         Ok(())
     }
 
@@ -404,6 +435,10 @@ impl Page {
             let expanded = aria_bool(element.aria_expanded.as_deref());
             let value = accessibility_value(&element, &role);
             let range = accessibility_range(&element, &role);
+            let text_selection = (self.focused_element_node_id == Some(element.node_id)
+                && matches!(role.as_str(), "textbox" | "searchbox"))
+            .then(|| self.control_selections.get(&element.node_id).copied())
+            .flatten();
             let live_region = accessibility_live_region(&element, &role);
             let mut actions = Vec::new();
             if !disabled && matches!(role.as_str(), "button" | "link" | "checkbox" | "radio") {
@@ -429,6 +464,7 @@ impl Page {
                 label: element.label,
                 description: element.description,
                 value,
+                text_selection,
                 range,
                 bbox: bounds.get(&element.node_id).copied(),
                 focused: self.focused_element_node_id == Some(element.node_id),
@@ -1250,6 +1286,50 @@ mod tests {
         assert!(!supports_set_value("Read only"));
         assert!(!supports_set_value("Secret"));
         assert!(!supports_set_value("Authored"));
+    }
+
+    #[test]
+    fn accessibility_snapshot_projects_only_focused_native_control_selection() {
+        let mut page = Page::from_html(
+            "file:///accessibility-selection.html",
+            "<input id='name' aria-label='Name' value='Vixen'><div role='textbox' aria-label='Authored'></div>",
+        )
+        .unwrap();
+        let input_id = page.query_selector_all("#name").unwrap()[0].node_id;
+        page.set_form_control_selection(input_id, 1, 4).unwrap();
+        let context_id = BrowsingContextId::new(1).unwrap();
+        let document_id = DocumentId::new(1).unwrap();
+        let unfocused = page.accessibility_snapshot(context_id, document_id, (800, 600));
+        assert!(
+            unfocused
+                .nodes
+                .iter()
+                .all(|node| node.text_selection.is_none())
+        );
+
+        page.set_focused_element_node_id(Some(input_id));
+        let focused = page.accessibility_snapshot(context_id, document_id, (800, 600));
+        assert_eq!(
+            focused
+                .nodes
+                .iter()
+                .find(|node| node.label == "Name")
+                .unwrap()
+                .text_selection,
+            Some(AccessibilityTextSelection {
+                base_offset: 1,
+                extent_offset: 4,
+            })
+        );
+        assert!(
+            focused
+                .nodes
+                .iter()
+                .find(|node| node.label == "Authored")
+                .unwrap()
+                .text_selection
+                .is_none()
+        );
     }
 
     #[test]

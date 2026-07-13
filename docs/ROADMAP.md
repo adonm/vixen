@@ -236,8 +236,10 @@ Authored ARIA sliders/spinbuttons with finite numeric state now expose bounded
 range values and exact-generation arrow-key adjustments through the live
 runtime. Explicit and implicit live regions now map into Flutter, and active
 runtime-effect events force a new frame/full-semantics pair despite unchanged
-document keys. Semantic deltas, text selection, broader authored-range and
-platform relationship mappings, and native AT remain.
+document keys. Focused writable native text controls now project live UTF-16
+selection offsets through Flutter Semantics. Semantic deltas,
+document/contenteditable selection, broader authored-range and platform
+relationship mappings, and native AT remain.
 External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
 sparse paths. Headless `--incremental` now captures real before/after frames from
@@ -531,7 +533,7 @@ correctness. Neither may starve the other.
 4. Extend the landed bounded hierarchical accessibility projection beyond its
    `aria-controls`/`aria-describedby`/`aria-details` relationships, descriptions,
    and native/authored-range increase/decrease and live-region slices: add
-   semantic delta updates, text selection, and native AT evidence. Add platform
+   semantic delta updates, document/contenteditable selection, and native AT evidence. Add platform
    host-service UI; both remain cross-cutting through every later platform.
 5. Use the landed checked-in hello-Flutter peer, controlled release-bundle
    build, component/delta analyzer, initial clean x86_64 size report, and pinned

@@ -215,6 +215,12 @@ existing one-in-flight/one-replacement bounds still apply. This prevents live
 same-document changes from being hidden by key coalescing; it is not yet a
 semantic delta transport or native AT announcement smoke.
 
+Writable native text controls retain live runtime UTF-16 selection offsets in
+Page-owned accessibility state. Only the focused native textbox/searchbox emits
+that selection through the bounded ABI, and a small render-semantics adapter
+sets Flutter's otherwise non-widget-exposed `textSelection` configuration.
+Unfocused controls and authored ARIA-only textboxes remain unset.
+
 Semantic focus is dispatched only when the exact context, document, runtime,
 viewport, source generation, capped wire generation, node id, and advertised
 capability still match; BrowserCore executes live focus events/mutation and Dart
@@ -223,8 +229,8 @@ set-value action only for enabled, writable native text inputs/textareas; it
 uses the live control-value and input/change event path, while password,
 readonly, unsupported input types, and authored ARIA-only textboxes remain
 unadvertised. Complete accessibility still requires platform mappings for more
-non-tree relationships, heading levels, mixed states, text selection, semantic
-delta updates, broader authored-range keyboard conventions, the disabled-fieldset
+non-tree relationships, heading levels, mixed states, document/contenteditable
+selection, semantic delta updates, broader authored-range keyboard conventions, the disabled-fieldset
 first-legend exception, full ARIA presentational-role conflict handling, and
 native AT smoke on each platform.
 

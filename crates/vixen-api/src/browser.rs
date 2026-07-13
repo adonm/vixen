@@ -62,6 +62,14 @@ impl AccessibilitySnapshot {
             hash.string(&node.label);
             hash.string(&node.description);
             hash.optional_string(node.value.as_deref());
+            match node.text_selection {
+                Some(selection) => {
+                    hash.byte(1);
+                    hash.u64(u64::from(selection.base_offset));
+                    hash.u64(u64::from(selection.extent_offset));
+                }
+                None => hash.byte(0),
+            }
             match node.range {
                 Some(range) => {
                     hash.byte(1);
@@ -170,6 +178,7 @@ pub struct AccessibilityNode {
     pub label: String,
     pub description: String,
     pub value: Option<String>,
+    pub text_selection: Option<AccessibilityTextSelection>,
     pub range: Option<AccessibilityRange>,
     pub bbox: Option<AccessibilityRect>,
     pub focused: bool,
@@ -181,6 +190,13 @@ pub struct AccessibilityNode {
     pub live_region: bool,
     pub focusable: bool,
     pub actions: Vec<String>,
+}
+
+/// UTF-16 offsets selected in a writable native text control.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AccessibilityTextSelection {
+    pub base_offset: u32,
+    pub extent_offset: u32,
 }
 
 /// Numeric state for an adjustable native range control.
@@ -1112,6 +1128,7 @@ mod tests {
                 label: "Before".to_owned(),
                 description: String::new(),
                 value: None,
+                text_selection: None,
                 range: None,
                 bbox: None,
                 focused: false,

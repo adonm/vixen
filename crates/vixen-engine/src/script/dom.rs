@@ -63,6 +63,11 @@ pub(super) enum DomMutation {
         tag: String,
         value: String,
     },
+    SetControlSelection {
+        node_id: usize,
+        base_offset: u32,
+        extent_offset: u32,
+    },
     SetFocusedElement {
         node_id: Option<usize>,
     },
@@ -150,6 +155,7 @@ deno_core::extension!(
         op_vixen_dom_remove_element_attr,
         op_vixen_dom_set_element_inner_html,
         op_vixen_dom_set_control_value,
+        op_vixen_dom_set_control_selection,
         op_vixen_dom_set_focused_element,
         op_vixen_dom_set_selection,
     ],
@@ -365,6 +371,27 @@ fn op_vixen_dom_set_control_value(
         name: (!name.is_empty()).then_some(name),
         tag,
         value,
+    });
+    json!({ "ok": true })
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_dom_set_control_selection(
+    state: &mut OpState,
+    node_id: u32,
+    base_offset: u32,
+    extent_offset: u32,
+) -> deno_core::serde_json::Value {
+    let host = state.borrow::<DomHost>().0.clone();
+    let node_id = node_id as usize;
+    if element_record_by_node_id(&host, node_id).is_none() {
+        return missing_element_result(node_id as u32);
+    }
+    host.mutations.push(DomMutation::SetControlSelection {
+        node_id,
+        base_offset,
+        extent_offset,
     });
     json!({ "ok": true })
 }
@@ -993,6 +1020,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     op_vixen_dom_remove_element_attr,
     op_vixen_dom_set_element_inner_html,
     op_vixen_dom_set_control_value,
+    op_vixen_dom_set_control_selection,
     op_vixen_dom_set_focused_element,
     op_vixen_dom_set_selection,
     op_vixen_document_cookie_get,
@@ -3243,6 +3271,9 @@ const DOM_API_BOOTSTRAP: &str = r#"
     if (nextStart > nextEnd) nextEnd = nextStart;
     record.selectionStart = nextStart;
     record.selectionEnd = nextEnd;
+    if (record.nodeId > 0 && isTextEditableControl(element)) {
+      unwrapDomOp(op_vixen_dom_set_control_selection(record.nodeId, nextStart, nextEnd));
+    }
   }
 
   function commitControlValue(element) {

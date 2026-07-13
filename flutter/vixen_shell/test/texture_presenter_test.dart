@@ -193,6 +193,10 @@ void main() {
       role: 'textbox',
       label: 'Name',
       value: '',
+      textSelection: const BrowserAccessibilityTextSelection(
+        baseOffset: 0,
+        extentOffset: 0,
+      ),
       bounds: const BrowserAccessibilityRect(
         x: 10,
         y: 70,
@@ -301,6 +305,10 @@ void main() {
         hasFocusAction: true,
         hasSetTextAction: true,
       ),
+    );
+    expect(
+      tester.getSemantics(textboxFinder).getSemanticsData().textSelection,
+      const TextSelection.collapsed(offset: 0),
     );
     tester.widget<Semantics>(textboxFinder).properties.onSetText!('Ada');
     expect(setValue?.$1.id, 43);

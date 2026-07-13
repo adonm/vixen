@@ -1017,6 +1017,10 @@ fn accessibility_node_json(node: AccessibilityNode) -> Value {
         "label": node.label,
         "description": node.description,
         "value": node.value,
+        "text_selection": node.text_selection.map(|selection| json!({
+            "base_offset": selection.base_offset,
+            "extent_offset": selection.extent_offset,
+        })),
         "range": node.range.map(|range| json!({
             "current": range.current,
             "minimum": range.minimum,
@@ -2128,6 +2132,10 @@ mod tests {
             label: "Remember me".to_owned(),
             description: "Account preference".to_owned(),
             value: Some("yes".to_owned()),
+            text_selection: Some(vixen_api::AccessibilityTextSelection {
+                base_offset: 1,
+                extent_offset: 3,
+            }),
             range: None,
             bbox: Some(vixen_api::AccessibilityRect {
                 x: 1.5,
@@ -2177,6 +2185,7 @@ mod tests {
                     "label": "Remember me",
                     "description": "Account preference",
                     "value": "yes",
+                    "text_selection": {"base_offset": 1, "extent_offset": 3},
                     "range": null,
                     "bbox": {"x": 1.5, "y": 2.5, "width": 30.0, "height": 40.0},
                     "focused": true,

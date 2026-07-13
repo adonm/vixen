@@ -329,6 +329,7 @@ final class BrowserAccessibilityNode {
     required this.label,
     this.description = '',
     this.value,
+    this.textSelection,
     this.range,
     this.bounds,
     required this.focused,
@@ -372,6 +373,11 @@ final class BrowserAccessibilityNode {
       label: _string(wire, 'label'),
       description: _string(wire, 'description'),
       value: _optionalString(wire, 'value'),
+      textSelection: wire['text_selection'] == null
+          ? null
+          : BrowserAccessibilityTextSelection.fromWire(
+              _map(wire['text_selection']),
+            ),
       range: wire['range'] == null
           ? null
           : BrowserAccessibilityRange.fromWire(_map(wire['range'])),
@@ -399,6 +405,7 @@ final class BrowserAccessibilityNode {
   final String label;
   final String description;
   final String? value;
+  final BrowserAccessibilityTextSelection? textSelection;
   final BrowserAccessibilityRange? range;
   final BrowserAccessibilityRect? bounds;
   final bool focused;
@@ -421,6 +428,7 @@ final class BrowserAccessibilityNode {
     'label': label,
     'description': description,
     'value': value,
+    'text_selection': textSelection?.toWire(),
     'range': range?.toWire(),
     'bbox': bounds?.toWire(),
     'focused': focused,
@@ -432,6 +440,28 @@ final class BrowserAccessibilityNode {
     'live_region': liveRegion,
     'focusable': focusable,
     'actions': actions,
+  };
+}
+
+final class BrowserAccessibilityTextSelection {
+  const BrowserAccessibilityTextSelection({
+    required this.baseOffset,
+    required this.extentOffset,
+  });
+
+  factory BrowserAccessibilityTextSelection.fromWire(
+    Map<String, Object?> wire,
+  ) => BrowserAccessibilityTextSelection(
+    baseOffset: _nonNegativeInt(wire, 'base_offset'),
+    extentOffset: _nonNegativeInt(wire, 'extent_offset'),
+  );
+
+  final int baseOffset;
+  final int extentOffset;
+
+  Map<String, Object> toWire() => {
+    'base_offset': baseOffset,
+    'extent_offset': extentOffset,
   };
 }
 
@@ -1080,6 +1110,12 @@ int _positiveInt(Map<String, Object?> wire, String key) {
   final value = _int(wire, key);
   if (value > 0) return value;
   throw FormatException('$key must be nonzero');
+}
+
+int _nonNegativeInt(Map<String, Object?> wire, String key) {
+  final value = _int(wire, key);
+  if (value >= 0) return value;
+  throw FormatException('$key must be non-negative');
 }
 
 int? _optionalPositiveInt(Map<String, Object?> wire, String key) {

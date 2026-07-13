@@ -213,6 +213,7 @@ void main() {
           'label': 'Remember me',
           'description': 'Stores this preference',
           'value': null,
+          'text_selection': {'base_offset': 1, 'extent_offset': 3},
           'range': null,
           'bbox': {'x': 10.0, 'y': 20.0, 'width': 100.0, 'height': 30.0},
           'focused': true,
@@ -239,6 +240,8 @@ void main() {
     expect(response.snapshot.generation, 99);
     expect(response.snapshot.nodes.single.checked, isTrue);
     expect(response.snapshot.nodes.single.liveRegion, isTrue);
+    expect(response.snapshot.nodes.single.textSelection?.baseOffset, 1);
+    expect(response.snapshot.nodes.single.textSelection?.extentOffset, 3);
     expect(response.snapshot.nodes.single.bounds?.width, 100);
     expect(
       BrowserCommand.dispatchAccessibilityFocus(

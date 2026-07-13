@@ -4,6 +4,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../bridge/browser_models.dart';
@@ -595,9 +596,17 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
                   ? () =>
                         widget.onSemanticAdjustment?.call(snapshot, node, false)
                   : null,
-              child: children.isEmpty
-                  ? const SizedBox.expand()
-                  : Stack(clipBehavior: Clip.none, children: children),
+              child: _TextSelectionSemantics(
+                selection: node.textSelection == null
+                    ? null
+                    : TextSelection(
+                        baseOffset: node.textSelection!.baseOffset,
+                        extentOffset: node.textSelection!.extentOffset,
+                      ),
+                child: children.isEmpty
+                    ? const SizedBox.expand()
+                    : Stack(clipBehavior: Clip.none, children: children),
+              ),
             ),
           ),
         );
@@ -626,6 +635,46 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
     _contentFocus.dispose();
     unawaited(_controller.dispose());
     super.dispose();
+  }
+}
+
+final class _TextSelectionSemantics extends SingleChildRenderObjectWidget {
+  const _TextSelectionSemantics({
+    required this.selection,
+    required super.child,
+  });
+
+  final TextSelection? selection;
+
+  @override
+  RenderObject createRenderObject(BuildContext context) =>
+      _RenderTextSelectionSemantics(selection);
+
+  @override
+  void updateRenderObject(
+    BuildContext context,
+    _RenderTextSelectionSemantics renderObject,
+  ) {
+    renderObject.selection = selection;
+  }
+}
+
+final class _RenderTextSelectionSemantics extends RenderProxyBox {
+  _RenderTextSelectionSemantics(this._selection);
+
+  TextSelection? _selection;
+
+  set selection(TextSelection? value) {
+    if (_selection == value) return;
+    _selection = value;
+    markNeedsSemanticsUpdate();
+  }
+
+  @override
+  void describeSemanticsConfiguration(SemanticsConfiguration config) {
+    super.describeSemanticsConfiguration(config);
+    final selection = _selection;
+    if (selection != null) config.textSelection = selection;
   }
 }
 

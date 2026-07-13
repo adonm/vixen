@@ -734,6 +734,13 @@ impl JsRuntime {
                         &value,
                     )
                     .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+                dom::DomMutation::SetControlSelection {
+                    node_id,
+                    base_offset,
+                    extent_offset,
+                } => page
+                    .set_form_control_selection(node_id, base_offset, extent_offset)
+                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
                 dom::DomMutation::SetFocusedElement { node_id } => {
                     page.set_focused_element_node_id(node_id);
                 }
