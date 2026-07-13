@@ -97,6 +97,15 @@ final class _BrowserShellState extends State<BrowserShell>
         },
         const SingleActivator(LogicalKeyboardKey.keyF, control: true):
             _showFind,
+        const SingleActivator(LogicalKeyboardKey.equal, control: true): () {
+          unawaited(coordinator.zoomIn());
+        },
+        const SingleActivator(LogicalKeyboardKey.minus, control: true): () {
+          unawaited(coordinator.zoomOut());
+        },
+        const SingleActivator(LogicalKeyboardKey.digit0, control: true): () {
+          unawaited(coordinator.resetZoom());
+        },
         const SingleActivator(LogicalKeyboardKey.escape): _escape,
         const SingleActivator(LogicalKeyboardKey.arrowLeft, alt: true): () {
           unawaited(coordinator.goBack());
@@ -417,6 +426,12 @@ final class _Toolbar extends StatelessWidget {
                 switch (action) {
                   case _MenuAction.find:
                     onShowFind();
+                  case _MenuAction.zoomIn:
+                    unawaited(coordinator.zoomIn());
+                  case _MenuAction.zoomOut:
+                    unawaited(coordinator.zoomOut());
+                  case _MenuAction.resetZoom:
+                    unawaited(coordinator.resetZoom());
                   case _MenuAction.shortcuts:
                     onShowShortcuts();
                   case _MenuAction.about:
@@ -427,6 +442,18 @@ final class _Toolbar extends StatelessWidget {
                 PopupMenuItem(
                   value: _MenuAction.find,
                   child: Text('Find in page'),
+                ),
+                PopupMenuItem(
+                  value: _MenuAction.zoomIn,
+                  child: Text('Zoom in'),
+                ),
+                PopupMenuItem(
+                  value: _MenuAction.zoomOut,
+                  child: Text('Zoom out'),
+                ),
+                PopupMenuItem(
+                  value: _MenuAction.resetZoom,
+                  child: Text('Reset zoom'),
                 ),
                 PopupMenuItem(
                   value: _MenuAction.shortcuts,
@@ -445,7 +472,7 @@ final class _Toolbar extends StatelessWidget {
   }
 }
 
-enum _MenuAction { find, shortcuts, about }
+enum _MenuAction { find, zoomIn, zoomOut, resetZoom, shortcuts, about }
 
 final class _FindBar extends StatelessWidget {
   const _FindBar({
@@ -593,6 +620,7 @@ void _showShortcuts(BuildContext context) {
         'Ctrl+W  Close tab\n'
         'Ctrl+R  Reload\n'
         'Ctrl+F  Find in page\n'
+        'Ctrl++ / Ctrl+- / Ctrl+0  Zoom\n'
         'Escape  Stop or leave address\n'
         'Alt+Left  Back\n'
         'Alt+Right  Forward',

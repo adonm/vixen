@@ -42,7 +42,8 @@ and `libvixen_ffi.so`.
 
 This does not establish Linux parity: text/IME/gesture input, complete lifecycle
 recovery and scale handling, complete
-semantic relationships/actions and native AT smoke, find/zoom, downloads/permissions,
+semantic relationships/actions and native AT smoke, complete find traversal,
+downloads/permissions,
 host services, broader FlatPark host/portal coverage, release size/performance,
 and non-Linux runners remain open. The current
 Relm4/libadwaita/GTK shell remains the compatibility baseline until those gates
@@ -97,7 +98,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; scrolling, IME, find/zoom, recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root-wheel scrolling, find count UI, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; IME, nested/keyboard/touch scrolling, complete find traversal, recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -185,7 +186,7 @@ the controller boundary. The stored scale does not yet separate CSS layout pixel
 from the bounded physical render target.
 
 The remaining target adds text/IME, touch/keyboard and nested scrolling,
-CSS/physical scale and zoom correctness, and platform lifecycle/surface recovery.
+CSS/device-scale correctness, and platform lifecycle/surface recovery.
 BrowserCore continues to own hit testing, selection, DOM event dispatch, and
 navigation effects. Platform-specific raw data may be retained in bounded DTOs
 where web semantics require it.
@@ -204,6 +205,14 @@ for a bounded case-insensitive visible-text match count. Results are
 generation-checked before presentation and announced through a live region;
 Dart does not inspect page text. Highlighting, match traversal, and
 scroll-to-match remain before find parity is complete.
+
+Per-context page zoom is now core-owned and bounded from 25% through 500%.
+Flutter shortcuts/menu actions carry only zoom intent. BrowserCore derives a
+CSS viewport from the physical target, scales the single display list back to
+the frame, converts hit testing and wheel events into CSS coordinates, and
+projects Semantics bounds into physical display coordinates. Zoom resets only
+on explicit Ctrl+0 and survives navigation in the context; profile persistence,
+text-shaping fidelity, and device-scale/surface recovery remain open.
 
 The initial accessibility hierarchy is implemented. BrowserCore/Page derives native
 and explicit ARIA roles, bounded names (including `aria-labelledby` and HTML
@@ -291,7 +300,7 @@ session restore, shortcuts, visible WebRender content, input, viewport changes,
 error recovery, and accessibility projection.
 
 FlatPark is sequenced after the smaller basic-browser gate, not alongside its
-implementation. Until scrolling, IME text entry, find/zoom, core navigation
+implementation. Until broader scrolling, IME text entry, complete find, core navigation
 controls, visible rendering, and bounded recovery are proven, maintain archive
 reproducibility and launch smoke only; do not prioritize registry descriptor,
 review, publication, or update-channel work.

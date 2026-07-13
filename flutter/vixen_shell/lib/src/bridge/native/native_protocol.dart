@@ -210,6 +210,19 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
         _invalidCommand('case_sensitive must be a boolean');
       }
       break;
+    case 'set_page_zoom':
+      _expectKeys(normalized, const <String>{
+        'v',
+        'type',
+        'context_id',
+        'zoom',
+      });
+      _validateContextId(normalized['context_id']);
+      final zoom = normalized['zoom'];
+      if (zoom is! num || !zoom.isFinite || zoom < 0.25 || zoom > 5) {
+        _invalidCommand('zoom must be finite and in range');
+      }
+      break;
     case 'accessibility_snapshot':
       _expectKeys(normalized, const <String>{
         'v',

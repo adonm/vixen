@@ -150,6 +150,12 @@ final class ScriptedBrowserController extends BrowserController {
       case 'find_text':
         _knownContext(command.contextId);
         return const FindTextResponse(matches: 0);
+      case 'set_page_zoom':
+        final contextId = _knownContext(command.contextId);
+        final zoom = (command.toWire()['zoom']! as num).toDouble();
+        final state = _contexts[contextId]!.copyWith(pageZoom: zoom);
+        replaceContext(state);
+        return ContextStateResponse(state);
       case 'accessibility_snapshot':
         final contextId = _knownContext(command.contextId);
         final wire = command.toWire();

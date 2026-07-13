@@ -55,6 +55,13 @@ boundary and returns a Page-owned visible-text match count; stale responses are
 discarded and the result is a Flutter live region. Highlighting, traversal, and
 scroll-to-match remain open.
 
+Ctrl++/Ctrl+-/Ctrl+0 and menu actions adjust a 25–500% per-context zoom owned by
+BrowserCore. The core derives the CSS viewport, scales the single display list
+to the physical texture, converts hit testing/wheel input to CSS coordinates,
+and emits matching physical Semantics bounds. Flutter does not rescale pixels or
+own page zoom state. Profile persistence and device-scale/surface recovery
+remain open.
+
 ## Accessibility contract
 
 BrowserCore supplies a bounded projection of authoritative roles, names, values,

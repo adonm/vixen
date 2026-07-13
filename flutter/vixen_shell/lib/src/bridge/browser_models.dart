@@ -162,6 +162,7 @@ final class BrowsingContextState {
     required this.canGoForward,
     required this.isLoading,
     required this.loadProgress,
+    this.pageZoom = 1,
   });
 
   factory BrowsingContextState.initial(int contextId) {
@@ -180,6 +181,10 @@ final class BrowsingContextState {
   }
 
   factory BrowsingContextState.fromWire(Map<String, Object?> wire) {
+    final pageZoom = _number(wire, 'page_zoom').toDouble();
+    if (!pageZoom.isFinite || pageZoom < 0.25 || pageZoom > 5) {
+      throw const FormatException('page_zoom must be finite and in range');
+    }
     return BrowsingContextState(
       contextId: _positiveInt(wire, 'context_id'),
       mainFrameId: _positiveInt(wire, 'main_frame_id'),
@@ -194,6 +199,7 @@ final class BrowsingContextState {
       canGoForward: _bool(wire, 'can_go_forward'),
       isLoading: _bool(wire, 'is_loading'),
       loadProgress: _number(wire, 'load_progress').toDouble(),
+      pageZoom: pageZoom,
     );
   }
 
@@ -210,6 +216,7 @@ final class BrowsingContextState {
   final bool canGoForward;
   final bool isLoading;
   final double loadProgress;
+  final double pageZoom;
 
   String get displayTitle {
     final candidate = title?.trim();
@@ -230,6 +237,7 @@ final class BrowsingContextState {
     bool? canGoForward,
     bool? isLoading,
     double? loadProgress,
+    double? pageZoom,
   }) {
     return BrowsingContextState(
       contextId: contextId,
@@ -247,6 +255,7 @@ final class BrowsingContextState {
       canGoForward: canGoForward ?? this.canGoForward,
       isLoading: isLoading ?? this.isLoading,
       loadProgress: loadProgress ?? this.loadProgress,
+      pageZoom: pageZoom ?? this.pageZoom,
     );
   }
 
@@ -264,6 +273,7 @@ final class BrowsingContextState {
     'can_go_forward': canGoForward,
     'is_loading': isLoading,
     'load_progress': loadProgress,
+    'page_zoom': pageZoom,
   };
 }
 
@@ -731,6 +741,11 @@ final class BrowserCommand {
     'query': query,
     'case_sensitive': caseSensitive,
   });
+  factory BrowserCommand.setPageZoom(int contextId, double zoom) =>
+      BrowserCommand._('set_page_zoom', {
+        'context_id': contextId,
+        'zoom': zoom,
+      });
   factory BrowserCommand.updateHostViewState({
     required int contextId,
     required int generation,

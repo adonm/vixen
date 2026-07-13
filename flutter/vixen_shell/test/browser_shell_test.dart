@@ -151,6 +151,44 @@ void main() {
     await tester.pump();
   });
 
+  testWidgets('zoom shortcuts update BrowserCore-owned tab zoom', (
+    tester,
+  ) async {
+    final controller = ScriptedBrowserController(
+      snapshot: BrowserSnapshot(
+        activeContextId: 1,
+        contexts: [contextState(id: 1, url: 'https://example.test')],
+      ),
+    );
+    final coordinator = ShellCoordinator(controller);
+    await tester.pumpWidget(VixenApp(coordinator: coordinator));
+    await pumpStartup(tester);
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.equal);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    await tester.pump();
+    expect(coordinator.selectedContext?.pageZoom, 1.1);
+    expect(
+      controller.commands
+          .lastWhere((command) => command.type == 'set_page_zoom')
+          .toWire(),
+      {'v': 1, 'type': 'set_page_zoom', 'context_id': 1, 'zoom': 1.1},
+    );
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.digit0);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    await tester.pump();
+    expect(coordinator.selectedContext?.pageZoom, 1);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    coordinator.dispose();
+    await tester.pump();
+  });
+
   testWidgets('navigation failure displays dismissible error banner', (
     tester,
   ) async {

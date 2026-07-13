@@ -579,6 +579,13 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
                 case_sensitive: required_bool(object, "case_sensitive")?,
             }
         }
+        "set_page_zoom" => {
+            exact_keys(object, &["context_id", "type", "v", "zoom"])?;
+            ControllerCommand::SetPageZoom {
+                context_id: required_context_id(object)?,
+                zoom: required_f64(object, "zoom")?,
+            }
+        }
         "update_host_view_state" => {
             exact_keys(
                 object,
@@ -1115,6 +1122,7 @@ fn context_state_json(state: BrowsingContextState) -> Value {
         "can_go_forward": state.can_go_forward,
         "is_loading": state.is_loading,
         "load_progress": state.load_progress,
+        "page_zoom": state.page_zoom,
     })
 }
 
@@ -2407,6 +2415,27 @@ mod tests {
             })),
             json!({"type": "find_text", "matches": 3})
         );
+    }
+
+    #[test]
+    fn page_zoom_json_is_strict_and_bounded() {
+        let _scope = test_scope();
+        let command = json!({
+            "v": 1,
+            "type": "set_page_zoom",
+            "context_id": 1,
+            "zoom": 1.25,
+        });
+        assert!(matches!(
+            parse_command(&command.to_string()).unwrap(),
+            ControllerCommand::SetPageZoom { zoom: 1.25, .. }
+        ));
+        let mut invalid = command.clone();
+        invalid["zoom"] = json!("1.25");
+        assert!(parse_command(&invalid.to_string()).is_err());
+        let mut extra = command;
+        extra["extra"] = json!(true);
+        assert!(parse_command(&extra.to_string()).is_err());
     }
 
     #[test]

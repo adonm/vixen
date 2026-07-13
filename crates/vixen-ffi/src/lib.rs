@@ -54,6 +54,10 @@ pub enum ControllerCommand {
         context_id: BrowsingContextId,
         state: HostViewState,
     },
+    SetPageZoom {
+        context_id: BrowsingContextId,
+        zoom: f64,
+    },
     AccessibilitySnapshot {
         context_id: BrowsingContextId,
         document_id: DocumentId,
@@ -185,6 +189,10 @@ impl FlutterBrowserController {
             ControllerCommand::UpdateHostViewState { context_id, state } => {
                 self.primary_mouse_press = None;
                 BrowserCommand::UpdateHostViewState { context_id, state }
+            }
+            ControllerCommand::SetPageZoom { context_id, zoom } => {
+                self.primary_mouse_press = None;
+                BrowserCommand::SetPageZoom { context_id, zoom }
             }
             ControllerCommand::AccessibilitySnapshot {
                 context_id,
@@ -529,6 +537,17 @@ impl FlutterBrowserController {
         match self.dispatch(ControllerCommand::ContextState(context_id))? {
             ControllerResponse::ContextState(state) => Ok(state),
             response => Err(unexpected_response("get context state", response)),
+        }
+    }
+
+    pub fn set_page_zoom(
+        &mut self,
+        context_id: BrowsingContextId,
+        zoom: f64,
+    ) -> Result<BrowsingContextState, BrowserError> {
+        match self.dispatch(ControllerCommand::SetPageZoom { context_id, zoom })? {
+            ControllerResponse::ContextState(state) => Ok(state),
+            response => Err(unexpected_response("set page zoom", response)),
         }
     }
 
@@ -1192,6 +1211,84 @@ mod tests {
                 .find_text(context_id, state.document_id, "x".repeat(4097), false)
                 .unwrap_err()
                 .code,
+            browser_error_codes::INVALID_ARGUMENT
+        );
+    }
+
+    #[test]
+    fn page_zoom_scales_paint_hit_testing_and_accessibility_per_context() {
+        let profile = TestProfile::new();
+        let url = "https://ffi.test/zoom";
+        let mut config = BrowserConfig::new(&profile.0);
+        config.document_overrides.insert(
+            url.to_owned(),
+            r#"<!doctype html>
+                <style>html,body{margin:0}button{display:block;width:100px;height:50px;background-color:red}</style>
+                <button id="target">Zoom target</button>
+                <script>document.querySelector('#target').addEventListener('click', () => console.log('zoom-click'));</script>"#
+                .to_owned(),
+        );
+        let mut controller = FlutterBrowserController::from_config(config).unwrap();
+        let context_id = controller.create_context().unwrap();
+        let navigation_id = controller.navigate(context_id, url).unwrap();
+        wait_for_settled(&mut controller, navigation_id);
+        let original = controller.context_state(context_id).unwrap();
+        let viewport = (300, 200);
+        let original_paint = controller
+            .handle
+            .capture_paint_snapshot(context_id, original.document_id, viewport)
+            .unwrap();
+        let original_width =
+            original_paint
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    vixen_engine::display_list::PaintCommand::Background {
+                        fill, color, ..
+                    } if color.r == 255 && color.g == 0 && color.b == 0 => Some(fill.w),
+                    _ => None,
+                })
+                .unwrap();
+
+        let zoomed = controller.set_page_zoom(context_id, 2.0).unwrap();
+        assert_eq!(zoomed.page_zoom, 2.0);
+        let zoomed_paint = controller
+            .handle
+            .capture_paint_snapshot(context_id, original.document_id, viewport)
+            .unwrap();
+        let zoomed_width =
+            zoomed_paint
+                .commands
+                .iter()
+                .find_map(|command| match command {
+                    vixen_engine::display_list::PaintCommand::Background {
+                        fill, color, ..
+                    } if color.r == 255 && color.g == 0 && color.b == 0 => Some(fill.w),
+                    _ => None,
+                })
+                .unwrap();
+        assert_eq!(zoomed_width, original_width * 2.0);
+
+        let semantic = controller
+            .accessibility_snapshot(context_id, original.document_id, viewport)
+            .unwrap()
+            .nodes
+            .into_iter()
+            .find(|node| node.label == "Zoom target")
+            .unwrap();
+        assert_eq!(semantic.bbox.unwrap().width, 200.0);
+        let clicked = dispatch_mouse(&mut controller, &zoomed, "mousedown", 150.0, 25.0, 0, 1);
+        assert!(clicked.effects.console.is_empty());
+        let clicked = dispatch_mouse(&mut controller, &zoomed, "mouseup", 150.0, 25.0, 0, 0);
+        assert!(
+            clicked
+                .effects
+                .console
+                .iter()
+                .any(|event| { event.args[0].description.contains("zoom-click") })
+        );
+        assert_eq!(
+            controller.set_page_zoom(context_id, 0.1).unwrap_err().code,
             browser_error_codes::INVALID_ARGUMENT
         );
     }

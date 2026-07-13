@@ -262,6 +262,10 @@ the native tree; broader screen-reader/platform matrices remain.
 Ctrl+F now crosses the exact active context/document ABI boundary and reports a
 bounded Page-owned visible-text match count in a Flutter live region. Highlight,
 match traversal, and scroll-to-match remain before find parity.
+Per-context 25–500% page zoom now remains BrowserCore-owned: it derives a CSS
+viewport, scales the single display list into the physical frame, converts
+physical input back to CSS coordinates, and projects Semantics bounds through
+the same transform. Profile persistence and device-scale/surface recovery remain.
 External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
 sparse paths. Headless `--incremental` now captures real before/after frames from
@@ -561,7 +565,7 @@ correctness. Neither may starve the other.
    host-service UI; both remain cross-cutting through every later platform.
 5. Complete the Linux basic-browser gate: visible controlled-site navigation,
    nested/keyboard/touch/script scrolling, text/IME input,
-   back/forward/reload/stop, complete find traversal/highlighting, zoom,
+   back/forward/reload/stop, complete find traversal/highlighting,
    and bounded navigation/runtime/surface recovery. Keep release-archive smoke
    green, but defer FlatPark submission/review/publishing until this gate passes.
 6. Use the landed checked-in hello-Flutter peer, controlled release-bundle

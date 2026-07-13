@@ -172,6 +172,54 @@ final class ShellCoordinator extends ChangeNotifier {
   Future<void> goBack() => _traverse(-1);
   Future<void> goForward() => _traverse(1);
 
+  Future<void> zoomIn() => _changeZoom(1);
+  Future<void> zoomOut() => _changeZoom(-1);
+  Future<void> resetZoom() => setPageZoom(1);
+
+  Future<void> _changeZoom(int direction) {
+    const levels = <double>[
+      0.25,
+      0.5,
+      0.67,
+      0.8,
+      0.9,
+      1,
+      1.1,
+      1.25,
+      1.5,
+      1.75,
+      2,
+      2.5,
+      3,
+      4,
+      5,
+    ];
+    final current = selectedContext?.pageZoom ?? 1;
+    final next = direction > 0
+        ? levels.firstWhere(
+            (level) => level > current,
+            orElse: () => levels.last,
+          )
+        : levels.lastWhere(
+            (level) => level < current,
+            orElse: () => levels.first,
+          );
+    return setPageZoom(next);
+  }
+
+  Future<void> setPageZoom(double zoom) => _withSelected((context) async {
+    final state = await controller.setPageZoom(context.contextId, zoom);
+    final selected = selectedContext;
+    if (selected?.contextId != state.contextId ||
+        selected?.documentId != state.documentId) {
+      return;
+    }
+    _upsertContext(state);
+    _statusByContext[state.contextId] =
+        'Zoom ${(state.pageZoom * 100).round()}%';
+    _scheduleFrameCapture(force: true);
+  });
+
   Future<void> findText(String query, {bool caseSensitive = false}) async {
     final selected = selectedContext;
     final generation = ++_findRequestGeneration;

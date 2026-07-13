@@ -275,6 +275,15 @@ find bar exposes the result through a live region. Empty queries return zero;
 stale documents and queries above 4 KiB fail closed. Match highlighting,
 next/previous navigation, and scroll-to-match remain open.
 
+Page zoom is BrowserCore-owned per top-level context and bounded to 25–500%.
+Ctrl++/Ctrl+-/Ctrl+0 and menu actions send zoom intent through ABI v1; the core
+derives the CSS layout viewport from the physical frame, scales the same display
+list into that frame, maps physical hit-test/wheel coordinates back to CSS
+pixels, and scales accessibility bounds into the displayed coordinate space.
+Zoom survives document navigation in the context but is not yet persisted in
+the profile session. Text shaping quality, nested scrolling, and device-scale/
+surface recovery remain separate gaps.
+
 ---
 
 ## WPT target profile

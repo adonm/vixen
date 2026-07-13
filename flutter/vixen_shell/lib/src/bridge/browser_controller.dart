@@ -83,6 +83,13 @@ abstract class BrowserController {
     return _expect<ContextStateResponse>(response).state;
   }
 
+  Future<BrowsingContextState> setPageZoom(int contextId, double zoom) async {
+    final response = await dispatch(
+      BrowserCommand.setPageZoom(contextId, zoom),
+    );
+    return _expect<ContextStateResponse>(response).state;
+  }
+
   Future<int> findText({
     required int contextId,
     required int documentId,

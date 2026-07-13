@@ -59,6 +59,8 @@ const DEFAULT_EVENT_CAPACITY: usize = 2048;
 const MAX_SCRIPT_BYTES: usize = 1024 * 1024;
 const MAX_SELECTOR_BYTES: usize = 64 * 1024;
 const MAX_FIND_QUERY_BYTES: usize = 4 * 1024;
+const MIN_PAGE_ZOOM: f64 = 0.25;
+const MAX_PAGE_ZOOM: f64 = 5.0;
 const MAX_URL_BYTES: usize = 16 * 1024;
 const MAX_VIEWPORT_DIMENSION: u32 = 16_384;
 const MAX_RUNTIME_SLOTS: usize = 512;
@@ -449,6 +451,7 @@ struct BrowsingContext {
     runtime_slot: usize,
     config: BrowsingContextConfig,
     host_view: HostViewState,
+    page_zoom: f64,
 }
 
 struct RuntimeSlot {
@@ -777,6 +780,25 @@ impl BrowserCore {
             BrowserCommand::UpdateHostViewState { context_id, state } => {
                 self.update_host_view_state(context_id, state)
             }
+            BrowserCommand::SetPageZoom { context_id, zoom } => {
+                if !zoom.is_finite() || !(MIN_PAGE_ZOOM..=MAX_PAGE_ZOOM).contains(&zoom) {
+                    return Err(BrowserError::new(
+                        browser_error_codes::INVALID_ARGUMENT,
+                        format!(
+                            "page zoom must be finite and between {MIN_PAGE_ZOOM} and {MAX_PAGE_ZOOM}"
+                        ),
+                    ));
+                }
+                let context = self.context_mut(context_id)?;
+                context.page_zoom = zoom;
+                let layout_viewport = page_layout_viewport(context.host_view.viewport, zoom);
+                context.page.scroll_root_by(layout_viewport, (0.0, 0.0));
+                let state = self.context_state(context_id)?;
+                self.emit(BrowserEvent::BrowsingContextStateChanged {
+                    state: state.clone(),
+                });
+                Ok(BrowserCommandResult::BrowsingContextState(state))
+            }
             BrowserCommand::GetBrowserSnapshot => Ok(BrowserCommandResult::BrowserSnapshot(
                 self.browser_snapshot(),
             )),
@@ -881,11 +903,8 @@ impl BrowserCore {
                 viewport,
             } => {
                 validate_viewport(viewport)?;
-                let context = self.context_for_document(context_id, document_id)?;
                 Ok(BrowserCommandResult::AccessibilitySnapshot(
-                    context
-                        .page
-                        .accessibility_snapshot(context_id, document_id, viewport),
+                    self.accessibility_snapshot(context_id, document_id, viewport)?,
                 ))
             }
             BrowserCommand::DispatchAccessibilityAction {
@@ -991,9 +1010,12 @@ impl BrowserCore {
                     ));
                 }
                 let context = self.context_for_document(context_id, document_id)?;
-                Ok(BrowserCommandResult::HitTest(
-                    context.page.element_at(viewport, x, y),
-                ))
+                let layout_viewport = page_layout_viewport(viewport, context.page_zoom);
+                Ok(BrowserCommandResult::HitTest(context.page.element_at(
+                    layout_viewport,
+                    x / context.page_zoom,
+                    y / context.page_zoom,
+                )))
             }
             BrowserCommand::FocusProjection {
                 context_id,
@@ -1122,12 +1144,40 @@ impl BrowserCore {
     ) -> Result<PaintSnapshot, BrowserError> {
         validate_viewport(viewport)?;
         let context = self.context_for_document(context_id, document_id)?;
+        let layout_viewport = page_layout_viewport(viewport, context.page_zoom);
+        let mut commands = context.page.display_list(layout_viewport);
+        scale_paint_commands(&mut commands, context.page_zoom as f32);
         Ok(PaintSnapshot {
             context_id,
             document_id,
             viewport,
-            commands: context.page.display_list(viewport),
+            commands,
         })
+    }
+
+    fn accessibility_snapshot(
+        &self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        viewport: (u32, u32),
+    ) -> Result<vixen_api::AccessibilitySnapshot, BrowserError> {
+        let context = self.context_for_document(context_id, document_id)?;
+        let layout_viewport = page_layout_viewport(viewport, context.page_zoom);
+        let mut snapshot =
+            context
+                .page
+                .accessibility_snapshot(context_id, document_id, layout_viewport);
+        snapshot.viewport = viewport;
+        for node in &mut snapshot.nodes {
+            if let Some(bounds) = &mut node.bbox {
+                bounds.x *= context.page_zoom;
+                bounds.y *= context.page_zoom;
+                bounds.width *= context.page_zoom;
+                bounds.height *= context.page_zoom;
+            }
+        }
+        snapshot.refresh_generation();
+        Ok(snapshot)
     }
 
     fn navigate_html(
@@ -1200,6 +1250,7 @@ impl BrowserCore {
                 runtime_slot,
                 config: BrowsingContextConfig::default(),
                 host_view: HostViewState::default(),
+                page_zoom: 1.0,
             },
         );
         let state = self.context_state(context_id)?;
@@ -2512,6 +2563,16 @@ impl BrowserCore {
                 "mouse event coordinates and deltas must be finite",
             ));
         }
+        let page_zoom = self
+            .context_for_document(context_id, document_id)?
+            .page_zoom;
+        let event = MouseEventData {
+            x: event.x / page_zoom,
+            y: event.y / page_zoom,
+            delta_x: event.delta_x / page_zoom,
+            delta_y: event.delta_y / page_zoom,
+            ..event
+        };
         let is_wheel = event_type == "wheel";
         let node_id = if is_wheel && node_id == 0 {
             self.context_for_document(context_id, document_id)?
@@ -2557,7 +2618,8 @@ impl BrowserCore {
             && !event.meta_key
             && evaluation.value == ScriptValue::Bool(true)
         {
-            let viewport = self.context(context_id)?.host_view.viewport;
+            let viewport =
+                page_layout_viewport(self.context(context_id)?.host_view.viewport, page_zoom);
             self.context_mut(context_id)?
                 .page
                 .scroll_root_by(viewport, (event.delta_x, event.delta_y));
@@ -2625,9 +2687,7 @@ impl BrowserCore {
                 format!("runtime {runtime_context_id} is no longer active in context {context_id}"),
             ));
         }
-        let snapshot = context
-            .page
-            .accessibility_snapshot(context_id, document_id, viewport);
+        let snapshot = self.accessibility_snapshot(context_id, document_id, viewport)?;
         if snapshot.source_generation != source_generation {
             return Err(BrowserError::new(
                 browser_error_codes::STALE_ACCESSIBILITY,
@@ -3160,6 +3220,7 @@ fn context_state(context_id: BrowsingContextId, context: &BrowsingContext) -> Br
         } else {
             1.0
         },
+        page_zoom: context.page_zoom,
     }
 }
 
@@ -3643,6 +3704,26 @@ fn validate_viewport(viewport: (u32, u32)) -> Result<(), BrowserError> {
         ));
     }
     Ok(())
+}
+
+fn page_layout_viewport(viewport: (u32, u32), zoom: f64) -> (u32, u32) {
+    (
+        ((f64::from(viewport.0) / zoom).ceil() as u32).max(1),
+        ((f64::from(viewport.1) / zoom).ceil() as u32).max(1),
+    )
+}
+
+fn scale_paint_commands(commands: &mut [PaintCommand], scale: f32) {
+    for command in commands {
+        let rect = match command {
+            PaintCommand::Background { fill, .. } => fill,
+            PaintCommand::Text { rect, .. } => rect,
+        };
+        rect.x *= scale;
+        rect.y *= scale;
+        rect.w *= scale;
+        rect.h *= scale;
+    }
 }
 
 fn validate_lookup_id(id: &str) -> Result<(), BrowserError> {

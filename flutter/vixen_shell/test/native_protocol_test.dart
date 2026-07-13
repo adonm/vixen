@@ -248,6 +248,7 @@ void main() {
           ),
         ),
         BrowserCommand.findText(contextId: 1, documentId: 2, query: 'Vixen'),
+        BrowserCommand.setPageZoom(1, 1.25),
       ];
 
       for (final command in commands) {

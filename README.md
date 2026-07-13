@@ -39,6 +39,9 @@ paint, hit testing, and accessibility bounds consume that same offset while
 fixed-position content remains viewport anchored;
 Ctrl+F opens a bounded BrowserCore-backed find bar that reports exact
 case-insensitive visible-text match counts for the active document;
+per-tab zoom from 25–500% derives a CSS viewport inside BrowserCore and applies
+one matching transform to WebRender commands, hit testing, wheel coordinates,
+and Semantics bounds;
 the bounded BrowserCore-derived Semantics hierarchy includes parent structure,
 `aria-controls`, text editing, and native range adjustment. Monotonic host-view
 updates also drive document focus/visibility and Flutter lifecycle input policy.

@@ -88,6 +88,12 @@ void main() {
         'case_sensitive': false,
       },
     );
+    expect(BrowserCommand.setPageZoom(7, 1.25).toWire(), {
+      'v': 1,
+      'type': 'set_page_zoom',
+      'context_id': 7,
+      'zoom': 1.25,
+    });
     expect(
       BrowserCommand.updateHostViewState(
         contextId: 7,

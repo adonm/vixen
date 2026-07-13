@@ -389,6 +389,10 @@ pub enum BrowserCommand {
         context_id: BrowsingContextId,
         state: HostViewState,
     },
+    SetPageZoom {
+        context_id: BrowsingContextId,
+        zoom: f64,
+    },
     /// Capture the authoritative browser and context state in one owner-thread
     /// operation.
     GetBrowserSnapshot,
@@ -891,6 +895,7 @@ pub struct BrowsingContextState {
     pub can_go_forward: bool,
     pub is_loading: bool,
     pub load_progress: f64,
+    pub page_zoom: f64,
 }
 
 /// Lifecycle phase for a navigation generation.
