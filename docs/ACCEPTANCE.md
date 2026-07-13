@@ -191,7 +191,10 @@ releases never satisfy these gates.
 
 - **Linux:** real BrowserCore bridge, bounded RGBA texture, input/viewport,
   Semantics/AT, host services, parity, deterministic official release archive,
-  and checksum-pinned FlatPark package verification.
+  and—only after the basic-browser gate—checksum-pinned FlatPark package
+  verification. FlatPark publishing is not a current priority while visible
+  navigation, scrolling, text/IME, core navigation controls, find/zoom, or
+  bounded recovery remain incomplete.
 - **macOS and Windows:** native BrowserCore/V8/WebRender builds plus texture,
   input/IME, accessibility, host services, signing/packaging, and per-architecture
   size/performance evidence.

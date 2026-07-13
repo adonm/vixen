@@ -51,7 +51,11 @@ which layer today?”
 - ADR-017 frontend ownership migration is enforced by `gate-architecture`;
   subsequent lifecycle work adds cancellation/partition/live-document evidence
   without restoring direct frontend composition.
-- Released Linux shell changes use `just linux-release-smoke`; FlatPark package verification follows after the immutable GitHub Release exists. Direct GTK compatibility-shell work remains an in-tree parity concern.
+- Released Linux shell changes use `just linux-release-smoke`. FlatPark package
+  submission and verification follow only after the Linux basic-browser gate;
+  an immutable GitHub Release alone does not make registry publishing a current
+  priority. Direct GTK compatibility-shell work remains an in-tree parity
+  concern.
 - `just gate-native-abi` proves the handwritten C ABI/header/wire/frame ownership
   milestone over the same safe controller. `just gate-flutter-shell` adds Dart,
   widget, worker-isolate, texture-presenter, and live native smoke evidence. It

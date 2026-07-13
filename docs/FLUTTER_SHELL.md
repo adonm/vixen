@@ -13,6 +13,13 @@ expansion. The other four targets remain part of the product direction, but
 reuse the BrowserCore/Flutter boundary proven on Linux and must not delay Linux
 convergence.
 
+Within Linux work, browser behavior outranks distribution reach. FlatPark
+submission, review, and publishing are deferred until the Flutter shell can
+navigate and visibly render controlled sites, scroll through content, accept
+keyboard plus IME text, perform back/forward/reload/stop and find/zoom, and
+recover from bounded navigation/runtime/surface failures. The deterministic
+release archive remains a build gate while that product gate is open.
+
 ## Status and evidence boundary
 
 **Implemented Linux alpha slice:** the repository contains a Flutter 3.46 beta Linux
@@ -90,7 +97,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Flutter parity with the compatibility shell; deterministic official archive and checksum-pinned FlatPark package; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; FlatPark review, IME, full semantics/native AT, host services, broader matrix, and parity remain open |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; scrolling, IME, find/zoom, recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -267,6 +274,12 @@ create/close/duplicate/reopen, address/search, reload/stop, history traversal,
 find, zoom, diagnostics, downloads/permissions, settings/privacy controls,
 session restore, shortcuts, visible WebRender content, input, viewport changes,
 error recovery, and accessibility projection.
+
+FlatPark is sequenced after the smaller basic-browser gate, not alongside its
+implementation. Until scrolling, IME text entry, find/zoom, core navigation
+controls, visible rendering, and bounded recovery are proven, maintain archive
+reproducibility and launch smoke only; do not prioritize registry descriptor,
+review, publication, or update-channel work.
 
 The Linux release archive is now the Flutter composition root. It uses the
 official x86_64 Flutter 3.46.0-0.3.pre beta archive and verifies its framework

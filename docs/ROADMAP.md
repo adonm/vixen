@@ -116,6 +116,14 @@ Other material gaps remain:
   release evidence, and all non-Linux runners remain open; native
   BrowserCore/V8/WebRender viability remains unproven outside Linux.
 
+**Current product-priority gate:** do not spend delivery time on FlatPark
+submission, review, or publishing until the Linux Flutter path is a basic usable
+browser. The gate requires visible controlled-site navigation, engine-owned
+scrolling, pointer/keyboard plus text/IME input, back/forward/reload/stop,
+find/zoom, and bounded navigation/runtime/surface failure recovery. Keep the
+deterministic release archive healthy as build evidence, but package-registry
+availability does not outrank browser behavior.
+
 ## Design rules for every stage
 
 1. **One authoritative state graph.** Profile → browser → browsing context →
@@ -543,21 +551,25 @@ correctness. Neither may starve the other.
    document/contenteditable selection, long-tail relationship/state mappings,
    and broader native AT/screen-reader evidence. Add platform
    host-service UI; both remain cross-cutting through every later platform.
-5. Use the landed checked-in hello-Flutter peer, controlled release-bundle
-   build, component/delta analyzer, initial clean x86_64 size report, and pinned
-   GitHub Release/FlatPark package to reproduce and review Linux size/performance baselines and
-   add compressed/install attribution. Adopt warning thresholds only after
-   reviewed evidence; do not invent hard budgets.
-6. Reach Linux parity, then remove Relm4/libadwaita/custom GLArea ownership. GTK
+5. Complete the Linux basic-browser gate: visible controlled-site navigation,
+   engine-owned scrolling, text/IME input, back/forward/reload/stop, find/zoom,
+   and bounded navigation/runtime/surface recovery. Keep release-archive smoke
+   green, but defer FlatPark submission/review/publishing until this gate passes.
+6. Use the landed checked-in hello-Flutter peer, controlled release-bundle
+   build, component/delta analyzer, and initial clean x86_64 size report to
+   reproduce and review Linux size/performance baselines. Add compressed/install
+   attribution after browser usability; adopt warning thresholds only after
+   reviewed evidence and do not invent hard budgets.
+7. Reach Linux parity, then remove Relm4/libadwaita/custom GLArea ownership. GTK
    may remain as a Flutter Linux embedder runtime dependency.
-7. Expand the same bridge/chrome contract to macOS and Windows, with native
+8. Expand the same bridge/chrome contract to macOS and Windows, with native
    texture, accessibility, host-service, packaging/signing, ABI, size, and
    performance proof.
-8. Bring up Android with pinned V8 source/toolchain, GLES, lifecycle, input/
+9. Bring up Android with pinned V8 source/toolchain, GLES, lifecycle, input/
    accessibility, and split-ABI proof.
-9. Widen the existing V8 WebAssembly path with the same API, resource-limit,
+10. Widen the existing V8 WebAssembly path with the same API, resource-limit,
    malformed-module, and conformance proof on every declared target.
-10. Bring up `aarch64-apple-ios-sim` with the same Flutter bridge, V8 JavaScript/
+11. Bring up `aarch64-apple-ios-sim` with the same Flutter bridge, V8 JavaScript/
     WebAssembly, rendering, simulated lifecycle, input, accessibility, and host-
     service behavior. Physical iOS/TestFlight/App Store work requires a new ADR.
 

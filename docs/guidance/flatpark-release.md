@@ -4,6 +4,12 @@ Vixen publishes one official x86_64 Linux archive on GitHub Releases. FlatPark
 repackages those unchanged, checksum-pinned bytes as a signed Flatpak. Vixen no
 longer builds or hosts its own OSTree repository.
 
+> **Priority gate:** this document is a deferred release runbook. Keep the
+> official archive reproducible, but do not submit, review, or publish through
+> FlatPark until the Linux Flutter shell passes the basic-browser gate defined
+> in `../ROADMAP.md` (visible navigation/rendering, scrolling, text/IME, core
+> navigation controls, find/zoom, and bounded recovery).
+
 This deliberately separates two responsibilities:
 
 1. **Vixen CI** builds and tests `vixen-linux-x86_64.tar.gz` from the tagged
@@ -76,6 +82,8 @@ engine revisions, native layout, deterministic archive, bounded launch, and
 Impeller log must all pass.
 
 ## FlatPark submission
+
+This section is intentionally inactive while the basic-browser gate is open.
 
 The FlatPark registry entry uses `extra-data` and an immutable GitHub Release
 asset URL. Its update resolver reads Vixen's latest GitHub Release and selects

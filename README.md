@@ -15,6 +15,10 @@ most web capability per byte.
 host integration, packaging, accessibility evidence, and performance gates land
 on Linux first. macOS, Windows, Android, and the iOS Simulator remain committed
 targets and reuse the proven BrowserCore/Flutter contract after the Linux path.
+FlatPark publishing is deliberately deferred until the Linux Flutter shell is a
+basic usable browser: visible navigation, scrolling, text input/IME,
+back/forward/reload/stop, find/zoom, and bounded failure recovery take priority
+over package-registry work.
 
 The hard, spec-heavy, easy-to-get-wrong subsystems are delegated where that
 keeps Vixen smaller and more correct: **Stylo/selectors** for CSS matching and
@@ -44,8 +48,8 @@ controls now carry live UTF-16 selection offsets into Flutter Semantics.
 the platform tree. Same-document refreshes replace frame/semantics atomically
 and reconcile only changed semantic nodes. A release-bundle AT-SPI smoke observes
 BrowserCore's `DOM Basic` heading through the native Linux tree. IME, complete
-accessibility/screen-reader coverage, host services, release packaging, and
-non-Linux runners remain open, so the GTK/Relm4 shell is still the temporary
+accessibility/screen-reader coverage, basic-browser parity, and host services
+remain open, so the GTK/Relm4 shell is still the temporary
 Linux compatibility baseline rather than the product direction.
 
 ---
@@ -475,7 +479,9 @@ FlatPark pins and repackages that unchanged upstream archive, signs the Flatpak,
 and hosts the update repository. Vixen does not maintain a parallel OSTree
 repository. Flutter's Linux embedder uses GTK, so this removes packaged
 Relm4/libadwaita/custom GLArea ownership rather than promising a GTK-free
-runtime.
+runtime. The archive remains reproducible engineering evidence; FlatPark
+submission and publishing are not current priorities and resume only after the
+basic-browser gate in `docs/ROADMAP.md` passes.
 
 See [`docs/guidance/flatpark-release.md`](docs/guidance/flatpark-release.md)
 for the full workflow. Headless/CI hosts that only build `vixen-api` /
@@ -542,7 +548,8 @@ Update both when resolving.
   latest stable major OS release at the release cutoff; older releases are
   best-effort unless explicitly added as a tested tier.
 - Linux publishes an official x86_64 release archive that FlatPark repackages
-  unchanged as a signed convenience Flatpak. GTK/Relm4 remains the compatibility
+  unchanged as a signed convenience Flatpak after the basic-browser gate.
+  Registry publishing is deferred meanwhile. GTK/Relm4 remains the compatibility
   baseline until Flutter parity; Flutter Linux may still depend on GTK at runtime.
 - The current Rust release profile starts with `strip = true`, `lto = "thin"`,
   `codegen-units = 1`, and `panic = "abort"`; Flutter release/AOT and native

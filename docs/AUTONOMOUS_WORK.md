@@ -39,8 +39,10 @@ For ordinary implementation details, choose the safest path aligned with
 The checked-in Linux Flutter slice uses an exact ignored SDK checkout and
 `just gate-flutter-shell`; bootstrap it with `just setup-flutter`. Do not report
 Rust/GTK checks as Flutter proof, or Dart/widget checks as Linux package proof.
-Platform work follows `FLUTTER_SHELL.md`: IME/lifecycle, complete Semantics/native AT, offline
-Flatpak/size evidence, desktop expansion, Android, then the iOS Simulator track,
+Platform work follows `FLUTTER_SHELL.md`: basic browser behavior (especially
+scrolling, IME, find/zoom, and recovery), complete Semantics/native AT, host
+services and size evidence, then FlatPark publishing, desktop expansion,
+Android, and the iOS Simulator track,
 with V8 WebAssembly, accessibility, and host services consistent across targets.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk

@@ -101,7 +101,10 @@ just linux-at-spi-smoke
 That path builds release/AOT Flutter and the Rust bridge, creates and extracts
 the deterministic GitHub Release archive, and requires an Impeller launch log.
 FlatPark repackages the released archive unchanged; broader host-matrix, native
-AT, portal, and accepted size-baseline gates remain separate.
+AT, portal, and accepted size-baseline gates remain separate. FlatPark
+submission and publishing are deferred until visible navigation/rendering,
+engine-owned scrolling, text/IME, core navigation controls, find/zoom, and
+bounded recovery make this a basic usable browser.
 
 Set `VIXEN_FFI_LIBRARY` to an absolute `libvixen_ffi.so` path only for the
 native bridge smoke test. Normal Linux bundles load `lib/libvixen_ffi.so`

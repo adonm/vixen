@@ -32,7 +32,9 @@ tar -xzf vixen-linux-x86_64.tar.gz
 
 FlatPark repackages this unchanged release archive as a signed convenience
 Flatpak. The package remains unavailable until its registry submission is
-accepted. Neither form implies parity with the remaining platform targets.
+accepted, and submission/publishing is intentionally deferred until the Linux
+Flutter shell passes the basic-browser usability gate. Neither form implies
+parity with the remaining platform targets.
 
 ![Vixen browsing Example Domain on Linux](assets/vixen-linux.png)
 
