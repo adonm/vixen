@@ -177,6 +177,18 @@ linux-release-smoke: linux-release-archive
     command -v xvfb-run >/dev/null || { printf '%s\n' "xvfb-run is required for the Linux release smoke" >&2; exit 1; }
     sh -c 'set +e; LIBGL_ALWAYS_SOFTWARE=1 timeout 15s xvfb-run -a .tmp/linux-release/smoke/vixen/vixen_shell > .tmp/linux-release-smoke.log 2>&1; status=$?; set -e; cat .tmp/linux-release-smoke.log; test "$status" -eq 124; grep -Eq "Using the Impeller rendering backend \\((Vulkan|OpenGLES|VulkanSDF|OpenGLESSDF)\\)\\." .tmp/linux-release-smoke.log'
 
+# Launch the real release bundle on an isolated X11 display and require
+# BrowserCore-projected fixture semantics to appear through native AT-SPI.
+linux-at-spi-smoke: build-flutter-release-linux
+    command -v xvfb-run >/dev/null || { printf '%s\n' "xvfb-run is required for the AT-SPI smoke" >&2; exit 1; }
+    test -n "$DBUS_SESSION_BUS_ADDRESS" || { printf '%s\n' "an active user D-Bus/AT-SPI session is required" >&2; exit 1; }
+    python3 -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi'
+    xvfb-run -a python3 scripts/flutter-at-spi-smoke.py \
+        --app {{LINUX_RELEASE_BUNDLE}}/vixen_shell \
+        --library {{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so \
+        --url file://{{justfile_directory()}}/fixtures/dom/basic.html \
+        --expect "DOM Basic"
+
 flutter-size-check-inputs: linux-release-check-inputs
 
 # Add the controlled hello peer for the raw release-bundle size comparison.

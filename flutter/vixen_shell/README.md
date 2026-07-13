@@ -68,8 +68,10 @@ advertised. Live regions and event-driven same-document full refresh are also
 implemented, as are bounded `aria-owns` reparenting, heading levels, and mixed
 checkbox state. Same-document refreshes atomically swap frame/semantics pairs,
 and content-sensitive keys reconcile only changed nodes. Long-tail relationships,
-document/contenteditable selection, and native assistive-technology smoke remain
-open.
+document/contenteditable selection, and broader screen-reader coverage remain
+open. `just linux-at-spi-smoke` already proves that the real release bundle
+exports BrowserCore's `DOM Basic` heading through the process-filtered native
+Linux AT-SPI tree.
 
 From the repository root, install the pinned Flutter 3.46.0-0.3.pre beta through
 mise and run:
@@ -93,6 +95,7 @@ The official Linux release path uses the same GNOME 50 builder environment:
 ```sh
 just linux-release-prefetch
 just linux-release-smoke
+just linux-at-spi-smoke
 ```
 
 That path builds release/AOT Flutter and the Rust bridge, creates and extracts

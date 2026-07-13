@@ -1,10 +1,20 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'src/app/vixen_app.dart';
 import 'src/bridge/native/native_browser_controller.dart';
+import 'src/bridge/browser_models.dart';
 import 'src/shell/shell_coordinator.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  runApp(VixenApp(coordinator: ShellCoordinator(NativeBrowserController())));
+  runApp(
+    VixenApp(
+      coordinator: ShellCoordinator(
+        NativeBrowserController(),
+        initialUrl: Platform.environment['VIXEN_START_URL'] ?? vixenStartUrl,
+      ),
+    ),
+  );
 }

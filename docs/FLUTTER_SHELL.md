@@ -233,6 +233,14 @@ generation, preserving unchanged native semantic identities while replacing
 changed nodes. The ABI deliberately remains a bounded full-snapshot protocol so
 Dart never becomes the authoritative accessibility graph.
 
+The first native Linux evidence is checked in as `just linux-at-spi-smoke`. It
+launches the release/AOT bundle on Xvfb with a fresh profile and an explicit
+local fixture URL, traverses the host AT-SPI tree under strict node/time bounds,
+filters by the launched process id, and requires BrowserCore's `DOM Basic`
+heading. The environment-only initial URL changes startup intent but does not
+bypass BrowserCore URL/navigation policy. Broader Orca interaction and control
+action/state coverage remain release work.
+
 Semantic focus is dispatched only when the exact context, document, runtime,
 viewport, source generation, capped wire generation, node id, and advertised
 capability still match; BrowserCore executes live focus events/mutation and Dart
@@ -244,7 +252,7 @@ unadvertised. Complete accessibility still requires long-tail relationship and
 state mappings, document/contenteditable selection, wire-delta optimization,
 broader authored-range keyboard conventions, the disabled-fieldset
 first-legend exception, full ARIA presentational-role conflict handling, and
-native AT smoke on each platform.
+native AT and screen-reader smoke on each additional platform.
 
 Host-service UI is Flutter-owned presentation over BrowserCore decisions:
 permissions, file/directory selection, downloads, external opens, credentials,

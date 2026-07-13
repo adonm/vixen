@@ -39,13 +39,14 @@ Authored ARIA sliders/spinbuttons with finite numeric state also expose live,
 generation-checked adjustment actions. Explicit `aria-live` plus implicit live
 roles project into Flutter live regions, and runtime-effect events trigger a
 fresh frame/semantics pair for the active document. Focused writable native text
-controls now carry live UTF-16 selection offsets into Flutter Semantics. IME,
+controls now carry live UTF-16 selection offsets into Flutter Semantics.
 `aria-owns` reparenting, heading levels, and mixed checkbox state also map into
 the platform tree. Same-document refreshes replace frame/semantics atomically
-and reconcile only changed semantic nodes. IME, complete accessibility/native
-AT, host services, release packaging, and non-Linux runners
-remain open, so the GTK/Relm4 shell is still the temporary Linux compatibility
-baseline rather than the product direction.
+and reconcile only changed semantic nodes. A release-bundle AT-SPI smoke observes
+BrowserCore's `DOM Basic` heading through the native Linux tree. IME, complete
+accessibility/screen-reader coverage, host services, release packaging, and
+non-Linux runners remain open, so the GTK/Relm4 shell is still the temporary
+Linux compatibility baseline rather than the product direction.
 
 ---
 

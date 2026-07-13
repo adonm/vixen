@@ -10,9 +10,10 @@ import 'address.dart';
 final class ShellCoordinator extends ChangeNotifier {
   static const int maxPendingInputEvents = 64;
 
-  ShellCoordinator(this.controller);
+  ShellCoordinator(this.controller, {this.initialUrl = vixenStartUrl});
 
   final BrowserController controller;
+  final String initialUrl;
   final List<BrowsingContextState> _contexts = [];
   final Set<int> _closedContextIds = {};
   final Map<int, int> _pendingNavigations = {};
@@ -97,9 +98,7 @@ final class ShellCoordinator extends ChangeNotifier {
       var snapshot = await controller.browserSnapshot();
       _replaceFromSnapshot(snapshot);
       if (snapshot.contexts.isEmpty) {
-        final urls = session.tabs.isEmpty
-            ? const [vixenStartUrl]
-            : session.tabs;
+        final urls = session.tabs.isEmpty ? [initialUrl] : session.tabs;
         final created = <int>[];
         for (final url in urls) {
           final contextId = await controller.createContext();

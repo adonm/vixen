@@ -106,6 +106,7 @@ host-environment limitation. Verify release-shell changes with:
 just flutter-builder-update
 just linux-release-prefetch
 just linux-release-smoke
+just linux-at-spi-smoke
 ```
 
 Use native GTK development packages only for ad-hoc local work. Keep blocker

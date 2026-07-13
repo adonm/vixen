@@ -33,6 +33,20 @@ void main() {
     },
   );
 
+  test('startup accepts one explicit initial URL for native smokes', () async {
+    final controller = ScriptedBrowserController();
+    final coordinator = ShellCoordinator(
+      controller,
+      initialUrl: 'file:///accessibility.html',
+    );
+
+    await coordinator.start();
+    await flushEvents();
+
+    expect(coordinator.selectedContext?.url, 'file:///accessibility.html');
+    await coordinator.close();
+  });
+
   test(
     'startup restores session tabs and selected index through commands',
     () async {

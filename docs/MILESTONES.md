@@ -14,7 +14,7 @@ which layer today?”
 | `just gate-architecture` | leaf-crate dependency rules plus frontend rules that forbid the former shell/headless direct composition; production frontends may use only `vixen-api` and `vixen-engine` |
 | `just test-flutter-controller` | Safe controller and native boundary crate tests: one non-clone BrowserCore/event owner, immediate navigation acceptance, exact terminal events, active-load stop, contexts/profile session, and C ABI unit/integration coverage; not Dart or Flutter proof |
 | `just gate-native-abi` | Builds `vixen-ffi` library forms and runs focused ABI v1 layout/header, opaque handle, bounded UTF-8/JSON command, stable response/event/error, event-sequence, output-buffer ownership, and panic-containment tests; native C ABI evidence only |
-| `just gate-flutter-shell` | Exact mise-managed Flutter 3.46.0-0.3.pre beta framework/engine revisions, Dart formatting/analysis, 50 shell/coordinator/worker/texture/input/Semantics tests, including monotonic host focus/visibility/lifecycle state, bounded descriptions and `aria-controls`/`aria-describedby`/`aria-details`/`aria-owns` relationships, heading/mixed-state mapping, native/authored range adjustment, live-region mapping, native text-control selection, atomic frame/semantics replacement, and node-level incremental reconciliation, live process-adjacent native bridge smoke, and focused native ABI/frame/input/accessibility tests; Linux source/test evidence, not IME, native AT, lifecycle recovery, package, release, or non-Linux proof |
+| `just gate-flutter-shell` | Exact mise-managed Flutter 3.46.0-0.3.pre beta framework/engine revisions, Dart formatting/analysis, 51 shell/coordinator/worker/texture/input/Semantics tests, including monotonic host focus/visibility/lifecycle state, bounded descriptions and `aria-controls`/`aria-describedby`/`aria-details`/`aria-owns` relationships, heading/mixed-state mapping, native/authored range adjustment, live-region mapping, native text-control selection, atomic frame/semantics replacement, and node-level incremental reconciliation, live process-adjacent native bridge smoke, and focused native ABI/frame/input/accessibility tests; Linux source/test evidence, not IME, native AT, lifecycle recovery, package, release, or non-Linux proof |
 | `just gate-smoke` | reviewer baseline: formatting, clippy, host checks, and all host-runnable tests |
 | `just gate-push` | hk pre-push integration point: alpha, phase-6 runtime, smoke, and diff checks |
 | `just gate-webidl` | generated WebIDL constructor/prototype coverage plus headless/CDP runtime-host integration |
@@ -34,6 +34,7 @@ which layer today?”
 | `just fuzz-security` | URL, CSP, cookie, and HTML parser fuzz targets at the configured run count |
 | `just audit` | `cargo audit` plus `cargo deny check` |
 | `just linux-release-smoke` | pinned x86_64 Flutter 3.46.0-0.3.pre beta release/AOT plus Rust bridge build; deterministic archive creation, clean extraction, and Impeller-aware Xvfb launch smoke |
+| `just linux-at-spi-smoke` | real release/AOT Flutter bundle on Xvfb with a fresh BrowserCore profile and local fixture; bounded process-filtered AT-SPI traversal must observe the BrowserCore-derived `DOM Basic` heading; Linux native AT evidence, not a screen-reader matrix |
 | `just size-headless` | structured logical/allocated size, file count, and SHA-256 for the headless release binary |
 | `just size-flutter-linux` | controlled release/AOT build and component-attributed raw-bundle comparison against the checked-in hello-Flutter peer; measurement-only and not FlatPark package evidence |
 | `just baseline-headless` / `just baseline-headless-json` | per-scenario latency and Linux process-memory measurements for committed startup, navigation/runtime, layout, paint, and screenshot controls |
@@ -58,8 +59,9 @@ which layer today?”
   focus/visibility/lifecycle state, and the bounded
   BrowserCore-to-Flutter Semantics hierarchy with bounded descriptions, three
   non-tree relationships, native/authored range actions, live regions, and
-  event-driven full projection refresh, but not IME, complete semantics/native
-  AT, packages, release behavior, or non-Linux GUI support; use
+  event-driven full projection refresh. `linux-at-spi-smoke` adds first native
+  Linux AT evidence, but not IME, complete screen-reader coverage, packages,
+  release behavior, or non-Linux GUI support; use
   `FLUTTER_SHELL.md` for remaining gates.
 - Size/performance thresholds become gates only after a representative baseline,
   environment, and comparison method are committed.
