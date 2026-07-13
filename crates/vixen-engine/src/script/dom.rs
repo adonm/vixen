@@ -65,6 +65,9 @@ pub(super) enum DomMutation {
     },
     SetControlSelection {
         node_id: usize,
+        element_id: Option<String>,
+        name: Option<String>,
+        tag: String,
         base_offset: u32,
         extent_offset: u32,
     },
@@ -380,6 +383,9 @@ fn op_vixen_dom_set_control_value(
 fn op_vixen_dom_set_control_selection(
     state: &mut OpState,
     node_id: u32,
+    #[string] element_id: String,
+    #[string] name: String,
+    #[string] tag: String,
     base_offset: u32,
     extent_offset: u32,
 ) -> deno_core::serde_json::Value {
@@ -390,6 +396,9 @@ fn op_vixen_dom_set_control_selection(
     }
     host.mutations.push(DomMutation::SetControlSelection {
         node_id,
+        element_id: (!element_id.is_empty()).then_some(element_id),
+        name: (!name.is_empty()).then_some(name),
+        tag,
         base_offset,
         extent_offset,
     });
@@ -3272,7 +3281,14 @@ const DOM_API_BOOTSTRAP: &str = r#"
     record.selectionStart = nextStart;
     record.selectionEnd = nextEnd;
     if (record.nodeId > 0 && isTextEditableControl(element)) {
-      unwrapDomOp(op_vixen_dom_set_control_selection(record.nodeId, nextStart, nextEnd));
+      unwrapDomOp(op_vixen_dom_set_control_selection(
+        record.nodeId,
+        record.id || '',
+        recordAttr(record, 'name') || '',
+        elementTag(element),
+        nextStart,
+        nextEnd,
+      ));
     }
   }
 

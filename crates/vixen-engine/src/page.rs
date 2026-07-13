@@ -236,14 +236,16 @@ impl Page {
     pub fn set_form_control_selection(
         &mut self,
         node_id: usize,
+        element_id: Option<&str>,
+        name: Option<&str>,
+        tag: &str,
         base_offset: u32,
         extent_offset: u32,
     ) -> Result<(), String> {
-        let element = self
-            .document
-            .element_by_node_id(node_id)
-            .ok_or_else(|| format!("element node {node_id} is missing"))?;
-        if !matches!(element.tag.as_str(), "input" | "textarea") {
+        let node_id = self
+            .resolve_form_control_node_id(node_id, element_id, name, tag)
+            .ok_or_else(|| format!("native text control node {node_id} is missing"))?;
+        if !matches!(tag, "input" | "textarea") {
             return Err("text selection target is not a native text control".to_owned());
         }
         let selection = AccessibilityTextSelection {
@@ -256,6 +258,36 @@ impl Page {
         self.control_selections.insert(node_id, selection);
         self.bump_accessibility_mutation_epoch();
         Ok(())
+    }
+
+    fn resolve_form_control_node_id(
+        &self,
+        node_id: usize,
+        element_id: Option<&str>,
+        name: Option<&str>,
+        tag: &str,
+    ) -> Option<usize> {
+        let matches_identity = |element: &crate::style_dom::MatchedElement| {
+            element.tag == tag
+                && element_id.is_none_or(|id| element.id.as_deref() == Some(id))
+                && name.is_none_or(|name| {
+                    element
+                        .attributes
+                        .iter()
+                        .any(|(attribute, value)| attribute == "name" && value == name)
+                })
+        };
+        if let Some(element) = self.document.element_by_node_id(node_id)
+            && matches_identity(&element)
+        {
+            return Some(node_id);
+        }
+        let selector = Selector::parse(tag).ok()?;
+        self.document
+            .query_all(&selector)
+            .into_iter()
+            .find(matches_identity)
+            .map(|element| element.node_id)
     }
 
     /// Commit a live `<input>`/`<textarea>` value from the JS realm. The primary
@@ -1417,7 +1449,8 @@ mod tests {
         )
         .unwrap();
         let input_id = page.query_selector_all("#name").unwrap()[0].node_id;
-        page.set_form_control_selection(input_id, 1, 4).unwrap();
+        page.set_form_control_selection(input_id, Some("name"), None, "input", 1, 4)
+            .unwrap();
         let context_id = BrowsingContextId::new(1).unwrap();
         let document_id = DocumentId::new(1).unwrap();
         let unfocused = page.accessibility_snapshot(context_id, document_id, (800, 600));
