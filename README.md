@@ -41,7 +41,9 @@ roles project into Flutter live regions, and runtime-effect events trigger a
 fresh frame/semantics pair for the active document. Focused writable native text
 controls now carry live UTF-16 selection offsets into Flutter Semantics. IME,
 `aria-owns` reparenting, heading levels, and mixed checkbox state also map into
-the platform tree. IME, complete accessibility/native AT, host services, release packaging, and non-Linux runners
+the platform tree. Same-document refreshes replace frame/semantics atomically
+and reconcile only changed semantic nodes. IME, complete accessibility/native
+AT, host services, release packaging, and non-Linux runners
 remain open, so the GTK/Relm4 shell is still the temporary Linux compatibility
 baseline rather than the product direction.
 

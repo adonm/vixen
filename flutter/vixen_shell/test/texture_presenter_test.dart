@@ -309,8 +309,14 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    final finder = find.byKey(const ValueKey('semantic-9-42'));
-    final parentFinder = find.byKey(const ValueKey('semantic-9-7'));
+    final finder = find.byWidgetPredicate(
+      (widget) =>
+          widget is Semantics && widget.properties.label == 'Open settings',
+    );
+    final parentFinder = find.byWidgetPredicate(
+      (widget) =>
+          widget is Semantics && widget.properties.label == 'Page content',
+    );
     expect(find.descendant(of: parentFinder, matching: finder), findsOneWidget);
     expect(
       tester.getSemantics(finder),
@@ -331,7 +337,9 @@ void main() {
     tester.widget<Semantics>(finder).properties.onFocus!();
     expect(tapped?.id, 42);
     expect(focused?.id, 42);
-    final textboxFinder = find.byKey(const ValueKey('semantic-9-43'));
+    final textboxFinder = find.byWidgetPredicate(
+      (widget) => widget is Semantics && widget.properties.label == 'Name',
+    );
     expect(
       tester.getSemantics(textboxFinder),
       matchesSemantics(
@@ -359,7 +367,9 @@ void main() {
       tester.widget<Semantics>(textboxFinder).properties.identifier,
       'vixen-10-20-43',
     );
-    final sliderFinder = find.byKey(const ValueKey('semantic-9-44'));
+    final sliderFinder = find.byWidgetPredicate(
+      (widget) => widget is Semantics && widget.properties.label == 'Volume',
+    );
     expect(
       tester.getSemantics(sliderFinder),
       matchesSemantics(
@@ -384,19 +394,105 @@ void main() {
     expect(adjusted?.$2, isTrue);
     expect(
       tester
-          .widget<Semantics>(find.byKey(const ValueKey('semantic-9-45')))
+          .widget<Semantics>(
+            find.byWidgetPredicate(
+              (widget) =>
+                  widget is Semantics &&
+                  widget.properties.label == 'Preferences',
+            ),
+          )
           .properties
           .headingLevel,
       2,
     );
     expect(
       tester
-          .widget<Semantics>(find.byKey(const ValueKey('semantic-9-46')))
+          .widget<Semantics>(
+            find.byWidgetPredicate(
+              (widget) =>
+                  widget is Semantics &&
+                  widget.properties.label == 'Some selected',
+            ),
+          )
           .properties
           .mixed,
       isTrue,
     );
     semantics.dispose();
+  });
+
+  testWidgets('semantic reconciliation keys only changed nodes', (
+    tester,
+  ) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final controller = _TestTextureController();
+
+    Future<Key?> pumpNode(int generation, String label) async {
+      final node = BrowserAccessibilityNode(
+        id: 1,
+        role: 'button',
+        label: label,
+        bounds: const BrowserAccessibilityRect(
+          x: 10,
+          y: 10,
+          width: 100,
+          height: 40,
+        ),
+        focused: false,
+        disabled: false,
+        selected: false,
+        hidden: false,
+        focusable: true,
+        actions: const ['tap', 'focus'],
+      );
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Center(
+            child: SizedBox(
+              width: 400,
+              height: 300,
+              child: BrowserContentSurface(
+                contextState: BrowsingContextState.initial(
+                  10,
+                ).copyWith(documentId: 20),
+                frame: sizedTestFrame(
+                  frameId: generation,
+                  width: 400,
+                  height: 300,
+                ),
+                textureController: controller,
+                accessibility: BrowserAccessibilitySnapshot(
+                  sourceGeneration: generation,
+                  generation: generation,
+                  contextId: 10,
+                  documentId: 20,
+                  viewportWidth: 400,
+                  viewportHeight: 300,
+                  nodes: [node],
+                  truncated: false,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return tester
+          .widget<Semantics>(
+            find.byWidgetPredicate(
+              (widget) =>
+                  widget is Semantics && widget.properties.label == label,
+            ),
+          )
+          .key;
+    }
+
+    final first = await pumpNode(1, 'Stable');
+    final unchanged = await pumpNode(2, 'Stable');
+    final changed = await pumpNode(3, 'Changed');
+    expect(unchanged, first);
+    expect(changed, isNot(unchanged));
   });
 }
 

@@ -35,7 +35,6 @@ final class ShellCoordinator extends ChangeNotifier {
   int _captureGeneration = 0;
   int _accessibilityGeneration = 0;
   int _projectionGeneration = 0;
-  int? _frameProjectionGeneration;
   int _inputGeneration = 0;
   int _hostViewGeneration = 0;
   int _pendingInputEvents = 0;
@@ -43,6 +42,7 @@ final class ShellCoordinator extends ChangeNotifier {
   BrowserFrame? _frame;
   BrowserAccessibilitySnapshot? _accessibility;
   _PendingAccessibility? _pendingAccessibility;
+  _PendingFrame? _pendingFrame;
   InputDispatchedResponse? _lastInputResult;
   bool _captureInFlight = false;
   bool _accessibilityCaptureInFlight = false;
@@ -689,9 +689,8 @@ final class ShellCoordinator extends ChangeNotifier {
       return;
     }
     final projectionGeneration = ++_projectionGeneration;
-    _accessibility = null;
     _pendingAccessibility = null;
-    _frameProjectionGeneration = null;
+    _pendingFrame = null;
     _scheduleAccessibilityCapture(
       key,
       projectionGeneration: projectionGeneration,
@@ -730,10 +729,8 @@ final class ShellCoordinator extends ChangeNotifier {
               _frame!.contextId != captured.contextId ||
               _frame!.documentId != captured.documentId ||
               captured.frameId > _frame!.frameId)) {
-        _frame = captured;
-        _frameProjectionGeneration = request.projectionGeneration;
+        _pendingFrame = _PendingFrame(request.projectionGeneration, captured);
         _publishAccessibilityIfPaired();
-        _notify();
       }
     } catch (error) {
       if (request.generation == _captureGeneration &&
@@ -814,17 +811,20 @@ final class ShellCoordinator extends ChangeNotifier {
 
   void _publishAccessibilityIfPaired() {
     final pending = _pendingAccessibility;
-    final frame = _frame;
+    final pendingFrame = _pendingFrame;
+    final frame = pendingFrame?.frame;
     if (pending == null ||
         frame == null ||
-        pending.projectionGeneration != _frameProjectionGeneration ||
+        pending.projectionGeneration != pendingFrame!.projectionGeneration ||
         frame.contextId != pending.snapshot.contextId ||
         frame.documentId != pending.snapshot.documentId ||
         frame.width != pending.snapshot.viewportWidth ||
         frame.height != pending.snapshot.viewportHeight) {
       return;
     }
+    _frame = frame;
     _accessibility = pending.snapshot;
+    _pendingFrame = null;
     _pendingAccessibility = null;
     _notify();
   }
@@ -844,7 +844,7 @@ final class ShellCoordinator extends ChangeNotifier {
     _lastCaptureKey = null;
     _replacementCapture = null;
     _captureGeneration++;
-    _frameProjectionGeneration = null;
+    _pendingFrame = null;
     _projectionGeneration++;
     _accessibility = null;
     _pendingAccessibility = null;
@@ -998,6 +998,13 @@ final class _PendingAccessibility {
 
   final int projectionGeneration;
   final BrowserAccessibilitySnapshot snapshot;
+}
+
+final class _PendingFrame {
+  const _PendingFrame(this.projectionGeneration, this.frame);
+
+  final int projectionGeneration;
+  final BrowserFrame frame;
 }
 
 final class _InputGeneration {

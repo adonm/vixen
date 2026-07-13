@@ -238,6 +238,14 @@ cycles/backward ownership are ignored. Native `h1`–`h6` and valid authored
 maps to Flutter's tri-state semantics rather than being discarded as an invalid
 boolean.
 
+The Flutter coordinator stages a refreshed frame and semantics snapshot under
+one projection generation and publishes both atomically. Node reconciliation
+keys include context/document/node identity plus bounded semantic content, but
+not the whole-snapshot generation, so unchanged nodes retain platform identity
+while changed nodes are replaced. BrowserCore and the ABI still send a bounded
+full authoritative snapshot; wire-level semantic deltas are an optimization,
+not required state ownership.
+
 Flutter also sends one monotonic BrowserCore-owned host-view state for content
 focus, visibility, effective scale, and application lifecycle. Current documents
 expose the accepted state through `document.hasFocus()`, `hidden`, and

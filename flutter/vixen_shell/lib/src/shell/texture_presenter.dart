@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 
@@ -533,7 +534,12 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
             width: bounds.width * scale,
             height: bounds.height * scale,
             child: Semantics(
-              key: ValueKey('semantic-${snapshot.generation}-${node.id}'),
+              key: ValueKey((
+                snapshot.contextId,
+                snapshot.documentId,
+                node.id,
+                jsonEncode(node.toWire()),
+              )),
               container: true,
               explicitChildNodes: children.isNotEmpty,
               identifier: semanticIdentifier,

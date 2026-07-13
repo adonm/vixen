@@ -594,6 +594,7 @@ void main() {
     () async {
       var nextFrameId = 0;
       var sourceGeneration = 0;
+      final replacementFrame = Completer<BrowserFrame?>();
       final controller = ScriptedBrowserController(
         snapshot: BrowserSnapshot(
           activeContextId: 8,
@@ -610,13 +611,17 @@ void main() {
               nodes: [semanticButton(id: 1)],
               truncated: false,
             ),
-        onCaptureFrame: (contextId, documentId, width, height) => browserFrame(
-          width: width,
-          height: height,
-          frameId: ++nextFrameId,
-          contextId: contextId,
-          documentId: documentId,
-        ),
+        onCaptureFrame: (contextId, documentId, width, height) {
+          final frameId = ++nextFrameId;
+          if (frameId > 1) return replacementFrame.future;
+          return browserFrame(
+            width: width,
+            height: height,
+            frameId: frameId,
+            contextId: contextId,
+            documentId: documentId,
+          );
+        },
       );
       final coordinator = ShellCoordinator(controller);
       await coordinator.start();
@@ -643,6 +648,19 @@ void main() {
       await flushEvents();
 
       expect(controller.frameRequests, hasLength(2));
+      expect(coordinator.frame?.frameId, 1);
+      expect(coordinator.accessibility!.sourceGeneration, firstGeneration);
+
+      replacementFrame.complete(
+        browserFrame(
+          width: 320,
+          height: 180,
+          frameId: 2,
+          contextId: 8,
+          documentId: 800,
+        ),
+      );
+      await flushEvents();
       expect(coordinator.frame?.frameId, 2);
       expect(
         coordinator.accessibility!.sourceGeneration,

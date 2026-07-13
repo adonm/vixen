@@ -66,7 +66,8 @@ and live value/event machinery for enabled writable native text controls;
 passwords, readonly controls, unsupported types, and ARIA-only textboxes are not
 advertised. Live regions and event-driven same-document full refresh are also
 implemented, as are bounded `aria-owns` reparenting, heading levels, and mixed
-checkbox state. Semantic deltas, long-tail relationships,
+checkbox state. Same-document refreshes atomically swap frame/semantics pairs,
+and content-sensitive keys reconcile only changed nodes. Long-tail relationships,
 document/contenteditable selection, and native assistive-technology smoke remain
 open.
 

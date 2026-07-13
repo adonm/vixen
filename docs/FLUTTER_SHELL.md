@@ -226,6 +226,13 @@ for retained later nodes, while preserving parent-before-child and first-owner
 constraints. Native/authored heading levels and mixed checkbox state map to
 Flutter's dedicated semantics properties instead of generic labels.
 
+Same-document updates now stage the next frame and semantic projection and swap
+them atomically; neither half is exposed alone. Flutter reconciliation keys are
+content-sensitive per semantic node rather than tied to the whole snapshot
+generation, preserving unchanged native semantic identities while replacing
+changed nodes. The ABI deliberately remains a bounded full-snapshot protocol so
+Dart never becomes the authoritative accessibility graph.
+
 Semantic focus is dispatched only when the exact context, document, runtime,
 viewport, source generation, capped wire generation, node id, and advertised
 capability still match; BrowserCore executes live focus events/mutation and Dart
@@ -234,7 +241,7 @@ set-value action only for enabled, writable native text inputs/textareas; it
 uses the live control-value and input/change event path, while password,
 readonly, unsupported input types, and authored ARIA-only textboxes remain
 unadvertised. Complete accessibility still requires long-tail relationship and
-state mappings, document/contenteditable selection, semantic delta updates,
+state mappings, document/contenteditable selection, wire-delta optimization,
 broader authored-range keyboard conventions, the disabled-fieldset
 first-legend exception, full ARIA presentational-role conflict handling, and
 native AT smoke on each platform.

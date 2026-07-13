@@ -241,7 +241,10 @@ selection offsets through Flutter Semantics. Semantic deltas,
 document/contenteditable selection, long-tail authored-range/relationship
 mappings, and native AT remain. Bounded `aria-owns` now re-parents retained
 later nodes, and heading levels plus mixed checkbox state use dedicated Flutter
-semantics properties.
+semantics properties. Same-document refreshes atomically replace the paired
+frame/projection and content-sensitive node keys retain unchanged platform
+semantics identities; the bounded ABI remains full-snapshot rather than making
+Dart own a delta graph.
 External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
 sparse paths. Headless `--incremental` now captures real before/after frames from
@@ -535,8 +538,8 @@ correctness. Neither may starve the other.
 4. Extend the landed bounded hierarchical accessibility projection beyond its
    `aria-controls`/`aria-describedby`/`aria-details` relationships, descriptions,
    and native/authored-range increase/decrease and live-region slices: add
-   semantic delta updates, document/contenteditable selection, long-tail
-   relationship/state mappings, and native AT evidence. Add platform
+   document/contenteditable selection, long-tail relationship/state mappings,
+   and native AT evidence. Add platform
    host-service UI; both remain cross-cutting through every later platform.
 5. Use the landed checked-in hello-Flutter peer, controlled release-bundle
    build, component/delta analyzer, initial clean x86_64 size report, and pinned
