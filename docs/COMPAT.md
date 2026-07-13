@@ -193,15 +193,12 @@ context-tracing archive implementation.
 
 ---
 
-## Current desktop shell smoke baseline
+## Current Flutter shell smoke baseline
 
-The GTK/libadwaita shell is not a WPT surface, but alpha daily-smoke builds now
-route one app-level worker and all tab ids through BrowserCore. Profile-session
-load/save and explicit clear-data selections use browser commands; empty or
-unavailable profiles fall back to the configured start page and records remain
-bounded by the profile store. Native `gtk-shell` checks may be host-package
-blocked; use `just gate-flutter-shell` and `just linux-release-smoke` for the
-released GUI path.
+Flutter is the sole rendered GUI. `just gate-flutter-shell` covers its
+BrowserCore controller, tabs, input, texture, and Semantics seams;
+`just linux-release-smoke` covers the exact release archive under native
+Wayland. These are integration gates rather than WPT surfaces.
 
 The Flutter semantics projection additionally carries bounded `aria-controls`,
 `aria-describedby`, and `aria-details` relationships to retained semantic nodes.

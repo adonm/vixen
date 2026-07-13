@@ -18,9 +18,9 @@ tree state.
 | **Firefox**    | `https://github.com/mozilla-firefox/firefox.git`                  | `46e9f12a8f9b`     | `main` | CSS property definitions, DOM API behavior, JS/realm/rooting discipline, WebRender internals, WPT test selection. Also hosts the `servo/` Stylo subtree (see below). |
 | **Servo Stylo** (under Firefox tree) | vendored at `firefox/servo/` @ `46e9f12a8f9b` | (same as Firefox) | —      | **Primary CSS reference.** Stylo (`components/style/`), selectors (`components/selectors/`), and supporting Servo crates. Current Firefox HEAD does **not** carry the old Servo script/layout crates. |
 | **Ladybird**   | `https://github.com/LadybirdBrowser/ladybird.git`                 | `0de15a5dd2a9`     | `master` | **Primary layout architecture reference.** LibWeb DOM/style/layout/paint seams, TreeBuilder, formatting contexts, display-list construction. |
-| **GNOME Web (Epiphany)** | `https://gitlab.gnome.org/GNOME/epiphany.git`            | `21e02b9a272d`     | `main` | GTK4/libadwaita shell patterns, WebKitGTK embedding, GSettings usage, Flatpak manifest conventions. |
+| **Flutter**    | `https://github.com/flutter/flutter.git`                          | `677d472756f8`     | `beta` | **Primary GUI reference.** Widget, Semantics, platform-channel, texture, Linux runner-template, and test patterns for the pinned SDK. |
+| **GNOME Web (Epiphany)** | `https://gitlab.gnome.org/GNOME/epiphany.git`            | `21e02b9a272d`     | `main` | Linux browser AppStream/desktop metadata, portal behavior, and Flatpak manifest conventions. |
 | **Obscura**    | `https://github.com/h4ckf0r0day/obscura.git`                      | `ca71ce3c2da9`     | `main` | Headless CLI design, CDP server patterns, single-binary distribution. |
-| **Relm4**      | `https://github.com/Relm4/relm4.git`                              | `1ee9b5208b8b`     | `main` | Relm4 component patterns, factory widgets, async actions. The `examples/` and `relm4-components/` directories are the primary value. |
 | **Deno / deno_core** | `https://github.com/denoland/deno.git`                     | `83c50b1da61e`     | `main` | **Primary JS runtime packaging reference.** `deno_core` embedding, extension/op boundaries, bootstrap JS packaging, resource tables, permissions, and test layout. |
 
 ---
@@ -68,15 +68,27 @@ ladybird/Libraries/LibWeb/Painting/                ← display-list construction
 ladybird/Libraries/LibGfx/                         ← rasteriser fallback
 ```
 
+### Flutter (`flutter/`)
+
+Consult for GUI widget, Semantics, texture, platform-channel, native-runner, and
+test behavior. The mise-managed SDK is pinned to this framework revision; Vixen
+still requires its own platform evidence rather than treating Flutter support as
+BrowserCore support.
+
+```text
+flutter/packages/flutter/lib/                     ← widgets, services, Semantics
+flutter/packages/flutter_test/                    ← widget/test harness patterns
+flutter/packages/flutter_tools/templates/app/linux.tmpl/ ← Linux runner boundary
+flutter/examples/                                 ← focused framework examples
+```
+
 ### GNOME Web (`gnome-web/`)
 
-Consult for **shell-side** questions: how to embed a webview in libadwaita,
-how to structure preferences, how to write the Flatpak manifest, how to
-manage profile data per app-ID. This is the closest production analog to
-what Vixen wants to be at the shell layer.
+Consult only for Linux browser metadata, portal expectations, and Flatpak
+conventions. It is not a GUI architecture reference; Vixen renders its sole GUI
+with Flutter.
 
 ```
-gnome-web/src/                                     ← shell source
 gnome-web/data/                                    ← gschema, metainfo, desktop
 gnome-web/flatpak/                                 ← runtime/portal conventions useful for the FlatPark submission
 ```
@@ -87,18 +99,6 @@ Consult for **headless tooling**: CDP server implementation, CLI flag
 ergonomics, single-binary packaging for automation. Obscura is the
 design source for the headless CLI surface, which Vixen inherits
 verbatim.
-
-### Relm4 (`relm4/`)
-
-Consult before writing any new shell widget. The `examples/` directory is
-curated and the `relm4-components/` directory has reusable widgets
-(`relm4-components::alert`, `::simple_adw_combo_box`, etc.).
-
-```
-relm4/examples/                                    ← 45 component-pattern examples
-relm4/relm4-components/                            ← reusable widgets
-relm4/relm4/src/                                   ← factory, actions, message passing
-```
 
 ### Deno (`deno/`)
 
@@ -133,16 +133,16 @@ git clone --depth 1 --filter=blob:none --sparse --branch master https://github.c
 git -C ladybird sparse-checkout set Libraries/LibWeb Libraries/LibGfx
 git -C ladybird checkout 0de15a5dd2a9
 
+git clone --depth 1 --filter=blob:none --sparse --branch beta https://github.com/flutter/flutter.git
+git -C flutter sparse-checkout set packages/flutter packages/flutter_test packages/flutter_tools/templates/app/linux.tmpl examples
+git -C flutter checkout 677d472756f83c14371dd8cc624387065f3d32a7
+
 git clone --depth 1 --filter=blob:none --sparse --branch main https://gitlab.gnome.org/GNOME/epiphany.git gnome-web
-git -C gnome-web sparse-checkout set src data flatpak
+git -C gnome-web sparse-checkout set data flatpak
 git -C gnome-web checkout 21e02b9a272d
 
 git clone --depth 1 --filter=blob:none --branch main https://github.com/h4ckf0r0day/obscura.git
 git -C obscura checkout ca71ce3c2da9
-
-git clone --depth 1 --filter=blob:none --sparse --branch main https://github.com/Relm4/relm4.git
-git -C relm4 sparse-checkout set examples relm4-components relm4/src
-git -C relm4 checkout 1ee9b5208b8b
 
 git clone --depth 1 --filter=blob:none --sparse --branch main https://github.com/denoland/deno.git
 git -C deno sparse-checkout set core runtime ext cli

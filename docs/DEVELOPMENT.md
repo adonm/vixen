@@ -100,10 +100,10 @@ X11 and XWayland are intentionally unsupported.
 
 The released Linux shell is Flutter. Local release builds use **Podman + the
 pinned GNOME builder image**; CI builds the same release shape on Ubuntu 24.04.
-The transitional compatibility shell still uses
-GTK/libadwaita in-tree; if an ad-hoc native `cargo check --features
-vixen-shell/gtk-shell` fails with missing native packages, treat that as a
-host-environment limitation. Verify release-shell changes with:
+Flutter is the sole rendered GUI; the Rust workspace has no GTK4/libadwaita/
+Relm4 feature or fallback GUI. `just check` and `just clippy` therefore cover
+every Rust target and feature without GNOME development packages. Verify Linux
+Flutter release changes with:
 
 ```sh
 just flutter-builder-update
@@ -112,16 +112,15 @@ just linux-release-smoke
 just linux-at-spi-smoke
 ```
 
-Use native GTK development packages only for ad-hoc local work. Keep blocker
-notes explicit about this split so follow-up work points at the containerized
-release path before asking for host package installs.
+Native GTK3 development packages are needed only for direct host Flutter Linux
+builds; the pinned release container supplies them for official archive work.
 
 GitHub Releases publish the deterministic x86_64 archive built with the
 SHA-256-pinned official Flutter 3.46.0-0.3.pre beta, locked application/Cargo
 dependencies, and pinned rusty_v8 input. FlatPark repackages those bytes as a
 signed convenience Flatpak. Flutter's Linux embedder uses GTK, so migration
-removes Relm4/libadwaita/custom GLArea ownership without promising a GTK-free
-runtime.
+does not imply a GTK-free runtime; direct GTK code remains limited to Flutter's
+native runner boundary.
 
 The safe Rust controller and handwritten C ABI can be developed without Flutter
 installed:

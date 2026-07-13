@@ -1,11 +1,11 @@
-# Flutter shell plan
+# Flutter GUI contract and plan
 
 This is the authoritative plan for Vixen's primary GUI shell on Linux, macOS,
-Windows, Android, and the Apple Silicon iOS Simulator. It defines migration order, ownership, rendering,
+Windows, Android, and the Apple Silicon iOS Simulator. It defines delivery order, ownership, rendering,
 FFI, accessibility, packaging, artifact measurement, and platform gates. Product
 scope remains in [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md), browser-engine
 ownership in [`ARCHITECTURE.md`](ARCHITECTURE.md), and accepted tradeoffs in
-[`DECISIONS.md`](DECISIONS.md) ADR-018.
+[`DECISIONS.md`](DECISIONS.md) ADR-018 and ADR-021.
 
 **Linux is the highest-priority shell, integration, packaging, and release
 target.** Complete Linux parity and native evidence before equivalent platform
@@ -60,9 +60,8 @@ native IME evidence, complete lifecycle recovery and scale handling, complete
 semantic relationships/actions and native AT smoke,
 downloads/permissions,
 host services, broader FlatPark host/portal coverage, release size/performance,
-and non-Linux runners remain open. The current
-Relm4/libadwaita/GTK shell remains the compatibility baseline until those gates
-pass.
+and non-Linux runners remain open. Flutter is the only rendered GUI, so all
+remaining Linux behavior converges there rather than in a fallback shell.
 
 Flutter officially supports native deployment to Android, iOS, Windows,
 macOS, and Linux. That establishes a supported shell substrate, not proof that
@@ -119,11 +118,11 @@ cannot satisfy a release gate.
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
 | iOS Simulator | Latest stable iOS Simulator major in latest stable Xcode/macOS | Same bridge and RGBA external texture using Rust/V8 `aarch64-apple-ios-sim` | Simulator BrowserCore/V8/WebRender build, V8 JavaScript/WebAssembly, lifecycle/input/accessibility, and advisory size/performance proof | Committed simulator-only development target; unproven |
 
-The Linux Flutter embedder uses GTK. Migrating the shell removes Vixen's direct
-Relm4/libadwaita/custom `gtk4::GLArea` ownership; it does **not** promise that GTK
+The Linux Flutter embedder uses GTK3 internally. Vixen owns no separate GTK
+widget tree or custom `gtk4::GLArea`, but this does **not** promise that GTK
 runtime dependencies disappear from Linux packages.
 
-## Migration sequence
+## Delivery sequence
 
 ### 1. BrowserCore bridge and Linux fake shell
 
@@ -354,9 +353,9 @@ cert/proxy diagnostics, safe areas, notifications, platform menus, and
 application lifecycle. Native plugins provide OS access only through a narrow
 host-service interface; policy and durable decisions remain in BrowserCore.
 
-### 4. Linux parity, release/FlatPark packaging, and compatibility-shell removal
+### 4. Linux parity and release/FlatPark packaging
 
-Linux Flutter parity requires the current shell smoke surface: context/tab
+Linux Flutter parity requires the product smoke surface: context/tab
 create/close/duplicate/reopen, address/search, reload/stop, history traversal,
 find, zoom, diagnostics, downloads/permissions, settings/privacy controls,
 session restore, shortcuts, visible WebRender content, input, viewport changes,
@@ -378,10 +377,9 @@ immutable GitHub Release URL, size, and SHA-256 and repackages those unchanged
 bytes as a signed convenience Flatpak; Vixen does not maintain a parallel
 OSTree repository.
 
-The Relm4/libadwaita/custom GLArea shell remains temporarily in-tree for parity
-comparison but is no longer the package entrypoint. Remove it and its
-shell-specific dependencies only after parity and required host smokes pass.
-Linux still carries GTK through Flutter's embedder.
+The former Relm4/libadwaita/custom GLArea shell has been removed. Linux still
+carries GTK3 through Flutter's embedder; that native runner boundary must remain
+window/texture integration rather than a second application UI.
 
 ### 5. Desktop expansion
 

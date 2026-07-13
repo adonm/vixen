@@ -3,8 +3,11 @@
 Architecture decisions for Vixen, recorded ADR-style. Each entry carries
 context, the decision, the alternatives considered, and the consequences.
 
-When a future decision reverses one of these, append a new entry that
-supersedes it; do not edit the originals.
+When a future decision reverses one of these, append a new entry that supersedes
+it. Status and implementation annotations may be updated, but decision bodies
+remain historical and may describe components that no longer exist. Current
+direction follows the latest accepted ADR plus `PROJECT_DIRECTION.md` and
+`ARCHITECTURE.md`.
 
 ---
 
@@ -94,7 +97,8 @@ engine selection, no runtime engine switching.
 
 ## ADR-003: GPU-only — no CPU paint path
 
-**Status:** accepted
+**Status:** accepted for GPU-only rendering; GUI-surface detail superseded by
+ADR-018 and ADR-021
 
 **Context.** A browser paint pipeline can have one paint path (GPU) or
 two (GPU + a software CPU fallback). A CPU fallback exists traditionally
@@ -197,7 +201,8 @@ promises.
 
 ## ADR-006: One display list, one paint path, two GL surfaces
 
-**Status:** accepted
+**Status:** accepted for one display list/paint path; GTK surface detail
+superseded by ADR-018 and ADR-021
 
 **Context.** A previous design had four parallel paint implementations
 (CPU compositor, CPU renderer, "GPU renderer" that was actually CPU,
@@ -247,7 +252,7 @@ difference is the `GlContext` implementation behind it.
 
 ## ADR-007: GNOME-only target at v1.0
 
-**Status:** accepted
+**Status:** superseded by ADR-015, ADR-018, ADR-019, and ADR-021
 
 **Context.** Cross-platform browsers either limit themselves to what the
 upstream crates already abstract (Servo works on macOS/Windows) or carry
@@ -343,7 +348,7 @@ semantics (pointer focus, XDG toplevel, real input events).
 
 ## ADR-010: Idiomatic Relm4 shell
 
-**Status:** accepted
+**Status:** superseded by ADR-018 and ADR-021
 
 **Context.** The shell can be written in three styles against Relm4:
 (1) hand-rolled GTK with Relm4 only as an app entry point, (2) Relm4
@@ -627,7 +632,8 @@ The target JS architecture is Deno-shaped:
 
 ## ADR-015: Modern-Linux Firefox replacement, optimized for capability per byte
 
-**Status:** accepted
+**Status:** accepted for product focus; GUI/platform clauses superseded by
+ADR-018, ADR-019, and ADR-021
 
 **Supersedes:** ADR-007's narrow "GNOME-only" product wording. The
 Relm4/libadwaita/Flatpak implementation path remains accepted.
@@ -797,8 +803,8 @@ not an engine-plug-in abstraction.
   integration tests for ownership, partitioning, event ordering, cancellation,
   stale completions, and frontend parity.
 
-**Implementation status (2026-07-11).** The A1 migration is complete: shell,
-headless, CDP, and WPT route contexts through BrowserCore, and the architecture
+**Implementation status (2026-07-14).** The A1 migration is complete: the
+Flutter bridge, headless, CDP, and WPT route contexts through BrowserCore, and the architecture
 gate forbids their former direct leaf composition. The first A2 slice runs source
 loads on a bounded external Tokio runtime and returns generation-tagged results;
 stop/supersede abort active transport and forced late completions are rejected
@@ -815,7 +821,7 @@ remain synchronous and require the next cooperative-cancellation slice.
 
 ## ADR-018: Flutter is the primary five-platform GUI shell
 
-**Status:** accepted
+**Status:** accepted; compatibility-shell retention superseded by ADR-021
 
 **Supersedes:** ADR-007, ADR-010, and ADR-015 where they make Linux/GNOME or
 Relm4/libadwaita the product shell direction. It also supersedes ADR-003 and
@@ -981,3 +987,32 @@ recovery. X11-only sessions cannot launch the supported GUI, and XWayland is not
 a compatibility fallback. Reintroducing X11 requires a new ADR plus dedicated
 window/input/IME/accessibility/GPU/release gates; framework capability alone is
 not sufficient.
+
+## ADR-021: Flutter is the sole rendered GUI
+
+**Status:** accepted
+
+**Context.** The Rust GTK4/Relm4 shell served as migration evidence for chrome,
+BrowserCore routing, and visible WebRender output. The packaged Linux product is
+now Flutter, with BrowserCore FFI, bounded external-texture presentation,
+generation-checked input, Semantics projection, native Wayland enforcement, and
+release/AT-SPI smokes. Retaining the old shell duplicates tabs, navigation,
+profile/session coordination, rendering surfaces, native dependencies, and
+quality gates while providing no supported fallback.
+
+**Decision.** Flutter is Vixen's only rendered GUI on every product platform.
+Remove the `vixen-shell` crate, the root Rust GUI binary, GTK4/libadwaita/Relm4
+dependencies, and custom GLArea presentation. BrowserCore remains Rust and is
+reached from Flutter only through `vixen-ffi`; headless, CDP, and WPT remain
+non-GUI Rust frontends. Linux may use direct GTK3/GDK APIs only inside Flutter's
+native embedder runner for window creation, texture registration, startup
+fallback, and fail-closed Wayland validation. Those APIs must not grow into a
+second application UI or browser-state owner.
+
+**Consequences.** Missing browser behavior, accessibility, host services, and
+recovery are implemented and tested in Flutter rather than compared against or
+hidden by a legacy shell. The Rust workspace no longer requires GNOME
+development packages for all-feature checking or Clippy. Historical Relm4 and
+GLArea evidence remains in version history and the historical plan, not as
+buildable product code. Adding any second rendered GUI requires a new ADR and
+dedicated ownership, accessibility, packaging, and release evidence.

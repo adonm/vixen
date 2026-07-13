@@ -213,8 +213,8 @@ budget.
 ## Current limits
 
 This batch completes the local latency, Linux process-memory, profile-growth,
-headless-path, compatibility-shell artifact-size, and Flutter raw-release-bundle
-comparison foundations. It does not yet measure:
+headless-path, historical native-shell artifact-size, and Flutter raw-release-
+bundle comparison foundations. It does not yet measure:
 
 - representative external sites or complete external-site compatibility;
 - an accepted/reproduced Flutter GUI size baseline or FlatPark package artifact;

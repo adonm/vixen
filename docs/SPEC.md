@@ -70,10 +70,9 @@ are incompatible with `--incremental` and produce a command-line usage error
 rather than being silently ignored.
 
 `--gpu` is removed: every render path uses WebRender against a GPU context.
-Headless uses EGL surfaceless. The current Linux compatibility GUI binds
-WebRender to GLArea; the target Flutter GUI presents WebRender output through a
-bounded external-texture transport. Headless without a GPU device fails closed
-with `unsupported.screenshot`.
+Headless uses EGL surfaceless. Flutter is the sole rendered GUI and presents
+WebRender output through a bounded external-texture transport. Headless without
+a GPU device fails closed with `unsupported.screenshot`.
 
 **Stable error codes** (returned exactly as written):
 

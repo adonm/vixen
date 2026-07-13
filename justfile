@@ -1,6 +1,6 @@
 # Vixen justfile. Recipe names referenced from docs/PLAN.md,
 # docs/MILESTONES.md, and docs/ACCEPTANCE.md: `check-all-host`, `test-host`,
-# `gate-*`, release, size, and run commands.
+# `gate-*`, release, size, and Flutter run commands.
 #
 # Linux release bundles are built in the pinned GNOME builder image. FlatPark
 # repackages the official GitHub Release archive as a signed Flatpak.
@@ -66,16 +66,9 @@ _flutter-sdk-present:
 
 # --- Build / check -----------------------------------------------------------
 
-# Type-check the whole workspace (default features). This is the Phase 0
-# gate (docs/PLAN.md). GTK shell wiring is opt-in via the `gtk-shell`
-# feature because it needs the GNOME SDK; see `shell-check`.
+# Type-check every Rust workspace target and feature.
 check-all-host:
-    cargo check --workspace --all-targets
-
-# Type-check including the transitional GTK shell. Install your distro's
-# gtk4/libadwaita development packages for this optional host-only path.
-shell-check:
-    cargo check --workspace --all-targets --features vixen-shell/gtk-shell
+    cargo check --workspace --all-targets --all-features
 
 # --- Test --------------------------------------------------------------------
 
@@ -235,7 +228,6 @@ test-browser-core: test-flutter-controller
     cargo test -p vixen-headless browser_adapter::tests -- --test-threads=1
     cargo test -p vixen-headless eval_gate_returns_three -- --test-threads=1
     cargo test -p vixen-headless interaction_flags_run_through_browser_core -- --test-threads=1
-    cargo test -p vixen-shell --features browser-core browser_adapter::tests -- --test-threads=1
 
 test-script:
     cargo test -p vixen-engine script
@@ -267,7 +259,7 @@ fmt-check:
     cargo fmt --all -- --check
 
 clippy:
-    cargo clippy --workspace --all-targets -- -D warnings
+    cargo clippy --workspace --all-targets --all-features -- -D warnings
 
 # --- Documentation -----------------------------------------------------------
 
@@ -286,8 +278,8 @@ book-serve *ARGS:
 gate-alpha: fmt-check clippy check-all-host gate-webidl gate-architecture test-browser-core
     cargo test -p vixen-headless --test wpt_runner
 
-# Stable crate-boundary allowlist. This also bans the former shell/headless
-# direct composition of network, store, and WPT implementation crates.
+# Stable crate-boundary allowlist. This also bans frontend direct composition
+# of network, store, and WPT implementation crates.
 gate-architecture:
     python3 scripts/check-vixen-deps.py
 
@@ -418,12 +410,6 @@ baseline-beta runs="5" warmups="1": build-release
 
 build-release:
     cargo build --locked --release -p vixen-headless --bin vixen-headless
-
-# --- Run ---------------------------------------------------------------------
-# Launch the transitional GTK compatibility GUI. For ad-hoc native runs,
-# install your distro's gtk4/libadwaita development packages.
-run *ARGS:
-    cargo run --features vixen-shell/gtk-shell -- {{ARGS}}
 
 # --- Local GNOME release builder ---------------------------------------------
 

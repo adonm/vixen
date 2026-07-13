@@ -79,8 +79,7 @@ writing, fragmentation/pagination, and advanced intrinsic sizing.
 **Done when**:
 
 - Flutter GUI presents WebRender output through the bounded external-texture
-  contract; the GTK GLArea path is accepted only as the temporary Linux
-  compatibility baseline
+  contract; no second GUI or renderer path is accepted
 - Headless uses EGL surfaceless (per ADR-009), and GUI/headless reference
   comparisons prove both consume the same WebRender output semantics
 - Headless works on CI with `LIBGL_ALWAYS_SOFTWARE=1` + Mesa
@@ -169,10 +168,9 @@ drop the flag.
 - BrowserCore's accessibility projection reaches Flutter Semantics and native
   assistive-technology smoke; texture pixels alone do not satisfy accessibility
 
-The current GTK/Relm4 shell is evidence for the interaction list, not the v1 GUI
-target. Linux Flutter parity must pass it before that shell is removed. Flutter's
-Linux embedder uses GTK, so removal means no Relm4/libadwaita/custom GLArea
-ownership, not necessarily no GTK runtime dependency.
+Flutter is the only rendered GUI and must satisfy this interaction list directly.
+Its Linux embedder uses GTK3 internally, but there is no separate
+Relm4/libadwaita/custom GLArea application path.
 
 ### Platform gates
 
@@ -249,7 +247,7 @@ visits and verifies localStorage after reopening it. `just baseline-beta` runs
 those hermetic controls plus headless artifact sizing.
 
 This completes the local Linux latency, memory, profile-growth, headless, and
-compatibility-shell artifact-size measurement foundation. All values remain
+historical GUI artifact-size measurement foundation. All values remain
 measurement-only until the
 accepted-report process in [`BASELINES.md`](BASELINES.md) produces reviewed host
 baselines and explicit policies here. Real external-site measurements, the
@@ -270,7 +268,7 @@ Restated from `PLAN.md` as the per-phase acceptance check.
 | 2 — JS runtime                    | `just gate-phase2` (`vixen-headless --url <file> --eval '1+2'` returns `3`); runtime is `deno_core` per ADR-014 |
 | 3 — HTML + Stylo                  | `just gate-phase3`; then WPT CSS fixtures pass with cascade output correct            |
 | 4 — Vixen-owned layout            | `just gate-phase4`; then the v1 WPT layout target profile in `docs/COMPAT.md` is green |
-| 5 — Paint                         | `just gate-phase5`; then `just run` shows a page and headless PNG diff ≤ 1 %          |
+| 5 — Paint                         | `just gate-phase5`; then `just run-flutter` shows a page and headless PNG diff ≤ 1 %  |
 | 6 — Host bindings                 | `just gate-phase6`; then `fixtures/{dom,events,forms,storage,network}/` all pass      |
 | 7 — Security                      | `just audit` clean; all security tests green; fuzz stable                             |
 | 8 — Headless CDP                  | Every CLI flag works; CDP responds to required methods                                |

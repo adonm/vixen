@@ -5,7 +5,7 @@
 > its shell assumptions as current guidance. Use
 > [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md), [`ROADMAP.md`](ROADMAP.md), and the
 > latest ADRs for current work; historical GTK/Relm4 statements below describe
-> how the compatibility baseline was built.
+> removed code and some referenced paths/commands intentionally no longer exist.
 
 Phased execution runbook. Each phase ends in a green test suite, a
 working binary, and a measured size. Do not start the next phase until

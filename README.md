@@ -84,8 +84,8 @@ the platform tree. Same-document refreshes replace frame/semantics atomically
 and reconcile only changed semantic nodes. A release-bundle AT-SPI smoke observes
 BrowserCore's `DOM Basic` heading through the native Linux tree. Real Linux IME
 evidence, complete accessibility/screen-reader coverage, basic-browser parity,
-and host services remain open, so the GTK/Relm4 shell is still the temporary
-Linux compatibility baseline rather than the product direction.
+and host services remain open. Flutter is the only rendered GUI; there is no
+secondary Rust/GTK compatibility shell or fallback UI.
 
 ---
 
@@ -93,7 +93,7 @@ Linux compatibility baseline rather than the product direction.
 
 Pre-v1.0. This repository contains the specification, architecture, plan,
 and reference material, plus:
-- **Phase 0** — scaffolding (workspace, engine/adapters, and Rust GUI bridge core).
+- **Phase 0** — scaffolding (workspace, engine/adapters, and native Flutter bridge core).
 - **Phase 1** — networking/security "crown jewels" (`vixen-net`, `vixen-store`).
 - **Phase 2** — the `deno_core` JS runtime seam (`vixen-engine::script`) and the
   `vixen-headless` CLI; `vixen-headless --url <file> --eval '1+2'` → `3` passes
@@ -414,13 +414,6 @@ and reference material, plus:
   permission overrides, bounded Chromium JSON tracing through `IO` streams,
   same-connection stop races for pending navigate/reload requests, and stable
   machine-readable protocol errors.
-- **Browser shell/profile slice** — the compatibility GTK shell now resolves
-  production
-  app-ID profile paths on startup and routes bounded session restore/save and
-  explicit clear-data selections through BrowserCore profile-session commands
-  backed by the engine-owned store. Restore state is persisted as tabs are added,
-  closed, selected, or finish loading, and clear-data policy explicitly preserves
-  or removes that state.
 - **Flutter shell target** — ADR-018 commits one Flutter chrome to Linux, macOS,
   Windows, Android, and the Apple Silicon iOS Simulator over the same BrowserCore.
   The exported C/Dart ABI, fake/real Linux shell, bounded RGBA external texture,
@@ -513,8 +506,8 @@ The result is a deterministic `vixen-linux-x86_64.tar.gz` GitHub Release asset.
 FlatPark pins and repackages that unchanged upstream archive, signs the Flatpak,
 and hosts the update repository. Vixen does not maintain a parallel OSTree
 repository. Flutter's Linux embedder uses GTK, so this removes packaged
-Relm4/libadwaita/custom GLArea ownership rather than promising a GTK-free
-runtime. The archive remains reproducible engineering evidence; FlatPark
+application-owned GTK widgets without promising a GTK-free runtime. The archive
+remains reproducible engineering evidence; FlatPark
 submission and publishing are not current priorities and resume only after the
 basic-browser gate in `docs/ROADMAP.md` passes.
 
@@ -560,7 +553,7 @@ If executing the build:
 1. `docs/PROJECT_DIRECTION.md` — the north star
 2. `docs/ROADMAP.md` — the next delivery order
 3. `docs/ARCHITECTURE.md` — the shape
-4. `docs/FLUTTER_SHELL.md` — GUI migration and platform gates
+4. `docs/FLUTTER_SHELL.md` — Flutter GUI contract and platform gates
 5. `docs/RUNTIME_WEB_PLATFORM.md` — runtime host strategy
 6. `docs/DEVELOPMENT.md` and `docs/AUTONOMOUS_WORK.md` — workflow and gates
 7. `docs/DECISIONS.md` — confirm the choices
@@ -584,8 +577,8 @@ Update both when resolving.
   best-effort unless explicitly added as a tested tier.
 - Linux publishes an official x86_64 release archive that FlatPark repackages
   unchanged as a signed convenience Flatpak after the basic-browser gate.
-  Registry publishing is deferred meanwhile. GTK/Relm4 remains the compatibility
-  baseline until Flutter parity; Flutter Linux may still depend on GTK at runtime.
+  Registry publishing is deferred meanwhile. Flutter is the sole GUI; its Linux
+  embedder may still depend on GTK at runtime.
 - The current Rust release profile starts with `strip = true`, `lto = "thin"`,
   `codegen-units = 1`, and `panic = "abort"`; Flutter release/AOT and native
   packaging are measured per platform before any stronger optimization claim.

@@ -41,9 +41,9 @@ the profile, platform, command, and measured result.
 
 ## Proven baseline — use it, do not roadmap it
 
-As of 2026-07-10 the repository has these building blocks:
+As of 2026-07-14 the repository has these building blocks:
 
-- An eight-crate workspace, hk/`just` development gates, stable diagnostics, fuzz
+- A seven-crate workspace, hk/`just` development gates, stable diagnostics, fuzz
   targets, and a WPT/fixture harness. The committed manifest currently measures
   **269 fixtures / 2,015 checks at 100%**; `COMPAT.md` owns the detailed counts.
 - `html5ever` parsing, Stylo-backed selector/cascade integration, a Vixen-owned
@@ -61,14 +61,12 @@ As of 2026-07-10 the repository has these building blocks:
 - A useful CDP slice covering navigation, runtime evaluation/handles, DOM basics,
   input, lifecycle/network/console/dialog events, screenshots, permissions,
   tracing-lite, and stable protocol errors, with an external Playwright smoke.
-- A Relm4/libadwaita compatibility-shell vertical retained in-tree for parity
-  comparison. The packaged Linux composition root is now Flutter: chrome, real
-  BrowserCore FFI, visible WebRender output through a bounded RGBA texture,
+- Flutter is the sole rendered GUI. The packaged Linux composition root provides
+  chrome, real BrowserCore FFI, visible WebRender output through a bounded RGBA texture,
   input/accessibility projection, and a deterministic release/AOT archive with
   clean extraction and Impeller Cage/headless-Wayland launch smoke. The Linux
   GUI now rejects X11/XWayland. FlatPark review, broader/native IME evidence,
-  host services, complete accessibility, and compatibility-shell parity remain
-  open.
+  host services, complete accessibility, and Flutter parity remain open.
 
 These are substantial components now routed through one initial browser owner,
 not yet a broadly compatible browser. API shape or inert reflection is still not
@@ -76,9 +74,9 @@ counted as implemented behavior when the underlying subsystem does not exist.
 
 ## The critical gap
 
-The production path is now the browser-scoped `BrowserHandle` seam rather than
-the older tab-shaped `vixen_api::Engine` trait. Shell, headless CLI, CDP targets,
-and the WPT adapter create contexts in one `vixen-engine::browser::BrowserCore`;
+The production path is the browser-scoped `BrowserHandle` seam. The Flutter FFI
+controller, headless CLI, CDP targets, and WPT adapter create contexts in one
+`vixen-engine::browser::BrowserCore`;
 they no longer own parallel `Page`, `JsRuntime`, network, cookie, history, or
 profile-session state. CDP has one core context/runtime generation per target,
 with bounded generation-scoped remote handles.
@@ -171,10 +169,10 @@ Progress as of 2026-07-14: A1 is routed through the dependency-free typed
 `vixen-api` command/event seam and one `vixen-engine::browser::BrowserCore`.
 BrowserCore owns one engine thread, profile Store/network/cookies, bounded
 context/runtime registries, history, evaluation, inspection, and paint inputs.
-WPT, headless CLI, CDP, and the GTK shell are thin adapters over that owner; two
-CDP/shell contexts prove independent globals/sessionStorage/history with intended
-profile sharing. The 2,015-check fixture manifest, GTK-free shell tests, and the
-external Playwright smoke remain green.
+WPT, headless CLI, CDP, and the Flutter FFI controller are thin adapters over
+that owner; multi-context tests prove independent globals/sessionStorage/history
+with intended profile sharing. The 2,015-check fixture manifest, controller
+tests, and external Playwright smoke remain green.
 
 The first A2 slices are also landed: dispatch acknowledges navigation before
 source completion; a bounded Tokio loader performs cancellable HTTP/file reads;
@@ -434,7 +432,7 @@ invalidation.
 Alpha is reached only when:
 
 - a production browser core owns lifecycle/profile state;
-- shell, headless, CDP, and WPT are adapters over it;
+- Flutter, headless, CDP, and WPT are adapters over it;
 - two independent contexts can load, script, render, inspect, and share only the
   profile state they should share;
 - active navigation can be cancelled without stale commits;
@@ -578,7 +576,7 @@ After v1, prioritize these programs by measured site impact:
 ## Immediate execution order
 
 The core ownership and local headless measurement foundations are landed. The
-next work has two interleaved tracks: Flutter shell migration and browser
+next work has two interleaved tracks: Flutter GUI delivery and browser
 correctness. Neither may starve the other.
 
 1. Extend the landed physical viewport, pointer/wheel/keyboard, root
@@ -611,16 +609,14 @@ correctness. Neither may starve the other.
    reproduce and review Linux size/performance baselines. Add compressed/install
    attribution after browser usability; adopt warning thresholds only after
    reviewed evidence and do not invent hard budgets.
-7. Reach Linux parity, then remove Relm4/libadwaita/custom GLArea ownership. GTK
-   may remain as a Flutter Linux embedder runtime dependency.
-8. Expand the same bridge/chrome contract to macOS and Windows, with native
+7. Expand the same bridge/chrome contract to macOS and Windows, with native
    texture, accessibility, host-service, packaging/signing, ABI, size, and
    performance proof.
-9. Bring up Android with pinned V8 source/toolchain, GLES, lifecycle, input/
+8. Bring up Android with pinned V8 source/toolchain, GLES, lifecycle, input/
    accessibility, and split-ABI proof.
-10. Widen the existing V8 WebAssembly path with the same API, resource-limit,
+9. Widen the existing V8 WebAssembly path with the same API, resource-limit,
    malformed-module, and conformance proof on every declared target.
-11. Bring up `aarch64-apple-ios-sim` with the same Flutter bridge, V8 JavaScript/
+10. Bring up `aarch64-apple-ios-sim` with the same Flutter bridge, V8 JavaScript/
     WebAssembly, rendering, simulated lifecycle, input, accessibility, and host-
     service behavior. Physical iOS/TestFlight/App Store work requires a new ADR.
 

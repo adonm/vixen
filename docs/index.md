@@ -17,8 +17,8 @@ and more correct: **Stylo/selectors** for CSS matching and cascade,
 and **html5ever** for HTML. BrowserCore owns browser truth and Flutter/Dart owns
 only chrome, presentation, and host-service UI. The Linux Flutter shell has a
 real BrowserCore bridge, bounded RGBA texture, and a tested release archive;
-the GTK/Relm4 shell remains only an in-tree parity baseline until host services,
-complete accessibility, and parity gates permit removal.
+Flutter is the sole rendered GUI; host services, complete accessibility, and
+basic-browser parity remain open.
 
 ## Linux release
 
@@ -42,7 +42,7 @@ parity with the remaining platform targets.
 
 - [Project Direction](PROJECT_DIRECTION.md) — current focus and constraints.
 - [Architecture](ARCHITECTURE.md) — crate layout and dependency direction.
-- [Flutter Shell](FLUTTER_SHELL.md) — five-platform migration and gates.
+- [Flutter Shell](FLUTTER_SHELL.md) — five-platform GUI contract and gates.
 - [Roadmap](ROADMAP.md) and [Milestones](MILESTONES.md) — current delivery and evidence.
 - [Historical Plan](PLAN.md) — original Linux/Relm4 phase record.
 - [Development](DEVELOPMENT.md) — local workflow and contribution mechanics.

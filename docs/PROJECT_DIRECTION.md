@@ -70,9 +70,8 @@ The user-facing rank is:
    loading before breadth.
 4. **Storage/history/session** — required for real browsing and app-like sites.
 5. **Minimal Flutter shell, Linux first** — Linux is the highest-priority GUI and
-   release target. Dart owns chrome and host-service presentation only; the
-   current GTK/Relm4 shell is temporary. The same proven contract then expands
-   to the other four committed native targets.
+   release target. Dart owns chrome and host-service presentation only. The same
+   proven contract then expands to the other four committed native targets.
 6. **Headless CLI + CDP/Playwright-compatible seams** — automation and text
    reports are product features, not test-only scaffolding.
 7. **WPT/imported fixture coverage and reports** — correctness driver for every
@@ -86,7 +85,7 @@ The user-facing rank is:
 ## Design lessons now baked in
 
 Recent work proved that shared fetch/storage/runtime pieces are valuable and that
-component sharing alone is insufficient. BrowserCore now gives shell, headless,
+component sharing alone is insufficient. BrowserCore now gives Flutter, headless,
 CDP, and WPT one engine-owned lifecycle. The following lessons are requirements:
 
 1. **One browser state graph.** Profile → browser → browsing context → document
@@ -130,8 +129,7 @@ CDP, and WPT one engine-owned lifecycle. The following lessons are requirements:
 
 - A kitchen-sink UI or clone of every Firefox chrome feature.
 - WebKit fallback, runtime engine switching, or a generic JS-engine abstraction.
-- A permanent second GUI shell; GTK/Relm4 exists only as the Linux compatibility
-  baseline until Flutter parity.
+- A second GUI shell or fallback rendered UI outside Flutter.
 - A CPU paint fallback that competes with WebRender.
 - Media/WebGPU/WebRTC/service workers unless promoted by a later ADR.
 - Full WPT/browser parity claims before measured profiles justify them.
@@ -146,7 +144,7 @@ Alpha is not broad API completeness. Alpha means the architecture is frozen and
 validated for full delivery:
 
 - one JS runtime target (`deno_core`/V8),
-- one target GUI path (Flutter) with a temporary GTK/Relm4 Linux baseline,
+- one target GUI path (Flutter),
 - one display list and one WebRender paint path,
 - one layout architecture,
 - one WPT/reporting workflow,
@@ -164,7 +162,7 @@ recovery, and complete semantics/native AT behavior remain open.
 
 Alpha also requires a production browser core: one profile service, one context
 registry, one generational navigation/document lifecycle, and one command/event
-path used by shell, headless, CDP, WPT, and page runtime. Two contexts must run
+path used by Flutter, headless, CDP, WPT, and page runtime. Two contexts must run
 independently while sharing only intended profile state, active navigation must
 be cancellable, and live DOM mutation must reach the visible render path. Narrow
 surfaces are acceptable; duplicate models are not.

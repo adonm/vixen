@@ -1,16 +1,17 @@
-# Vixen workspace + transitional GTK compatibility binary.
+# Vixen Rust workspace. Rendered GUI applications live under `flutter/` and
+# reach BrowserCore only through `vixen-ffi`; Rust composition roots are
+# headless/CDP and test adapters.
 #
 # Layout per docs/ARCHITECTURE.md. The engine, adapters, and Rust-only Flutter
-# controller live under `crates/`; the temporary GUI binary at `src/main.rs`
-# delegates to `vixen_shell::run()` until Flutter Linux parity (ADR-018).
+# controller live under `crates/`.
 #
 # Stable target dependency direction (docs/ARCHITECTURE.md, ADR-017):
 #
 #                      vixen-api (contracts only)
 #                           ▲
-#          ┌────────────────┼─────────────────────────┐
-#          │                │                         │
-#     vixen-shell      vixen-engine      vixen-wpt / vixen-ffi
+#                  ┌────────┼─────────────────────────┐
+#                  │        │                         │
+#             vixen-engine  │            vixen-wpt / vixen-ffi
 #                           │
 #                     ┌─────┴─────┐
 #                     ▼           ▼
@@ -28,25 +29,11 @@ members = [
     "crates/vixen-net",
     "crates/vixen-store",
     "crates/vixen-engine",
-    "crates/vixen-shell",
     "crates/vixen-wpt",
     "crates/vixen-headless",
     "crates/vixen-ffi",
 ]
 default-members = ["crates/vixen-api", "crates/vixen-net", "crates/vixen-store"]
-
-# GUI binary (thin; calls vixen_shell::run()).
-[package]
-name = "vixen"
-version = "0.1.6"
-edition = "2024"
-rust-version = "1.88"   # let-chains used in vixen-net per docs/SPEC.md
-description = "A focused cross-platform browser built for capability per byte"
-license = "Apache-2.0"
-publish = false
-
-[dependencies]
-vixen-shell = { path = "crates/vixen-shell", default-features = false }
 
 # Carry the optimised release profile forward unchanged
 # (docs/ARCHITECTURE.md "Build profile"). `panic = "abort"` is release-only

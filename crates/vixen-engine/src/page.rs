@@ -18,7 +18,7 @@ use vixen_api::{
     ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityNode, AccessibilityRange,
     AccessibilityRect, AccessibilitySnapshot, AccessibilityTextInputAction,
     AccessibilityTextInputType, AccessibilityTextSelection, BrowsingContextId, DocumentId,
-    ElementInfo, EngineDiagnostic, EngineInspector, FindTextResult, PageSnapshot,
+    ElementInfo, EngineDiagnostic, FindTextResult, PageSnapshot,
 };
 use vixen_net::csp::ContentSecurityPolicy;
 
@@ -1566,20 +1566,6 @@ fn element_attr(info: &ElementInfo, name: &str) -> Option<String> {
         .iter()
         .find(|(attr_name, _)| attr_name == name)
         .map(|(_, value)| value.clone())
-}
-
-impl EngineInspector for Page {
-    fn inspect_element_at(&self, x: f64, y: f64) -> Option<ElementInfo> {
-        self.element_at((800, 600), x, y)
-    }
-
-    fn capture_snapshot(&self, vw: u32, vh: u32) -> PageSnapshot {
-        self.snapshot((vw, vh))
-    }
-
-    fn computed_style_for_element(&self, node_id: usize) -> Vec<(String, String)> {
-        self.computed_style(node_id)
-    }
 }
 
 #[cfg(test)]

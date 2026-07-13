@@ -10,8 +10,8 @@ which layer today?”
 
 | Command | Current evidence |
 |---------|------------------|
-| `just gate-alpha` | formatting, clippy, host workspace checks, generated WebIDL/runtime seams, BrowserCore ownership tests, BrowserCore-backed committed fixture runner, and stable crate-boundary allowlist |
-| `just gate-architecture` | leaf-crate dependency rules plus frontend rules that forbid the former shell/headless direct composition; production frontends may use only `vixen-api` and `vixen-engine` |
+| `just gate-alpha` | formatting, all-target/all-feature Clippy, host workspace checks, generated WebIDL/runtime seams, BrowserCore ownership tests, BrowserCore-backed committed fixture runner, and stable crate-boundary allowlist |
+| `just gate-architecture` | leaf-crate dependency rules plus frontend rules that forbid headless/FFI direct leaf composition; production frontends may use only `vixen-api` and `vixen-engine` |
 | `just test-flutter-controller` | Safe controller and native boundary crate tests: one non-clone BrowserCore/event owner, immediate navigation acceptance, exact terminal events, active-load stop, contexts/profile session, and C ABI unit/integration coverage; not Dart or Flutter proof |
 | `just gate-native-abi` | Builds `vixen-ffi` library forms and runs focused ABI v1 layout/header, opaque handle, bounded UTF-8/JSON command, stable response/event/error, event-sequence, output-buffer ownership, and panic-containment tests; native C ABI evidence only |
 | `just gate-flutter-shell` | Exact mise-managed Flutter 3.46.0-0.3.pre beta framework/engine revisions, locked Yaru 10.2.0 Adwaita-blue chrome/in-scene titlebar, Dart formatting/analysis, 60 shell/coordinator/worker/texture/input/Semantics tests, including monotonic host focus/visibility/lifecycle state, physical wheel normalization and slop-gated single-touch dragging through BrowserCore-owned cancelable root scrolling, bounded native/contenteditable platform text/selection/composition routing, normalized `inputmode`/input-type/`enterkeyhint` keyboard and action configuration over the Enter key path, bounded BrowserCore-backed find traversal/scroll/highlighting, two-retry current-generation frame/Semantics capture and texture recreation, per-context BrowserCore-owned zoom across paint/input/Semantics, bounded descriptions and `aria-controls`/`aria-describedby`/`aria-details`/`aria-owns` relationships, heading/mixed-state mapping, native/authored range adjustment, live-region mapping, native/contenteditable text selection, atomic frame/semantics replacement, and node-level incremental reconciliation, live process-adjacent native bridge smoke, and focused native ABI/frame/input/accessibility tests; Linux source/test evidence, not a real native IME or screen-reader interaction, native surface-loss/lifecycle recovery, release/package, or non-Linux proof |
@@ -29,7 +29,7 @@ which layer today?”
 | `npm test` | bounded-process, timeout, percentile, `/proc` parser, hash, and recursive-size unit tests used by the baseline tools |
 | `cargo test -p vixen-headless --test incremental` | one-context headless load, before-frame capture, live BrowserCore evaluation/mutation, after-frame capture, deterministic names, and distinct valid PNG evidence |
 | `just wpt-profile <profile> <root>` | optional external profile execution after fail-closed validation of the canonical repository, full pinned commit, clean checkout root, and sparse-path coverage |
-| `just test-browser-core` | ADR-017 production owner/thread/typed-generation proof with two independent contexts, shared profile localStorage/cookies, isolated runtime/sessionStorage/history, asynchronous source loading, bounded cooperative HTML parsing and per-item script/lifecycle work, deadline-bounded V8/promise execution with reusable-isolate, failed-evaluation mutation discard, and author-timeout continuation proof, generation-cancellable external classic-script I/O with pre-hop CSP/mixed-content policy, status/nosniff checks, delta-safe profile cookie persistence, and stale cookie/document/runtime rejection, ordered phases, one generation-checked terminalization boundary, live redirect delivery before a gated final response, latest-request stop and stale-progress rejection, source/parser/script/lifecycle stale-work rejection, author-exception separation, cancelable wheel/navigation-key plus bounded live-script root scrolling, native/contenteditable IME-state commits, bounded event lag, headless adapter coverage, and GTK-free multi-context shell routing |
+| `just test-browser-core` | ADR-017 production owner/thread/typed-generation proof with two independent contexts, shared profile localStorage/cookies, isolated runtime/sessionStorage/history, asynchronous source loading, bounded cooperative HTML parsing and per-item script/lifecycle work, deadline-bounded V8/promise execution with reusable-isolate, failed-evaluation mutation discard, and author-timeout continuation proof, generation-cancellable external classic-script I/O with pre-hop CSP/mixed-content policy, status/nosniff checks, delta-safe profile cookie persistence, and stale cookie/document/runtime rejection, ordered phases, one generation-checked terminalization boundary, live redirect delivery before a gated final response, latest-request stop and stale-progress rejection, source/parser/script/lifecycle stale-work rejection, author-exception separation, cancelable wheel/navigation-key plus bounded live-script root scrolling, native/contenteditable IME-state commits, bounded event lag, and headless adapter coverage |
 | `just compat-report` | current BrowserCore-backed committed fixture/profile counts and per-source/category output |
 | `just fuzz-security` | URL, CSP, cookie, and HTML parser fuzz targets at the configured run count |
 | `just audit` | `cargo audit` plus `cargo deny check` |
@@ -54,8 +54,7 @@ which layer today?”
 - Released Linux shell changes use `just linux-release-smoke`. FlatPark package
   submission and verification follow only after the Linux basic-browser gate;
   an immutable GitHub Release alone does not make registry publishing a current
-  priority. Direct GTK compatibility-shell work remains an in-tree parity
-  concern.
+  priority. Flutter is the only rendered GUI and parity concern.
 - `just gate-native-abi` proves the handwritten C ABI/header/wire/frame ownership
   milestone over the same safe controller. `just gate-flutter-shell` adds Dart,
   widget, worker-isolate, texture-presenter, and live native smoke evidence. It
@@ -86,12 +85,12 @@ which layer today?”
   claim; see `BASELINES.md`.
 - External automation contract: [`CDP_PLAYWRIGHT_SMOKE.md`](CDP_PLAYWRIGHT_SMOKE.md).
 - Browser ownership/cancellation vertical: `just test-browser-core` (engine,
-  headless, and GTK-free shell adapters through the production command/event
+  headless, and FFI controller adapters through the production command/event
   handle).
 - Release requirements: [`ACCEPTANCE.md`](ACCEPTANCE.md).
 - Measurement methods, report schemas, acceptance policy, and current gaps:
   [`BASELINES.md`](BASELINES.md).
-- Five-platform GUI migration and gate plan:
+- Five-platform Flutter GUI contract and gate plan:
   [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md).
 
 When a gate and its description diverge, fix this table in the same change as the

@@ -9,9 +9,8 @@ use std::collections::HashMap;
 
 use crate::origin::Origin;
 
-/// Permission kinds a page may query/request at v1.0. Mirrors the
-/// `vixen_api::Permission` shape but is duplicated here on purpose:
-/// `vixen-net` deliberately depends on no other vixen crate (see
+/// Permission kinds a page may query/request at v1.0. `vixen-net`
+/// deliberately owns this policy type and depends on no other Vixen crate (see
 /// `Cargo.toml` and docs/ARCHITECTURE.md "Dependency direction").
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PermissionKind {

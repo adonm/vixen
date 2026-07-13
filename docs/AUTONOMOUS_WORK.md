@@ -9,8 +9,7 @@ Until alpha, continue without asking unless a change would alter architecture.
 Architecture changes include:
 
 - a new JS runtime target or abstraction,
-- a GUI path other than the ADR-018 Flutter shell, or retention of GTK/Relm4
-  beyond its Linux compatibility-baseline parity gate,
+- a GUI path other than the ADR-018/ADR-021 Flutter shell,
 - a second render/paint path,
 - a Flutter bridge that moves browser ownership, web rendering, or accessibility
   source data out of BrowserCore,

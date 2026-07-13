@@ -19,7 +19,7 @@ This document uses three explicit states:
 Vixen now has a production `BrowserCore` behind the browser-scoped `vixen-api`
 command/event seam. It owns one profile Store/network/cookie service, one
 DOM/V8 owner thread, typed context/document/runtime/navigation generations,
-asynchronous source loading, and bounded ordered events. Shell, headless, CDP,
+asynchronous source loading, and bounded ordered events. Flutter, headless, CDP,
 and WPT are adapters over that owner. This completes the A1 ownership migration,
 not the broader alpha compatibility exit gate.
 
@@ -30,31 +30,28 @@ first, then the same boundary expands to the other committed platforms.
 The checked-in Linux Flutter runner and release archive are implemented; the
 runner requires a native Wayland GDK display and rejects X11/XWayland; headless
 CLI/CDP remains display-server-independent. The non-Linux runners remain
-targets. The GTK/Relm4 adapter is the transitional Linux compatibility baseline;
-see
-[`FLUTTER_SHELL.md`](FLUTTER_SHELL.md) for the target bridge and platform gates.
-Flutter's Linux embedder uses GTK, so parity removes Relm4/libadwaita/custom
-GLArea ownership rather than guaranteeing a GTK-free Linux runtime.
+targets. Flutter is the only rendered GUI; the former Rust GTK4/Relm4 adapter
+was removed under ADR-021. See [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md) for the
+bridge and platform gates. Flutter's Linux embedder uses GTK3 internally, so the
+Linux runtime is not GTK-free even though Vixen owns no second GTK widget tree.
 
 ## Crates and responsibilities
 
 | Crate | Implemented responsibility | Target boundary |
 |-------|----------------------------|-----------------|
-| `vixen-api` | Browser-scoped typed lifecycle ids, command/event/error/handle contracts, transitional Engine/delegate/inspector traits, diagnostics, profile configuration, graphics-context trait, DTOs | GUI/protocol-neutral command, event, id, snapshot, and factory contracts; no implementation dependencies |
+| `vixen-api` | Browser-scoped typed lifecycle ids, command/event/error/handle contracts, diagnostics, graphics-context trait, and bounded DTOs | GUI/protocol-neutral command, event, id, snapshot, and factory contracts; no implementation dependencies |
 | `vixen-net` | HTTP client primitives and URL/cookie/CSP/CORS/referrer/mixed-content/permissions/security policy | Pure network and policy leaf; no DOM, runtime, GTK, or profile orchestration |
 | `vixen-store` | Bounded redb profile tables and clear-data operations | Persistence leaf using opaque partition/id keys; no network or UI policy |
 | `vixen-engine` | Initial production BrowserCore/thread/profile/context lifecycle, HTML, DOM/Page, Stylo integration, V8 host runtime, forms/history, Vixen layout, display list, WebRender integration | Sole owner of browser/profile/context/document/navigation/resource lifecycle |
-| `vixen-shell` | Transitional Relm4/libadwaita chrome, GLArea surface, one app-level engine worker, BrowserCore context/session routing | Removed after Linux Flutter parity; the replacement native bridge has no chrome, independent browser model, or second renderer |
 | `vixen-ffi` | Non-clone safe GUI controller over one `EngineBrowserHandle` and sole ordered event consumer; handwritten C ABI v1 with process-registry browser/buffer/frame tokens, bounded copied JSON commands, stable tagged projections, polling/timeout events, retained RGBA frames, and panic containment | Safe core and inspectable C/frame transport behind Dart bindings and native Flutter texture/semantics plugins; depends only on API and engine |
 | `vixen-headless` | BrowserCore-backed CLI, CDP target/session adapter, interaction adapter, EGL surfaceless surface | Thin CLI/CDP adapter and composition root over the browser core |
 | `vixen-wpt` | Fixture/profile manifest, runner, reports, checks, visual evidence | Engine-consumer test adapter; no engine internals or alternate semantics |
 
 The packaged Linux GUI composition root is the Flutter runner plus the narrow
-`vixen-ffi` bridge into BrowserCore. The thin root `vixen` binary remains the
-in-tree GTK compatibility-shell composition root for parity comparison, but is
-not installed by the Flatpak. The Linux runner is under `flutter/vixen_shell`;
-its locked Yaru/Adwaita-blue chrome and in-scene titlebar remain presentation
-above the same bridge. Other platform runners remain targets. `data/` contains application metadata;
+`vixen-ffi` bridge into BrowserCore. There is no Rust GUI binary or fallback
+shell. The Linux runner is under `flutter/vixen_shell`; its locked
+Yaru/Adwaita-blue chrome and in-scene titlebar remain presentation above the same
+bridge. Other platform runners remain targets. `data/` contains application metadata;
 `scripts/package-linux-release.py` creates the official archive consumed by FlatPark;
 `fixtures/` contains the hermetic compatibility suite and external-profile
 descriptors.
@@ -84,17 +81,14 @@ Rules:
   runtime, layout, and paint behavior.
 - Composition roots may construct `vixen-engine`, but adapters use its browser
   core rather than directly combining `Page`, `Network`, `Store`, or `JsRuntime`.
-- Dart/Flutter and platform runner types stay above the native bridge. During
-  migration GTK/Relm4 types stay in `vixen-shell`; EGL/CLI/CDP types stay in
-  `vixen-headless`. None leak into engine state.
+- Dart/Flutter and platform runner types stay above the native bridge. Native
+  Linux GTK embedder types stay inside `flutter/vixen_shell/linux`; EGL/CLI/CDP
+  types stay in `vixen-headless`. None leak into engine state.
 - Dart owns chrome and host-service presentation only. BrowserCore remains the
   sole owner of browser state and accessibility source data.
 
-### Current migration status
+### Current adapter status
 
-- `vixen-shell` depends only on `vixen-api` and `vixen-engine` among Vixen
-  crates. One app-level worker owns one `ShellBrowser`; tabs retain typed ids and
-  immutable presentation snapshots only.
 - `vixen-headless` depends only on `vixen-api` and `vixen-engine` in production.
   CLI and CDP targets route through BrowserCore and do not own `Page`,
   `JsRuntime`, cookies, network, or session history.
@@ -136,10 +130,9 @@ CDP maps every target to a BrowserCore context, keeps only bounded protocol
 presentation/session/remote-handle state, and retains events by target while
 waiting. Its socket loop polls BrowserCore events while `Page.navigate` or
 `Page.reload` is pending, so the same connection can dispatch `Page.stopLoading`
-without creating a second event consumer. The GTK shell uses the same context/
-history/paint and profile-session commands through one app-level worker.
-Host-runnable multi-context tests cover both adapters; the compatibility GTK
-shell is no longer a distribution path.
+without creating a second event consumer. Flutter uses the same context/history/
+paint and profile-session commands through `vixen-ffi`. Host-runnable
+multi-context tests cover the headless and FFI adapters.
 
 ## Authoritative ownership model (target)
 
@@ -200,8 +193,7 @@ plus bounded external workers for sendable I/O and host work:
 - network and blocking host operations may run externally, but return typed
   messages carrying context/navigation/request generations;
 - the target Flutter platform thread owns chrome, texture registration, Semantics,
-  and host-service presentation; the transitional GTK main thread still owns
-  compatibility-shell widgets and GLArea callbacks;
+  and host-service presentation;
 - CDP sockets and CLI orchestration may use Tokio tasks, but dispatch browser
   commands to the core and consume ordered events;
 - renderer interaction observes document/display-list generations and cannot
@@ -247,21 +239,16 @@ shutdown cancel the task and emit one bounded request/failure sequence; late
 completions are inert. File documents and file scripts share one async reader that
 checks the configured body limit both before allocation and while reading.
 
-ADR-010 is superseded as product-shell direction by ADR-018, and its
-one-engine-worker-per-tab ownership was already superseded by ADR-017. The
-compatibility shell retains the old component model only until Linux Flutter
-parity and is no longer the package entrypoint. Every shell has one browser adapter (or factory-injected browser handle),
-not an independent engine state machine per tab.
+ADR-010 is superseded by ADR-018 and ADR-021, and the Rust GTK shell has been
+removed. Every frontend has one browser adapter (or factory-injected browser
+handle), not an independent engine state machine per tab.
 
 ## Command and event seam
 
 The implemented dependency-free `BrowserHandle`, `BrowserCommand`, and
 `BrowserEvent` contracts establish typed routing for context/navigation/document/
-request/runtime/download generations. The current `Engine` trait remains a
-transitional shell-facing API. It is too
-tab-shaped to own a shared profile and too callback-shaped to represent multiple
-concurrent navigations safely. Evolve it or replace it with a browser-scoped seam
-whose concepts are:
+request/runtime/download generations. They replace the removed tab-shaped
+callback API with a browser-scoped seam whose concepts are:
 
 - **Commands:** create/close/activate context; navigate/reload/stop/traverse;
   evaluate; dispatch input; query/snapshot; set viewport/emulation; answer a
@@ -398,7 +385,7 @@ html5ever DOM
   → layout fragments
   → one Vixen display list
   → one WebRender paint path
-  → GTK GLArea, headless EGL, or Flutter-frame EGL surfaceless GlContext
+  → headless EGL or Flutter-frame EGL surfaceless GlContext
 ```
 
 Implemented Linux Flutter presentation adds transport after WebRender, without
@@ -517,11 +504,10 @@ services provide:
 - GL/EGL/GLES/Metal/D3D and driver capability diagnostics as applicable; and
 - safe file/download destination validation.
 
-The current GTK-free `vixen-shell::profile` path/session helpers are useful but
-transitional. Path discovery may remain platform code; profile state ownership
-moves into `BrowserCore`. Flutter owns prompt/dialog presentation, not policy or
-durable decisions. All host failures produce structured diagnostics usable by
-GUI error pages, headless output, CDP, and smoke reports.
+Path discovery may remain platform code, but profile state ownership stays in
+`BrowserCore`. Flutter owns prompt/dialog presentation, not policy or durable
+decisions. All host failures produce structured diagnostics usable by GUI error
+pages, headless output, CDP, and smoke reports.
 
 ## Trust boundaries and limits
 
@@ -554,7 +540,7 @@ Observability is a product contract, not debug residue:
   cancellation, stale-state, resource-limit, renderer/runtime reset, and profile
   failure;
 - traces and logs are bounded and privacy-minimal by default;
-- shell, headless, CDP, WPT, and real-site reports translate the same engine
+- Flutter, headless, CDP, WPT, and real-site reports translate the same engine
   events;
 - no adapter may require page text, JS expressions, credentials, form values, or
   full headers in a default trace.
