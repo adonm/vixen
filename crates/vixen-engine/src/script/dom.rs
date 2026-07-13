@@ -71,6 +71,12 @@ pub(super) enum DomMutation {
         base_offset: u32,
         extent_offset: u32,
     },
+    SetContenteditableState {
+        node_id: usize,
+        value: String,
+        base_offset: u32,
+        extent_offset: u32,
+    },
     SetFocusedElement {
         node_id: Option<usize>,
     },
@@ -163,6 +169,7 @@ deno_core::extension!(
         op_vixen_dom_set_element_inner_html,
         op_vixen_dom_set_control_value,
         op_vixen_dom_set_control_selection,
+        op_vixen_dom_set_contenteditable_state,
         op_vixen_dom_set_focused_element,
         op_vixen_dom_set_selection,
         op_vixen_dom_set_root_scroll,
@@ -404,6 +411,48 @@ fn op_vixen_dom_set_control_selection(
         element_id: (!element_id.is_empty()).then_some(element_id),
         name: (!name.is_empty()).then_some(name),
         tag,
+        base_offset,
+        extent_offset,
+    });
+    json!({ "ok": true })
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_dom_set_contenteditable_state(
+    state: &mut OpState,
+    node_id: u32,
+    #[string] value: String,
+    base_offset: u32,
+    extent_offset: u32,
+) -> deno_core::serde_json::Value {
+    let host = state.borrow::<DomHost>().0.clone();
+    let node_id = node_id as usize;
+    let Some(record) = element_record_by_node_id(&host, node_id) else {
+        return missing_element_result(node_id as u32);
+    };
+    let editable = record.attributes.iter().any(|(name, value)| {
+        name == "contenteditable"
+            && !matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "false" | "inherit"
+            )
+    });
+    if !editable {
+        return json!({ "ok": false, "message": "text input target is not a contenteditable host" });
+    }
+    let utf16_len = value.encode_utf16().count();
+    if base_offset as usize > utf16_len || extent_offset as usize > utf16_len {
+        return json!({ "ok": false, "message": "contenteditable selection exceeds the UTF-16 text length" });
+    }
+
+    host.text_overrides
+        .lock()
+        .expect("DOM text override map poisoned")
+        .insert(node_id, value.clone());
+    host.mutations.push(DomMutation::SetContenteditableState {
+        node_id,
+        value,
         base_offset,
         extent_offset,
     });
@@ -1059,6 +1108,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     op_vixen_dom_set_element_inner_html,
     op_vixen_dom_set_control_value,
     op_vixen_dom_set_control_selection,
+    op_vixen_dom_set_contenteditable_state,
     op_vixen_dom_set_focused_element,
     op_vixen_dom_set_selection,
     op_vixen_dom_set_root_scroll,
@@ -2445,9 +2495,9 @@ const DOM_API_BOOTSTRAP: &str = r#"
         return activeElementNodeId === target.__vixenNodeId;
       }
       if (String(action) === 'set_value') {
-        if (!isTextEditableControl(target)) return false;
+        if (!isPlatformTextEditable(target)) return false;
         const text = String(value === null ? '' : value);
-        applyControlValue(target, text, text.length, text.length, 'insertReplacementText', text, true);
+        applyPlatformTextValue(target, text, text.length, text.length, 'insertReplacementText', text, true);
         return true;
       }
       if (String(action) === 'increase' || String(action) === 'decrease') {
@@ -2483,7 +2533,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
   Object.defineProperty(globalThis, '__vixenApplyTextInputState', {
     value(state = {}) {
       const target = keyboardEventTarget();
-      if (!isTextEditableControl(target)) return false;
+      if (!isPlatformTextEditable(target)) return false;
       const text = String(state.text || '');
       const selectionBase = Number(state.selectionBase);
       const selectionExtent = Number(state.selectionExtent);
@@ -2496,7 +2546,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
         dispatchTextCompositionEvent(target, 'compositionstart', '');
       }
 
-      const previous = controlValue(target);
+      const previous = platformTextValue(target);
       if (previous !== text) {
         const inputType = composing !== null
           ? 'insertCompositionText'
@@ -2513,7 +2563,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
           isComposing: composing !== null,
         });
         if (!target.dispatchEvent(beforeInput)) return true;
-        applyControlValue(target, text, selectionBase, selectionExtent);
+        applyPlatformTextValue(target, text, selectionBase, selectionExtent);
         target.dispatchEvent(new InputEvent('input', {
           bubbles: true,
           composed: true,
@@ -2522,7 +2572,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
           isComposing: composing !== null,
         }));
       } else {
-        setControlSelection(target, selectionBase, selectionExtent);
+        setPlatformTextSelection(target, selectionBase, selectionExtent);
       }
 
       if (composing !== null) {
@@ -3312,6 +3362,17 @@ const DOM_API_BOOTSTRAP: &str = r#"
     return false;
   }
 
+  function contenteditableHost(element) {
+    let current = element;
+    while (current) {
+      const state = contentEditableState(current);
+      if (state === 'true' || state === 'plaintext-only') return current;
+      if (state === 'false') return null;
+      current = current.parentElement;
+    }
+    return null;
+  }
+
   const textInputTypes = new Set(['', 'text', 'search', 'url', 'tel', 'email', 'password', 'number']);
 
   function elementTag(element) {
@@ -3388,6 +3449,14 @@ const DOM_API_BOOTSTRAP: &str = r#"
     if (tag !== 'input') return false;
     if (elementAttribute(element.__vixenNodeId, 'readonly') !== null) return false;
     return textInputTypes.has(elementType(element));
+  }
+
+  function isContenteditableHost(element) {
+    return element !== null && contenteditableHost(element) === element;
+  }
+
+  function isPlatformTextEditable(element) {
+    return isTextEditableControl(element) || isContenteditableHost(element);
   }
 
   function controlValue(element) {
@@ -3477,6 +3546,86 @@ const DOM_API_BOOTSTRAP: &str = r#"
     return record.value;
   }
 
+  function ensureContenteditableState(element) {
+    const record = elementRecord(element);
+    if (!record.__vixenContenteditableState) {
+      const value = elementText(element.__vixenNodeId);
+      record.__vixenEditableValue = value;
+      record.__vixenEditableSelectionStart = value.length;
+      record.__vixenEditableSelectionEnd = value.length;
+      record.__vixenContenteditableState = true;
+    }
+    return record;
+  }
+
+  function contenteditableSelection(element) {
+    const record = ensureContenteditableState(element);
+    const length = record.__vixenEditableValue.length;
+    let start = Number(record.__vixenEditableSelectionStart);
+    let end = Number(record.__vixenEditableSelectionEnd);
+    if (!Number.isFinite(start)) start = length;
+    if (!Number.isFinite(end)) end = start;
+    start = Math.min(length, Math.max(0, Math.trunc(start)));
+    end = Math.min(length, Math.max(0, Math.trunc(end)));
+    record.__vixenEditableSelectionStart = start;
+    record.__vixenEditableSelectionEnd = end;
+    return [start, end];
+  }
+
+  function setContenteditableState(element, value, selectionStart, selectionEnd) {
+    const record = ensureContenteditableState(element);
+    const text = String(value);
+    let start = Math.min(text.length, Math.max(0, Math.trunc(Number(selectionStart) || 0)));
+    let end = Math.min(text.length, Math.max(0, Math.trunc(Number(selectionEnd) || 0)));
+    if (record.__vixenEditableValue !== text) {
+      const oldSerialized = serializeElementRecord(record);
+      const oldText = record.textContent || '';
+      const removed = nodesFromIds((record.childNodeIds || record.childElementNodeIds || []).slice());
+      record.textContent = text;
+      record.innerHTML = escapeTextForHtml(text);
+      record.childNodeIds = [];
+      record.childElementNodeIds = [];
+      record.firstElementChildNodeId = null;
+      record.lastElementChildNodeId = null;
+      const parent = parentElementRecord(record);
+      if (parent) parent.textContent = replaceFirst(parent.textContent || '', oldText, text);
+      queueChildListMutation(element, [], removed);
+      propagateSerializedChange(record, oldSerialized);
+    }
+    record.__vixenEditableValue = text;
+    record.__vixenEditableSelectionStart = start;
+    record.__vixenEditableSelectionEnd = end;
+    unwrapDomOp(op_vixen_dom_set_contenteditable_state(record.nodeId, text, start, end));
+    return text;
+  }
+
+  function platformTextValue(element) {
+    return isContenteditableHost(element)
+      ? ensureContenteditableState(element).__vixenEditableValue
+      : controlValue(element);
+  }
+
+  function platformTextSelection(element) {
+    return isContenteditableHost(element) ? contenteditableSelection(element) : controlSelection(element);
+  }
+
+  function setPlatformTextSelection(element, start, end = start) {
+    if (isContenteditableHost(element)) {
+      return setContenteditableState(element, platformTextValue(element), start, end);
+    }
+    setControlSelection(element, start, end);
+    return platformTextValue(element);
+  }
+
+  function applyPlatformTextValue(element, value, selectionStart, selectionEnd, inputType = '', dataValue = null, dispatchEvents = false) {
+    if (!isContenteditableHost(element)) {
+      return applyControlValue(element, value, selectionStart, selectionEnd, inputType, dataValue, dispatchEvents);
+    }
+    const result = setContenteditableState(element, value, selectionStart, selectionEnd);
+    if (dispatchEvents) dispatchValueEvents(element, inputType, dataValue);
+    return result;
+  }
+
   function setControlValue(element, value) {
     const text = String(value);
     const tag = elementTag(element);
@@ -3489,21 +3638,21 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   function insertTextIntoControl(element, text) {
-    if (!isTextEditableControl(element)) return false;
+    if (!isPlatformTextEditable(element)) return false;
     const input = String(text);
     if (input === '') return false;
-    const value = controlValue(element);
-    const [start, end] = controlSelection(element);
+    const value = platformTextValue(element);
+    const [start, end] = platformTextSelection(element);
     const next = value.slice(0, start) + input + value.slice(end);
     const caret = start + input.length;
-    applyControlValue(element, next, caret, caret, 'insertText', input, true);
+    applyPlatformTextValue(element, next, caret, caret, 'insertText', input, true);
     return true;
   }
 
   function deleteTextFromControl(element, direction) {
-    if (!isTextEditableControl(element)) return false;
-    const value = controlValue(element);
-    let [start, end] = controlSelection(element);
+    if (!isPlatformTextEditable(element)) return false;
+    const value = platformTextValue(element);
+    let [start, end] = platformTextSelection(element);
     if (start === end) {
       if (direction === 'backward') {
         if (start === 0) return false;
@@ -3515,30 +3664,30 @@ const DOM_API_BOOTSTRAP: &str = r#"
     }
     const next = value.slice(0, start) + value.slice(end);
     const inputType = direction === 'backward' ? 'deleteContentBackward' : 'deleteContentForward';
-    applyControlValue(element, next, start, start, inputType, null, true);
+    applyPlatformTextValue(element, next, start, start, inputType, null, true);
     return true;
   }
 
   function moveControlCaret(element, key) {
-    if (!isTextEditableControl(element)) return false;
-    const value = controlValue(element);
-    const [start, end] = controlSelection(element);
+    if (!isPlatformTextEditable(element)) return false;
+    const value = platformTextValue(element);
+    const [start, end] = platformTextSelection(element);
     let next = end;
     if (key === 'ArrowLeft') next = Math.max(0, start - 1);
     else if (key === 'ArrowRight') next = Math.min(value.length, end + 1);
     else if (key === 'Home') next = 0;
     else if (key === 'End') next = value.length;
     else return false;
-    setControlSelection(element, next, next);
+    setPlatformTextSelection(element, next, next);
     return true;
   }
 
   function handleKeyboardDefault(target, event) {
     if (!target || typeof target.__vixenNodeId !== 'number' || event.type !== 'keydown') return;
-    if (!isTextEditableControl(target)) return;
+    if (!isPlatformTextEditable(target)) return;
     const key = String(event.key || '');
     if ((event.ctrlKey || event.metaKey) && key.toLowerCase() === 'a') {
-      setControlSelection(target, 0, controlValue(target).length);
+      setPlatformTextSelection(target, 0, platformTextValue(target).length);
       return;
     }
     if (event.__vixenApplyText && event.__vixenInputText) {
@@ -3550,7 +3699,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     } else if (key === 'Delete') {
       deleteTextFromControl(target, 'forward');
     } else if (key === 'Enter') {
-      if (elementTag(target) === 'textarea') insertTextIntoControl(target, '\n');
+      if (elementTag(target) === 'textarea' || isContenteditableHost(target)) insertTextIntoControl(target, '\n');
       else submitFormDefault(findOwnerForm(target), null);
     } else {
       moveControlCaret(target, key);
@@ -3947,6 +4096,10 @@ const DOM_API_BOOTSTRAP: &str = r#"
     const tag = String(elementRecord(target).tag).toLowerCase();
     if (isDisabled(target)) return;
     if (tag === 'input' || tag === 'textarea' || tag === 'select' || tag === 'button') target.focus();
+    else {
+      const editingHost = contenteditableHost(target);
+      if (editingHost) editingHost.focus();
+    }
     if (tag === 'input') {
       const type = elementType(target) || 'text';
       if (type === 'checkbox') {
@@ -4472,6 +4625,10 @@ const DOM_API_BOOTSTRAP: &str = r#"
       this.dispatchEvent(new FocusEvent('focusin', { bubbles: true, composed: true, relatedTarget: old }));
       if (old) old.dispatchEvent(new FocusEvent('blur', { composed: true, relatedTarget: this }));
       this.dispatchEvent(new FocusEvent('focus', { composed: true, relatedTarget: old }));
+      if (isPlatformTextEditable(this)) {
+        const [start, end] = platformTextSelection(this);
+        setPlatformTextSelection(this, start, end);
+      }
     }
     blur() {
       if (activeElementNodeId !== this.__vixenNodeId) return;
@@ -5664,6 +5821,7 @@ mod tests {
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_element_attr"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_element_inner_html"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_control_value"));
+        assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_contenteditable_state"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_root_scroll"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_document_cookie_set"));
         assert!(!DOM_API_BOOTSTRAP.contains("data.elements"));

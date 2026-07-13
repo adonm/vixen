@@ -58,9 +58,9 @@ Page scripts also use that exact root offset through bounded numeric/options
 `scroll()`/`scrollTo()`/`scrollBy()`, synchronized window offsets, and root/body
 `scrollTop`/`scrollLeft`; BrowserCore refreshes its CSS viewport and overflow
 clamp on host-view and page-zoom changes.
-Focused writable native text controls attach Flutter's platform text-input
-client; bounded full values and UTF-16 selection/composing ranges cross the
-exact BrowserCore generation and update the live runtime control. Contenteditable,
+Focused writable native text controls and contenteditable editing hosts attach
+Flutter's platform text-input client; bounded full values and UTF-16 selection/
+composing ranges cross the exact BrowserCore generation and update the live DOM.
 IME action specialization and real native IME evidence, nested/touch
 scrolling, CSS/physical scale correctness, and broader lifecycle/native
 surface-loss recovery remain follow-up work.
@@ -91,20 +91,22 @@ relationships. Bounded `aria-controls`, `aria-describedby`, and `aria-details`
 targets plus descriptions cross the ABI; controls map to stable Flutter semantic
 identifiers. Native and authored ranges expose bounded values and route
 increase/decrease through the exact-generation live runtime action path. Focused
-writable native text controls also project live UTF-16 selection offsets. The ABI exposes at most 192 document-order nodes and tags the
+writable native text controls and contenteditable hosts also project live UTF-16
+selection offsets. The ABI exposes at most 192 document-order nodes and tags the
 exact projection with a deterministic mutation generation. The coordinator
 publishes it only with the matching frame/context/document/viewport generation;
 Flutter maps the hierarchy to keyed nested `Semantics` nodes and routes taps back
 through BrowserCore hit testing. Focus requires exact source and capped-wire
 generations and executes through the live runtime before a refreshed projection
 is published. A 16 KiB-bounded `onSetText` path uses the same generation checks
-and live value/event machinery for enabled writable native text controls;
+and live value/event machinery for enabled writable native text controls and
+contenteditable editing hosts;
 passwords, readonly controls, unsupported types, and ARIA-only textboxes are not
 advertised. Live regions and event-driven same-document full refresh are also
 implemented, as are bounded `aria-owns` reparenting, heading levels, and mixed
 checkbox state. Same-document refreshes atomically swap frame/semantics pairs,
 and content-sensitive keys reconcile only changed nodes. Long-tail relationships,
-document/contenteditable selection, and broader screen-reader coverage remain
+general document-range selection and broader screen-reader coverage remain
 open. `just linux-at-spi-smoke` already proves that the real release bundle
 exports BrowserCore's `DOM Basic` heading through the process-filtered native
 Linux AT-SPI tree.

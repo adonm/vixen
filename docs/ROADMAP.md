@@ -258,9 +258,9 @@ Authored ARIA sliders/spinbuttons with finite numeric state now expose bounded
 range values and exact-generation arrow-key adjustments through the live
 runtime. Explicit and implicit live regions now map into Flutter, and active
 runtime-effect events force a new frame/full-semantics pair despite unchanged
-document keys. Focused writable native text controls now project live UTF-16
-selection offsets through Flutter Semantics. Semantic deltas,
-document/contenteditable selection, long-tail authored-range/relationship
+document keys. Focused writable native text controls and direct contenteditable
+editing hosts now project live UTF-16 selection offsets through Flutter
+Semantics. Semantic deltas, general document-range selection, long-tail authored-range/relationship
 mappings, and native AT remain. Bounded `aria-owns` now re-parents retained
 later nodes, and heading levels plus mixed checkbox state use dedicated Flutter
 semantics properties. Same-document refreshes atomically replace the paired
@@ -269,11 +269,11 @@ semantics identities; the bounded ABI remains full-snapshot rather than making
 Dart own a delta graph. The real Linux release bundle now has process-filtered,
 bounded AT-SPI evidence that the BrowserCore-derived `DOM Basic` heading reaches
 the native tree; broader screen-reader/platform matrices remain.
-A focused writable native text control now attaches Flutter's platform
-`TextInputClient`; bounded full text plus UTF-16 selection and composing ranges
-cross exact context/document/runtime ids and update the live control with
-composition-shaped plus `beforeinput`/`input` events. Contenteditable, IME action
-specialization, and real Linux IME evidence remain.
+A focused writable native text control or direct contenteditable editing host
+now attaches Flutter's platform `TextInputClient`; bounded full text plus UTF-16
+selection and composing ranges cross exact context/document/runtime ids and
+update the live DOM with composition-shaped plus `beforeinput`/`input` events.
+IME action specialization and real Linux IME evidence remain.
 Ctrl+F now crosses the exact active context/document ABI boundary. Page owns a
 10,000-match-bounded rendered-text result and one-based active match; Enter/F3
 plus Previous/Next traverse with wrapping and move the shared root offset to
@@ -570,7 +570,7 @@ correctness. Neither may starve the other.
 1. Extend the landed physical viewport, pointer/wheel/keyboard, root
    wheel/key/script scrolling, native text-control IME, and monotonic
    focus/visibility/lifecycle
-   path with contenteditable/IME action handling and real native IME evidence,
+   path with IME action handling and real native IME evidence,
    nested/touch scrolling plus scroll events/restoration, CSS/physical
    scale correctness, and lifecycle recovery. In parallel, finish
    navigation-aware runtime/native-host cancellation and preserve one BrowserCore
@@ -583,11 +583,11 @@ correctness. Neither may starve the other.
 4. Extend the landed bounded hierarchical accessibility projection beyond its
    `aria-controls`/`aria-describedby`/`aria-details` relationships, descriptions,
    and native/authored-range increase/decrease and live-region slices: add
-   document/contenteditable selection, long-tail relationship/state mappings,
+   general document-range selection, long-tail relationship/state mappings,
    and broader native AT/screen-reader evidence. Add platform
    host-service UI; both remain cross-cutting through every later platform.
 5. Complete the Linux basic-browser gate: visible controlled-site navigation,
-   nested/touch scrolling, contenteditable plus native IME evidence,
+   nested/touch scrolling, IME actions plus native IME evidence,
    back/forward/reload/stop, and finish bounded navigation/runtime plus native
    surface recovery beyond the landed capture/texture retry policy. Keep
    release-archive smoke green, but defer FlatPark submission/review/publishing

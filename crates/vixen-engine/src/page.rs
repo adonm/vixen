@@ -51,7 +51,7 @@ pub struct Page {
     focused_element_node_id: Option<usize>,
     accessibility_mutation_epoch: u64,
     selection: Option<PageSelection>,
-    control_selections: std::collections::HashMap<usize, AccessibilityTextSelection>,
+    text_selections: std::collections::HashMap<usize, AccessibilityTextSelection>,
     layout_viewport: (u32, u32),
     root_scroll: (f32, f32),
     find_state: Option<FindState>,
@@ -141,7 +141,7 @@ impl Page {
             focused_element_node_id: None,
             accessibility_mutation_epoch: 1,
             selection: None,
-            control_selections: std::collections::HashMap::new(),
+            text_selections: std::collections::HashMap::new(),
             layout_viewport: (800, 600),
             root_scroll: (0.0, 0.0),
             find_state: None,
@@ -216,7 +216,7 @@ impl Page {
     pub fn set_element_text_content(&mut self, node_id: usize, value: &str) -> Result<(), String> {
         self.document.set_element_text_content(node_id, value)?;
         self.focused_element_node_id = None;
-        self.control_selections.clear();
+        self.text_selections.clear();
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
         Ok(())
@@ -256,7 +256,7 @@ impl Page {
     pub fn set_element_inner_html(&mut self, node_id: usize, html: &str) -> Result<(), String> {
         self.document.set_element_inner_html(node_id, html)?;
         self.focused_element_node_id = None;
-        self.control_selections.clear();
+        self.text_selections.clear();
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
         Ok(())
@@ -283,11 +283,58 @@ impl Page {
             base_offset,
             extent_offset,
         };
-        if self.control_selections.get(&node_id) == Some(&selection) {
+        if self.text_selections.get(&node_id) == Some(&selection) {
             return Ok(());
         }
-        self.control_selections.insert(node_id, selection);
+        self.text_selections.insert(node_id, selection);
         self.bump_accessibility_mutation_epoch();
+        Ok(())
+    }
+
+    /// Commit a focused contenteditable host's full text and UTF-16 selection
+    /// from the live runtime without clearing focus during subtree replacement.
+    pub fn set_contenteditable_text_state(
+        &mut self,
+        node_id: usize,
+        value: &str,
+        base_offset: u32,
+        extent_offset: u32,
+    ) -> Result<(), String> {
+        let element = self
+            .document
+            .element_by_node_id(node_id)
+            .ok_or_else(|| format!("contenteditable host node {node_id} is missing"))?;
+        let editable = element.attributes.iter().any(|(name, value)| {
+            name == "contenteditable"
+                && !matches!(
+                    value.trim().to_ascii_lowercase().as_str(),
+                    "false" | "inherit"
+                )
+        });
+        if !editable || self.focused_element_node_id != Some(node_id) {
+            return Err("text input target is not the focused contenteditable host".to_owned());
+        }
+        let utf16_len = value.encode_utf16().count();
+        if base_offset as usize > utf16_len || extent_offset as usize > utf16_len {
+            return Err("contenteditable selection exceeds the UTF-16 text length".to_owned());
+        }
+
+        let selection = AccessibilityTextSelection {
+            base_offset,
+            extent_offset,
+        };
+        let text_changed = self.document.element_text_content(node_id).as_deref() != Some(value);
+        let selection_changed = self.text_selections.get(&node_id) != Some(&selection);
+        if text_changed {
+            self.document.set_element_text_content(node_id, value)?;
+            self.refresh_author_stylesheet();
+        }
+        if selection_changed {
+            self.text_selections.insert(node_id, selection);
+        }
+        if text_changed || selection_changed {
+            self.bump_accessibility_mutation_epoch();
+        }
         Ok(())
     }
 
@@ -752,7 +799,7 @@ impl Page {
             let range = accessibility_range(&element, &role);
             let text_selection = (self.focused_element_node_id == Some(element.node_id)
                 && matches!(role.as_str(), "textbox" | "searchbox"))
-            .then(|| self.control_selections.get(&element.node_id).copied())
+            .then(|| self.text_selections.get(&element.node_id).copied())
             .flatten();
             let live_region = accessibility_live_region(&element, &role);
             let heading_level = accessibility_heading_level(&element, &role);
@@ -1084,6 +1131,7 @@ fn accessibility_role(element: &AccessibilityElement) -> Option<String> {
         "select" => "combobox",
         "option" => "option",
         "textarea" => "textbox",
+        _ if element.contenteditable => "textbox",
         "img" => "image",
         "h1" | "h2" | "h3" | "h4" | "h5" | "h6" => "heading",
         "ul" | "ol" => "list",
@@ -1111,6 +1159,9 @@ fn accessibility_value(element: &AccessibilityElement, role: &str) -> Option<Str
         "textbox" | "searchbox" | "combobox" | "listbox" | "slider" | "spinbutton"
     ) {
         return None;
+    }
+    if element.contenteditable {
+        return Some(element.text.clone());
     }
     element
         .aria_value_text
@@ -1211,7 +1262,7 @@ fn accessibility_set_value_supported(element: &AccessibilityElement, role: &str)
     if element.read_only || !matches!(role, "textbox" | "searchbox") {
         return false;
     }
-    if element.tag == "textarea" {
+    if element.contenteditable || element.tag == "textarea" {
         return true;
     }
     if element.tag != "input" {
@@ -1850,7 +1901,7 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_set_value_is_limited_to_writable_native_text_controls() {
+    fn accessibility_set_value_is_limited_to_writable_text_hosts() {
         let page = Page::from_html(
             "file:///accessibility-values.html",
             r#"<!doctype html>
@@ -1858,6 +1909,7 @@ mod tests {
                 <textarea aria-label="Notes"></textarea>
                 <input aria-label="Read only" readonly>
                 <input aria-label="Secret" type="password">
+                <div contenteditable aria-label="Editor">draft</div>
                 <div role="textbox" aria-label="Authored"></div>"#,
         )
         .unwrap();
@@ -1880,6 +1932,7 @@ mod tests {
         assert!(supports_set_value("Notes"));
         assert!(!supports_set_value("Read only"));
         assert!(!supports_set_value("Secret"));
+        assert!(supports_set_value("Editor"));
         assert!(!supports_set_value("Authored"));
     }
 

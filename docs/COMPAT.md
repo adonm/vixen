@@ -224,22 +224,23 @@ snapshot, so same-document live mutations are not suppressed by the normal
 same-key capture coalescing. This is event-driven full-projection refresh, not a
 delta protocol or native assistive-technology proof.
 
-Focused writable native text inputs and textareas project the live runtime's
-bounded UTF-16 selection base/extent through BrowserCore and ABI v1 into
-Flutter's semantics configuration. Selection changes participate in the source
-generation, while unfocused controls and authored ARIA-only textboxes do not
-fabricate caret state. Document-range and contenteditable selection remain
-outside this slice.
+Focused writable native text inputs, textareas, and direct contenteditable
+editing hosts project the live runtime's bounded UTF-16 selection base/extent
+through BrowserCore and ABI v1 into Flutter's semantics configuration. Selection
+changes participate in the source generation, while unfocused controls and
+authored ARIA-only textboxes do not fabricate caret state. General document-
+range selection remains outside this slice.
 
-Focused writable native text inputs and textareas also attach Flutter's platform
+Those native controls and contenteditable hosts also attach Flutter's platform
 text-input client. Each update carries a value capped at 16 KiB plus selection
 and optional composing ranges in UTF-16 units through exact context/document/
 runtime ids. BrowserCore validates every range against the value, applies it to
-the live focused control, and emits composition-shaped events plus cancelable
-`beforeinput` and `input`; stale or non-writable targets fail closed. Widget,
-wire, and BrowserCore tests cover a non-ASCII composing update. Contenteditable,
-IME action/keyboard-type specialization, and a real Linux desktop-IME smoke or
-language matrix remain open.
+the live focused editing host, and emits composition-shaped events plus
+cancelable `beforeinput` and `input`; stale or non-writable targets fail closed.
+Widget/wire tests cover the shared transport, and BrowserCore tests cover native
+non-ASCII plus contenteditable surrogate-pair composition. IME action/keyboard-
+type specialization and a real Linux desktop-IME smoke or language matrix remain
+open.
 
 Top-level script scrolling now shares the Page-owned offset used by wheel/key
 defaults, paint, hit testing, find, and Semantics. The live runtime exposes

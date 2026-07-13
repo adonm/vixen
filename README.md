@@ -61,15 +61,16 @@ generation-checked adjustment actions. Explicit `aria-live` plus implicit live
 roles project into Flutter live regions, and runtime-effect events trigger a
 fresh frame/semantics pair for the active document. Focused writable native text
 controls now carry live UTF-16 selection offsets into Flutter Semantics. A
-focused writable native text control also attaches Flutter's platform text-input
-client and sends bounded full text, UTF-16 selection, and composing ranges
-through the exact BrowserCore document/runtime generation; the live control
-receives composition-shaped plus `beforeinput`/`input` events.
+focused writable native text control or contenteditable host also attaches
+Flutter's platform text-input client and sends bounded full text, UTF-16
+selection, and composing ranges through the exact BrowserCore document/runtime
+generation; the live editing host receives composition-shaped plus
+`beforeinput`/`input` events.
 `aria-owns` reparenting, heading levels, and mixed checkbox state also map into
 the platform tree. Same-document refreshes replace frame/semantics atomically
 and reconcile only changed semantic nodes. A release-bundle AT-SPI smoke observes
-BrowserCore's `DOM Basic` heading through the native Linux tree. Contenteditable
-IME, platform IME action handling and real Linux IME evidence, complete
+BrowserCore's `DOM Basic` heading through the native Linux tree. Platform IME
+action handling and real Linux IME evidence, complete
 accessibility/screen-reader coverage, basic-browser parity, and host services
 remain open, so the GTK/Relm4 shell is still the temporary
 Linux compatibility baseline rather than the product direction.

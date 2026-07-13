@@ -4265,7 +4265,7 @@ mod tests {
         );
         config.document_overrides.insert(
             "https://same.test/input".to_owned(),
-            "<!doctype html><button id='same' aria-controls='name'>Same</button><a id='go' href='https://same.test/b'>Go</a><input id='name' aria-label='Name'><input id='volume' type='range' aria-label='Volume' min='0' max='10' step='2' value='4'><div id='brightness' role='slider' tabindex='0' aria-label='Brightness' aria-valuemin='0' aria-valuemax='10' aria-valuenow='3'></div><script>document.getElementById('brightness').addEventListener('keydown', event => { if (event.key === 'ArrowRight') event.currentTarget.setAttribute('aria-valuenow', '4'); });</script>".to_owned(),
+            "<!doctype html><button id='same' aria-controls='name'>Same</button><a id='go' href='https://same.test/b'>Go</a><input id='name' aria-label='Name'><div id='editor' contenteditable aria-label='Editor'>draft</div><input id='volume' type='range' aria-label='Volume' min='0' max='10' step='2' value='4'><div id='brightness' role='slider' tabindex='0' aria-label='Brightness' aria-valuemin='0' aria-valuemax='10' aria-valuenow='3'></div><script>document.getElementById('brightness').addEventListener('keydown', event => { if (event.key === 'ArrowRight') event.currentTarget.setAttribute('aria-valuenow', '4'); });</script>".to_owned(),
         );
         config.document_overrides.insert(
             "https://same.test/scroll".to_owned(),
@@ -5499,6 +5499,114 @@ mod tests {
             })
             .unwrap_err();
         assert_eq!(error.code, browser_error_codes::INVALID_ARGUMENT);
+    }
+
+    #[test]
+    fn text_input_commits_ime_state_to_a_focused_contenteditable_host() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/input");
+        let current = state(&mut handle, context_id);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "const editor = document.querySelector('#editor'); editor.click(); globalThis.editorImeEvents = []; for (const type of ['compositionstart', 'beforeinput', 'input', 'compositionupdate', 'compositionend']) editor.addEventListener(type, event => editorImeEvents.push(type + ':' + (event.data || '') + ':' + Boolean(event.isComposing))); document.activeElement.id"
+            ),
+            ScriptValue::String("editor".to_owned())
+        );
+        let BrowserCommandResult::AccessibilitySnapshot(focused) = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: (800, 600),
+            })
+            .unwrap()
+        else {
+            panic!("expected accessibility snapshot");
+        };
+        let editor = focused
+            .nodes
+            .iter()
+            .find(|node| node.label == "Editor")
+            .unwrap();
+        assert_eq!(editor.role, "textbox");
+        assert_eq!(editor.value.as_deref(), Some("draft"));
+        assert!(editor.actions.iter().any(|action| action == "set_value"));
+        assert_eq!(
+            editor.text_selection,
+            Some(vixen_api::AccessibilityTextSelection {
+                base_offset: 5,
+                extent_offset: 5,
+            })
+        );
+
+        handle
+            .dispatch(BrowserCommand::DispatchTextInput {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                state: TextInputState {
+                    text: "draft🦊".to_owned(),
+                    selection: vixen_api::AccessibilityTextSelection {
+                        base_offset: 7,
+                        extent_offset: 7,
+                    },
+                    composing: Some(vixen_api::AccessibilityTextSelection {
+                        base_offset: 5,
+                        extent_offset: 7,
+                    }),
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "document.querySelector('#editor').textContent + '|' + editorImeEvents.join('>')"
+            ),
+            ScriptValue::String(
+                "draft🦊|compositionstart::false>beforeinput:🦊:true>input:🦊:true>compositionupdate:🦊:false"
+                    .to_owned()
+            )
+        );
+        let BrowserCommandResult::AccessibilitySnapshot(updated) = handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport: (800, 600),
+            })
+            .unwrap()
+        else {
+            panic!("expected accessibility snapshot");
+        };
+        let editor = updated
+            .nodes
+            .iter()
+            .find(|node| node.label == "Editor")
+            .unwrap();
+        assert_eq!(editor.value.as_deref(), Some("draft🦊"));
+        assert_eq!(editor.text_selection.unwrap().base_offset, 7);
+
+        handle
+            .dispatch(BrowserCommand::DispatchTextInput {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                state: TextInputState {
+                    text: "draft🦊".to_owned(),
+                    selection: vixen_api::AccessibilityTextSelection {
+                        base_offset: 7,
+                        extent_offset: 7,
+                    },
+                    composing: None,
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            eval(&mut handle, &current, "editorImeEvents.at(-1)"),
+            ScriptValue::String("compositionend:🦊:false".to_owned())
+        );
     }
 
     #[test]

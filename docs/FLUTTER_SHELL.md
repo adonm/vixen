@@ -40,7 +40,7 @@ native smoke tests, and the native ABI gate. A Fedora 43 container build also
 produced a relocatable debug bundle containing the executable, Flutter embedder,
 and `libvixen_ffi.so`.
 
-This does not establish Linux parity: contenteditable/IME action and gesture
+This does not establish Linux parity: IME action and gesture
 input, real native IME evidence, complete lifecycle recovery and scale handling, complete
 semantic relationships/actions and native AT smoke,
 downloads/permissions,
@@ -98,7 +98,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key/script scrolling, native text-control IME state, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; contenteditable/IME actions and native evidence, nested/touch scrolling, native lifecycle/surface recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key/script scrolling, native/contenteditable text-input state, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; IME actions and native evidence, nested/touch scrolling, native lifecycle/surface recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -194,23 +194,25 @@ transition, suppresses hidden captures, and cancels pending primary presses at
 the controller boundary. The stored scale does not yet separate CSS layout pixels
 from the bounded physical render target.
 
-The remaining target adds contenteditable/IME action handling and native IME
-evidence, touch and nested scrolling,
+The remaining target adds IME action handling and native IME evidence, touch and
+nested scrolling,
 CSS/device-scale correctness, and platform lifecycle/surface recovery.
 BrowserCore continues to own hit testing, selection, DOM event dispatch, and
 navigation effects. Platform-specific raw data may be retained in bounded DTOs
 where web semantics require it.
 
 The first platform text-input vertical is implemented for focused writable
-native text inputs and textareas. BrowserCore's semantic projection selects the
-eligible control, Flutter attaches one `TextInputClient`, and every platform
-update sends a value bounded to 16 KiB plus UTF-16 selection and optional
-composing ranges through exact context/document/runtime ids. BrowserCore
-revalidates the ranges and focused target before applying the state to the live
-control and dispatching composition-shaped, cancelable `beforeinput`, and
-`input` events. Stale targets and inactive host views fail closed. Widget/wire/
-core tests exercise non-ASCII composition; contenteditable, IME action and
-keyboard-type specialization, and real desktop-IME evidence remain.
+native text inputs/textareas and direct contenteditable editing hosts.
+BrowserCore's semantic projection selects the eligible host, Flutter attaches
+one `TextInputClient`, and every platform update sends a value bounded to 16 KiB
+plus UTF-16 selection and optional composing ranges through exact context/
+document/runtime ids. BrowserCore revalidates the ranges and focused target
+before applying the state to the live DOM and dispatching composition-shaped,
+cancelable `beforeinput`, and `input` events. Stale targets and inactive host
+views fail closed. Widget/wire tests cover the shared transport; BrowserCore
+tests exercise native non-ASCII and contenteditable surrogate-pair composition.
+IME action and keyboard-type specialization plus real desktop-IME evidence
+remain.
 
 The first engine-owned scrolling vertical is now implemented for the top-level
 document. Flutter scales wheel deltas into frame coordinates, BrowserCore sends
@@ -307,11 +309,12 @@ Semantic focus is dispatched only when the exact context, document, runtime,
 viewport, source generation, capped wire generation, node id, and advertised
 capability still match; BrowserCore executes live focus events/mutation and Dart
 waits for the refreshed projection. The same boundary exposes a 16 KiB-bounded
-set-value action only for enabled, writable native text inputs/textareas; it
-uses the live control-value and input/change event path, while password,
+set-value action only for enabled, writable native text inputs/textareas and
+contenteditable editing hosts; it uses the live value and input/change event
+path, while password,
 readonly, unsupported input types, and authored ARIA-only textboxes remain
 unadvertised. Complete accessibility still requires long-tail relationship and
-state mappings, document/contenteditable selection, wire-delta optimization,
+state mappings, general document-range selection, wire-delta optimization,
 broader authored-range keyboard conventions, the disabled-fieldset
 first-legend exception, full ARIA presentational-role conflict handling, and
 native AT and screen-reader smoke on each additional platform.
