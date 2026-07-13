@@ -7,6 +7,12 @@ scope remains in [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md), browser-engine
 ownership in [`ARCHITECTURE.md`](ARCHITECTURE.md), and accepted tradeoffs in
 [`DECISIONS.md`](DECISIONS.md) ADR-018.
 
+**Linux is the highest-priority shell, integration, packaging, and release
+target.** Complete Linux parity and native evidence before equivalent platform
+expansion. The other four targets remain part of the product direction, but
+reuse the BrowserCore/Flutter boundary proven on Linux and must not delay Linux
+convergence.
+
 ## Status and evidence boundary
 
 **Implemented Linux alpha slice:** the repository contains a Flutter 3.46 beta Linux
@@ -84,7 +90,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Flutter parity with the compatibility shell; deterministic official archive and checksum-pinned FlatPark package; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; FlatPark review, IME, full semantics/native AT, host services, broader matrix, and parity remain open |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Flutter parity with the compatibility shell; deterministic official archive and checksum-pinned FlatPark package; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; FlatPark review, IME, full semantics/native AT, host services, broader matrix, and parity remain open |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |

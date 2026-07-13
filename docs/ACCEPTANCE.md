@@ -179,6 +179,11 @@ ownership, not necessarily no GTK runtime dependency.
 Flutter supports native deployment to all five targets, but Vixen supports a
 platform only after its gate in [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md) passes:
 
+Linux is the highest-priority platform gate. Linux Flutter parity, host
+integration, accessibility evidence, packaging, and performance are completed
+before equivalent non-Linux release work; other targets remain committed but do
+not block Linux convergence.
+
 Each gate runs on the latest generally available major OS release at the release
 cutoff. The release record pins exact OS/SDK/image versions. Older releases are
 best-effort unless explicitly listed as an additional tested tier; preview OS

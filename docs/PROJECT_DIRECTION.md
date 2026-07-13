@@ -10,6 +10,12 @@ Linux, macOS, Windows, Android, and the Apple Silicon iOS Simulator, plus first-
 is optimized for the most web capability per byte of binary and per MiB of
 memory.
 
+**Linux is the highest-priority GUI, integration, packaging, and release
+target.** Product work should make the Linux Flutter browser useful and pass its
+native gates before equivalent platform expansion. macOS, Windows, Android, and
+the iOS Simulator remain committed targets, but they follow the shared contract
+proven on Linux rather than competing with Linux convergence for priority.
+
 The product should feel closer to Ghostty than to a kitchen-sink browser:
 small, fast to build, efficient to run, easy to iterate on, and boringly
 reliable.
@@ -63,8 +69,10 @@ The user-facing rank is:
 3. **Network/security/fetch/cookies** — real browsing needs safe, fail-closed
    loading before breadth.
 4. **Storage/history/session** — required for real browsing and app-like sites.
-5. **Minimal Flutter shell on five native platforms** — Dart owns chrome and
-   host-service presentation only; the current GTK/Relm4 shell is temporary.
+5. **Minimal Flutter shell, Linux first** — Linux is the highest-priority GUI and
+   release target. Dart owns chrome and host-service presentation only; the
+   current GTK/Relm4 shell is temporary. The same proven contract then expands
+   to the other four committed native targets.
 6. **Headless CLI + CDP/Playwright-compatible seams** — automation and text
    reports are product features, not test-only scaffolding.
 7. **WPT/imported fixture coverage and reports** — correctness driver for every
@@ -149,8 +157,8 @@ Flutter alpha additionally requires the browser-scoped Rust bridge contract, a
 Linux fake and real shell, bounded RGBA external-texture transport, input and
 viewport routing, and the accessibility projection shape. The bridge, shell, and
 RGBA texture, physical viewport, pointer/wheel/keyboard routing, and the first
-bounded BrowserCore-to-Flutter Semantics shape are landed. IME/gesture/lifecycle
-input and complete semantics/native AT behavior remain open.
+bounded BrowserCore-to-Flutter Semantics shape are landed. IME/gesture input,
+scale/lifecycle recovery, and complete semantics/native AT behavior remain open.
 
 Alpha also requires a production browser core: one profile service, one context
 registry, one generational navigation/document lifecycle, and one command/event

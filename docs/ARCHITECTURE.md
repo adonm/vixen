@@ -24,8 +24,12 @@ and WPT are adapters over that owner. This completes the A1 ownership migration,
 not the broader alpha compatibility exit gate.
 
 Flutter is the target GUI adapter on Linux, macOS, Windows, Android, and the Apple Silicon iOS Simulator.
-It is not implemented or installed in this workspace. The GTK/Relm4 adapter is
-the transitional Linux compatibility baseline; see
+Linux is the highest-priority GUI and release target: architecture integration,
+host services, packaging, accessibility, and performance evidence converge there
+first, then the same boundary expands to the other committed platforms.
+The checked-in Linux Flutter runner and release archive are implemented; the
+non-Linux runners remain targets. The GTK/Relm4 adapter is the transitional
+Linux compatibility baseline; see
 [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md) for the target bridge and platform gates.
 Flutter's Linux embedder uses GTK, so parity removes Relm4/libadwaita/custom
 GLArea ownership rather than guaranteeing a GTK-free Linux runtime.

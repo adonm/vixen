@@ -6,6 +6,12 @@ targeting Linux, macOS, Windows, Android, and the Apple Silicon iOS Simulator, p
 automation. It is deliberately more ambitious than a demo-browser plan, but it
 does not turn framework support into an unsupported Vixen compatibility claim.
 
+**Linux is the highest-priority GUI and release target throughout this
+roadmap.** Browser correctness remains shared-core work, while GUI integration,
+host services, accessibility evidence, packaging, and performance converge on
+Linux first. Non-Linux targets remain committed and follow the contract proven
+by the Linux gates; they do not delay Linux parity.
+
 Historical phase instructions live in [`PLAN.md`](PLAN.md), executable evidence
 in [`MILESTONES.md`](MILESTONES.md), and measured support in
 [`COMPAT.md`](COMPAT.md). Already-landed feature inventories do not belong in the

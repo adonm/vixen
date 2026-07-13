@@ -11,6 +11,11 @@ A focused cross-platform Firefox replacement: a Flutter GUI targeting Linux,
 macOS, Windows, Android, and the Apple Silicon iOS Simulator, first-class headless/CDP automation, and the
 most web capability per byte.
 
+**Linux is Vixen's highest-priority GUI and release target.** Browser usability,
+host integration, packaging, accessibility evidence, and performance gates land
+on Linux first. macOS, Windows, Android, and the iOS Simulator remain committed
+targets and reuse the proven BrowserCore/Flutter contract after the Linux path.
+
 The hard, spec-heavy, easy-to-get-wrong subsystems are delegated where that
 keeps Vixen smaller and more correct: **Stylo/selectors** for CSS matching and
 cascade, **deno_core/V8** for JS execution and host packaging, **WebRender** for
