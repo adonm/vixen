@@ -65,8 +65,10 @@ As of 2026-07-10 the repository has these building blocks:
   comparison. The packaged Linux composition root is now Flutter: chrome, real
   BrowserCore FFI, visible WebRender output through a bounded RGBA texture,
   input/accessibility projection, and a deterministic release/AOT archive with
-  clean extraction and Impeller Xvfb launch smoke. FlatPark review, broader/native IME evidence, host services, complete accessibility, and
-  compatibility-shell parity remain open.
+  clean extraction and Impeller Cage/headless-Wayland launch smoke. The Linux
+  GUI now rejects X11/XWayland. FlatPark review, broader/native IME evidence,
+  host services, complete accessibility, and compatibility-shell parity remain
+  open.
 
 These are substantial components now routed through one initial browser owner,
 not yet a broadly compatible browser. API shape or inert reflection is still not

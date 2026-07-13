@@ -48,13 +48,16 @@ just linux-release-prefetch
 just linux-release-smoke
 ```
 
+The host needs Cage with wlroots' headless backend; the packaged Linux GUI
+supports native Wayland only.
+
 `linux-release-smoke`:
 
 - builds Flutter in release/AOT mode;
 - builds the BrowserCore-backed `libvixen_ffi.so` through the Flutter runner;
 - creates a deterministic archive with normalized ownership and timestamps;
 - extracts that exact archive into a clean directory;
-- launches it under Xvfb on the Linux host;
+- launches it under Cage's headless Wayland backend on the Linux host;
 - requires survival to the bounded timeout; and
 - requires `Using the Impeller rendering backend (...)` in the engine log.
 
@@ -92,8 +95,9 @@ SHA-256 before publishing.
 
 The package may install wrapper, desktop, icon, and AppStream files around the
 archive, but it must not patch or replace Vixen's binaries. Permissions stay at
-the minimum needed for browser operation: display, GPU, IPC, network, and the
-explicit download directory grant. Optional broader host access is not enabled.
+the minimum needed for browser operation: the Wayland socket (without X11 or
+fallback-X11), GPU, IPC, network, and the explicit download directory grant.
+Optional broader host access is not enabled.
 
 Before submitting an update:
 

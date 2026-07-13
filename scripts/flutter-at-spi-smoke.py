@@ -62,7 +62,7 @@ def main() -> int:
     env = os.environ.copy()
     env.update(
         {
-            "GDK_BACKEND": "x11",
+            "GDK_BACKEND": "wayland",
             "GTK_A11Y": "1",
             "NO_AT_BRIDGE": "0",
             "LIBGL_ALWAYS_SOFTWARE": "1",

@@ -123,7 +123,15 @@ build-flutter-linux: _flutter-sdk-present
 
 # Launch the Linux shell through Flutter's desktop runner.
 run-flutter: _flutter-sdk-present
-    cd flutter/vixen_shell && flutter run -d linux
+    cd flutter/vixen_shell && GDK_BACKEND=wayland flutter run -d linux
+
+# Launch the Linux shell in a local headless Wayland compositor.
+run-flutter-cage: _flutter-sdk-present
+    command -v cage >/dev/null || { printf '%s\n' "cage is required for local headless Wayland testing" >&2; exit 1; }
+    rm -rf .tmp/wayland-run && mkdir -m 700 -p .tmp/wayland-run
+    XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/wayland-run" GDK_BACKEND=wayland \
+        WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
+        LIBGL_ALWAYS_SOFTWARE=1 cage -- sh -c 'cd {{justfile_directory()}}/flutter/vixen_shell && exec flutter run -d linux'
 
 # Stage locked application/Cargo inputs and the exact rusty_v8 archive. This is
 # network-capable setup, not release evidence.
@@ -172,21 +180,25 @@ linux-release-archive: build-flutter-release-linux
     python3 scripts/package-linux-release.py {{LINUX_RELEASE_BUNDLE}} {{LINUX_RELEASE_ARCHIVE}}
     cd "$(dirname {{LINUX_RELEASE_ARCHIVE}})" && sha256sum "$(basename {{LINUX_RELEASE_ARCHIVE}})" > "$(basename {{LINUX_RELEASE_ARCHIVE}}).sha256"
 
-# Extract and launch the exact archive on the Linux host. The runner
-# must survive to the timeout and report an Impeller backend.
+# Extract and launch the exact archive in a headless Wayland compositor. The
+# runner must survive to the timeout and report an Impeller backend.
 linux-release-smoke: linux-release-archive
     rm -rf .tmp/linux-release/smoke && mkdir -p .tmp/linux-release/smoke
     tar -xzf {{LINUX_RELEASE_ARCHIVE}} -C .tmp/linux-release/smoke
-    command -v xvfb-run >/dev/null || { printf '%s\n' "xvfb-run is required for the Linux release smoke" >&2; exit 1; }
-    sh -c 'set +e; LIBGL_ALWAYS_SOFTWARE=1 timeout 15s xvfb-run -a .tmp/linux-release/smoke/vixen/vixen_shell > .tmp/linux-release-smoke.log 2>&1; status=$?; set -e; cat .tmp/linux-release-smoke.log; test "$status" -eq 124; grep -Eq "Using the Impeller rendering backend \\((Vulkan|OpenGLES|VulkanSDF|OpenGLESSDF)\\)\\." .tmp/linux-release-smoke.log'
+    command -v cage >/dev/null || { printf '%s\n' "cage is required for the Wayland release smoke" >&2; exit 1; }
+    rm -rf .tmp/linux-release/wayland && mkdir -m 700 -p .tmp/linux-release/wayland
+    sh -c 'set +e; XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/linux-release/wayland" GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 timeout 15s cage -- .tmp/linux-release/smoke/vixen/vixen_shell > .tmp/linux-release-smoke.log 2>&1; status=$?; set -e; cat .tmp/linux-release-smoke.log; test "$status" -eq 124; grep -Eq "Using the Impeller rendering backend \\((Vulkan|OpenGLES|VulkanSDF|OpenGLESSDF)\\)\\." .tmp/linux-release-smoke.log'
 
-# Launch the real release bundle on an isolated X11 display and require
+# Launch the real release bundle on an isolated Wayland compositor and require
 # BrowserCore-projected fixture semantics to appear through native AT-SPI.
 linux-at-spi-smoke: build-flutter-release-linux
-    command -v xvfb-run >/dev/null || { printf '%s\n' "xvfb-run is required for the AT-SPI smoke" >&2; exit 1; }
+    command -v cage >/dev/null || { printf '%s\n' "cage is required for the Wayland AT-SPI smoke" >&2; exit 1; }
     test -n "$DBUS_SESSION_BUS_ADDRESS" || { printf '%s\n' "an active user D-Bus/AT-SPI session is required" >&2; exit 1; }
     python3 -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi'
-    xvfb-run -a python3 scripts/flutter-at-spi-smoke.py \
+    rm -rf .tmp/linux-at-spi-wayland && mkdir -m 700 -p .tmp/linux-at-spi-wayland
+    XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/linux-at-spi-wayland" GDK_BACKEND=wayland \
+        WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
+        LIBGL_ALWAYS_SOFTWARE=1 cage -- python3 scripts/flutter-at-spi-smoke.py \
         --app {{LINUX_RELEASE_BUNDLE}}/vixen_shell \
         --library {{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so \
         --url file://{{justfile_directory()}}/fixtures/dom/basic.html \

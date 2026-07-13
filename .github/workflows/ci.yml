@@ -138,6 +138,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
+            cage \
             clang \
             cmake \
             libegl-dev \
@@ -146,9 +147,7 @@ jobs:
             liblzma-dev \
             mesa-vulkan-drivers \
             ninja-build \
-            pkg-config \
-            xauth \
-            xvfb
+            pkg-config
 
       - name: Install pinned Rust and Flutter beta
         uses: jdx/mise-action@v3
@@ -208,8 +207,13 @@ jobs:
           set -eu
           mkdir -p .tmp/linux-release-smoke
           tar -xzf vixen-linux-x86_64.tar.gz -C .tmp/linux-release-smoke
+          install -d -m 700 .tmp/wayland-runtime
           set +e
-          timeout 15s xvfb-run -a .tmp/linux-release-smoke/vixen/vixen_shell \
+          XDG_RUNTIME_DIR="$GITHUB_WORKSPACE/.tmp/wayland-runtime" \
+          GDK_BACKEND=wayland WLR_BACKENDS=headless \
+          WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
+          LIBGL_ALWAYS_SOFTWARE=1 \
+          timeout 15s cage -- .tmp/linux-release-smoke/vixen/vixen_shell \
             > linux-release-smoke.log 2>&1
           status=$?
           set -e

@@ -13,6 +13,11 @@ expansion. The other four targets remain part of the product direction, but
 reuse the BrowserCore/Flutter boundary proven on Linux and must not delay Linux
 convergence.
 
+The Linux GUI target is **native Wayland only**. The runner exits nonzero when
+GTK selects X11, including XWayland. Local and release automation use Cage's
+headless wlroots backend; this does not change the EGL-surfaced Rust headless/CDP
+product.
+
 Within Linux work, browser behavior outranks distribution reach. FlatPark
 submission, review, and publishing are deferred until the Flutter shell can
 navigate and visibly render controlled sites, scroll through content, accept
@@ -108,7 +113,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Locked Yaru/Adwaita-blue chrome with an integrated native-window titlebar, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key/script/single-touch scrolling, native/contenteditable text-input state plus normalized `inputmode`/input-type/`enterkeyhint` keyboard and action intent, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; native IME evidence, nested/richer gesture scrolling, native lifecycle/surface recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime; native Wayland only | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Locked Yaru/Adwaita-blue chrome with an integrated native-window titlebar, explicit X11/XWayland rejection, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key/script/single-touch scrolling, native/contenteditable text-input state plus normalized `inputmode`/input-type/`enterkeyhint` keyboard and action intent, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Cage/Wayland smoke implemented; native IME evidence, nested/richer gesture scrolling, native lifecycle/surface recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -317,8 +322,9 @@ changed nodes. The ABI deliberately remains a bounded full-snapshot protocol so
 Dart never becomes the authoritative accessibility graph.
 
 The first native Linux evidence is checked in as `just linux-at-spi-smoke`. It
-launches the release/AOT bundle on Xvfb with a fresh profile and an explicit
-local fixture URL, traverses the host AT-SPI tree under strict node/time bounds,
+launches the release/AOT bundle in Cage's headless Wayland compositor with a
+fresh profile and an explicit local fixture URL, traverses the host AT-SPI tree
+under strict node/time bounds,
 filters by the launched process id, and requires BrowserCore's `DOM Basic`
 heading. The environment-only initial URL changes startup intent but does not
 bypass BrowserCore URL/navigation policy. Broader Orca interaction and control
@@ -363,9 +369,10 @@ official x86_64 Flutter 3.46.0-0.3.pre beta archive and verifies its framework
 and engine revisions. Cargo, Pub, and rusty_v8 remain locked/pinned inputs.
 `just linux-release-smoke` builds release/AOT Flutter and `libvixen_ffi.so`,
 creates a deterministic archive, extracts that exact file, and requires a
-bounded Impeller Xvfb launch. FlatPark pins the immutable GitHub Release URL,
-size, and SHA-256 and repackages those unchanged bytes as a signed convenience
-Flatpak; Vixen does not maintain a parallel OSTree repository.
+bounded Impeller launch in Cage's headless Wayland compositor. FlatPark pins the
+immutable GitHub Release URL, size, and SHA-256 and repackages those unchanged
+bytes as a signed convenience Flatpak; Vixen does not maintain a parallel
+OSTree repository.
 
 The Relm4/libadwaita/custom GLArea shell remains temporarily in-tree for parity
 comparison but is no longer the package entrypoint. Remove it and its

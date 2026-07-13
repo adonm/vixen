@@ -1,6 +1,9 @@
 #include "my_application.h"
 
 #include <flutter_linux/flutter_linux.h>
+#ifdef GDK_WINDOWING_WAYLAND
+#include <gdk/gdkwayland.h>
+#endif
 
 #include "flutter/generated_plugin_registrant.h"
 #include "vixen_texture.h"
@@ -220,6 +223,20 @@ static gboolean my_application_local_command_line(GApplication* application,
   g_autoptr(GError) error = nullptr;
   if (!g_application_register(application, nullptr, &error)) {
     g_warning("Failed to register: %s", error->message);
+    *exit_status = 1;
+    return TRUE;
+  }
+
+#ifdef GDK_WINDOWING_WAYLAND
+  GdkDisplay* display = gdk_display_get_default();
+  const gboolean is_wayland =
+      display != nullptr && GDK_IS_WAYLAND_DISPLAY(display);
+#else
+  const gboolean is_wayland = FALSE;
+#endif
+  if (!is_wayland) {
+    g_printerr("Vixen requires a native Wayland session; X11 and XWayland are "
+               "unsupported.\n");
     *exit_status = 1;
     return TRUE;
   }

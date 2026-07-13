@@ -25,6 +25,11 @@ state, the exact Go/Search input actions, and the find query's 4096-byte UI cap.
 This is Yaru with an Adwaita accent/style target, not a claim that Yaru is
 pixel-identical to libadwaita.
 
+The Linux GUI is native-Wayland-only. The runner exits nonzero if GTK selected
+X11 or XWayland. Use `just run-flutter` in a native Wayland session or `just
+run-flutter-cage` for a local isolated compositor; release and AT-SPI smokes use
+the same Cage headless-wlroots shape.
+
 ## Linux frame texture contract
 
 The native worker captures only the selected, settled BrowserCore

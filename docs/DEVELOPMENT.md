@@ -94,6 +94,9 @@ just gate-flutter-shell
 pkg-config, and GTK 3 development headers. Missing host packages are an
 environment limitation; they do not turn Rust or Dart-only checks into Linux
 bundle proof. The debug bundle has been reproduced in a Fedora 43 container.
+The Linux runner requires native Wayland. `just run-flutter-cage` additionally
+uses Cage with wlroots' headless backend for isolated local Wayland testing;
+X11 and XWayland are intentionally unsupported.
 
 The released Linux shell is Flutter. Local release builds use **Podman + the
 pinned GNOME builder image**; CI builds the same release shape on Ubuntu 24.04.

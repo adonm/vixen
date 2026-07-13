@@ -114,6 +114,8 @@ Flutter is the primary native GUI shell target on Linux, macOS, Windows, Android
 and the Apple Silicon iOS Simulator. The Linux alpha slice implements chrome,
 BrowserCore FFI, and bounded RGBA texture presentation; the remaining contract
 and every other platform stay evidence-gated rather than implied by Flutter.
+The Linux GUI requires a native Wayland display and rejects X11/XWayland;
+headless/CDP remains surfaceless and does not inherit that requirement.
 
 Platform validation follows a rolling contemporary baseline: the latest stable
 major release of Linux's reference distribution, macOS, Windows client, Android,

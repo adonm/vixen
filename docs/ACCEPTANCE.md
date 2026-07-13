@@ -189,8 +189,9 @@ cutoff. The release record pins exact OS/SDK/image versions. Older releases are
 best-effort unless explicitly listed as an additional tested tier; preview OS
 releases never satisfy these gates.
 
-- **Linux:** real BrowserCore bridge, bounded RGBA texture, input/viewport,
-  Semantics/AT, host services, parity, deterministic official release archive,
+- **Linux:** native Wayland session (X11/XWayland are unsupported), real
+  BrowserCore bridge, bounded RGBA texture, input/viewport, Semantics/AT, host
+  services, parity, deterministic official release archive,
   and—only after the basic-browser gate—checksum-pinned FlatPark package
   verification. FlatPark publishing is not a current priority while visible
   navigation, scrolling, text/IME, core navigation controls, find/zoom, or

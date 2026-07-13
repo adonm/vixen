@@ -956,3 +956,28 @@ without promising an untested legacy matrix. Users receive an exact release
 manifest rather than an ambiguous “Flutter supports it” claim. Expanding
 backward compatibility remains possible, but requires measured demand and its
 own ongoing gate capacity.
+
+## ADR-020: Linux Flutter GUI is native-Wayland-only
+
+**Status:** accepted
+
+**Context.** Supporting both native Wayland and X11/XWayland duplicates native
+window, compositor, input/IME, accessibility, lifecycle, GPU, and release-smoke
+matrices while Linux browser usability is still converging. Fedora Workstation
+and the pinned GNOME distribution runtime already provide the contemporary
+Wayland target. The Rust headless/CDP product does not need a display server.
+
+**Decision.** The packaged Linux Flutter GUI requires GTK to select a native
+Wayland display. Startup on X11 or XWayland exits nonzero with an explicit
+diagnostic. Local isolated GUI testing, release archive launch evidence, and
+native AT-SPI evidence use Cage with wlroots' headless Wayland backend. FlatPark
+permissions will expose Wayland and will not request X11 or fallback-X11.
+Headless CLI, CDP, WPT, and screenshot automation retain their existing
+surfaceless EGL path and are unaffected.
+
+**Consequences.** Vixen has one Linux GUI display-server matrix and can focus
+native work on Wayland input, IME, accessibility, portals, scaling, and surface
+recovery. X11-only sessions cannot launch the supported GUI, and XWayland is not
+a compatibility fallback. Reintroducing X11 requires a new ADR plus dedicated
+window/input/IME/accessibility/GPU/release gates; framework capability alone is
+not sufficient.

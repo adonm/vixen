@@ -274,11 +274,13 @@ while changed nodes are replaced. BrowserCore and the ABI still send a bounded
 full authoritative snapshot; wire-level semantic deltas are an optimization,
 not required state ownership.
 
-`just linux-at-spi-smoke` launches the real release/AOT Flutter bundle on Xvfb
-with a fresh BrowserCore profile and `fixtures/dom/basic.html`, then filters the
-native AT-SPI tree by the launched process and requires the BrowserCore-derived
-`DOM Basic` heading. This is concrete Linux native-bridge evidence, not a screen
-reader interaction matrix or evidence for non-Linux accessibility backends.
+`just linux-at-spi-smoke` launches the real release/AOT Flutter bundle in Cage's
+headless Wayland compositor with a fresh BrowserCore profile and
+`fixtures/dom/basic.html`, then filters the native AT-SPI tree by the launched
+process and requires the BrowserCore-derived `DOM Basic` heading. This is
+concrete Linux native-bridge evidence, not a screen-reader interaction matrix or
+evidence for non-Linux accessibility backends. The Linux GUI rejects X11 and
+XWayland at startup.
 
 Flutter also sends one monotonic BrowserCore-owned host-view state for content
 focus, visibility, effective scale, and application lifecycle. Current documents
