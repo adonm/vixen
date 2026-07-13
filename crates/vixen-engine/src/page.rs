@@ -52,6 +52,7 @@ pub struct Page {
     accessibility_mutation_epoch: u64,
     selection: Option<PageSelection>,
     control_selections: std::collections::HashMap<usize, AccessibilityTextSelection>,
+    layout_viewport: (u32, u32),
     root_scroll: (f32, f32),
     find_state: Option<FindState>,
 }
@@ -141,6 +142,7 @@ impl Page {
             accessibility_mutation_epoch: 1,
             selection: None,
             control_selections: std::collections::HashMap::new(),
+            layout_viewport: (800, 600),
             root_scroll: (0.0, 0.0),
             find_state: None,
         })
@@ -436,6 +438,37 @@ impl Page {
     /// Current top-level document scroll offset in layout pixels.
     pub fn root_scroll(&self) -> (f32, f32) {
         self.root_scroll
+    }
+
+    /// Browser-owned CSS layout viewport used by live script scrolling.
+    pub(crate) fn layout_viewport(&self) -> (u32, u32) {
+        self.layout_viewport
+    }
+
+    /// Update the live CSS viewport and clamp the retained root offset.
+    pub(crate) fn set_layout_viewport(&mut self, viewport: (u32, u32)) {
+        self.layout_viewport = viewport;
+        self.scroll_root_by(viewport, (0.0, 0.0));
+    }
+
+    /// Current maximum top-level scroll offset for the live CSS viewport.
+    pub(crate) fn root_scroll_max(&self) -> (f32, f32) {
+        self.root_scroll_limits(self.layout_viewport)
+    }
+
+    /// Apply an absolute script-driven top-level scroll request.
+    pub(crate) fn scroll_root_to(&mut self, position: (f64, f64)) -> bool {
+        if !position.0.is_finite() || !position.1.is_finite() {
+            return false;
+        }
+        let (current_x, current_y) = self.root_scroll;
+        self.scroll_root_by(
+            self.layout_viewport,
+            (
+                position.0 - f64::from(current_x),
+                position.1 - f64::from(current_y),
+            ),
+        )
     }
 
     /// Whether the focused live element owns navigation-key defaults that must

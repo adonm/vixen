@@ -34,7 +34,7 @@ struct DomHostState {
     mutations: DomMutationSink,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(super) enum DomMutation {
     SetDocumentTitle {
         value: String,
@@ -76,6 +76,10 @@ pub(super) enum DomMutation {
     },
     SetSelection {
         selection: Option<PageSelection>,
+    },
+    SetRootScroll {
+        x: f64,
+        y: f64,
     },
 }
 
@@ -161,6 +165,7 @@ deno_core::extension!(
         op_vixen_dom_set_control_selection,
         op_vixen_dom_set_focused_element,
         op_vixen_dom_set_selection,
+        op_vixen_dom_set_root_scroll,
     ],
     options = {
         host: Arc<DomHostState>,
@@ -472,6 +477,21 @@ fn op_vixen_dom_set_selection(
 
 #[deno_core::op2]
 #[serde]
+fn op_vixen_dom_set_root_scroll(
+    state: &mut OpState,
+    x: f64,
+    y: f64,
+) -> deno_core::serde_json::Value {
+    if !x.is_finite() || !y.is_finite() {
+        return json!({ "ok": false, "message": "root scroll coordinates must be finite" });
+    }
+    let host = state.borrow::<DomHost>().0.clone();
+    host.mutations.push(DomMutation::SetRootScroll { x, y });
+    json!({ "ok": true })
+}
+
+#[deno_core::op2]
+#[serde]
 fn op_vixen_dom_element_attribute(
     state: &mut OpState,
     node_id: u32,
@@ -573,6 +593,9 @@ fn dom_host_state(page: &Page, mutations: DomMutationSink) -> Result<DomHostStat
     let images = collection_node_ids(page, "img")?;
     let links = collection_node_ids(page, "a[href], area[href]")?;
     let scripts = collection_node_ids(page, "script")?;
+    let (scroll_x, scroll_y) = page.root_scroll();
+    let (scroll_max_x, scroll_max_y) = page.root_scroll_max();
+    let (viewport_width, viewport_height) = page.layout_viewport();
 
     Ok(DomHostState {
         snapshot: json!({
@@ -591,6 +614,12 @@ fn dom_host_state(page: &Page, mutations: DomMutationSink) -> Result<DomHostStat
                 "focusOffset": selection.focus_offset,
             })),
             "scrollingElementNodeId": document_element_node_id,
+            "scrollX": scroll_x,
+            "scrollY": scroll_y,
+            "scrollMaxX": scroll_max_x,
+            "scrollMaxY": scroll_max_y,
+            "viewportWidth": viewport_width,
+            "viewportHeight": viewport_height,
             "historyLength": page.session_history().length(),
             "historyIndex": page.session_history().index(),
             "historyStateJson": page.history_state_json(),
@@ -1032,6 +1061,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     op_vixen_dom_set_control_selection,
     op_vixen_dom_set_focused_element,
     op_vixen_dom_set_selection,
+    op_vixen_dom_set_root_scroll,
     op_vixen_document_cookie_get,
     op_vixen_document_cookie_set,
   } = Deno.core.ops;
@@ -1073,6 +1103,10 @@ const DOM_API_BOOTSTRAP: &str = r#"
   let historyIndex = Math.min(historyLength - 1, Math.max(0, Number(data.historyIndex) || 0));
   let historyState = parseHistoryState(data.historyStateJson);
   let historyScrollRestoration = data.historyScrollRestoration === 'manual' ? 'manual' : 'auto';
+  let topLevelScrollX = Math.max(0, Number(data.scrollX) || 0);
+  let topLevelScrollY = Math.max(0, Number(data.scrollY) || 0);
+  let topLevelScrollMaxX = Math.max(0, Number(data.scrollMaxX) || 0);
+  let topLevelScrollMaxY = Math.max(0, Number(data.scrollMaxY) || 0);
   const navigationActions = [];
   const maxNavigationActions = 64;
 
@@ -2176,6 +2210,46 @@ const DOM_API_BOOTSTRAP: &str = r#"
   function integerCssPixels(value) {
     const number = Number(value) || 0;
     return Math.max(0, Math.trunc(number));
+  }
+
+  function finiteScrollCoordinate(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+  }
+
+  function applyTopLevelScroll(x, y) {
+    const nextX = Math.min(topLevelScrollMaxX, Math.max(0, finiteScrollCoordinate(x)));
+    const nextY = Math.min(topLevelScrollMaxY, Math.max(0, finiteScrollCoordinate(y)));
+    if (nextX === topLevelScrollX && nextY === topLevelScrollY) return;
+    topLevelScrollX = nextX;
+    topLevelScrollY = nextY;
+    unwrapDomOp(op_vixen_dom_set_root_scroll(nextX, nextY));
+  }
+
+  function windowScrollTo(leftOrOptions = 0, top = 0) {
+    if (leftOrOptions !== null && typeof leftOrOptions === 'object') {
+      const left = leftOrOptions.left === undefined ? topLevelScrollX : leftOrOptions.left;
+      const nextTop = leftOrOptions.top === undefined ? topLevelScrollY : leftOrOptions.top;
+      applyTopLevelScroll(left, nextTop);
+      return;
+    }
+    applyTopLevelScroll(leftOrOptions, top);
+  }
+
+  function windowScrollBy(leftOrOptions = 0, top = 0) {
+    if (leftOrOptions !== null && typeof leftOrOptions === 'object') {
+      const left = leftOrOptions.left === undefined ? 0 : leftOrOptions.left;
+      const nextTop = leftOrOptions.top === undefined ? 0 : leftOrOptions.top;
+      applyTopLevelScroll(
+        topLevelScrollX + finiteScrollCoordinate(left),
+        topLevelScrollY + finiteScrollCoordinate(nextTop),
+      );
+      return;
+    }
+    applyTopLevelScroll(
+      topLevelScrollX + finiteScrollCoordinate(leftOrOptions),
+      topLevelScrollY + finiteScrollCoordinate(top),
+    );
   }
 
   function elementClientWidth(element) {
@@ -3960,10 +4034,22 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get clientLeft() { return 0; }
     get scrollWidth() { return elementScrollSize(this, 'x'); }
     get scrollHeight() { return elementScrollSize(this, 'y'); }
-    get scrollTop() { return Number(elementRecord(this).__vixenScrollTop) || 0; }
-    set scrollTop(value) { elementRecord(this).__vixenScrollTop = Math.max(0, Number(value) || 0); }
-    get scrollLeft() { return Number(elementRecord(this).__vixenScrollLeft) || 0; }
-    set scrollLeft(value) { elementRecord(this).__vixenScrollLeft = Math.max(0, Number(value) || 0); }
+    get scrollTop() {
+      if (this === vixenDocument.documentElement || this === vixenDocument.body) return topLevelScrollY;
+      return Number(elementRecord(this).__vixenScrollTop) || 0;
+    }
+    set scrollTop(value) {
+      if (this === vixenDocument.documentElement || this === vixenDocument.body) applyTopLevelScroll(topLevelScrollX, value);
+      else elementRecord(this).__vixenScrollTop = Math.max(0, Number(value) || 0);
+    }
+    get scrollLeft() {
+      if (this === vixenDocument.documentElement || this === vixenDocument.body) return topLevelScrollX;
+      return Number(elementRecord(this).__vixenScrollLeft) || 0;
+    }
+    set scrollLeft(value) {
+      if (this === vixenDocument.documentElement || this === vixenDocument.body) applyTopLevelScroll(value, topLevelScrollY);
+      else elementRecord(this).__vixenScrollLeft = Math.max(0, Number(value) || 0);
+    }
     get offsetWidth() { const rect = elementRect(this.__vixenNodeId); return rect ? integerCssPixels(rect.width) : 0; }
     get offsetHeight() { const rect = elementRect(this.__vixenNodeId); return rect ? integerCssPixels(rect.height) : 0; }
     get offsetTop() { const rect = elementRect(this.__vixenNodeId); return rect ? Math.trunc(Number(rect.y) || 0) : 0; }
@@ -5411,7 +5497,19 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   const vixenDocument = new VixenDocument();
   Object.defineProperty(globalThis, '__vixenApplyHostViewState', {
-    value(focused, visible) {
+    value(focused, visible, viewportWidth, viewportHeight, maxScrollX, maxScrollY, scrollX, scrollY) {
+      globalThis.innerWidth = Math.max(1, Number(viewportWidth) || 1);
+      globalThis.innerHeight = Math.max(1, Number(viewportHeight) || 1);
+      topLevelScrollMaxX = Math.max(0, Number(maxScrollX) || 0);
+      topLevelScrollMaxY = Math.max(0, Number(maxScrollY) || 0);
+      topLevelScrollX = Math.min(topLevelScrollMaxX, Math.max(0, Number(scrollX) || 0));
+      topLevelScrollY = Math.min(topLevelScrollMaxY, Math.max(0, Number(scrollY) || 0));
+      if (globalThis.visualViewport) {
+        globalThis.visualViewport.width = globalThis.innerWidth;
+        globalThis.visualViewport.height = globalThis.innerHeight;
+        globalThis.visualViewport.pageLeft = topLevelScrollX;
+        globalThis.visualViewport.pageTop = topLevelScrollY;
+      }
       const nextVisibility = visible ? 'visible' : 'hidden';
       if (documentVisibilityState !== nextVisibility) {
         documentVisibilityState = nextVisibility;
@@ -5426,7 +5524,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
       }
       return true;
     },
-    configurable: true,
+    configurable: false,
   });
   const vixenSelection = new VixenSelection();
   vixenSelection.__vixenRestore(data.selection);
@@ -5534,6 +5632,17 @@ const DOM_API_BOOTSTRAP: &str = r#"
     writable: true,
     configurable: true,
   });
+  Object.defineProperties(globalThis, {
+    scrollX: { get() { return topLevelScrollX; }, configurable: true },
+    scrollY: { get() { return topLevelScrollY; }, configurable: true },
+    pageXOffset: { get() { return topLevelScrollX; }, configurable: true },
+    pageYOffset: { get() { return topLevelScrollY; }, configurable: true },
+    scroll: { value: windowScrollTo, writable: true, configurable: true },
+    scrollTo: { value: windowScrollTo, writable: true, configurable: true },
+    scrollBy: { value: windowScrollBy, writable: true, configurable: true },
+  });
+  globalThis.innerWidth = Math.max(1, Number(data.viewportWidth) || 800);
+  globalThis.innerHeight = Math.max(1, Number(data.viewportHeight) || 600);
 })();
 "#;
 
@@ -5555,6 +5664,7 @@ mod tests {
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_element_attr"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_element_inner_html"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_control_value"));
+        assert!(DOM_API_BOOTSTRAP.contains("op_vixen_dom_set_root_scroll"));
         assert!(DOM_API_BOOTSTRAP.contains("op_vixen_document_cookie_set"));
         assert!(!DOM_API_BOOTSTRAP.contains("data.elements"));
 

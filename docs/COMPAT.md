@@ -241,6 +241,15 @@ wire, and BrowserCore tests cover a non-ASCII composing update. Contenteditable,
 IME action/keyboard-type specialization, and a real Linux desktop-IME smoke or
 language matrix remain open.
 
+Top-level script scrolling now shares the Page-owned offset used by wheel/key
+defaults, paint, hit testing, find, and Semantics. The live runtime exposes
+numeric and options-object `scroll()`/`scrollTo()`/`scrollBy()`, synchronized
+`scrollX`/`scrollY` and `pageXOffset`/`pageYOffset`, and root/body
+`scrollTop`/`scrollLeft`; BrowserCore refreshes the CSS viewport and clamps the
+offset to current layout overflow on host-view and page-zoom changes. Nested
+element scrolling remains runtime-local, and smooth scrolling, scroll events,
+touch gestures, and restoration are not claimed.
+
 Bounded `aria-owns` references now reparent only retained later semantic nodes;
 the first valid owner wins, parent-before-child ordering remains enforced, and
 cycles/backward ownership are ignored. Native `h1`–`h6` and valid authored

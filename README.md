@@ -38,7 +38,9 @@ uncanceled wheel input and uncanceled navigation-key defaults now update a
 bounded Page-owned root scroll offset. Arrow, Page Up/Down, Home/End, and Space
 scrolling respect focused controls and page `preventDefault()` handlers; paint,
 hit testing, and accessibility bounds consume that same offset while fixed-
-position content remains viewport anchored;
+position content remains viewport anchored. Live page scripts use that same
+offset through bounded `scroll()`/`scrollTo()`/`scrollBy()`, `scrollX`/`scrollY`,
+and root-element `scrollTop`/`scrollLeft` projections;
 Ctrl+F opens a bounded BrowserCore-backed find bar; Enter/F3 and Previous/Next
 traverse up to 10,000 case-insensitive rendered-text matches, wrap in document
 order, use the Page-owned root offset to reveal the active match, and paint

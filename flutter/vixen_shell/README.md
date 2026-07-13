@@ -54,10 +54,14 @@ Uncanceled wheel and navigation-key defaults apply one bounded Page-owned root
 scroll offset used by paint, hit testing, and accessibility bounds; fixed-
 position content remains anchored. Arrow, Page Up/Down, Home/End, and Space
 scrolling respects focused controls and page `preventDefault()` handlers.
+Page scripts also use that exact root offset through bounded numeric/options
+`scroll()`/`scrollTo()`/`scrollBy()`, synchronized window offsets, and root/body
+`scrollTop`/`scrollLeft`; BrowserCore refreshes its CSS viewport and overflow
+clamp on host-view and page-zoom changes.
 Focused writable native text controls attach Flutter's platform text-input
 client; bounded full values and UTF-16 selection/composing ranges cross the
 exact BrowserCore generation and update the live runtime control. Contenteditable,
-IME action specialization and real native IME evidence, nested/touch/script
+IME action specialization and real native IME evidence, nested/touch
 scrolling, CSS/physical scale correctness, and broader lifecycle/native
 surface-loss recovery remain follow-up work.
 

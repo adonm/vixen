@@ -795,11 +795,12 @@ impl BrowserCore {
                 let context = self.context_mut(context_id)?;
                 context.page_zoom = zoom;
                 let layout_viewport = page_layout_viewport(context.host_view.viewport, zoom);
-                context.page.scroll_root_by(layout_viewport, (0.0, 0.0));
+                context.page.set_layout_viewport(layout_viewport);
+                let document_id = context.document_id;
+                let runtime_context_id = context.runtime_context_id;
+                let source = host_view_runtime_source(&context.page, context.host_view);
+                self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
                 let state = self.context_state(context_id)?;
-                self.emit(BrowserEvent::BrowsingContextStateChanged {
-                    state: state.clone(),
-                });
                 Ok(BrowserCommandResult::BrowsingContextState(state))
             }
             BrowserCommand::GetBrowserSnapshot => Ok(BrowserCommandResult::BrowserSnapshot(
@@ -1642,7 +1643,14 @@ impl BrowserCore {
                 return;
             }
         };
-        let (old_document_id, old_runtime_context_id, old_runtime_slot, context_config, host_view) = {
+        let (
+            old_document_id,
+            old_runtime_context_id,
+            old_runtime_slot,
+            context_config,
+            host_view,
+            page_zoom,
+        ) = {
             let context = self
                 .context(context_id)
                 .expect("active navigation context exists");
@@ -1652,8 +1660,10 @@ impl BrowserCore {
                 context.runtime_slot,
                 context.config.clone(),
                 context.host_view,
+                context.page_zoom,
             )
         };
+        page.set_layout_viewport(page_layout_viewport(host_view.viewport, page_zoom));
         if self.runtime_slots.len() >= MAX_RUNTIME_SLOTS {
             self.fail_navigation(
                 context_id,
@@ -1684,10 +1694,7 @@ impl BrowserCore {
             }
         };
         apply_runtime_config(&mut runtime, &context_config);
-        let host_view_source = format!(
-            "globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}) : false",
-            host_view.focused, host_view.visible
-        );
+        let host_view_source = host_view_runtime_source(&page, host_view);
         if let Err(error) = runtime.with_entered_isolate(|runtime| {
             runtime.evaluate_with_page_mut(&host_view_source, &mut page)
         }) {
@@ -2446,11 +2453,14 @@ impl BrowserCore {
                 ),
             ));
         }
-        self.context_mut(context_id)?.host_view = state;
-        let source = format!(
-            "globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}) : false",
-            state.focused, state.visible
-        );
+        let source = {
+            let context = self.context_mut(context_id)?;
+            context.host_view = state;
+            context
+                .page
+                .set_layout_viewport(page_layout_viewport(state.viewport, context.page_zoom));
+            host_view_runtime_source(&context.page, state)
+        };
         let evaluation =
             self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
         Ok(BrowserCommandResult::InputDispatched(InputDispatchResult {
@@ -4132,6 +4142,16 @@ fn json_string(value: &str) -> Result<String, BrowserError> {
     })
 }
 
+fn host_view_runtime_source(page: &Page, state: HostViewState) -> String {
+    let (viewport_width, viewport_height) = page.layout_viewport();
+    let (max_scroll_x, max_scroll_y) = page.root_scroll_max();
+    let (scroll_x, scroll_y) = page.root_scroll();
+    format!(
+        "globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}, {viewport_width}, {viewport_height}, {max_scroll_x}, {max_scroll_y}, {scroll_x}, {scroll_y}) : false",
+        state.focused, state.visible
+    )
+}
+
 fn append_form_query(action: &str, body: &[u8]) -> Result<String, BrowserError> {
     if body.is_empty() {
         return Ok(action.to_owned());
@@ -5322,6 +5342,60 @@ mod tests {
         assert_eq!(
             element_y(&mut handle, &current, "#marker", viewport),
             initial_y
+        );
+    }
+
+    #[test]
+    fn script_scroll_uses_the_browser_owned_root_offset_and_live_viewport() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/scroll");
+        let current = state(&mut handle, context_id);
+        let viewport = (200, 100);
+        handle
+            .dispatch(BrowserCommand::UpdateHostViewState {
+                context_id,
+                state: HostViewState {
+                    generation: 1,
+                    viewport,
+                    ..HostViewState::default()
+                },
+            })
+            .unwrap();
+
+        let initial_y = element_y(&mut handle, &current, "#marker", viewport);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "scrollTo({ top: 150 }); [innerWidth, innerHeight, scrollY, pageYOffset, document.documentElement.scrollTop].join(':')"
+            ),
+            ScriptValue::String("200:100:150:150:150".to_owned())
+        );
+        assert_eq!(
+            initial_y - element_y(&mut handle, &current, "#marker", viewport),
+            150.0
+        );
+
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "scrollBy(0, 25); document.body.scrollTop = document.body.scrollTop + 10; scrollY"
+            ),
+            ScriptValue::Int32(185)
+        );
+        assert_eq!(
+            initial_y - element_y(&mut handle, &current, "#marker", viewport),
+            185.0
+        );
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "scrollTo(0, 1e9); scrollY === pageYOffset && scrollY === document.scrollingElement.scrollTop && scrollY < 1e9"
+            ),
+            ScriptValue::Bool(true)
         );
     }
 

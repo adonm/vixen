@@ -85,7 +85,7 @@ macro_rules! iface {
 }
 
 const WEBIDL_INTERFACES: &[WebIdlInterface] = &[
-    iface!("Window" => "EventTarget"; attrs ["document", "navigator", "location", "history", "screen", "performance", "innerWidth", "innerHeight", "devicePixelRatio"]; ops ["getComputedStyle", "matchMedia", "requestAnimationFrame", "cancelAnimationFrame", "fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval"]),
+    iface!("Window" => "EventTarget"; attrs ["document", "navigator", "location", "history", "screen", "performance", "innerWidth", "innerHeight", "devicePixelRatio", "scrollX", "scrollY", "pageXOffset", "pageYOffset"]; ops ["getComputedStyle", "matchMedia", "requestAnimationFrame", "cancelAnimationFrame", "fetch", "setTimeout", "clearTimeout", "setInterval", "clearInterval", "scroll", "scrollTo", "scrollBy"]),
     WebIdlInterface {
         name: "EventTarget",
         parent: None,

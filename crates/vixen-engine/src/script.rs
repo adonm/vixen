@@ -757,6 +757,9 @@ impl JsRuntime {
                 dom::DomMutation::SetSelection { selection } => {
                     page.set_selection(selection);
                 }
+                dom::DomMutation::SetRootScroll { x, y } => {
+                    page.scroll_root_to((x, y));
+                }
             }
         }
         self.realm_key = RealmKey::Page(page_realm_key(page));
