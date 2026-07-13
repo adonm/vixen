@@ -1130,6 +1130,7 @@ fn accessibility_node_json(node: AccessibilityNode) -> Value {
             "base_offset": selection.base_offset,
             "extent_offset": selection.extent_offset,
         })),
+        "multiline": node.multiline,
         "range": node.range.map(|range| json!({
             "current": range.current,
             "minimum": range.minimum,
@@ -2249,6 +2250,7 @@ mod tests {
                 base_offset: 1,
                 extent_offset: 3,
             }),
+            multiline: false,
             range: None,
             bbox: Some(vixen_api::AccessibilityRect {
                 x: 1.5,
@@ -2302,6 +2304,7 @@ mod tests {
                     "description": "Account preference",
                     "value": "yes",
                     "text_selection": {"base_offset": 1, "extent_offset": 3},
+                    "multiline": false,
                     "range": null,
                     "bbox": {"x": 1.5, "y": 2.5, "width": 30.0, "height": 40.0},
                     "focused": true,

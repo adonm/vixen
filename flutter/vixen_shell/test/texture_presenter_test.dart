@@ -219,6 +219,7 @@ void main() {
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetDevicePixelRatio);
     final states = <BrowserTextInputState>[];
+    final keyEvents = <(String, BrowserKeyEvent)>[];
     final context = BrowsingContextState.initial(
       10,
     ).copyWith(documentId: 20, runtimeContextId: 30);
@@ -266,6 +267,7 @@ void main() {
             accessibility: snapshot,
             textureController: _TestTextureController(),
             onTextInput: states.add,
+            onKeyEvent: (type, event) => keyEvents.add((type, event)),
           ),
         ),
       ),
@@ -274,6 +276,10 @@ void main() {
     await tester.tap(find.byKey(const Key('content-surface')));
     await tester.pump();
     expect(tester.testTextInput.isVisible, isTrue);
+    expect(
+      tester.testTextInput.setClientArgs?['inputAction'],
+      'TextInputAction.done',
+    );
 
     tester.testTextInput.updateEditingValue(
       const TextEditingValue(
@@ -289,6 +295,14 @@ void main() {
     expect(states.single.selection.baseOffset, 1);
     expect(states.single.composing?.baseOffset, 0);
     expect(states.single.composing?.extentOffset, 1);
+
+    await tester.testTextInput.receiveAction(TextInputAction.done);
+    await tester.pump();
+    expect(keyEvents.map((entry) => entry.$1), ['keydown', 'keyup']);
+    expect(keyEvents.map((entry) => entry.$2.key), everyElement('Enter'));
+    await tester.testTextInput.receiveAction(TextInputAction.newline);
+    await tester.pump();
+    expect(keyEvents, hasLength(2));
   });
 
   testWidgets('BrowserCore nodes project into actionable Flutter Semantics', (

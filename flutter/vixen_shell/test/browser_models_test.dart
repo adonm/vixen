@@ -273,6 +273,7 @@ void main() {
           'description': 'Stores this preference',
           'value': null,
           'text_selection': {'base_offset': 1, 'extent_offset': 3},
+          'multiline': false,
           'range': null,
           'bbox': {'x': 10.0, 'y': 20.0, 'width': 100.0, 'height': 30.0},
           'focused': true,
@@ -297,6 +298,7 @@ void main() {
       'Stores this preference',
     );
     expect(response.snapshot.nodes.single.parentId, isNull);
+    expect(response.snapshot.nodes.single.multiline, isFalse);
     expect(response.snapshot.sourceGeneration, 8);
     expect(response.snapshot.generation, 99);
     expect(response.snapshot.nodes.single.checked, isTrue);

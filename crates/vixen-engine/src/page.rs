@@ -801,6 +801,8 @@ impl Page {
                 && matches!(role.as_str(), "textbox" | "searchbox"))
             .then(|| self.text_selections.get(&element.node_id).copied())
             .flatten();
+            let multiline = matches!(role.as_str(), "textbox" | "searchbox")
+                && (element.tag == "textarea" || element.contenteditable);
             let live_region = accessibility_live_region(&element, &role);
             let heading_level = accessibility_heading_level(&element, &role);
             let mut actions = Vec::new();
@@ -829,6 +831,7 @@ impl Page {
                 description: element.description,
                 value,
                 text_selection,
+                multiline,
                 range,
                 bbox: bounds.get(&element.node_id).copied(),
                 focused: self.focused_element_node_id == Some(element.node_id),

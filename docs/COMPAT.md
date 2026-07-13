@@ -240,7 +240,11 @@ cancelable `beforeinput` and `input`; stale or non-writable targets fail closed.
 Widget/wire tests cover the shared transport, and BrowserCore tests cover native
 non-ASCII plus contenteditable surrogate-pair composition. IME action/keyboard-
 type specialization and a real Linux desktop-IME smoke or language matrix remain
-open.
+open. Basic platform actions are live: BrowserCore marks textarea/contenteditable
+hosts as multiline, Flutter configures Newline for those hosts, Search for a
+searchbox, and Done for other single-line hosts, and `performAction` dispatches
+Enter down/up through the existing exact-generation key path. Authored
+`enterkeyhint` values are not yet specialized.
 
 Top-level script scrolling now shares the Page-owned offset used by wheel/key
 defaults, paint, hit testing, find, and Semantics. The live runtime exposes

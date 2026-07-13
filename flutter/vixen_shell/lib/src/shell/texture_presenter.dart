@@ -182,7 +182,10 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   void initState() {
     super.initState();
     _controller = widget.textureController ?? LinuxTextureController();
-    _textInputClient = _BrowserTextInputClient(_handleTextInput);
+    _textInputClient = _BrowserTextInputClient(
+      _handleTextInput,
+      _handleTextInputAction,
+    );
     _queueFrame(widget.frame);
   }
 
@@ -365,6 +368,20 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
     );
   }
 
+  void _handleTextInputAction(TextInputAction action) {
+    final callback = widget.onKeyEvent;
+    if (callback == null ||
+        !_contentFocused ||
+        _textInputTarget == null ||
+        action == TextInputAction.none ||
+        action == TextInputAction.unspecified) {
+      return;
+    }
+    const event = BrowserKeyEvent(key: 'Enter', code: 'Enter');
+    callback('keydown', event);
+    callback('keyup', event);
+  }
+
   void _syncTextInput() {
     final contextState = widget.contextState;
     final snapshot = widget.accessibility;
@@ -403,7 +420,15 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
     if (_textInputTarget != target) {
       _textInputClient.close();
       _textInputTarget = target;
-      _textInputClient.open(value);
+      _textInputClient.open(
+        value,
+        multiline: node.multiline,
+        action: node.multiline
+            ? TextInputAction.newline
+            : node.role == 'searchbox'
+            ? TextInputAction.search
+            : TextInputAction.done,
+      );
     } else {
       _textInputClient.reconcile(value);
     }
@@ -797,11 +822,13 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
 }
 
 final class _BrowserTextInputClient with TextInputClient {
-  _BrowserTextInputClient(this._onChanged);
+  _BrowserTextInputClient(this._onChanged, this._onAction);
 
   final ValueChanged<TextEditingValue> _onChanged;
+  final ValueChanged<TextInputAction> _onAction;
   TextInputConnection? _connection;
   TextEditingValue _value = TextEditingValue.empty;
+  TextInputAction _action = TextInputAction.none;
 
   @override
   TextEditingValue get currentTextEditingValue => _value;
@@ -809,13 +836,18 @@ final class _BrowserTextInputClient with TextInputClient {
   @override
   AutofillScope? get currentAutofillScope => null;
 
-  void open(TextEditingValue value) {
+  void open(
+    TextEditingValue value, {
+    required bool multiline,
+    required TextInputAction action,
+  }) {
     _value = value;
+    _action = action;
     _connection = TextInput.attach(
       this,
-      const TextInputConfiguration(
-        inputType: TextInputType.text,
-        inputAction: TextInputAction.none,
+      TextInputConfiguration(
+        inputType: multiline ? TextInputType.multiline : TextInputType.text,
+        inputAction: action,
         enableSuggestions: true,
         autocorrect: true,
       ),
@@ -836,6 +868,7 @@ final class _BrowserTextInputClient with TextInputClient {
   void close() {
     _connection?.close();
     _connection = null;
+    _action = TextInputAction.none;
   }
 
   @override
@@ -855,13 +888,16 @@ final class _BrowserTextInputClient with TextInputClient {
   @override
   void connectionClosed() {
     _connection = null;
+    _action = TextInputAction.none;
   }
 
   @override
   bool onFocusReceived() => _connection != null;
 
   @override
-  void performAction(TextInputAction action) {}
+  void performAction(TextInputAction action) {
+    if (_connection != null && action == _action) _onAction(action);
+  }
 
   @override
   void performPrivateCommand(String action, Map<String, dynamic> data) {}

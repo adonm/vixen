@@ -342,6 +342,7 @@ final class BrowserAccessibilityNode {
     this.description = '',
     this.value,
     this.textSelection,
+    this.multiline = false,
     this.range,
     this.bounds,
     required this.focused,
@@ -396,6 +397,7 @@ final class BrowserAccessibilityNode {
           : BrowserAccessibilityTextSelection.fromWire(
               _map(wire['text_selection']),
             ),
+      multiline: _bool(wire, 'multiline'),
       range: wire['range'] == null
           ? null
           : BrowserAccessibilityRange.fromWire(_map(wire['range'])),
@@ -427,6 +429,7 @@ final class BrowserAccessibilityNode {
   final String description;
   final String? value;
   final BrowserAccessibilityTextSelection? textSelection;
+  final bool multiline;
   final BrowserAccessibilityRange? range;
   final BrowserAccessibilityRect? bounds;
   final bool focused;
@@ -453,6 +456,7 @@ final class BrowserAccessibilityNode {
     'description': description,
     'value': value,
     'text_selection': textSelection?.toWire(),
+    'multiline': multiline,
     'range': range?.toWire(),
     'bbox': bounds?.toWire(),
     'focused': focused,

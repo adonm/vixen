@@ -40,8 +40,8 @@ native smoke tests, and the native ABI gate. A Fedora 43 container build also
 produced a relocatable debug bundle containing the executable, Flutter embedder,
 and `libvixen_ffi.so`.
 
-This does not establish Linux parity: IME action and gesture
-input, real native IME evidence, complete lifecycle recovery and scale handling, complete
+This does not establish Linux parity: `enterkeyhint`/keyboard-type and gesture
+input specialization, real native IME evidence, complete lifecycle recovery and scale handling, complete
 semantic relationships/actions and native AT smoke,
 downloads/permissions,
 host services, broader FlatPark host/portal coverage, release size/performance,
@@ -98,7 +98,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key/script scrolling, native/contenteditable text-input state, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; IME actions and native evidence, nested/touch scrolling, native lifecycle/surface recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key/script scrolling, native/contenteditable text-input state plus basic Done/Search/Newline actions, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; `enterkeyhint`/keyboard-type specialization and native IME evidence, nested/touch scrolling, native lifecycle/surface recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -194,8 +194,8 @@ transition, suppresses hidden captures, and cancels pending primary presses at
 the controller boundary. The stored scale does not yet separate CSS layout pixels
 from the bounded physical render target.
 
-The remaining target adds IME action handling and native IME evidence, touch and
-nested scrolling,
+The remaining target adds `enterkeyhint`/keyboard-type specialization and native
+IME evidence, touch and nested scrolling,
 CSS/device-scale correctness, and platform lifecycle/surface recovery.
 BrowserCore continues to own hit testing, selection, DOM event dispatch, and
 navigation effects. Platform-specific raw data may be retained in bounded DTOs
@@ -211,8 +211,12 @@ before applying the state to the live DOM and dispatching composition-shaped,
 cancelable `beforeinput`, and `input` events. Stale targets and inactive host
 views fail closed. Widget/wire tests cover the shared transport; BrowserCore
 tests exercise native non-ASCII and contenteditable surrogate-pair composition.
-IME action and keyboard-type specialization plus real desktop-IME evidence
-remain.
+BrowserCore also marks multiline editing hosts in the bounded projection;
+Flutter configures Newline for those hosts, Search for searchboxes, and Done for
+other single-line hosts. Platform `performAction` reuses the exact-generation
+Enter down/up path, so existing native input/submit and contenteditable newline
+defaults remain authoritative. Authored `enterkeyhint`, richer keyboard-type
+specialization, and real desktop-IME evidence remain.
 
 The first engine-owned scrolling vertical is now implemented for the top-level
 document. Flutter scales wheel deltas into frame coordinates, BrowserCore sends

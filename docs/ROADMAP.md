@@ -273,7 +273,11 @@ A focused writable native text control or direct contenteditable editing host
 now attaches Flutter's platform `TextInputClient`; bounded full text plus UTF-16
 selection and composing ranges cross exact context/document/runtime ids and
 update the live DOM with composition-shaped plus `beforeinput`/`input` events.
-IME action specialization and real Linux IME evidence remain.
+The semantic projection now distinguishes multiline hosts; Flutter configures
+Newline for those, Search for searchboxes, and Done for other single-line hosts,
+then routes platform actions through exact-generation Enter down/up dispatch.
+Authored `enterkeyhint`/keyboard-type specialization and real Linux IME evidence
+remain.
 Ctrl+F now crosses the exact active context/document ABI boundary. Page owns a
 10,000-match-bounded rendered-text result and one-based active match; Enter/F3
 plus Previous/Next traverse with wrapping and move the shared root offset to
@@ -570,7 +574,7 @@ correctness. Neither may starve the other.
 1. Extend the landed physical viewport, pointer/wheel/keyboard, root
    wheel/key/script scrolling, native text-control IME, and monotonic
    focus/visibility/lifecycle
-   path with IME action handling and real native IME evidence,
+   path with `enterkeyhint`/keyboard-type specialization and real native IME evidence,
    nested/touch scrolling plus scroll events/restoration, CSS/physical
    scale correctness, and lifecycle recovery. In parallel, finish
    navigation-aware runtime/native-host cancellation and preserve one BrowserCore
@@ -587,7 +591,7 @@ correctness. Neither may starve the other.
    and broader native AT/screen-reader evidence. Add platform
    host-service UI; both remain cross-cutting through every later platform.
 5. Complete the Linux basic-browser gate: visible controlled-site navigation,
-   nested/touch scrolling, IME actions plus native IME evidence,
+   nested/touch scrolling plus native IME evidence,
    back/forward/reload/stop, and finish bounded navigation/runtime plus native
    surface recovery beyond the landed capture/texture retry policy. Keep
    release-archive smoke green, but defer FlatPark submission/review/publishing

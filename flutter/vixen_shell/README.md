@@ -61,7 +61,9 @@ clamp on host-view and page-zoom changes.
 Focused writable native text controls and contenteditable editing hosts attach
 Flutter's platform text-input client; bounded full values and UTF-16 selection/
 composing ranges cross the exact BrowserCore generation and update the live DOM.
-IME action specialization and real native IME evidence, nested/touch
+BrowserCore's multiline bit configures Newline versus single-line Search/Done
+platform actions, and performed actions reuse exact-generation Enter down/up.
+`enterkeyhint`/keyboard-type specialization and real native IME evidence, nested/touch
 scrolling, CSS/physical scale correctness, and broader lifecycle/native
 surface-loss recovery remain follow-up work.
 

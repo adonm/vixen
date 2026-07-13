@@ -74,6 +74,7 @@ impl AccessibilitySnapshot {
                 }
                 None => hash.byte(0),
             }
+            hash.boolean(node.multiline);
             match node.range {
                 Some(range) => {
                     hash.byte(1);
@@ -193,6 +194,8 @@ pub struct AccessibilityNode {
     pub description: String,
     pub value: Option<String>,
     pub text_selection: Option<AccessibilityTextSelection>,
+    /// Whether this editable text host accepts line breaks.
+    pub multiline: bool,
     pub range: Option<AccessibilityRange>,
     pub bbox: Option<AccessibilityRect>,
     pub focused: bool,
@@ -1182,6 +1185,7 @@ mod tests {
                 description: String::new(),
                 value: None,
                 text_selection: None,
+                multiline: false,
                 range: None,
                 bbox: None,
                 focused: false,

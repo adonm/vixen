@@ -5481,6 +5481,7 @@ mod tests {
             .find(|node| node.label == "Name")
             .unwrap();
         assert_eq!(field.value.as_deref(), Some("に"));
+        assert!(!field.multiline);
         assert_eq!(field.text_selection.unwrap().base_offset, 1);
 
         let error = handle
@@ -5532,6 +5533,7 @@ mod tests {
             .unwrap();
         assert_eq!(editor.role, "textbox");
         assert_eq!(editor.value.as_deref(), Some("draft"));
+        assert!(editor.multiline);
         assert!(editor.actions.iter().any(|action| action == "set_value"));
         assert_eq!(
             editor.text_selection,
@@ -5606,6 +5608,15 @@ mod tests {
         assert_eq!(
             eval(&mut handle, &current, "editorImeEvents.at(-1)"),
             ScriptValue::String("compositionend:🦊:false".to_owned())
+        );
+        dispatch_test_key(&mut handle, &current, "Enter", false);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "document.querySelector('#editor').textContent"
+            ),
+            ScriptValue::String("draft🦊\n".to_owned())
         );
     }
 
