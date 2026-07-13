@@ -262,11 +262,13 @@ surface recovery are not established by this slice.
 The first interactive root-scrolling slice is BrowserCore-owned. Flutter scales
 wheel deltas into the physical frame coordinate space; the live runtime receives
 a cancelable `wheel` event; and only an uncanceled default action updates the
-bounded Page scroll offset. The same translated layout projection drives
-WebRender paint, hit testing, selector/accessibility bounds, while fixed-position
-subtrees remain viewport anchored. Nested scroll containers, keyboard/touch
-scrolling, scroll restoration, smooth scrolling, and JS `scrollTo`/`scrollBy`
-state remain open.
+bounded Page scroll offset. Unmodified Arrow, Page Up/Down, Home/End, and Space
+keydown defaults use the same CSS viewport and offset, including page zoom;
+`preventDefault()` blocks the scroll and focused native/editing controls retain
+their own key handling. The same translated layout projection drives WebRender
+paint, hit testing, selector/accessibility bounds, while fixed-position subtrees
+remain viewport anchored. Nested scroll containers, touch scrolling, scroll
+restoration, smooth scrolling, and JS `scrollTo`/`scrollBy` state remain open.
 
 Flutter Ctrl+F now sends a UTF-8-byte-bounded query with the exact active context
 and document generation through ABI v1. BrowserCore counts non-overlapping

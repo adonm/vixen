@@ -98,7 +98,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root-wheel scrolling, find count UI, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; IME, nested/keyboard/touch scrolling, complete find traversal, recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Chrome, BrowserCore bridge, RGBA texture, viewport/input, root wheel/key scrolling, find count UI, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Xvfb smoke implemented; IME, nested/touch/script scrolling, complete find traversal, recovery, full semantics/native AT, host services, broader matrix, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -185,7 +185,7 @@ transition, suppresses hidden captures, and cancels pending primary presses at
 the controller boundary. The stored scale does not yet separate CSS layout pixels
 from the bounded physical render target.
 
-The remaining target adds text/IME, touch/keyboard and nested scrolling,
+The remaining target adds text/IME, touch and nested scrolling,
 CSS/device-scale correctness, and platform lifecycle/surface recovery.
 BrowserCore continues to own hit testing, selection, DOM event dispatch, and
 navigation effects. Platform-specific raw data may be retained in bounded DTOs
@@ -193,11 +193,13 @@ where web semantics require it.
 
 The first engine-owned scrolling vertical is now implemented for the top-level
 document. Flutter scales wheel deltas into frame coordinates, BrowserCore sends
-the cancelable wheel event to the live target, and only an uncanceled default
-action mutates a clamped Page scroll offset. Paint, hit testing, selector and
+cancelable wheel and keyboard events to the live target, and only uncanceled
+defaults mutate a clamped Page scroll offset. Arrow, Page Up/Down, Home/End, and
+Space keys use the BrowserCore-owned CSS viewport, while focused native/editing
+controls retain their own key defaults. Paint, hit testing, selector and
 Semantics bounds share the translated layout; fixed-position subtrees stay
-anchored. Nested scrollers, keyboard/touch gestures, restoration, smooth
-scrolling, and script-driven scrolling remain in the target above.
+anchored. Nested scrollers, touch gestures, restoration, smooth scrolling, and
+script-driven scrolling remain in the target above.
 
 The first find-in-page vertical is also implemented. Ctrl+F and the menu open a
 Flutter-owned find bar, while an exact context/document command asks BrowserCore

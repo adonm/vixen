@@ -345,6 +345,24 @@ impl Page {
         self.root_scroll
     }
 
+    /// Whether the focused live element owns navigation-key defaults that must
+    /// not fall through to top-level document scrolling.
+    pub fn focused_element_consumes_scroll_keys(&self) -> bool {
+        let Some(node_id) = self.focused_element_node_id else {
+            return false;
+        };
+        let Some(element) = self.document.element_by_node_id(node_id) else {
+            return false;
+        };
+        matches!(
+            element.tag.as_str(),
+            "button" | "input" | "select" | "textarea"
+        ) || element
+            .attributes
+            .iter()
+            .any(|(name, value)| name == "contenteditable" && !value.eq_ignore_ascii_case("false"))
+    }
+
     /// Apply a bounded top-level default scroll action. Returns whether the
     /// visible projection changed.
     pub fn scroll_root_by(&mut self, viewport: (u32, u32), delta: (f64, f64)) -> bool {
@@ -1920,6 +1938,26 @@ mod tests {
         assert!(bottom_limit > 250.0);
         assert!(!page.scroll_root_by(viewport, (0.0, f64::MAX)));
         assert!(!page.scroll_root_by(viewport, (0.0, f64::NAN)));
+    }
+
+    #[test]
+    fn focused_editing_controls_consume_scroll_keys() {
+        let mut page = Page::from_html(
+            "file:///controls.html",
+            "<input id='field'><div id='editor' contenteditable>edit</div><a id='link'>link</a>",
+        )
+        .unwrap();
+        let input = page.query_selector_all("#field").unwrap()[0].node_id;
+        let editor = page.query_selector_all("#editor").unwrap()[0].node_id;
+        let link = page.query_selector_all("#link").unwrap()[0].node_id;
+
+        assert!(!page.focused_element_consumes_scroll_keys());
+        page.set_focused_element_node_id(Some(input));
+        assert!(page.focused_element_consumes_scroll_keys());
+        page.set_focused_element_node_id(Some(editor));
+        assert!(page.focused_element_consumes_scroll_keys());
+        page.set_focused_element_node_id(Some(link));
+        assert!(!page.focused_element_consumes_scroll_keys());
     }
 
     #[test]

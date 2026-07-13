@@ -232,7 +232,10 @@ focus/visibility state and events across navigation. CSS/physical scale
 separation and lifecycle/surface recovery remain. Uncanceled wheel events now
 apply a clamped Page-owned root scroll offset; the translated layout drives
 paint, hit testing, selector/accessibility bounds, and fixed-position anchoring.
-Nested/keyboard/touch/script scrolling and restoration remain. A bounded,
+Unmodified Arrow, Page Up/Down, Home/End, and Space defaults now use the same
+zoom-derived CSS viewport and Page offset; page `preventDefault()` cancels the
+action and focused native/editing controls retain their key handling. Nested,
+touch, and script scrolling plus restoration remain. A bounded,
 mutation-generation-tagged
 BrowserCore projection now maps roles/names/states/bounds and tap/focus into Flutter
 Semantics. Nearest emitted semantic-parent relationships now produce a validated,
@@ -546,9 +549,9 @@ The core ownership and local headless measurement foundations are landed. The
 next work has two interleaved tracks: Flutter shell migration and browser
 correctness. Neither may starve the other.
 
-1. Extend the landed physical viewport, pointer/wheel/keyboard, root-wheel
+1. Extend the landed physical viewport, pointer/wheel/keyboard, root wheel/key
    scrolling, and monotonic focus/visibility/lifecycle path with IME,
-   nested/keyboard/touch/script scrolling, CSS/physical
+   nested/touch/script scrolling, CSS/physical
    scale correctness, and lifecycle recovery. In parallel, finish
    navigation-aware runtime/native-host cancellation and preserve one BrowserCore
    terminal outcome.
@@ -564,7 +567,7 @@ correctness. Neither may starve the other.
    and broader native AT/screen-reader evidence. Add platform
    host-service UI; both remain cross-cutting through every later platform.
 5. Complete the Linux basic-browser gate: visible controlled-site navigation,
-   nested/keyboard/touch/script scrolling, text/IME input,
+   nested/touch/script scrolling, text/IME input,
    back/forward/reload/stop, complete find traversal/highlighting,
    and bounded navigation/runtime/surface recovery. Keep release-archive smoke
    green, but defer FlatPark submission/review/publishing until this gate passes.

@@ -61,6 +61,8 @@ const MAX_SELECTOR_BYTES: usize = 64 * 1024;
 const MAX_FIND_QUERY_BYTES: usize = 4 * 1024;
 const MIN_PAGE_ZOOM: f64 = 0.25;
 const MAX_PAGE_ZOOM: f64 = 5.0;
+const KEYBOARD_SCROLL_LINE_PX: f64 = 40.0;
+const KEYBOARD_SCROLL_PAGE_FRACTION: f64 = 0.875;
 const MAX_URL_BYTES: usize = 16 * 1024;
 const MAX_VIEWPORT_DIMENSION: u32 = 16_384;
 const MAX_RUNTIME_SLOTS: usize = 512;
@@ -2639,6 +2641,11 @@ impl BrowserCore {
         event: KeyEventData,
     ) -> Result<BrowserCommandResult, BrowserError> {
         self.ensure_host_accepts_input(context_id)?;
+        let default_scroll = keyboard_scroll_delta(
+            &event_type,
+            &event,
+            self.context_for_document(context_id, document_id)?,
+        );
         let event_type = json_string(&event_type)?;
         let init = deno_core::serde_json::json!({
             "key": event.key,
@@ -2659,6 +2666,13 @@ impl BrowserCore {
         );
         let evaluation =
             self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
+        if evaluation.value == ScriptValue::Bool(true)
+            && let Some(delta) = default_scroll
+        {
+            let context = self.context_mut(context_id)?;
+            let viewport = page_layout_viewport(context.host_view.viewport, context.page_zoom);
+            context.page.scroll_root_by(viewport, delta);
+        }
         Ok(BrowserCommandResult::InputDispatched(InputDispatchResult {
             effects: evaluation.effects,
             navigation_actions: evaluation.navigation_actions,
@@ -3713,6 +3727,36 @@ fn page_layout_viewport(viewport: (u32, u32), zoom: f64) -> (u32, u32) {
     )
 }
 
+fn keyboard_scroll_delta(
+    event_type: &str,
+    event: &KeyEventData,
+    context: &BrowsingContext,
+) -> Option<(f64, f64)> {
+    if !matches!(event_type, "keyDown" | "keydown")
+        || event.ctrl_key
+        || event.alt_key
+        || event.meta_key
+        || context.page.focused_element_consumes_scroll_keys()
+    {
+        return None;
+    }
+    let viewport = page_layout_viewport(context.host_view.viewport, context.page_zoom);
+    let page = f64::from(viewport.1) * KEYBOARD_SCROLL_PAGE_FRACTION;
+    match event.key.as_str() {
+        "ArrowLeft" => Some((-KEYBOARD_SCROLL_LINE_PX, 0.0)),
+        "ArrowRight" => Some((KEYBOARD_SCROLL_LINE_PX, 0.0)),
+        "ArrowUp" => Some((0.0, -KEYBOARD_SCROLL_LINE_PX)),
+        "ArrowDown" => Some((0.0, KEYBOARD_SCROLL_LINE_PX)),
+        "PageUp" => Some((0.0, -page)),
+        "PageDown" => Some((0.0, page)),
+        "Home" => Some((0.0, -f64::MAX)),
+        "End" => Some((0.0, f64::MAX)),
+        " " if event.shift_key => Some((0.0, -page)),
+        " " => Some((0.0, page)),
+        _ => None,
+    }
+}
+
 fn scale_paint_commands(commands: &mut [PaintCommand], scale: f32) {
     for command in commands {
         let rect = match command {
@@ -4112,6 +4156,10 @@ mod tests {
         config.document_overrides.insert(
             "https://same.test/input".to_owned(),
             "<!doctype html><button id='same' aria-controls='name'>Same</button><a id='go' href='https://same.test/b'>Go</a><input id='name' aria-label='Name'><input id='volume' type='range' aria-label='Volume' min='0' max='10' step='2' value='4'><div id='brightness' role='slider' tabindex='0' aria-label='Brightness' aria-valuemin='0' aria-valuemax='10' aria-valuenow='3'></div><script>document.getElementById('brightness').addEventListener('keydown', event => { if (event.key === 'ArrowRight') event.currentTarget.setAttribute('aria-valuenow', '4'); });</script>".to_owned(),
+        );
+        config.document_overrides.insert(
+            "https://same.test/scroll".to_owned(),
+            "<!doctype html><style>body{margin:0}#spacer{height:800px}</style><div id='spacer'>Top</div><div id='marker'>Bottom</div><input id='field' value='abc'><script>document.addEventListener('keydown', event => { if (event.key === 'PageUp') event.preventDefault(); });</script>".to_owned(),
         );
         config
     }
@@ -4715,6 +4763,55 @@ mod tests {
         }
     }
 
+    fn dispatch_test_key(
+        handle: &mut EngineBrowserHandle,
+        state: &BrowsingContextState,
+        key: &str,
+        shift_key: bool,
+    ) {
+        let result = handle
+            .dispatch(BrowserCommand::DispatchKeyEvent {
+                context_id: state.context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                event_type: "keyDown".to_owned(),
+                event: KeyEventData {
+                    key: key.to_owned(),
+                    code: key.to_owned(),
+                    text: String::new(),
+                    apply_text: false,
+                    ctrl_key: false,
+                    shift_key,
+                    alt_key: false,
+                    meta_key: false,
+                    repeat: false,
+                    location: 0,
+                },
+            })
+            .unwrap();
+        assert!(matches!(result, BrowserCommandResult::InputDispatched(_)));
+    }
+
+    fn element_y(
+        handle: &mut EngineBrowserHandle,
+        state: &BrowsingContextState,
+        selector: &str,
+        viewport: (u32, u32),
+    ) -> f64 {
+        let result = handle
+            .dispatch(BrowserCommand::QuerySelectorAll {
+                context_id: state.context_id,
+                document_id: state.document_id,
+                selector: selector.to_owned(),
+                viewport,
+            })
+            .unwrap();
+        let BrowserCommandResult::SelectorMatches(matches) = result else {
+            panic!("unexpected selector result: {result:?}");
+        };
+        matches[0].bbox.unwrap().1
+    }
+
     #[test]
     fn runtime_and_input_results_report_exact_navigation_ids() {
         let mut handle = spawn_browser(test_config()).unwrap();
@@ -5085,6 +5182,56 @@ mod tests {
                 "`${document.visibilityState}:${document.hasFocus()}:${visibilityChanges}`"
             ),
             ScriptValue::String("visible:true:2".to_owned())
+        );
+    }
+
+    #[test]
+    fn uncancelled_navigation_keys_scroll_the_root_document() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/scroll");
+        let current = state(&mut handle, context_id);
+        let viewport = (200, 100);
+        handle
+            .dispatch(BrowserCommand::UpdateHostViewState {
+                context_id,
+                state: HostViewState {
+                    generation: 1,
+                    viewport,
+                    ..HostViewState::default()
+                },
+            })
+            .unwrap();
+
+        let initial_y = element_y(&mut handle, &current, "#marker", viewport);
+        dispatch_test_key(&mut handle, &current, "PageDown", false);
+        let paged_y = element_y(&mut handle, &current, "#marker", viewport);
+        assert_eq!(initial_y - paged_y, 87.5);
+
+        dispatch_test_key(&mut handle, &current, "PageUp", false);
+        assert_eq!(
+            element_y(&mut handle, &current, "#marker", viewport),
+            paged_y
+        );
+
+        dispatch_test_key(&mut handle, &current, "Home", false);
+        assert_eq!(
+            element_y(&mut handle, &current, "#marker", viewport),
+            initial_y
+        );
+
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "document.querySelector('#field').focus(); document.activeElement.id"
+            ),
+            ScriptValue::String("field".to_owned())
+        );
+        dispatch_test_key(&mut handle, &current, "End", false);
+        assert_eq!(
+            element_y(&mut handle, &current, "#marker", viewport),
+            initial_y
         );
     }
 
