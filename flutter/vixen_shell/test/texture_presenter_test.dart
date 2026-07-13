@@ -235,6 +235,45 @@ void main() {
       focusable: true,
       actions: const ['focus', 'increase', 'decrease'],
     );
+    final heading = BrowserAccessibilityNode(
+      id: 45,
+      parentId: 7,
+      role: 'heading',
+      label: 'Preferences',
+      headingLevel: 2,
+      bounds: const BrowserAccessibilityRect(
+        x: 150,
+        y: 20,
+        width: 120,
+        height: 30,
+      ),
+      focused: false,
+      disabled: false,
+      selected: false,
+      hidden: false,
+      focusable: false,
+      actions: const [],
+    );
+    final mixed = BrowserAccessibilityNode(
+      id: 46,
+      parentId: 7,
+      role: 'checkbox',
+      label: 'Some selected',
+      checked: false,
+      mixed: true,
+      bounds: const BrowserAccessibilityRect(
+        x: 150,
+        y: 60,
+        width: 120,
+        height: 30,
+      ),
+      focused: false,
+      disabled: false,
+      selected: false,
+      hidden: false,
+      focusable: true,
+      actions: const ['tap', 'focus'],
+    );
     final semantics = tester.ensureSemantics();
     await tester.pumpWidget(
       MaterialApp(
@@ -255,7 +294,7 @@ void main() {
                 documentId: 20,
                 viewportWidth: 400,
                 viewportHeight: 300,
-                nodes: [parent, node, textbox, slider],
+                nodes: [parent, node, textbox, slider, heading, mixed],
                 truncated: false,
               ),
               onSemanticTap: (_, value) => tapped = value,
@@ -343,6 +382,20 @@ void main() {
     sliderWidget.properties.onIncrease!();
     expect(adjusted?.$1.id, 44);
     expect(adjusted?.$2, isTrue);
+    expect(
+      tester
+          .widget<Semantics>(find.byKey(const ValueKey('semantic-9-45')))
+          .properties
+          .headingLevel,
+      2,
+    );
+    expect(
+      tester
+          .widget<Semantics>(find.byKey(const ValueKey('semantic-9-46')))
+          .properties
+          .mixed,
+      isTrue,
+    );
     semantics.dispose();
   });
 }

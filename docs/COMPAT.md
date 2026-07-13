@@ -231,6 +231,13 @@ generation, while unfocused controls and authored ARIA-only textboxes do not
 fabricate caret state. Document-range and contenteditable selection remain
 outside this slice.
 
+Bounded `aria-owns` references now reparent only retained later semantic nodes;
+the first valid owner wins, parent-before-child ordering remains enforced, and
+cycles/backward ownership are ignored. Native `h1`–`h6` and valid authored
+`aria-level="1"`–`"6"` map to Flutter heading levels. `aria-checked="mixed"`
+maps to Flutter's tri-state semantics rather than being discarded as an invalid
+boolean.
+
 Flutter also sends one monotonic BrowserCore-owned host-view state for content
 focus, visibility, effective scale, and application lifecycle. Current documents
 expose the accepted state through `document.hasFocus()`, `hidden`, and

@@ -427,10 +427,15 @@ impl Page {
                 element.disabled || aria_bool(element.aria_disabled.as_deref()) == Some(true);
             let focusable = !disabled && accessibility_focusable(&element);
             let checked = if element.aria_checked.is_some() {
-                aria_bool(element.aria_checked.as_deref())
+                if aria_mixed(element.aria_checked.as_deref()) {
+                    Some(false)
+                } else {
+                    aria_bool(element.aria_checked.as_deref())
+                }
             } else {
                 matches!(role.as_str(), "checkbox" | "radio").then_some(element.checked)
             };
+            let mixed = aria_mixed(element.aria_checked.as_deref()).then_some(true);
             let selected = aria_bool(element.aria_selected.as_deref()).unwrap_or(element.selected);
             let expanded = aria_bool(element.aria_expanded.as_deref());
             let value = accessibility_value(&element, &role);
@@ -440,6 +445,7 @@ impl Page {
             .then(|| self.control_selections.get(&element.node_id).copied())
             .flatten();
             let live_region = accessibility_live_region(&element, &role);
+            let heading_level = accessibility_heading_level(&element, &role);
             let mut actions = Vec::new();
             if !disabled && matches!(role.as_str(), "button" | "link" | "checkbox" | "radio") {
                 actions.push("tap".to_owned());
@@ -460,6 +466,7 @@ impl Page {
                 controls_ids: element.controls_ids,
                 described_by_ids: element.described_by_ids,
                 details_ids: element.details_ids,
+                owns_ids: element.owns_ids,
                 role,
                 label: element.label,
                 description: element.description,
@@ -470,8 +477,10 @@ impl Page {
                 focused: self.focused_element_node_id == Some(element.node_id),
                 disabled,
                 checked,
+                mixed,
                 selected,
                 expanded,
+                heading_level,
                 hidden: false,
                 live_region,
                 focusable,
@@ -489,6 +498,33 @@ impl Page {
                 .retain(|target| emitted_ids.contains(target));
             node.details_ids
                 .retain(|target| emitted_ids.contains(target));
+            node.owns_ids.retain(|target| emitted_ids.contains(target));
+        }
+        let node_indexes = nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| (node.id, index))
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut claimed = std::collections::HashSet::new();
+        let ownership = nodes
+            .iter()
+            .flat_map(|owner| {
+                owner
+                    .owns_ids
+                    .iter()
+                    .copied()
+                    .map(move |target| (owner.id, target))
+            })
+            .collect::<Vec<_>>();
+        for (owner_id, target_id) in ownership {
+            let (Some(&owner_index), Some(&target_index)) =
+                (node_indexes.get(&owner_id), node_indexes.get(&target_id))
+            else {
+                continue;
+            };
+            if owner_index < target_index && claimed.insert(target_id) {
+                nodes[target_index].parent_id = Some(owner_id);
+            }
         }
         let mut snapshot = AccessibilitySnapshot {
             context_id,
@@ -869,12 +905,34 @@ fn accessibility_live_region(element: &AccessibilityElement, role: &str) -> bool
     matches!(role, "alert" | "log" | "marquee" | "status" | "timer")
 }
 
+fn accessibility_heading_level(element: &AccessibilityElement, role: &str) -> Option<u8> {
+    if role != "heading" {
+        return None;
+    }
+    element
+        .aria_level
+        .as_deref()
+        .and_then(|value| value.parse::<u8>().ok())
+        .filter(|level| (1..=6).contains(level))
+        .or_else(|| {
+            element
+                .tag
+                .strip_prefix('h')
+                .and_then(|value| value.parse::<u8>().ok())
+                .filter(|level| (1..=6).contains(level))
+        })
+}
+
 fn aria_bool(value: Option<&str>) -> Option<bool> {
     match value?.trim().to_ascii_lowercase().as_str() {
         "true" => Some(true),
         "false" => Some(false),
         _ => None,
     }
+}
+
+fn aria_mixed(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.trim().eq_ignore_ascii_case("mixed"))
 }
 
 fn count_text_matches(haystack: &str, needle: &str, case_sensitive: bool) -> u32 {
@@ -1070,6 +1128,69 @@ mod tests {
                 .iter()
                 .all(|node| { node.parent_id.is_none_or(|parent_id| parent_id < node.id) })
         );
+    }
+
+    #[test]
+    fn accessibility_snapshot_maps_owned_nodes_headings_and_mixed_state() {
+        let page = Page::from_html(
+            "file:///accessibility-platform-mappings.html",
+            r#"<!doctype html>
+                <section role="group" aria-label="Palette" aria-owns="blue missing red blue"></section>
+                <button id="red">Red</button>
+                <button id="blue">Blue</button>
+                <h2>Native heading</h2>
+                <div role="heading" aria-level="4">Authored heading</div>
+                <div role="checkbox" aria-label="Some selected" aria-checked="mixed" tabindex="0"></div>"#,
+        )
+        .unwrap();
+        let snapshot = page.accessibility_snapshot(
+            BrowsingContextId::new(1).unwrap(),
+            DocumentId::new(1).unwrap(),
+            (800, 600),
+        );
+        let palette = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Palette")
+            .unwrap();
+        let red = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Red")
+            .unwrap();
+        let blue = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Blue")
+            .unwrap();
+        assert_eq!(palette.owns_ids, [blue.id, red.id]);
+        assert_eq!(red.parent_id, Some(palette.id));
+        assert_eq!(blue.parent_id, Some(palette.id));
+        assert_eq!(
+            snapshot
+                .nodes
+                .iter()
+                .find(|node| node.label == "Native heading")
+                .unwrap()
+                .heading_level,
+            Some(2)
+        );
+        assert_eq!(
+            snapshot
+                .nodes
+                .iter()
+                .find(|node| node.label == "Authored heading")
+                .unwrap()
+                .heading_level,
+            Some(4)
+        );
+        let mixed = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.label == "Some selected")
+            .unwrap();
+        assert_eq!(mixed.checked, Some(false));
+        assert_eq!(mixed.mixed, Some(true));
     }
 
     #[test]

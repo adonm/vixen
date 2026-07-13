@@ -661,14 +661,21 @@ pub(crate) fn bounded_accessibility_snapshot(
         .map(|node| node.id)
         .collect::<std::collections::HashSet<_>>();
     for node in &mut snapshot.nodes {
-        let before = node.controls_ids.len() + node.described_by_ids.len() + node.details_ids.len();
+        let before = node.controls_ids.len()
+            + node.described_by_ids.len()
+            + node.details_ids.len()
+            + node.owns_ids.len();
         node.controls_ids
             .retain(|target| retained_ids.contains(target));
         node.described_by_ids
             .retain(|target| retained_ids.contains(target));
         node.details_ids
             .retain(|target| retained_ids.contains(target));
-        let after = node.controls_ids.len() + node.described_by_ids.len() + node.details_ids.len();
+        node.owns_ids.retain(|target| retained_ids.contains(target));
+        let after = node.controls_ids.len()
+            + node.described_by_ids.len()
+            + node.details_ids.len()
+            + node.owns_ids.len();
         snapshot.truncated |= after != before;
     }
     snapshot.refresh_generation();

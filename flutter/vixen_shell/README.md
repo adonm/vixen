@@ -65,8 +65,10 @@ is published. A 16 KiB-bounded `onSetText` path uses the same generation checks
 and live value/event machinery for enabled writable native text controls;
 passwords, readonly controls, unsupported types, and ARIA-only textboxes are not
 advertised. Live regions and event-driven same-document full refresh are also
-implemented. Semantic deltas, broader relationships, document/contenteditable
-selection, and native assistive-technology smoke remain open.
+implemented, as are bounded `aria-owns` reparenting, heading levels, and mixed
+checkbox state. Semantic deltas, long-tail relationships,
+document/contenteditable selection, and native assistive-technology smoke remain
+open.
 
 From the repository root, install the pinned Flutter 3.46.0-0.3.pre beta through
 mise and run:

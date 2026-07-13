@@ -668,6 +668,7 @@ pub(crate) struct AccessibilityElement {
     pub controls_ids: Vec<usize>,
     pub described_by_ids: Vec<usize>,
     pub details_ids: Vec<usize>,
+    pub owns_ids: Vec<usize>,
     pub tag: String,
     pub role: Option<String>,
     pub aria_labelledby: Option<String>,
@@ -675,6 +676,7 @@ pub(crate) struct AccessibilityElement {
     pub aria_describedby: Option<String>,
     pub aria_description: Option<String>,
     pub aria_details: Option<String>,
+    pub aria_owns: Option<String>,
     pub aria_label: Option<String>,
     pub title: Option<String>,
     pub alt: Option<String>,
@@ -693,6 +695,7 @@ pub(crate) struct AccessibilityElement {
     pub aria_selected: Option<String>,
     pub aria_expanded: Option<String>,
     pub aria_live: Option<String>,
+    pub aria_level: Option<String>,
     pub tabindex: Option<String>,
     pub text: String,
     pub label: String,
@@ -900,6 +903,7 @@ impl Document {
                 controls_ids: Vec::new(),
                 described_by_ids: Vec::new(),
                 details_ids: Vec::new(),
+                owns_ids: Vec::new(),
                 tag: name.local.as_ref().to_owned(),
                 role: None,
                 aria_labelledby: None,
@@ -907,6 +911,7 @@ impl Document {
                 aria_describedby: None,
                 aria_description: None,
                 aria_details: None,
+                aria_owns: None,
                 aria_label: None,
                 title: None,
                 alt: None,
@@ -925,6 +930,7 @@ impl Document {
                 aria_selected: None,
                 aria_expanded: None,
                 aria_live: None,
+                aria_level: None,
                 tabindex: None,
                 text: String::new(),
                 label: String::new(),
@@ -982,6 +988,12 @@ impl Document {
                     ),
                     "aria-details" => copy_accessibility_attr(
                         &mut element.aria_details,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "aria-owns" => copy_accessibility_attr(
+                        &mut element.aria_owns,
                         attr.value.as_ref(),
                         max_string_bytes,
                         &mut truncated,
@@ -1090,6 +1102,12 @@ impl Document {
                     ),
                     "aria-live" => copy_accessibility_attr(
                         &mut element.aria_live,
+                        attr.value.as_ref(),
+                        max_string_bytes,
+                        &mut truncated,
+                    ),
+                    "aria-level" => copy_accessibility_attr(
+                        &mut element.aria_level,
                         attr.value.as_ref(),
                         max_string_bytes,
                         &mut truncated,
@@ -1207,6 +1225,12 @@ impl Document {
                 element.aria_details.as_deref(),
                 &ids,
                 &mut element.details_ids,
+                &mut truncated,
+            );
+            resolve_accessibility_idrefs(
+                element.aria_owns.as_deref(),
+                &ids,
+                &mut element.owns_ids,
                 &mut truncated,
             );
             nearest_semantic_ancestor[idx] = Some(node_id);

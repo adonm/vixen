@@ -221,6 +221,11 @@ that selection through the bounded ABI, and a small render-semantics adapter
 sets Flutter's otherwise non-widget-exposed `textSelection` configuration.
 Unfocused controls and authored ARIA-only textboxes remain unset.
 
+The relationship/state mapping also supports bounded `aria-owns` reparenting
+for retained later nodes, while preserving parent-before-child and first-owner
+constraints. Native/authored heading levels and mixed checkbox state map to
+Flutter's dedicated semantics properties instead of generic labels.
+
 Semantic focus is dispatched only when the exact context, document, runtime,
 viewport, source generation, capped wire generation, node id, and advertised
 capability still match; BrowserCore executes live focus events/mutation and Dart
@@ -228,9 +233,9 @@ waits for the refreshed projection. The same boundary exposes a 16 KiB-bounded
 set-value action only for enabled, writable native text inputs/textareas; it
 uses the live control-value and input/change event path, while password,
 readonly, unsupported input types, and authored ARIA-only textboxes remain
-unadvertised. Complete accessibility still requires platform mappings for more
-non-tree relationships, heading levels, mixed states, document/contenteditable
-selection, semantic delta updates, broader authored-range keyboard conventions, the disabled-fieldset
+unadvertised. Complete accessibility still requires long-tail relationship and
+state mappings, document/contenteditable selection, semantic delta updates,
+broader authored-range keyboard conventions, the disabled-fieldset
 first-legend exception, full ARIA presentational-role conflict handling, and
 native AT smoke on each platform.
 

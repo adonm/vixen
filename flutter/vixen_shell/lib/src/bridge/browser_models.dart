@@ -325,6 +325,7 @@ final class BrowserAccessibilityNode {
     List<int> controlsIds = const [],
     List<int> describedByIds = const [],
     List<int> detailsIds = const [],
+    List<int> ownsIds = const [],
     required this.role,
     required this.label,
     this.description = '',
@@ -335,8 +336,10 @@ final class BrowserAccessibilityNode {
     required this.focused,
     required this.disabled,
     this.checked,
+    this.mixed,
     required this.selected,
     this.expanded,
+    this.headingLevel,
     required this.hidden,
     this.liveRegion = false,
     required this.focusable,
@@ -344,6 +347,7 @@ final class BrowserAccessibilityNode {
   }) : controlsIds = List.unmodifiable(controlsIds),
        describedByIds = List.unmodifiable(describedByIds),
        detailsIds = List.unmodifiable(detailsIds),
+       ownsIds = List.unmodifiable(ownsIds),
        actions = List.unmodifiable(actions);
 
   factory BrowserAccessibilityNode.fromWire(Map<String, Object?> wire) {
@@ -354,10 +358,12 @@ final class BrowserAccessibilityNode {
     final controlsIds = _list(wire, 'controls_ids');
     final describedByIds = _list(wire, 'described_by_ids');
     final detailsIds = _list(wire, 'details_ids');
+    final ownsIds = _list(wire, 'owns_ids');
     if ([
       ...controlsIds,
       ...describedByIds,
       ...detailsIds,
+      ...ownsIds,
     ].any((id) => id is! int || id <= 0)) {
       throw const FormatException(
         'accessibility relationship ids must be positive integers',
@@ -369,6 +375,7 @@ final class BrowserAccessibilityNode {
       controlsIds: controlsIds.cast<int>(),
       describedByIds: describedByIds.cast<int>(),
       detailsIds: detailsIds.cast<int>(),
+      ownsIds: ownsIds.cast<int>(),
       role: _string(wire, 'role'),
       label: _string(wire, 'label'),
       description: _string(wire, 'description'),
@@ -387,8 +394,10 @@ final class BrowserAccessibilityNode {
       focused: _bool(wire, 'focused'),
       disabled: _bool(wire, 'disabled'),
       checked: _optionalBool(wire, 'checked'),
+      mixed: _optionalBool(wire, 'mixed'),
       selected: _bool(wire, 'selected'),
       expanded: _optionalBool(wire, 'expanded'),
+      headingLevel: _optionalInt(wire, 'heading_level'),
       hidden: _bool(wire, 'hidden'),
       liveRegion: _bool(wire, 'live_region'),
       focusable: _bool(wire, 'focusable'),
@@ -401,6 +410,7 @@ final class BrowserAccessibilityNode {
   final List<int> controlsIds;
   final List<int> describedByIds;
   final List<int> detailsIds;
+  final List<int> ownsIds;
   final String role;
   final String label;
   final String description;
@@ -411,8 +421,10 @@ final class BrowserAccessibilityNode {
   final bool focused;
   final bool disabled;
   final bool? checked;
+  final bool? mixed;
   final bool selected;
   final bool? expanded;
+  final int? headingLevel;
   final bool hidden;
   final bool liveRegion;
   final bool focusable;
@@ -424,6 +436,7 @@ final class BrowserAccessibilityNode {
     'controls_ids': controlsIds,
     'described_by_ids': describedByIds,
     'details_ids': detailsIds,
+    'owns_ids': ownsIds,
     'role': role,
     'label': label,
     'description': description,
@@ -434,8 +447,10 @@ final class BrowserAccessibilityNode {
     'focused': focused,
     'disabled': disabled,
     'checked': checked,
+    'mixed': mixed,
     'selected': selected,
     'expanded': expanded,
+    'heading_level': headingLevel,
     'hidden': hidden,
     'live_region': liveRegion,
     'focusable': focusable,
@@ -525,6 +540,10 @@ final class BrowserAccessibilitySnapshot {
       if (!seen.add(node.id)) {
         throw const FormatException('accessibility node ids must be unique');
       }
+      final headingLevel = node.headingLevel;
+      if (headingLevel != null && (headingLevel < 1 || headingLevel > 6)) {
+        throw const FormatException('accessibility heading level must be 1 to 6');
+      }
       final parentId = node.parentId;
       if (parentId != null && !seen.contains(parentId)) {
         throw const FormatException(
@@ -537,6 +556,7 @@ final class BrowserAccessibilitySnapshot {
         node.controlsIds,
         node.describedByIds,
         node.detailsIds,
+        node.ownsIds,
       ]) {
         if (ids.toSet().length != ids.length ||
             ids.any((id) => id == node.id || !seen.contains(id))) {
@@ -1121,6 +1141,11 @@ int _nonNegativeInt(Map<String, Object?> wire, String key) {
 int? _optionalPositiveInt(Map<String, Object?> wire, String key) {
   if (wire[key] == null) return null;
   return _positiveInt(wire, key);
+}
+
+int? _optionalInt(Map<String, Object?> wire, String key) {
+  if (wire[key] == null) return null;
+  return _int(wire, key);
 }
 
 bool _bool(Map<String, Object?> wire, String key) {

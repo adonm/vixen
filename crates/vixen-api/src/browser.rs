@@ -58,6 +58,10 @@ impl AccessibilitySnapshot {
             for details_id in &node.details_ids {
                 hash.u64(*details_id as u64);
             }
+            hash.u64(node.owns_ids.len() as u64);
+            for owns_id in &node.owns_ids {
+                hash.u64(*owns_id as u64);
+            }
             hash.string(&node.role);
             hash.string(&node.label);
             hash.string(&node.description);
@@ -93,8 +97,16 @@ impl AccessibilitySnapshot {
             hash.boolean(node.focused);
             hash.boolean(node.disabled);
             hash.optional_bool(node.checked);
+            hash.optional_bool(node.mixed);
             hash.boolean(node.selected);
             hash.optional_bool(node.expanded);
+            match node.heading_level {
+                Some(level) => {
+                    hash.byte(1);
+                    hash.byte(level);
+                }
+                None => hash.byte(0),
+            }
             hash.boolean(node.hidden);
             hash.boolean(node.live_region);
             hash.boolean(node.focusable);
@@ -174,6 +186,8 @@ pub struct AccessibilityNode {
     pub described_by_ids: Vec<usize>,
     /// Emitted semantic nodes referenced by this element's `aria-details`.
     pub details_ids: Vec<usize>,
+    /// Emitted semantic nodes reparented by this element's `aria-owns`.
+    pub owns_ids: Vec<usize>,
     pub role: String,
     pub label: String,
     pub description: String,
@@ -184,8 +198,10 @@ pub struct AccessibilityNode {
     pub focused: bool,
     pub disabled: bool,
     pub checked: Option<bool>,
+    pub mixed: Option<bool>,
     pub selected: bool,
     pub expanded: Option<bool>,
+    pub heading_level: Option<u8>,
     pub hidden: bool,
     pub live_region: bool,
     pub focusable: bool,
@@ -1124,6 +1140,7 @@ mod tests {
                 controls_ids: vec![],
                 described_by_ids: vec![],
                 details_ids: vec![],
+                owns_ids: vec![],
                 role: "button".to_owned(),
                 label: "Before".to_owned(),
                 description: String::new(),
@@ -1134,8 +1151,10 @@ mod tests {
                 focused: false,
                 disabled: false,
                 checked: None,
+                mixed: None,
                 selected: false,
                 expanded: None,
+                heading_level: None,
                 hidden: false,
                 live_region: false,
                 focusable: true,

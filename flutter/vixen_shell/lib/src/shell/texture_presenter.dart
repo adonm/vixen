@@ -566,10 +566,12 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
                     ),
               enabled: _roleHasEnabledState(node.role) ? !node.disabled : null,
               checked: node.checked,
+              mixed: node.mixed,
               selected: node.role == 'option' || node.role == 'tab'
                   ? node.selected
                   : null,
               expanded: node.expanded,
+              headingLevel: node.headingLevel,
               liveRegion: node.liveRegion,
               focusable: node.focusable,
               focused: node.focused,
