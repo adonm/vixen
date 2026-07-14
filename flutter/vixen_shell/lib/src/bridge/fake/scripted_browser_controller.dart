@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:collection';
 
 import '../browser_controller.dart';
 import '../browser_models.dart';
+import '../native/native_renderer_protocol.dart';
 
 typedef BrowserCommandHandler = FutureOr<BrowserResponse> Function(
   BrowserCommand command,
@@ -49,6 +51,8 @@ final class ScriptedBrowserController extends BrowserController {
   final StreamController<SequencedBrowserEvent> _events =
       StreamController<SequencedBrowserEvent>.broadcast();
   final List<BrowserCommand> commands = [];
+  final Queue<NativeRendererRequest> rendererRequests = Queue();
+  final List<Map<String, Object?>> rendererResponses = [];
   final Map<int, BrowsingContextState> _contexts;
   ProfileSessionState session;
   int? _activeContextId;
@@ -71,6 +75,16 @@ final class ScriptedBrowserController extends BrowserController {
     activeContextId: _activeContextId,
     contexts: List.unmodifiable(_contexts.values),
   );
+
+  void enqueueRendererRequest(NativeRendererRequest request) =>
+      rendererRequests.addLast(request);
+
+  NativeRendererRequest? pollRenderer({int timeoutMilliseconds = 0}) =>
+      rendererRequests.isEmpty ? null : rendererRequests.removeFirst();
+
+  void respondRenderer(Map<String, Object?> response) {
+    rendererResponses.add(Map.unmodifiable(response));
+  }
 
   @override
   Future<void> start() async {

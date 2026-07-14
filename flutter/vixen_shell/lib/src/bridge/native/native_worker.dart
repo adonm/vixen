@@ -6,6 +6,7 @@ import '../browser_models.dart';
 import 'native_bindings.dart';
 import 'native_paths.dart';
 import 'native_protocol.dart';
+import 'native_renderer_protocol.dart';
 
 const Duration _eventPollInterval = Duration(milliseconds: 8);
 const Duration _startupTimeout = Duration(seconds: 30);
@@ -52,12 +53,43 @@ class NativeWorkerClient {
 
   late final StreamSubscription<Object?> _subscription;
   SendPort? _commands;
+  VixenNativeApi? _rendererApi;
+  int? _rendererHandle;
   int _nextRequestId = 1;
   bool _closing = false;
   bool _finished = false;
   Future<void>? _closeOperation;
 
   Stream<Map<String, Object?>> get events => _events.stream;
+
+  NativeRendererRequest? pollRenderer({int timeoutMilliseconds = 0}) {
+    if (_closing ||
+        _finished ||
+        _rendererApi == null ||
+        _rendererHandle == null) {
+      throw const NativeBridgeException(
+        'native renderer broker is closed',
+        code: 'render.closed',
+      );
+    }
+    return _rendererApi!.pollRenderer(
+      _rendererHandle!,
+      timeoutMilliseconds: timeoutMilliseconds,
+    );
+  }
+
+  void respondRenderer(Map<String, Object?> response) {
+    if (_closing ||
+        _finished ||
+        _rendererApi == null ||
+        _rendererHandle == null) {
+      throw const NativeBridgeException(
+        'native renderer broker is closed',
+        code: 'render.closed',
+      );
+    }
+    _rendererApi!.respondRenderer(_rendererHandle!, response);
+  }
 
   Future<Map<String, Object?>> command(Map<Object?, Object?> command) {
     if (_closing || _finished) {
@@ -167,7 +199,13 @@ class NativeWorkerClient {
     switch (message['kind']) {
       case 'ready':
         final port = message['port'];
-        if (port is! SendPort || _commands != null) {
+        final libraryPath = message['library_path'];
+        final rendererHandle = message['renderer_handle'];
+        if (port is! SendPort ||
+            libraryPath is! String ||
+            rendererHandle is! int ||
+            rendererHandle <= 0 ||
+            _commands != null) {
           _failAll(
             const NativeProtocolException(
               'native worker sent invalid readiness',
@@ -177,6 +215,8 @@ class NativeWorkerClient {
           return;
         }
         _commands = port;
+        _rendererApi = VixenNativeApi.open(libraryPath);
+        _rendererHandle = rendererHandle;
         if (!_ready.isCompleted) {
           _ready.complete();
         }
@@ -252,6 +292,8 @@ class NativeWorkerClient {
       return;
     }
     _finished = true;
+    _rendererApi = null;
+    _rendererHandle = null;
     _isolate.kill(priority: Isolate.immediate);
     await _subscription.cancel();
     _messages.close();
@@ -291,7 +333,7 @@ void _nativeWorkerMain(Map<String, Object?> bootstrap) {
     ensureProfileParentExists(profilePath);
     final api = VixenNativeApi.open(libraryPath);
     final handle = api.openProfile(profilePath);
-    _NativeWorkerRuntime(replyTo, api, handle).start();
+    _NativeWorkerRuntime(replyTo, api, handle, libraryPath).start();
   } catch (error) {
     final bridgeError = error is NativeBridgeException
         ? error
@@ -304,11 +346,17 @@ void _nativeWorkerMain(Map<String, Object?> bootstrap) {
 }
 
 class _NativeWorkerRuntime {
-  _NativeWorkerRuntime(this._replyTo, this._api, this._handle);
+  _NativeWorkerRuntime(
+    this._replyTo,
+    this._api,
+    this._handle,
+    this._libraryPath,
+  );
 
   final SendPort _replyTo;
   final VixenNativeApi _api;
   final int _handle;
+  final String _libraryPath;
   final ReceivePort _requests = ReceivePort();
 
   Timer? _pollTimer;
@@ -321,6 +369,8 @@ class _NativeWorkerRuntime {
     _replyTo.send(<String, Object?>{
       'kind': 'ready',
       'port': _requests.sendPort,
+      'library_path': _libraryPath,
+      'renderer_handle': _handle,
     });
     _drainEvents();
   }
