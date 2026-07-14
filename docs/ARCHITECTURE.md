@@ -487,6 +487,19 @@ offset/caret/range/affinity operations use a bounded batched renderer query
 service. Renderer-authoritative means Flutter computes every value; it does not
 require an FFI round trip for every rectangle read.
 
+### Dedicated renderer transport
+
+R2 keeps renderer traffic outside serialized browser commands. BrowserCore-side
+code publishes bounded asynchronous snapshot/mutation/handle-release updates;
+Flutter submits bounded commit/presented/resync records. `EnsureLayout`, hit
+tests, and Paragraph text queries alone occupy correlated in-flight request
+slots. One mutex/condition queue atomically owns closure, deadlines, queue order,
+and all pending slots, so polling does not free capacity before a response. C
+output remains retained only by release token. The bridge can be shut down from
+the Flutter/UI side to cancel requests and wake polls even if the command worker
+is blocked. The small Dart service consumes records into the test-only R3
+formatter without calling BrowserCore.
+
 ### Synchronous layout broker
 
 For same-task mutation followed by geometry, BrowserCore flushes DOM/Stylo,

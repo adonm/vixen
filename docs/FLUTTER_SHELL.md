@@ -136,6 +136,11 @@ only. Do not add renderer breadth there. R1 protocol validation, the R2 C/Dart
 broker, and the R3 test-only formatter are implemented. The remaining delivery
 sequence is:
 
+R2 uses plain bounded messages: asynchronous snapshot/mutation/release updates,
+asynchronous commit/presented/resync submissions, and correlated broker traffic
+only for `EnsureLayout`, hit testing, and text queries. The Dart broker service
+never calls BrowserCore and the production shell does not consume it yet.
+
 1. Route Linux input, scrolling, zoom, and accessibility through accepted
    geometry; prove lifecycle recovery without pixel-buffer texture ownership.
 2. Add a chrome-less Flutter host under Cage for visual fixtures and CDP capture.

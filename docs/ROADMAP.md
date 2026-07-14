@@ -185,13 +185,21 @@ stale wire tests, cancellation/timeout tests, queue bounds, worker-blocked broke
 service, shutdown, and full resync. Production still displays the old frame.
 
 **Implemented evidence:** the bounded `RenderBroker` is independent of the
-serialized BrowserCore controller lock; C `renderer_poll`/`renderer_respond`
-entrypoints and handwritten Dart records use strict correlated envelopes and the
-existing tokenized output release contract. Timeout, late response, cancellation,
-shutdown, malformed wire, double release, worker-blocked progress, native header,
-and Rust/Dart golden tests are checked in. The native worker shares only its
-opaque process token with the UI-side broker endpoint, and the scripted fake has
-the same queue/response shape. Normal browsing still uses the old frame.
+serialized BrowserCore controller lock. Ordinary snapshots, every mutation
+variant, and handle releases use a bounded asynchronous update queue; commits,
+presentation, and resync use a separately bounded submission queue. Only
+`EnsureLayout`, hit tests, and text queries use correlated request/response.
+C `renderer_poll`/`renderer_respond`/`renderer_submit`/`renderer_shutdown`
+entrypoints and handwritten Dart records are strict, versioned, and retain C
+output only through the existing tokenized release contract. Total in-flight
+requests remain capped after polling, update source is capped at 512 KiB before
+JSON encoding, incoming messages remain capped at 64 KiB, and encoded output at
+1 MiB. Timeout, late response, exact identity/kind correlation, cancellation,
+queue saturation, shutdown wakeup, malformed wire, double release,
+worker-blocked progress, native header, and Rust/Dart golden tests are checked
+in. A small Dart service drives the formatter from the same transport; the
+scripted fake enforces the same queue/payload bounds. Normal browsing still uses
+the old frame.
 
 ### R3. First Flutter-rendered document — landed test-only
 
@@ -216,7 +224,12 @@ path remains test-only.
 immutable snapshot through a small flow formatter over `dart:ui` Paragraph,
 Canvas/Picture, encoded PNG decode, Scene capture, geometry, reverse-paint-order
 hit testing, UTF-16 range/point queries, scroll limits, semantic bounds, mutation,
-presentation, stale/equal-snapshot rejection, deterministic resync, and reset.
+presentation, explicit idempotent handle release, stale/equal-snapshot rejection,
+deterministic resync, and reset. Candidate source/scene state publishes only
+after successful formatting; failed or superseded asynchronous builds retain the
+previous revision and dispose their Paragraph/image/Picture resources. Mixed
+text runs have run/line fragments, padded boxes retain distinct content bounds,
+and wrapped semantic text retains all Paragraph rectangles.
 Software and Impeller-requested captures have separate exact raw-RGBA hashes.
 The formatter is not connected to normal shell presentation.
 
