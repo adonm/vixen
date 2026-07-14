@@ -1441,6 +1441,35 @@ mod tests {
     }
 
     #[test]
+    fn flutter_frame_capture_preserves_raster_fixture_pixels() {
+        let profile = TestProfile::new();
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/images/raster-image.html")
+            .canonicalize()
+            .unwrap();
+        let url = format!("file://{}", fixture.display());
+        let mut controller =
+            FlutterBrowserController::from_config(BrowserConfig::new(&profile.0)).unwrap();
+        let context_id = controller.create_context().unwrap();
+        let navigation_id = controller.navigate(context_id, url).unwrap();
+        wait_for_settled(&mut controller, navigation_id);
+        let state = controller.context_state(context_id).unwrap();
+        let frame = controller
+            .capture_rgba_frame(context_id, state.document_id, (80, 80))
+            .unwrap();
+        let pixel = |x: usize, y: usize| {
+            let offset = (y * frame.width as usize + x) * 4;
+            &frame.rgba[offset..offset + 4]
+        };
+
+        assert_eq!(pixel(5, 5), [255, 0, 0, 255]);
+        assert_eq!(pixel(35, 5), [0, 255, 0, 255]);
+        assert_eq!(pixel(5, 35), [0, 0, 255, 255]);
+        assert_eq!(pixel(35, 35), [255, 255, 0, 255]);
+        assert_eq!(pixel(50, 50), [255, 255, 255, 255]);
+    }
+
+    #[test]
     fn controller_owns_primary_click_sequence_and_dispatches_keyboard_input() {
         let profile = TestProfile::new();
         let url = "https://ffi.test/input";

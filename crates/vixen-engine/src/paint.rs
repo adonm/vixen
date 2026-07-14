@@ -23,9 +23,10 @@ use webrender::api::units::{
     LayoutSize,
 };
 use webrender::api::{
-    BuiltDisplayList, ColorF, CommonItemProperties, DocumentId, Epoch, ExternalEvent,
-    FramePublishId, FrameReadyParams, PipelineId, PrimitiveFlags, RenderNotifier, RenderReasons,
-    SpaceAndClipInfo,
+    AlphaType, BuiltDisplayList, ColorF, CommonItemProperties, DocumentId, Epoch, ExternalEvent,
+    FramePublishId, FrameReadyParams, ImageData, ImageDescriptor, ImageDescriptorFlags,
+    ImageFormat, ImageKey, ImageRendering, PipelineId, PrimitiveFlags, RenderNotifier,
+    RenderReasons, SpaceAndClipInfo,
 };
 use webrender::{
     Renderer as WebRenderRenderer, Transaction, WebRenderOptions, create_webrender_instance,
@@ -67,6 +68,7 @@ pub struct Renderer {
     document_id: DocumentId,
     epoch: u32,
     notifier: PaintNotifier,
+    image_keys: Vec<ImageKey>,
 }
 
 impl Renderer {
@@ -97,6 +99,7 @@ impl Renderer {
             document_id,
             epoch: 0,
             notifier,
+            image_keys: Vec::new(),
         })
     }
 
@@ -111,9 +114,47 @@ impl Renderer {
         let size = device_size(viewport)?;
         self.epoch = self.epoch.saturating_add(1).max(1);
         let epoch = Epoch(self.epoch);
-        let display_list = build_webrender_display_list(commands, viewport)?;
+        let image_keys = commands
+            .iter()
+            .filter(|command| matches!(command, PaintCommand::Image { .. }))
+            .map(|_| self.api.generate_image_key())
+            .collect::<Vec<_>>();
+        let display_list = build_webrender_display_list_with_images(
+            commands,
+            viewport,
+            image_keys.iter().copied(),
+        )?;
 
         let mut txn = Transaction::new();
+        for key in self.image_keys.drain(..) {
+            txn.delete_image(key);
+        }
+        for (command, key) in commands
+            .iter()
+            .filter(|command| matches!(command, PaintCommand::Image { .. }))
+            .zip(image_keys.iter().copied())
+        {
+            let PaintCommand::Image { image, .. } = command else {
+                unreachable!();
+            };
+            let flags = if image.rgba.chunks_exact(4).all(|pixel| pixel[3] == 255) {
+                ImageDescriptorFlags::IS_OPAQUE
+            } else {
+                ImageDescriptorFlags::empty()
+            };
+            txn.add_image(
+                key,
+                ImageDescriptor::new(
+                    image.width as i32,
+                    image.height as i32,
+                    ImageFormat::RGBA8,
+                    flags,
+                ),
+                ImageData::Raw(Arc::clone(&image.rgba)),
+                None,
+            );
+        }
+        self.image_keys = image_keys;
         txn.set_document_view(DeviceIntRect::from_size(size));
         txn.set_root_pipeline(PIPELINE_ID);
         txn.set_display_list(epoch, display_list);
@@ -174,6 +215,14 @@ pub fn build_webrender_display_list(
     commands: &[PaintCommand],
     viewport: (u32, u32),
 ) -> Result<(PipelineId, BuiltDisplayList), PaintError> {
+    build_webrender_display_list_with_images(commands, viewport, std::iter::repeat(ImageKey::DUMMY))
+}
+
+fn build_webrender_display_list_with_images(
+    commands: &[PaintCommand],
+    viewport: (u32, u32),
+    mut image_keys: impl Iterator<Item = ImageKey>,
+) -> Result<(PipelineId, BuiltDisplayList), PaintError> {
     let _ = device_size(viewport)?;
     let mut builder = webrender::api::DisplayListBuilder::new(PIPELINE_ID);
     let viewport_rect = layout_rect(Rect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32));
@@ -194,6 +243,16 @@ pub fn build_webrender_display_list(
             PaintCommand::Text { rect, color, .. } => {
                 push_rect(&mut builder, &common, *rect, *color);
             }
+            PaintCommand::Image { rect, .. } => builder.push_image(
+                &common,
+                layout_rect(*rect),
+                ImageRendering::Auto,
+                AlphaType::Alpha,
+                image_keys
+                    .next()
+                    .expect("one WebRender key per image command"),
+                ColorF::WHITE,
+            ),
         }
     }
     builder.pop_stacking_context();
@@ -320,6 +379,7 @@ impl RenderNotifier for PaintNotifier {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     use webrender::api::DisplayItem;
 
     #[test]
@@ -348,6 +408,25 @@ mod tests {
         }
 
         assert_eq!(rectangles, 2);
+    }
+
+    #[test]
+    fn converts_raster_pixels_to_a_webrender_image_item() {
+        let commands = vec![PaintCommand::Image {
+            rect: Rect::new(2.0, 3.0, 20.0, 10.0),
+            image: crate::display_list::RasterImage {
+                width: 1,
+                height: 1,
+                rgba: Arc::new(vec![255, 0, 0, 255]),
+            },
+        }];
+        let (_, list) = build_webrender_display_list(&commands, (100, 80)).unwrap();
+        let mut iter = list.iter();
+        let mut found = false;
+        while let Some(item) = iter.next() {
+            found |= matches!(item.item(), DisplayItem::Image(_));
+        }
+        assert!(found);
     }
 
     #[test]

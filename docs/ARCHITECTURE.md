@@ -416,9 +416,18 @@ the sole web renderer. The headless EGL path is unchanged.
 
 The path is intentionally singular, but its current formatting and text metrics
 are narrow. The target keeps the same ownership shape while adding full Stylo
-computed values, font discovery/shaping/fallback, images/replaced elements,
+computed values, font discovery/shaping/fallback, broader images/replaced elements,
 common formatting contexts, scroll/hit-test state, compositing, animation, and
 incremental invalidation.
+
+The first raster-image vertical follows this path without a side renderer.
+BrowserCore discovers static `<img src>` PNGs, reuses the generation-cancellable
+external-resource loader and its URL/CSP/mixed-content/redirect/cookie/cache
+policy, requires a successful `image/png` response, and rejects bodies above
+8 MiB, axes above 2048 pixels, decoded RGBA above 16 MiB, and animated PNG before
+Page/display-list exposure. Decoded immutable RGBA8 is intrinsic-size input and
+a `PaintCommand::Image`; WebRender owns the image upload. Headless EGL and the
+Flutter FFI frame path therefore consume identical commands and pixels.
 
 Rules:
 
@@ -457,7 +466,7 @@ For every request:
 2. validate URL/method/headers/body and private-network policy;
 3. apply HSTS, cookies, cache, redirect, mixed-content, CORS, and request metadata
    policy in a defined order;
-4. stream transport with request id, limits, progress, and cancellation;
+4. stream transport with request id, destination-specific limits, progress, and cancellation;
 5. apply response CORS/CORP/COEP/nosniff/integrity/content policy;
 6. only then expose, execute, decode, persist, cache, or create a download.
 

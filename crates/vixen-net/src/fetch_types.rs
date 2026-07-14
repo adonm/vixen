@@ -83,9 +83,37 @@ impl Method {
     }
 }
 
-/// The decoded result of a `get_text` fetch (the navigation data-flow entry
-/// in docs/ARCHITECTURE.md). Headers are lower-cased and multi-valued
+/// The raw result of a bounded fetch. Headers are lower-cased and multi-valued
 /// headers collapsed into one entry per name.
+#[derive(Debug, Clone)]
+pub struct ByteResponse {
+    /// Final response body. Bounded by the client's max body size.
+    pub body: Vec<u8>,
+    pub headers: BTreeMap<String, String>,
+    pub status: u16,
+    pub final_url: String,
+    pub set_cookie: Vec<String>,
+    pub redirects: u32,
+    pub events: Vec<NetworkEvent>,
+}
+
+impl ByteResponse {
+    /// Case-insensitive header lookup.
+    pub fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .get(&name.to_ascii_lowercase())
+            .map(|s| s.as_str())
+    }
+
+    /// Parsed `Content-Type` media type (before `;`).
+    pub fn content_type(&self) -> Option<&str> {
+        self.header("content-type")
+            .map(|v| v.split(';').next().unwrap_or("").trim())
+    }
+}
+
+/// The decoded result of a `get_text` fetch (the navigation data-flow entry
+/// in docs/ARCHITECTURE.md).
 #[derive(Debug, Clone)]
 pub struct TextResponse {
     /// Final response body (UTF-8 lossy). Bounded by the client's max body.
@@ -103,6 +131,20 @@ pub struct TextResponse {
     pub redirects: u32,
     /// Stable network lifecycle events for automation/diagnostics.
     pub events: Vec<NetworkEvent>,
+}
+
+impl From<ByteResponse> for TextResponse {
+    fn from(response: ByteResponse) -> Self {
+        Self {
+            body: String::from_utf8_lossy(&response.body).into_owned(),
+            headers: response.headers,
+            status: response.status,
+            final_url: response.final_url,
+            set_cookie: response.set_cookie,
+            redirects: response.redirects,
+            events: response.events,
+        }
+    }
 }
 
 impl TextResponse {

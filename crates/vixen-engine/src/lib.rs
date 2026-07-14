@@ -58,6 +58,7 @@ pub mod page;
 pub mod paint;
 pub mod radial_gradient;
 pub mod range;
+mod raster_image;
 pub mod ratio;
 pub mod resolution;
 pub mod responsive_select;

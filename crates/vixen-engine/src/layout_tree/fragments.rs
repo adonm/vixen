@@ -19,6 +19,7 @@ pub struct LayoutFragment {
 #[derive(Debug, Clone, PartialEq)]
 pub enum LayoutFragmentKind {
     Background { color: Color, boxes: LayoutBoxes },
+    Image,
     Text { color: Color, text: String },
 }
 
@@ -47,6 +48,17 @@ pub fn layout_fragments_from_tree(tree: &LayoutTree) -> Vec<LayoutFragment> {
                     color,
                     boxes: node.boxes,
                 },
+            });
+        }
+
+        if node.tag.as_deref() == Some("img") && node.dom_node_id.is_some() {
+            out.push(LayoutFragment {
+                order: fragment_order(node, 1),
+                node_id: node.id,
+                dom_node_id: node.dom_node_id,
+                rect: node.boxes.content,
+                clip: Some(clip),
+                kind: LayoutFragmentKind::Image,
             });
         }
 

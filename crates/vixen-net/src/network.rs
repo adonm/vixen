@@ -16,7 +16,9 @@ use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use url::Url;
 
 use crate::cookie::CookieJar;
-use crate::fetch_types::{Method, NetworkEvent, RedirectMode, TextRequest, TextResponse};
+use crate::fetch_types::{
+    ByteResponse, Method, NetworkEvent, RedirectMode, TextRequest, TextResponse,
+};
 use crate::url_policy::{UrlPolicyError, validate_http_url};
 
 /// Default upper bound on a response body (8 MiB). Navigation responses are
@@ -155,7 +157,7 @@ impl Network {
         redirect_mode: RedirectMode,
     ) -> Result<TextResponse, NetworkError> {
         validate_http_url(url)?;
-        self.fetch(
+        self.fetch_bytes(
             jar,
             TextRequest {
                 url: url.clone(),
@@ -168,6 +170,7 @@ impl Network {
             |_| {},
         )
         .await
+        .map(TextResponse::from)
     }
 
     /// Fetch `url` as text using explicit redirect handling and caller-provided
@@ -183,7 +186,7 @@ impl Network {
         headers: Vec<(String, String)>,
     ) -> Result<TextResponse, NetworkError> {
         validate_http_url(url)?;
-        self.fetch(
+        self.fetch_bytes(
             jar,
             TextRequest {
                 url: url.clone(),
@@ -196,6 +199,7 @@ impl Network {
             |_| {},
         )
         .await
+        .map(TextResponse::from)
     }
 
     /// Fetch a fully specified bounded-text request, threading `jar` through
@@ -206,7 +210,9 @@ impl Network {
         request: TextRequest,
     ) -> Result<TextResponse, NetworkError> {
         validate_http_url(&request.url)?;
-        self.fetch(jar, request, |_| {}).await
+        self.fetch_bytes(jar, request, |_| {})
+            .await
+            .map(TextResponse::from)
     }
 
     /// Fetch a fully specified bounded-text request and synchronously report
@@ -223,15 +229,65 @@ impl Network {
         F: FnMut(&NetworkEvent),
     {
         validate_http_url(&request.url)?;
-        self.fetch(jar, request, on_progress).await
+        self.fetch_bytes(jar, request, on_progress)
+            .await
+            .map(TextResponse::from)
     }
 
-    async fn fetch<F>(
+    /// Fetch a fully specified request without decoding its bounded body.
+    pub async fn get_bytes_with_cookies_request_with_progress<F>(
         &mut self,
         jar: &mut CookieJar,
         request: TextRequest,
+        on_progress: F,
+    ) -> Result<ByteResponse, NetworkError>
+    where
+        F: FnMut(&NetworkEvent),
+    {
+        validate_http_url(&request.url)?;
+        self.fetch_bytes(jar, request, on_progress).await
+    }
+
+    /// Fetch raw bytes with a caller-specific body cap no wider than the
+    /// profile network cap. The limit is checked against `Content-Length` and
+    /// the received body before the response crosses this boundary.
+    pub async fn get_bytes_with_cookies_request_with_progress_and_limit<F>(
+        &mut self,
+        jar: &mut CookieJar,
+        request: TextRequest,
+        max_body_bytes: u64,
+        on_progress: F,
+    ) -> Result<ByteResponse, NetworkError>
+    where
+        F: FnMut(&NetworkEvent),
+    {
+        validate_http_url(&request.url)?;
+        let limit = self.config.max_body_bytes.min(max_body_bytes);
+        self.fetch_bytes_with_limit(jar, request, limit, on_progress)
+            .await
+    }
+
+    async fn fetch_bytes<F>(
+        &mut self,
+        jar: &mut CookieJar,
+        request: TextRequest,
+        on_progress: F,
+    ) -> Result<ByteResponse, NetworkError>
+    where
+        F: FnMut(&NetworkEvent),
+    {
+        let limit = self.config.max_body_bytes;
+        self.fetch_bytes_with_limit(jar, request, limit, on_progress)
+            .await
+    }
+
+    async fn fetch_bytes_with_limit<F>(
+        &mut self,
+        jar: &mut CookieJar,
+        request: TextRequest,
+        limit: u64,
         mut on_progress: F,
-    ) -> Result<TextResponse, NetworkError>
+    ) -> Result<ByteResponse, NetworkError>
     where
         F: FnMut(&NetworkEvent),
     {
@@ -244,7 +300,6 @@ impl Network {
             body,
         } = request;
         let max = self.config.max_redirects;
-        let limit = self.config.max_body_bytes;
         let mut current = start;
         let mut redirects = 0u32;
         let mut visited: HashSet<String> = HashSet::new();
@@ -305,8 +360,8 @@ impl Network {
                     },
                     &mut on_progress,
                 );
-                return Ok(TextResponse {
-                    body: String::new(),
+                return Ok(ByteResponse {
+                    body: Vec::new(),
                     headers: flatten_headers(resp.headers()),
                     status,
                     final_url: current.to_string(),
@@ -392,16 +447,8 @@ impl Network {
                 });
             }
 
-            // TODO(Phase 7): route through vixen_engine::text_codec::TextDecoder
-            // (or a future `decode(headers, bytes)` helper) once the charset
-            // pipeline is wired. Today `text_codec` only supports UTF-8 (no
-            // legacy-encoding codecs), and this lossy decode ignores the
-            // Content-Type `charset` parameter entirely, so non-UTF-8 response
-            // bodies are silently mangled to U+FFFD.
-            let body = String::from_utf8_lossy(&bytes).into_owned();
-
-            return Ok(TextResponse {
-                body,
+            return Ok(ByteResponse {
+                body: bytes.to_vec(),
                 headers,
                 status,
                 final_url: current.to_string(),

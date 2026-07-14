@@ -96,7 +96,9 @@ pub use cors::{
     CorsCredentialsMode, CorsError, CorsResponseHeaders, cors_check, cors_filtered_headers,
 };
 pub use csp::{ContentSecurityPolicy, CspPolicy, HashAlg, HostSource, Source};
-pub use fetch_types::{Method, NetworkEvent, RedirectMode, TextRequest, TextResponse};
+pub use fetch_types::{
+    ByteResponse, Method, NetworkEvent, RedirectMode, TextRequest, TextResponse,
+};
 pub use integrity::{
     HashAlgorithm, IntegrityOutcome, IntensityItem, parse_integrity, verify as verify_integrity,
 };

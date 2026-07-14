@@ -147,6 +147,16 @@ Web Storage mutation, focused `fetch()` success/blocking checks, sequential
 global/storage persistence across `Runtime.evaluate`, focused `document`/`Element`
 snapshot host-object evals, and read-only `DOMTokenList`/`DOMStringMap` property
 reads are also exercised directly through the persistent `deno_core` runtime seam.
+
+Static parser-discovered PNG `<img src>` now has one real resource-to-pixel
+vertical. BrowserCore applies exact document/runtime/navigation generations,
+URL/CSP/mixed-content/redirect policy, cookies/cache, successful `image/png`
+response policy, and explicit compressed/dimension/decoded limits before the
+decoded RGBA8 enters Page layout and the one display list. A 2×2 four-colour
+fixture proves the exact source pixels in a BrowserCore paint snapshot, a
+headless EGL PNG, and the Flutter FFI RGBA frame path. This does not yet claim
+dynamic image loading, `srcset`/`picture` selection, animated PNG, JPEG/WebP/GIF,
+SVG image documents, broad intrinsic replaced-element sizing, or image events.
 Runtime platform smoke now additionally covers secure `crypto.getRandomValues()` /
 `randomUUID()`, async Clipboard text and `ClipboardItem` shape, `MessageEvent`,
 `MessageChannel`, `BroadcastChannel`, first-callback `IntersectionObserver` /

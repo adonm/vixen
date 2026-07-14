@@ -28,8 +28,8 @@ use vixen_api::{
     TextInputState, browser_error_codes,
 };
 use vixen_net::{
-    CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent, RedirectMode,
-    TextRequest, TextResponse,
+    ByteResponse, CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent,
+    RedirectMode, TextRequest,
 };
 use vixen_store::{CacheEntry, ClearDataSelection, SessionRecord, Store};
 
@@ -37,10 +37,13 @@ use crate::data_url::parse_data_url;
 use crate::display_list::PaintCommand;
 use crate::history::{HistoryEntry, ScrollRestoration, SessionHistory};
 use crate::page::{Page, PageParser};
+use crate::raster_image::{
+    ExternalPageImage, MAX_RASTER_IMAGE_BODY_BYTES, PageImageRunner, PreparedPageImage, decode_png,
+};
 use crate::script::{
     ExternalPageScript, JsConsoleValue, JsNavigationAction, JsNetworkEvent, JsRuntime, JsValue,
     PageScriptRunner, PreparedPageScript, RuntimeInterruptHandle, merge_profile_cookies,
-    persist_profile_cookies, script_response_allowed,
+    persist_profile_cookies,
 };
 use crate::stylesheet::{ExternalPageStylesheet, PageStylesheetRunner, PreparedPageStylesheet};
 
@@ -341,6 +344,7 @@ enum CoreMessage {
     SourceLoaded(SourceLoadCompletion),
     ExternalScriptLoaded(ExternalScriptLoadCompletion),
     ExternalStylesheetLoaded(ExternalStylesheetLoadCompletion),
+    ExternalImageLoaded(ExternalImageLoadCompletion),
     Shutdown,
 }
 
@@ -379,6 +383,9 @@ fn handle_core_message(core: &mut BrowserCore, message: CoreMessage) -> bool {
         }
         CoreMessage::ExternalStylesheetLoaded(completion) => {
             core.complete_external_stylesheet(completion);
+        }
+        CoreMessage::ExternalImageLoaded(completion) => {
+            core.complete_external_image(completion);
         }
         CoreMessage::Shutdown => {
             core.shutdown();
@@ -592,6 +599,7 @@ struct ActiveNavigation {
     load_task: Option<tokio::task::AbortHandle>,
     pending_script: Option<PendingExternalScript>,
     pending_stylesheet: Option<PendingExternalStylesheet>,
+    pending_image: Option<PendingExternalImage>,
 }
 
 enum PreparedNavigationAction {
@@ -613,6 +621,7 @@ enum PreparedNavigationAction {
 enum NavigationWork {
     Parsing(Box<PageParser>),
     Stylesheets(NavigationStylesheetWork),
+    Images(NavigationImageWork),
     Scripts(NavigationScriptWork),
     Lifecycle {
         stage: LifecycleStage,
@@ -622,6 +631,11 @@ enum NavigationWork {
 
 struct NavigationStylesheetWork {
     runner: PageStylesheetRunner,
+    scripts: NavigationScriptWork,
+}
+
+struct NavigationImageWork {
+    runner: PageImageRunner,
     scripts: NavigationScriptWork,
 }
 
@@ -651,6 +665,12 @@ struct PendingExternalStylesheet {
     work: NavigationStylesheetWork,
 }
 
+struct PendingExternalImage {
+    key: ExternalImageLoadKey,
+    request: ExternalPageImage,
+    work: NavigationImageWork,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ExternalScriptLoadKey {
     context_id: BrowsingContextId,
@@ -668,6 +688,16 @@ struct ExternalStylesheetLoadKey {
     runtime_context_id: RuntimeContextId,
     request_id: RequestId,
     stylesheet_index: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ExternalImageLoadKey {
+    context_id: BrowsingContextId,
+    navigation_id: NavigationId,
+    document_id: DocumentId,
+    runtime_context_id: RuntimeContextId,
+    request_id: RequestId,
+    node_id: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -798,13 +828,19 @@ struct ExternalStylesheetLoadCompletion {
     cookie_delta: CookieJarDelta,
 }
 
+struct ExternalImageLoadCompletion {
+    key: ExternalImageLoadKey,
+    result: Result<LoadedExternalResource, ExternalResourceLoadFailure>,
+    cookie_delta: CookieJarDelta,
+}
+
 enum LoadedExternalResource {
     File {
         final_url: url::Url,
-        source: String,
+        body: Vec<u8>,
     },
     Http {
-        response: TextResponse,
+        response: ByteResponse,
         requested_urls: Vec<url::Url>,
     },
 }
@@ -816,14 +852,14 @@ struct ExternalResourceLoadFailure {
     blocked_reason: &'static str,
 }
 
-trait ExternalTextResource: Clone + Send + 'static {
+trait ExternalResourceRequest: Clone + Send + 'static {
     fn url(&self) -> &url::Url;
     fn blocked_reason(&self, url: &url::Url) -> Option<&'static str>;
     fn is_cross_site(&self, url: &url::Url) -> bool;
     fn kind(&self) -> &'static str;
 }
 
-impl ExternalTextResource for ExternalPageScript {
+impl ExternalResourceRequest for ExternalPageScript {
     fn url(&self) -> &url::Url {
         self.url()
     }
@@ -841,7 +877,7 @@ impl ExternalTextResource for ExternalPageScript {
     }
 }
 
-impl ExternalTextResource for ExternalPageStylesheet {
+impl ExternalResourceRequest for ExternalPageStylesheet {
     fn url(&self) -> &url::Url {
         self.url()
     }
@@ -856,6 +892,24 @@ impl ExternalTextResource for ExternalPageStylesheet {
 
     fn kind(&self) -> &'static str {
         "stylesheet"
+    }
+}
+
+impl ExternalResourceRequest for ExternalPageImage {
+    fn url(&self) -> &url::Url {
+        self.url()
+    }
+
+    fn blocked_reason(&self, url: &url::Url) -> Option<&'static str> {
+        self.blocked_reason(url)
+    }
+
+    fn is_cross_site(&self, url: &url::Url) -> bool {
+        self.is_cross_site(url)
+    }
+
+    fn kind(&self) -> &'static str {
+        "image"
     }
 }
 
@@ -1637,6 +1691,7 @@ impl BrowserCore {
             load_task: None,
             pending_script: None,
             pending_stylesheet: None,
+            pending_image: None,
         });
         self.control.set_navigation(context_id, navigation_id);
         self.emit(BrowserEvent::NavigationRequested {
@@ -1807,6 +1862,9 @@ impl BrowserCore {
             },
             NavigationWork::Stylesheets(stylesheets) => {
                 self.advance_stylesheet_work(context_id, navigation_id, stylesheets)
+            }
+            NavigationWork::Images(images) => {
+                self.advance_image_work(context_id, navigation_id, images)
             }
             NavigationWork::Scripts(scripts) => {
                 self.advance_script_work(context_id, navigation_id, scripts)
@@ -2101,7 +2159,15 @@ impl BrowserCore {
             self.restore_navigation_work(
                 context_id,
                 navigation_id,
-                NavigationWork::Scripts(work.scripts),
+                NavigationWork::Images(NavigationImageWork {
+                    runner: PageImageRunner::new(
+                        &self
+                            .context(context_id)
+                            .expect("external stylesheet context was checked")
+                            .page,
+                    ),
+                    scripts: work.scripts,
+                }),
             );
             return;
         };
@@ -2292,9 +2358,14 @@ impl BrowserCore {
             ..RuntimeEffects::default()
         };
         let (source, blocked, requested_urls, cache_response) = match result {
-            Ok(LoadedExternalResource::File { final_url, source }) => {
+            Ok(LoadedExternalResource::File { final_url, body }) => {
                 if pending.request.allows_url(&final_url) {
-                    (Some(source), None, Vec::new(), None)
+                    (
+                        Some(String::from_utf8_lossy(&body).into_owned()),
+                        None,
+                        Vec::new(),
+                        None,
+                    )
                 } else {
                     (None, Some((final_url.to_string(), "csp")), Vec::new(), None)
                 }
@@ -2323,7 +2394,7 @@ impl BrowserCore {
                     )
                 } else {
                     (
-                        Some(response.body.clone()),
+                        Some(String::from_utf8_lossy(&response.body).into_owned()),
                         None,
                         requested_urls,
                         Some(response),
@@ -2401,6 +2472,325 @@ impl BrowserCore {
             key.context_id,
             key.navigation_id,
             NavigationWork::Stylesheets(pending.work),
+        );
+    }
+
+    fn advance_image_work(
+        &mut self,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+        mut work: NavigationImageWork,
+    ) {
+        let Ok(context) = self.context(context_id) else {
+            return;
+        };
+        let Some(active) = context.active_navigation.as_ref() else {
+            return;
+        };
+        if active.navigation_id != navigation_id {
+            return;
+        }
+        let document_id = context.document_id;
+        let runtime_context_id = context.runtime_context_id;
+        let runtime_slot = context.runtime_slot;
+        let frame_id = context.frame_id;
+        let document_url = context.page.url().to_owned();
+
+        let Some(step) = work.runner.prepare_next(&context.page) else {
+            self.restore_navigation_work(
+                context_id,
+                navigation_id,
+                NavigationWork::Scripts(work.scripts),
+            );
+            return;
+        };
+        let PreparedPageImage::External(request) = step else {
+            self.restore_navigation_work(context_id, navigation_id, NavigationWork::Images(work));
+            return;
+        };
+
+        let mut baseline = self.cookies.snapshots();
+        match self.runtime_slots[runtime_slot]
+            .runtime
+            .network_cookie_snapshots()
+        {
+            Ok(snapshots) => baseline.extend(snapshots),
+            Err(error) => {
+                self.emit(BrowserEvent::RuntimeEffects {
+                    context_id,
+                    frame_id,
+                    document_id,
+                    runtime_context_id,
+                    url: document_url,
+                    effects: RuntimeEffects {
+                        exceptions: vec![RuntimeExceptionEvent {
+                            error: script_error(error),
+                        }],
+                        ..RuntimeEffects::default()
+                    },
+                });
+                self.restore_navigation_work(
+                    context_id,
+                    navigation_id,
+                    NavigationWork::Images(work),
+                );
+                return;
+            }
+        }
+        let request_id = match self.ids.request() {
+            Ok(request_id) => request_id,
+            Err(error) => {
+                self.emit(BrowserEvent::RuntimeEffects {
+                    context_id,
+                    frame_id,
+                    document_id,
+                    runtime_context_id,
+                    url: document_url,
+                    effects: RuntimeEffects {
+                        exceptions: vec![RuntimeExceptionEvent { error }],
+                        ..RuntimeEffects::default()
+                    },
+                });
+                self.restore_navigation_work(
+                    context_id,
+                    navigation_id,
+                    NavigationWork::Images(work),
+                );
+                return;
+            }
+        };
+        self.start_external_image_load(
+            ExternalImageLoadKey {
+                context_id,
+                navigation_id,
+                document_id,
+                runtime_context_id,
+                request_id,
+                node_id: request.node_id(),
+            },
+            request,
+            work,
+            baseline,
+        );
+    }
+
+    fn start_external_image_load(
+        &mut self,
+        key: ExternalImageLoadKey,
+        request: ExternalPageImage,
+        work: NavigationImageWork,
+        baseline: Vec<vixen_net::CookieSnapshot>,
+    ) {
+        let mut worker_jar = CookieJar::from_snapshots(baseline.clone());
+        let mut network = self.network.clone();
+        let max_body_bytes = self
+            .network_config
+            .max_body_bytes
+            .min(MAX_RASTER_IMAGE_BODY_BYTES);
+        let max_redirects = self.network_config.max_redirects;
+        let worker_request = request.clone();
+        let store = Arc::clone(&self.store);
+        let command_tx = self.command_tx.clone();
+        let (cancel, cancel_rx) = tokio::sync::oneshot::channel();
+
+        {
+            let active = self
+                .context_mut(key.context_id)
+                .expect("external image context was checked")
+                .active_navigation
+                .as_mut()
+                .expect("external image navigation was checked");
+            active.cancel = Some(cancel);
+            active.pending_image = Some(PendingExternalImage { key, request, work });
+        }
+
+        let task = self
+            .network_runtime
+            .as_ref()
+            .expect("source runtime is available")
+            .spawn(async move {
+                let mut profile_baseline = baseline.clone();
+                let result = tokio::select! {
+                    _ = cancel_rx => return,
+                    result = load_external_resource(
+                        &mut network,
+                        &mut worker_jar,
+                        ExternalResourceLoadInput {
+                            store: &store,
+                            profile_baseline: &mut profile_baseline,
+                            request: worker_request,
+                            max_body_bytes,
+                            max_redirects,
+                        },
+                    ) => result,
+                };
+                let cookie_delta = worker_jar.delta_from_snapshots(&profile_baseline);
+                let _ = command_tx.send(CoreMessage::ExternalImageLoaded(
+                    ExternalImageLoadCompletion {
+                        key,
+                        result,
+                        cookie_delta,
+                    },
+                ));
+            });
+        self.context_mut(key.context_id)
+            .expect("external image context was checked")
+            .active_navigation
+            .as_mut()
+            .expect("external image navigation was checked")
+            .load_task = Some(task.abort_handle());
+    }
+
+    fn complete_external_image(&mut self, completion: ExternalImageLoadCompletion) {
+        let ExternalImageLoadCompletion {
+            key,
+            result,
+            cookie_delta,
+        } = completion;
+        let Some(context) = self.contexts.get(&key.context_id) else {
+            return;
+        };
+        if context.document_id != key.document_id
+            || context.runtime_context_id != key.runtime_context_id
+        {
+            return;
+        }
+        let runtime_slot = context.runtime_slot;
+        let frame_id = context.frame_id;
+        let document_url = context.page.url().to_owned();
+        let Some(active) = context.active_navigation.as_ref() else {
+            return;
+        };
+        if active.navigation_id != key.navigation_id
+            || active
+                .pending_image
+                .as_ref()
+                .is_none_or(|pending| pending.key != key)
+        {
+            return;
+        }
+
+        let pending = {
+            let active = self
+                .context_mut(key.context_id)
+                .expect("external image context was checked")
+                .active_navigation
+                .as_mut()
+                .expect("external image navigation was checked");
+            active.cancel.take();
+            active.load_task.take();
+            active
+                .pending_image
+                .take()
+                .expect("external image request was checked")
+        };
+        let request_url = pending.request.url().to_string();
+        let mut effects = RuntimeEffects {
+            network: external_resource_network_events(key.request_id, &request_url, &result),
+            ..RuntimeEffects::default()
+        };
+        let (body, blocked, requested_urls, cache_response) = match result {
+            Ok(LoadedExternalResource::File { final_url, body }) => {
+                if pending.request.allows_url(&final_url) {
+                    (Some(body), None, Vec::new(), None)
+                } else {
+                    (None, Some((final_url.to_string(), "csp")), Vec::new(), None)
+                }
+            }
+            Ok(LoadedExternalResource::Http {
+                response,
+                requested_urls,
+            }) => {
+                let final_url = url::Url::parse(&response.final_url).ok();
+                if final_url
+                    .as_ref()
+                    .is_none_or(|final_url| !pending.request.allows_url(final_url))
+                {
+                    (
+                        None,
+                        Some((response.final_url, "csp")),
+                        requested_urls,
+                        None,
+                    )
+                } else if !image_response_allowed(&response) {
+                    (
+                        None,
+                        Some((response.final_url, "response-policy")),
+                        requested_urls,
+                        None,
+                    )
+                } else {
+                    (
+                        Some(response.body.clone()),
+                        None,
+                        requested_urls,
+                        Some(response),
+                    )
+                }
+            }
+            Err(_) => (None, None, Vec::new(), None),
+        };
+        if let Some((url, blocked_reason)) = blocked {
+            effects.network.push(RuntimeNetworkEvent::Failure {
+                request_id: key.request_id.to_string(),
+                url,
+                error_text: "external image blocked".to_owned(),
+                blocked_reason: Some(blocked_reason.to_owned()),
+            });
+        }
+
+        let image = body.and_then(|body| match decode_png(&body) {
+            Ok(image) => Some(image),
+            Err(error_text) => {
+                effects.network.push(RuntimeNetworkEvent::Failure {
+                    request_id: key.request_id.to_string(),
+                    url: request_url.clone(),
+                    error_text,
+                    blocked_reason: Some("decode".to_owned()),
+                });
+                None
+            }
+        });
+
+        if let Some(image) = image {
+            let commit_result =
+                persist_profile_cookies(&self.store, &requested_urls, &cookie_delta)
+                    .map_err(script_error)
+                    .and_then(|()| {
+                        cache_response.as_ref().map_or(Ok(()), |response| {
+                            persist_external_resource_cache(&self.store, response)
+                        })
+                    })
+                    .and_then(|()| {
+                        self.runtime_slots[runtime_slot]
+                            .runtime
+                            .apply_network_cookie_delta(cookie_delta.clone())
+                            .map_err(script_error)
+                    });
+            if let Err(error) = commit_result {
+                effects.exceptions.push(RuntimeExceptionEvent { error });
+            } else {
+                self.cookies.apply_delta(cookie_delta);
+                self.context_mut(key.context_id)
+                    .expect("external image context was checked")
+                    .page
+                    .apply_raster_image(key.node_id, image);
+            }
+        }
+        if !effects.is_empty() {
+            self.emit(BrowserEvent::RuntimeEffects {
+                context_id: key.context_id,
+                frame_id,
+                document_id: key.document_id,
+                runtime_context_id: key.runtime_context_id,
+                url: document_url,
+                effects,
+            });
+        }
+        self.restore_navigation_work(
+            key.context_id,
+            key.navigation_id,
+            NavigationWork::Images(pending.work),
         );
     }
 
@@ -2713,9 +3103,14 @@ impl BrowserCore {
             ..RuntimeEffects::default()
         };
         let (source, blocked, requested_urls, cache_response) = match result {
-            Ok(LoadedExternalResource::File { final_url, source }) => {
+            Ok(LoadedExternalResource::File { final_url, body }) => {
                 if pending.request.allows_url(&final_url) {
-                    (Some(source), None, Vec::new(), None)
+                    (
+                        Some(String::from_utf8_lossy(&body).into_owned()),
+                        None,
+                        Vec::new(),
+                        None,
+                    )
                 } else {
                     (None, Some((final_url.to_string(), "csp")), Vec::new(), None)
                 }
@@ -2735,7 +3130,7 @@ impl BrowserCore {
                         requested_urls,
                         None,
                     )
-                } else if !script_response_allowed(&response) {
+                } else if !script_response_allowed_bytes(&response) {
                     (
                         None,
                         Some((response.final_url, "response-policy")),
@@ -2744,7 +3139,7 @@ impl BrowserCore {
                     )
                 } else {
                     (
-                        Some(response.body.clone()),
+                        Some(String::from_utf8_lossy(&response.body).into_owned()),
                         None,
                         requested_urls,
                         Some(response),
@@ -3915,6 +4310,15 @@ impl BrowserCore {
                         )
                     })
                 })
+                .or_else(|| {
+                    active.pending_image.as_ref().map(|pending| {
+                        (
+                            pending.key.request_id,
+                            pending.request.url().to_string(),
+                            "image",
+                        )
+                    })
+                })
                 .map(|(request_id, url, kind)| {
                     let request_id = request_id.to_string();
                     vec![
@@ -4294,7 +4698,7 @@ struct ExternalResourceLoadInput<'a, R> {
     max_redirects: usize,
 }
 
-async fn load_external_resource<R: ExternalTextResource>(
+async fn load_external_resource<R: ExternalResourceRequest>(
     network: &mut Network,
     cookies: &mut CookieJar,
     input: ExternalResourceLoadInput<'_, R>,
@@ -4366,7 +4770,7 @@ async fn load_external_resource<R: ExternalTextResource>(
                 })?;
             Ok(LoadedExternalResource::File {
                 final_url: url,
-                source: String::from_utf8_lossy(&bytes).into_owned(),
+                body: bytes,
             })
         }
         "http" | "https" => {
@@ -4401,7 +4805,7 @@ async fn load_external_resource<R: ExternalTextResource>(
                 requested_urls.push(current.clone());
                 let mut hop_events = Vec::new();
                 let response = network
-                    .get_text_with_cookies_request_with_progress(
+                    .get_bytes_with_cookies_request_with_progress_and_limit(
                         cookies,
                         TextRequest {
                             url: current.clone(),
@@ -4411,6 +4815,7 @@ async fn load_external_resource<R: ExternalTextResource>(
                             headers: Vec::new(),
                             body: None,
                         },
+                        max_body_bytes,
                         |event| hop_events.push(event.clone()),
                     )
                     .await;
@@ -4706,7 +5111,7 @@ fn scale_paint_commands(commands: &mut [PaintCommand], scale: f32) {
     for command in commands {
         let rect = match command {
             PaintCommand::Background { fill, .. } => fill,
-            PaintCommand::Text { rect, .. } => rect,
+            PaintCommand::Text { rect, .. } | PaintCommand::Image { rect, .. } => rect,
         };
         rect.x *= scale;
         rect.y *= scale;
@@ -4861,7 +5266,7 @@ fn external_resource_network_events(
     }
 }
 
-fn stylesheet_response_allowed(response: &TextResponse) -> bool {
+fn stylesheet_response_allowed(response: &ByteResponse) -> bool {
     if !(200..300).contains(&response.status) {
         return false;
     }
@@ -4875,9 +5280,30 @@ fn stylesheet_response_allowed(response: &TextResponse) -> bool {
     )
 }
 
+fn script_response_allowed_bytes(response: &ByteResponse) -> bool {
+    if !(200..300).contains(&response.status) {
+        return false;
+    }
+    let nosniff = response
+        .header("x-content-type-options")
+        .is_some_and(vixen_net::is_nosniff);
+    let mime_essence = response.content_type().unwrap_or("text/plain");
+    matches!(
+        vixen_net::enforce_nosniff(nosniff, mime_essence, vixen_net::Destination::Script,),
+        vixen_net::NosniffOutcome::Allow
+    )
+}
+
+fn image_response_allowed(response: &ByteResponse) -> bool {
+    (200..300).contains(&response.status)
+        && response
+            .content_type()
+            .is_some_and(|mime| mime.eq_ignore_ascii_case("image/png"))
+}
+
 fn persist_external_resource_cache(
     store: &Store,
-    response: &TextResponse,
+    response: &ByteResponse,
 ) -> Result<(), BrowserError> {
     let final_url = url::Url::parse(&response.final_url).map_err(|error| {
         BrowserError::new(
@@ -4901,7 +5327,7 @@ fn persist_external_resource_cache(
                     .iter()
                     .map(|(name, value)| (name.clone(), value.clone()))
                     .collect(),
-                body: response.body.as_bytes().to_vec(),
+                body: response.body.clone(),
                 fetched_unix,
             },
         )
@@ -5465,7 +5891,11 @@ mod tests {
                 .and_then(|active| active.work.as_ref());
             match work {
                 Some(NavigationWork::Scripts(_)) => return,
-                Some(NavigationWork::Parsing(_) | NavigationWork::Stylesheets(_)) => {
+                Some(
+                    NavigationWork::Parsing(_)
+                    | NavigationWork::Stylesheets(_)
+                    | NavigationWork::Images(_),
+                ) => {
                     assert!(core.advance_navigation_work())
                 }
                 _ => panic!("navigation did not reach script work"),
@@ -5740,8 +6170,8 @@ mod tests {
 
     fn loaded_script_response(final_url: &str, source: &str) -> LoadedExternalResource {
         LoadedExternalResource::Http {
-            response: TextResponse {
-                body: source.to_owned(),
+            response: ByteResponse {
+                body: source.as_bytes().to_vec(),
                 headers: BTreeMap::from([(
                     "content-type".to_owned(),
                     "text/javascript".to_owned(),
@@ -8577,6 +9007,39 @@ mod tests {
                 if fill.w == 120.0 && fill.h == 40.0
                     && color.r == 255 && color.g == 0 && color.b == 0
         )));
+    }
+
+    #[test]
+    fn raster_image_fixture_reaches_the_shared_paint_snapshot_with_exact_pixels() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/images/raster-image.html")
+            .canonicalize()
+            .unwrap();
+        let url = url::Url::from_file_path(fixture).unwrap().to_string();
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, &url);
+        let settled = state(&mut handle, context_id);
+        let paint = handle
+            .capture_paint_snapshot(context_id, settled.document_id, (320, 200))
+            .unwrap();
+        let (rect, image) = paint
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                PaintCommand::Image { rect, image } => Some((rect, image)),
+                _ => None,
+            })
+            .expect("decoded fixture image command");
+
+        assert_eq!((rect.x, rect.y, rect.w, rect.h), (0.0, 0.0, 40.0, 40.0));
+        assert_eq!((image.width, image.height), (2, 2));
+        assert_eq!(
+            image.rgba.as_slice(),
+            [
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
+            ]
+        );
     }
 
     #[test]

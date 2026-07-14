@@ -39,6 +39,8 @@
 
 #![forbid(unsafe_code)]
 
+use std::sync::Arc;
+
 // ---------------------------------------------------------------------------
 // Geometry
 // ---------------------------------------------------------------------------
@@ -155,6 +157,7 @@ pub struct DrawItem {
     pub background_origin: BackgroundBox,
     pub background_attachment: BackgroundAttachment,
     pub background: Option<Color>,
+    pub image: Option<RasterImage>,
     pub text: Option<TextRun>,
 }
 
@@ -172,6 +175,15 @@ impl DrawItem {
 pub struct TextRun {
     pub color: Color,
     pub text: String,
+}
+
+/// One decoded, immutable RGBA8 raster shared by paint snapshots and renderer
+/// resource uploads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RasterImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<Vec<u8>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -197,6 +209,8 @@ pub enum PaintCommand {
         color: Color,
         text: String,
     },
+    /// Decoded image pixels painted into the replaced element's content box.
+    Image { rect: Rect, image: RasterImage },
 }
 
 /// Cheap aggregate over the command stream for `vixen-headless --paint-stats`.
@@ -205,8 +219,10 @@ pub struct PaintStats {
     pub commands: usize,
     pub backgrounds: usize,
     pub text_runs: usize,
+    pub images: usize,
     pub background_area_px: f32,
     pub text_area_px: f32,
+    pub image_area_px: f32,
 }
 
 impl PaintStats {
@@ -215,8 +231,10 @@ impl PaintStats {
             commands: commands.len(),
             backgrounds: 0,
             text_runs: 0,
+            images: 0,
             background_area_px: 0.0,
             text_area_px: 0.0,
+            image_area_px: 0.0,
         };
         for command in commands {
             match command {
@@ -228,13 +246,17 @@ impl PaintStats {
                     stats.text_runs += 1;
                     stats.text_area_px += rect_area(*rect);
                 }
+                PaintCommand::Image { rect, .. } => {
+                    stats.images += 1;
+                    stats.image_area_px += rect_area(*rect);
+                }
             }
         }
         stats
     }
 
     pub fn total_area_px(self) -> f32 {
-        self.background_area_px + self.text_area_px
+        self.background_area_px + self.text_area_px + self.image_area_px
     }
 }
 
@@ -383,6 +405,15 @@ impl DisplayListBuilder {
                 }
             }
 
+            if let Some(image) = item.image.as_ref()
+                && let Some(rect) = content_paint_rect(&item)
+            {
+                out.push(PaintCommand::Image {
+                    rect,
+                    image: image.clone(),
+                });
+            }
+
             if let Some(text) = item.text.as_ref()
                 && !text.text.is_empty()
                 && let Some(rect) = content_paint_rect(&item)
@@ -432,6 +463,16 @@ pub fn dump_paint_commands(commands: &[PaintCommand], viewport: (u32, u32)) -> S
                 format_color(*color),
                 escape_dump_text(text),
             )),
+            PaintCommand::Image { rect, image } => out.push_str(&format!(
+                "cmd {idx}: image x={:.1} y={:.1} w={:.1} h={:.1} source={}x{} rgba-bytes={}\n",
+                rect.x,
+                rect.y,
+                rect.w,
+                rect.h,
+                image.width,
+                image.height,
+                image.rgba.len(),
+            )),
         }
     }
     out
@@ -441,14 +482,16 @@ pub fn dump_paint_commands(commands: &[PaintCommand], viewport: (u32, u32)) -> S
 pub fn dump_paint_stats(commands: &[PaintCommand], viewport: (u32, u32)) -> String {
     let stats = PaintStats::from_commands(commands);
     format!(
-        "# paint-stats viewport={}x{} commands={} backgrounds={} text-runs={} background-area={:.1} text-area={:.1} total-area={:.1}\n",
+        "# paint-stats viewport={}x{} commands={} backgrounds={} text-runs={} images={} background-area={:.1} text-area={:.1} image-area={:.1} total-area={:.1}\n",
         viewport.0,
         viewport.1,
         stats.commands,
         stats.backgrounds,
         stats.text_runs,
+        stats.images,
         stats.background_area_px,
         stats.text_area_px,
+        stats.image_area_px,
         stats.total_area_px(),
     )
 }
@@ -499,6 +542,7 @@ mod tests {
             background_origin: BackgroundBox::PaddingBox,
             background_attachment: BackgroundAttachment::Scroll,
             background: Some(color),
+            image: None,
             text: None,
         }
     }
@@ -550,7 +594,9 @@ mod tests {
             .iter()
             .map(|c| match c {
                 PaintCommand::Background { color, .. } => color.r,
-                PaintCommand::Text { .. } => unreachable!("test only emits backgrounds"),
+                PaintCommand::Text { .. } | PaintCommand::Image { .. } => {
+                    unreachable!("test only emits backgrounds")
+                }
             })
             .collect();
         // Expected: negative(20,40) then zero(30,50) then positive(10).

@@ -18,6 +18,7 @@ use std::io::Read;
 
 use crate::doc::DocumentScriptItem;
 use crate::engine_error::{EngineError, codes};
+#[cfg(test)]
 use crate::mime::MimeType;
 use crate::page::{ElementScrollRequest, Page};
 use crate::storage_key::{StorageKind, StoragePartition};
@@ -1464,6 +1465,7 @@ fn fetch_http_script(
     })?
 }
 
+#[cfg(test)]
 pub(crate) fn script_response_allowed(response: &vixen_net::TextResponse) -> bool {
     if !(200..300).contains(&response.status) {
         return false;

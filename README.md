@@ -153,7 +153,13 @@ and reference material, plus:
   display-list invariants) now has its first vertical surface:
   `Page::display_list` turns layout fragments into invariant-enforced paint
   commands and `vixen-headless --dump-display-list` dumps them; `--paint-stats`
-  reports command counts and painted area from the same stream. The paint-geometry
+  reports command counts and painted area from the same stream. Parser-discovered
+  PNG `<img>` resources now reuse BrowserCore's cancellable redirect/cookie/cache/
+  policy path, enforce 8 MiB body, 2048-pixel-axis, 16 MiB decoded-RGBA, static-
+  image, status, and `image/png` limits, and enter that same display list as
+  WebRender image resources. The checked-in four-colour fixture has exact-pixel
+  headless and Flutter-frame capture proof. Dynamic/responsive images, animated
+  PNG, other formats, and complete replaced-element sizing remain open. The paint-geometry
   family it will consume:
   `vixen-engine::transform` (CSS Transforms 1 § 13 2D affine algebra +
   list parser), `vixen-engine::border_radius` (CSS Backgrounds 3 § 5.5

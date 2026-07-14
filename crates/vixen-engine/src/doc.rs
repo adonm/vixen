@@ -76,6 +76,22 @@ pub enum DocumentStyleItem {
     ExternalStylesheet { index: usize, href: String },
 }
 
+/// A parser-discovered raster image candidate in document order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DocumentImage {
+    /// Stable 1-based element id shared with the layout/style projections.
+    pub node_id: usize,
+    /// Authored `src`; resolution and policy checks happen at the resource boundary.
+    pub src: String,
+}
+
+/// Document-ordered events relevant to parser-discovered image loading.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentImageItem {
+    CspMeta(String),
+    Image(DocumentImage),
+}
+
 impl Document {
     /// Parse an HTML string.
     pub fn parse(html: &str) -> Result<Self, ParseError> {
@@ -229,6 +245,40 @@ impl Document {
                     href,
                 });
                 external_index += 1;
+            }
+        });
+        out
+    }
+
+    /// Parser-discovered `<img src>` elements and preceding CSP meta policies.
+    /// Dynamic images and responsive source selection intentionally remain out
+    /// of this first bounded raster vertical.
+    pub fn image_execution_items(&self) -> Vec<DocumentImageItem> {
+        let mut out = Vec::new();
+        let mut node_id = 0;
+        walk(&self.dom.document, &mut |node| {
+            let NodeData::Element { name, attrs, .. } = &node.data else {
+                return;
+            };
+            node_id += 1;
+            let attrs = attrs.borrow();
+            match name.local.as_ref() {
+                "meta" => {
+                    if let Some(policy) = csp_meta_policy(&attrs) {
+                        out.push(DocumentImageItem::CspMeta(policy));
+                    }
+                }
+                "img" => {
+                    if let Some(src) = attrs
+                        .iter()
+                        .find(|attr| attr.name.local.as_ref() == "src")
+                        .map(|attr| attr.value.to_string())
+                        .filter(|src| !src.trim().is_empty())
+                    {
+                        out.push(DocumentImageItem::Image(DocumentImage { node_id, src }));
+                    }
+                }
+                _ => {}
             }
         });
         out

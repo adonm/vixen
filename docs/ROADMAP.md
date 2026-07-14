@@ -637,11 +637,7 @@ it is not permission to implement the whole subsystem in one batch.
 
 **Shared-core lane**
 
-1. **Decode and paint one bounded raster-image vertical.** Reuse the resource
-   request path, enforce response/body/decode limits before display-list exposure,
-   and prove the same pixels in GUI/headless capture. Responsive selection and
-   broad image formats widen only after this path is real.
-2. **Shape one text/fallback vertical.** Replace deterministic metrics for one
+1. **Shape one text/fallback vertical.** Replace deterministic metrics for one
    common script/fallback case through layout, paint, hit testing, find, and
    Semantics together; add a focused fixture before broad font-platform work.
 

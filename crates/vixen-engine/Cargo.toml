@@ -27,6 +27,7 @@ base64 = "0.22"
 # Secure host randomness for the browser-shaped `crypto.getRandomValues()` /
 # `crypto.randomUUID()` runtime seam.
 getrandom = "0.3"
+png = "0.18.1"
 
 # Phase 5: the single GPU paint path. `gleam` is used only at the GL FFI
 # loading boundary; all draw-command translation goes through WebRender.

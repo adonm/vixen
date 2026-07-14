@@ -24,7 +24,7 @@ use vixen_net::csp::ContentSecurityPolicy;
 
 use crate::display_list::{
     BackgroundAttachment, BackgroundBox, Color, DisplayListBuilder, DrawItem, PaintCommand,
-    PaintStats, Rect, TextRun, dump_paint_commands, dump_paint_stats,
+    PaintStats, RasterImage, Rect, TextRun, dump_paint_commands, dump_paint_stats,
 };
 use crate::doc::{Document, DocumentParser, DocumentStyleItem, ParseError};
 use crate::history::{HistoryElementScroll, HistoryEntry, HistoryScrollState, SessionHistory};
@@ -51,6 +51,7 @@ pub struct Page {
     csp: ContentSecurityPolicy,
     author_stylesheet: AuthorStylesheet,
     external_stylesheets: std::collections::BTreeMap<usize, String>,
+    raster_images: std::collections::BTreeMap<usize, RasterImage>,
     diagnostics: Vec<EngineDiagnostic>,
     focused_element_node_id: Option<usize>,
     accessibility_mutation_epoch: u64,
@@ -158,6 +159,7 @@ impl Page {
             csp,
             author_stylesheet,
             external_stylesheets: std::collections::BTreeMap::new(),
+            raster_images: std::collections::BTreeMap::new(),
             diagnostics: Vec::new(),
             focused_element_node_id: None,
             accessibility_mutation_epoch: 1,
@@ -624,7 +626,7 @@ impl Page {
         let viewport = self.layout_viewport;
         self.scroll_root_by(viewport, (0.0, 0.0));
         let tree = build_layout_tree(&self.document, viewport, |node_id| {
-            self.computed_style_for_viewport(node_id, viewport)
+            self.layout_style_for_viewport(node_id, viewport)
         });
         let mut changed = false;
         self.element_scrolls.retain(|node_id, position| {
@@ -670,7 +672,7 @@ impl Page {
     #[cfg(test)]
     pub(crate) fn element_scroll_metrics(&self, node_id: usize) -> Option<ElementScrollMetrics> {
         let tree = build_layout_tree(&self.document, self.layout_viewport, |node_id| {
-            self.computed_style_for_viewport(node_id, self.layout_viewport)
+            self.layout_style_for_viewport(node_id, self.layout_viewport)
         });
         let limits = element_scroll_limits_in_tree(&tree, node_id)?;
         let current = self
@@ -694,7 +696,7 @@ impl Page {
         &self,
     ) -> std::collections::HashMap<usize, ElementScrollMetrics> {
         let tree = build_layout_tree(&self.document, self.layout_viewport, |node_id| {
-            self.computed_style_for_viewport(node_id, self.layout_viewport)
+            self.layout_style_for_viewport(node_id, self.layout_viewport)
         });
         tree.nodes
             .iter()
@@ -739,7 +741,7 @@ impl Page {
         I: IntoIterator<Item = ElementScrollRequest>,
     {
         let tree = build_layout_tree(&self.document, self.layout_viewport, |node_id| {
-            self.computed_style_for_viewport(node_id, self.layout_viewport)
+            self.layout_style_for_viewport(node_id, self.layout_viewport)
         });
         let mut changed = false;
         for request in requests {
@@ -874,7 +876,7 @@ impl Page {
             return Vec::new();
         }
         let tree = build_layout_tree(&self.document, viewport, |node_id| {
-            self.computed_style_for_viewport(node_id, viewport)
+            self.layout_style_for_viewport(node_id, viewport)
         });
         let mut fixed_subtree = vec![false; tree.nodes.len()];
         for node in &tree.nodes {
@@ -904,7 +906,7 @@ impl Page {
 
     fn root_scroll_limits(&self, viewport: (u32, u32)) -> (f32, f32) {
         let tree = build_layout_tree(&self.document, viewport, |node_id| {
-            self.computed_style_for_viewport(node_id, viewport)
+            self.layout_style_for_viewport(node_id, viewport)
         });
         let mut fixed_subtree = vec![false; tree.nodes.len()];
         let mut right = viewport.0 as f32;
@@ -949,7 +951,7 @@ impl Page {
     /// arena-backed tree with stable layout-node ids.
     pub fn layout_tree(&self, viewport: (u32, u32)) -> LayoutTree {
         let mut tree = build_layout_tree(&self.document, viewport, |node_id| {
-            self.computed_style_for_viewport(node_id, viewport)
+            self.layout_style_for_viewport(node_id, viewport)
         });
         let offsets = self
             .element_scrolls
@@ -1011,7 +1013,16 @@ impl Page {
             }
         }
         for fragment in fragments {
-            builder.push(fragment_draw_item(&fragment));
+            if matches!(fragment.kind, LayoutFragmentKind::Image) {
+                if let Some(image) = fragment
+                    .dom_node_id
+                    .and_then(|node_id| self.raster_images.get(&node_id))
+                {
+                    builder.push(image_draw_item(&fragment, image.clone()));
+                }
+            } else {
+                builder.push(fragment_draw_item(&fragment));
+            }
         }
         builder.build()
     }
@@ -1254,6 +1265,27 @@ impl Page {
             .computed_style_for_viewport(&self.document, node_id, viewport)
     }
 
+    fn layout_style_for_viewport(
+        &self,
+        node_id: usize,
+        viewport: (u32, u32),
+    ) -> Vec<(String, String)> {
+        let mut styles = self.computed_style_for_viewport(node_id, viewport);
+        if let Some(image) = self.raster_images.get(&node_id) {
+            if !styles.iter().any(|(property, _)| property == "width") {
+                styles.push(("width".to_owned(), format!("{}px", image.width)));
+            }
+            if !styles.iter().any(|(property, _)| property == "height") {
+                styles.push(("height".to_owned(), format!("{}px", image.height)));
+            }
+        }
+        styles
+    }
+
+    pub(crate) fn apply_raster_image(&mut self, node_id: usize, image: RasterImage) {
+        self.raster_images.insert(node_id, image);
+    }
+
     /// Diagnostics accumulated by pipeline stages.
     pub fn diagnostics(&self) -> Vec<EngineDiagnostic> {
         self.diagnostics.clone()
@@ -1385,6 +1417,7 @@ fn viewport_background_item(rect: Rect) -> DrawItem {
         background_origin: BackgroundBox::BorderBox,
         background_attachment: BackgroundAttachment::Scroll,
         background: Some(Color::WHITE),
+        image: None,
         text: None,
     }
 }
@@ -1405,6 +1438,7 @@ fn fragment_draw_item(fragment: &LayoutFragment) -> DrawItem {
             background_origin: BackgroundBox::PaddingBox,
             background_attachment: BackgroundAttachment::Scroll,
             background: Some(*color),
+            image: None,
             text: None,
         },
         LayoutFragmentKind::Text { color, text } => DrawItem {
@@ -1421,11 +1455,33 @@ fn fragment_draw_item(fragment: &LayoutFragment) -> DrawItem {
             background_origin: BackgroundBox::ContentBox,
             background_attachment: BackgroundAttachment::Scroll,
             background: None,
+            image: None,
             text: Some(TextRun {
                 color: *color,
                 text: text.clone(),
             }),
         },
+        LayoutFragmentKind::Image => unreachable!("image fragments use image_draw_item"),
+    }
+}
+
+fn image_draw_item(fragment: &LayoutFragment, image: RasterImage) -> DrawItem {
+    DrawItem {
+        order: fragment.order,
+        z_index: 0,
+        visibility: crate::display_list::Visibility::Visible,
+        opacity: 1.0,
+        clip: fragment.clip,
+        is_viewport_background: false,
+        border_box: fragment.rect,
+        padding_box: fragment.rect,
+        content_box: fragment.rect,
+        background_clip: BackgroundBox::ContentBox,
+        background_origin: BackgroundBox::ContentBox,
+        background_attachment: BackgroundAttachment::Scroll,
+        background: None,
+        image: Some(image),
+        text: None,
     }
 }
 
@@ -1448,6 +1504,7 @@ fn find_highlight_draw_item(found: FindHighlight, active: bool) -> DrawItem {
         } else {
             Color::rgb(255, 235, 59)
         }),
+        image: None,
         text: None,
     }
 }
@@ -3193,7 +3250,7 @@ mod tests {
             .iter()
             .filter_map(|fragment| match &fragment.kind {
                 LayoutFragmentKind::Text { text, .. } => Some((text.as_str(), fragment.rect.y)),
-                LayoutFragmentKind::Background { .. } => None,
+                LayoutFragmentKind::Background { .. } | LayoutFragmentKind::Image => None,
             })
             .collect();
         assert_eq!(texts, vec![("alpha", 0.0), ("beta", 19.2), ("gamma", 38.4)]);
