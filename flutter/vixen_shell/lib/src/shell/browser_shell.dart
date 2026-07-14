@@ -646,16 +646,23 @@ final class _StatusBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      key: const Key('status-bar'),
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      color: Theme.of(context).colorScheme.surfaceContainerLow,
-      child: Text(
-        status,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: Theme.of(context).textTheme.labelSmall,
+    return Semantics(
+      key: const Key('browser-status-semantics'),
+      container: true,
+      liveRegion: true,
+      label: 'Browser status|$status',
+      excludeSemantics: true,
+      child: Container(
+        key: const Key('status-bar'),
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+        color: Theme.of(context).colorScheme.surfaceContainerLow,
+        child: Text(
+          status,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          style: Theme.of(context).textTheme.labelSmall,
+        ),
       ),
     );
   }

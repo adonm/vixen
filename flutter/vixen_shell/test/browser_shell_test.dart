@@ -34,6 +34,12 @@ void main() {
     expect(find.byKey(const Key('content-surface')), findsOneWidget);
     expect(find.text('Renderer frame unavailable'), findsOneWidget);
     expect(find.byKey(const Key('status-bar')), findsOneWidget);
+    expect(
+      tester
+          .getSemantics(find.byKey(const Key('browser-status-semantics')))
+          .label,
+      'Browser status|https://example.test',
+    );
 
     await tester.pumpWidget(const SizedBox.shrink());
     coordinator.dispose();

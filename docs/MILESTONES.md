@@ -35,7 +35,7 @@ which layer today?”
 | `just audit` | `cargo audit` plus `cargo deny check` |
 | `just linux-release-smoke` | pinned x86_64 Flutter 3.46.0-0.3.pre beta release/AOT plus Rust bridge/Yaru window-plugin build; stripped runner/plugin ELFs, deterministic archive creation, clean extraction, and Impeller-aware Cage/headless-Wayland launch smoke |
 | `just linux-at-spi-smoke` | real release/AOT Flutter bundle in Cage's headless Wayland compositor with a fresh BrowserCore profile and local fixture; bounded process-filtered AT-SPI traversal must observe the BrowserCore-derived `DOM Basic` heading; Linux native AT evidence, not a screen-reader matrix |
-| `just linux-interaction-smoke` | real release/AOT Flutter bundle in Cage with AT-SPI observation only, wtype virtual-keyboard input through IBus Anthy/GTK preedit+commit for native and contenteditable hosts, and a wlr virtual pointer for nested wheel ownership, cancellation, and root chaining; one controlled Linux interaction proof, not an IME/device matrix |
+| `just linux-interaction-smoke` | real release/AOT Flutter bundle in Cage with AT-SPI observation only; physical address entry visibly navigates to the controlled fixture, native back/forward and reload restore BrowserCore-owned root/nested offsets, a gated FIFO read proves the visible stop control cancels an active navigation and recovers the prior page, wtype drives IBus Anthy/GTK preedit+commit for native/contenteditable hosts, and a wlr virtual pointer proves nested wheel ownership/cancellation/root chaining; one controlled Linux interaction proof, not an IME/device matrix |
 | `just size-headless` | structured logical/allocated size, file count, and SHA-256 for the headless release binary |
 | `just size-flutter-linux` | controlled release/AOT build and component-attributed raw-bundle comparison against the checked-in hello-Flutter peer; measurement-only and not FlatPark package evidence |
 | `just baseline-headless` / `just baseline-headless-json` | per-scenario latency and Linux process-memory measurements for committed startup, navigation/runtime, layout, paint, and screenshot controls |
@@ -64,8 +64,9 @@ which layer today?”
   BrowserCore-to-Flutter Semantics hierarchy with bounded descriptions, three
   non-tree relationships, native/authored range actions, live regions, and
   event-driven full projection refresh. `linux-at-spi-smoke` adds first native
-  Linux AT evidence, but not real native IME interaction, complete screen-reader coverage, packages,
-  release behavior, or non-Linux GUI support; use
+  Linux AT evidence; `linux-interaction-smoke` adds the controlled native IME and
+  basic-navigation vertical. Neither proves complete screen-reader coverage,
+  packages, broader release behavior, or non-Linux GUI support; use
   `FLUTTER_SHELL.md` for remaining gates.
 - Size/performance thresholds become gates only after a representative baseline,
   environment, and comparison method are committed.

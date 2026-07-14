@@ -211,8 +211,9 @@ _build-wayland-virtual-pointer: linux-release-check-inputs
            $(pkg-config --cflags --libs wayland-client) -lm \
            -o .tmp/wayland-virtual-pointer/wayland-virtual-pointer'
 
-# Real Wayland input evidence: wtype -> IBus/GTK preedit+commit for native and
-# contenteditable controls, plus a wlr virtual pointer -> nested wheel routing.
+# Real Wayland basic-navigation/input evidence: physical chrome URL entry,
+# back/forward/reload/active stop with restored scrolling, IBus/GTK preedit+
+# commit, and nested/root wheel routing in the release process.
 linux-interaction-smoke: build-flutter-release-linux _build-wayland-virtual-pointer
     test -x "{{WTYPE}}" || command -v "{{WTYPE}}" >/dev/null || { printf '%s\n' "wtype is required for native Wayland keyboard input" >&2; exit 1; }
     command -v ibus >/dev/null && ibus list-engine | grep -q '^  anthy -' || { printf '%s\n' "IBus Anthy is required for native preedit evidence" >&2; exit 1; }

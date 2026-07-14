@@ -208,8 +208,9 @@ BrowserCore controller, tabs, input, texture, and Semantics seams;
 `just linux-release-smoke` covers the exact release archive under native
 Wayland. `just linux-interaction-smoke` separately drives that release bundle
 through Cage's virtual-keyboard and wlr virtual-pointer protocols, with GTK/IBus
-preedit/commit and native nested-wheel evidence. These are integration gates
-rather than WPT surfaces.
+preedit/commit, physical chrome navigation controls, history/reload scroll
+restoration, active stop/recovery, and native nested-wheel evidence. These are
+integration gates rather than WPT surfaces.
 
 The Flutter semantics projection additionally carries bounded `aria-controls`,
 `aria-describedby`, and `aria-details` relationships to retained semantic nodes.
@@ -315,7 +316,13 @@ Wayland virtual keyboard/pointer protocols; the test does not use AT-SPI
 start/update/end for both a native input and direct contenteditable host, proves
 an uncanceled wheel selects the nested scrollport, verifies authored
 `preventDefault()` leaves both offsets unchanged, and proves unconsumed wheel
-delta chains to the root at the inner boundary.
+delta chains to the root at the inner boundary. The same process starts on one
+controlled page, physically focuses the address field and enters the interaction
+fixture, then uses native back/forward and reload controls while checking that
+the root and nested offsets restore. A FIFO-backed file navigation remains
+active until the visible stop control cancels it; the prior scrolled page must
+become visible again. This is controlled local-file evidence, not a real-site or
+host-network corridor.
 
 Flutter also sends one monotonic BrowserCore-owned host-view state for content
 focus, visibility, effective scale, and application lifecycle. Current documents

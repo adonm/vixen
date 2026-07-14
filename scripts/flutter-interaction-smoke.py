@@ -10,6 +10,7 @@ import re
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 import gi
@@ -20,6 +21,10 @@ from gi.repository import Atspi  # noqa: E402
 
 MAX_NODES = 4096
 STATUS_PREFIX = "Interaction status|"
+BROWSER_STATUS_PREFIX = "Browser status|"
+# A recreated document can lose up to one line when its root extent is clamped
+# against the freshly reported Flutter viewport.
+ROOT_RESTORE_CLAMP_TOLERANCE = 16.0
 
 
 def arguments() -> argparse.Namespace:
@@ -75,6 +80,44 @@ def current_status(process_id: int) -> str | None:
     return max(statuses, key=len) if statuses else None
 
 
+def current_browser_status(process_id: int) -> str | None:
+    for node in app_accessibles(process_id):
+        try:
+            name = node.get_name() or ""
+            if name.startswith(BROWSER_STATUS_PREFIX):
+                return name.removeprefix(BROWSER_STATUS_PREFIX)
+        except Exception:
+            continue
+    return None
+
+
+def accessible_name_sample(process_id: int) -> list[str]:
+    names: list[str] = []
+    for node in app_accessibles(process_id):
+        try:
+            name = node.get_name() or ""
+            if name and name not in names:
+                names.append(name)
+        except Exception:
+            continue
+        if len(names) >= 80:
+            break
+    return names
+
+
+def has_focused_role(process_id: int, role: str) -> bool:
+    for node in app_accessibles(process_id):
+        try:
+            if (
+                node.get_role_name() == role
+                and node.get_state_set().contains(Atspi.StateType.FOCUSED)
+            ):
+                return True
+        except Exception:
+            continue
+    return False
+
+
 def wait_for(
     process: subprocess.Popen[str],
     timeout: float,
@@ -93,7 +136,10 @@ def wait_for(
         if last:
             return last
         time.sleep(0.15)
-    raise SystemExit(f"timed out waiting for {description}; last observation: {last!r}")
+    raise SystemExit(
+        f"timed out waiting for {description}; last observation: {last!r}; "
+        f"accessible names: {accessible_name_sample(process.pid)!r}"
+    )
 
 
 def status_fields(status: str) -> dict[str, str]:
@@ -112,6 +158,12 @@ def status_number(fields: dict[str, str], name: str) -> float:
     return float(value)
 
 
+def status_number_matches(
+    fields: dict[str, str], name: str, expected: float, tolerance: float = 0.01
+) -> bool:
+    return abs(status_number(fields, name) - expected) <= tolerance
+
+
 def run_wtype(args: argparse.Namespace, *command: str) -> None:
     subprocess.run(
         [args.wtype, *command],
@@ -121,6 +173,59 @@ def run_wtype(args: argparse.Namespace, *command: str) -> None:
         text=True,
         timeout=10,
     )
+
+
+def navigate_via_chrome(
+    args: argparse.Namespace,
+    process: subprocess.Popen[str],
+    address: str,
+) -> None:
+    for x, y in [(500, 75)] * 3 + [
+        (x, y) for y in (60, 75, 90) for x in (300, 500, 700, 900)
+    ]:
+        run_pointer(args, "click", str(x), str(y))
+        deadline = time.monotonic() + 0.4
+        while time.monotonic() < deadline:
+            if has_focused_role(process.pid, "text"):
+                break
+            time.sleep(0.03)
+        else:
+            continue
+        break
+    else:
+        raise SystemExit("native pointer scan did not focus the address field")
+    run_wtype(args, "-M", "ctrl", "-k", "l", "-m", "ctrl")
+    time.sleep(0.2)
+    run_wtype(args, "-M", "ctrl", "-k", "a", "-m", "ctrl")
+    time.sleep(0.2)
+    run_wtype(args, "-d", "1", address)
+    run_wtype(args, "-k", "Return")
+
+
+def history_shortcut(args: argparse.Namespace, key: str) -> None:
+    run_wtype(args, "-M", "alt", "-k", key, "-m", "alt")
+
+
+def activate_ibus_engine(args: argparse.Namespace, engine: str) -> None:
+    subprocess.run(
+        [args.ibus, "engine", engine],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=10,
+    )
+    for _ in range(20):
+        active_engine = subprocess.run(
+            [args.ibus, "engine"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        ).stdout.strip()
+        if active_engine == engine:
+            return
+        time.sleep(0.1)
+    raise SystemExit(f"failed to activate IBus engine {engine!r}")
 
 
 def ime_input(args: argparse.Namespace, codepoint: str) -> None:
@@ -183,26 +288,8 @@ def main() -> int:
         text=True,
         timeout=10,
     ).stdout.strip()
-    subprocess.run(
-        [args.ibus, "engine", args.ibus_engine],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        timeout=10,
-    )
-    for _ in range(20):
-        active_engine = subprocess.run(
-            [args.ibus, "engine"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        ).stdout.strip()
-        if active_engine == args.ibus_engine:
-            break
-        time.sleep(0.1)
-    else:
-        raise SystemExit(f"failed to activate IBus engine {args.ibus_engine!r}")
+    direct_engine = "xkb:us::eng"
+    activate_ibus_engine(args, direct_engine)
 
     env = os.environ.copy()
     env.update(
@@ -217,11 +304,19 @@ def main() -> int:
             "VIXEN_PROFILE_PATH": str(
                 Path.cwd() / ".tmp" / "interaction-profile" / "profile.redb"
             ),
-            "VIXEN_START_URL": args.url,
+            "VIXEN_START_URL": (Path.cwd() / "fixtures" / "dom" / "basic.html")
+            .resolve()
+            .as_uri(),
         }
     )
-    Path(env["VIXEN_PROFILE_PATH"]).parent.mkdir(parents=True, exist_ok=True)
+    profile_dir = Path(env["VIXEN_PROFILE_PATH"]).parent
+    profile_dir.mkdir(parents=True, exist_ok=True)
     Path(env["VIXEN_PROFILE_PATH"]).unlink(missing_ok=True)
+    stop_fifo = profile_dir / "stopped-navigation.html"
+    stop_fifo.unlink(missing_ok=True)
+    fifo_opened = threading.Event()
+    fifo_release = threading.Event()
+    fifo_thread: threading.Thread | None = None
     process = subprocess.Popen(
         [str(app)],
         env=env,
@@ -230,6 +325,19 @@ def main() -> int:
         text=True,
     )
     try:
+        wait_for(
+            process,
+            args.timeout,
+            "initial controlled page",
+            lambda: named_accessible(process.pid, "DOM Basic"),
+        )
+        wait_for(
+            process,
+            10,
+            "browser status semantics",
+            lambda: current_browser_status(process.pid),
+        )
+        navigate_via_chrome(args, process, args.url)
         wait_for(
             process,
             args.timeout,
@@ -249,11 +357,18 @@ def main() -> int:
             lambda: named_accessible(process.pid, "Nested scroll area"),
         )
 
+        activate_ibus_engine(args, args.ibus_engine)
         input_x, input_y = focus_with_pointer(args, process, "input")
         time.sleep(1)
-        run_wtype(args, "-M", "ctrl", "j", "-m", "ctrl")
-        time.sleep(0.5)
         ime_input(args, "306b")
+        time.sleep(0.5)
+        input_probe = current_status(process.pid)
+        if not input_probe or status_fields(input_probe).get("inputComposition") != (
+            "true:true:true"
+        ):
+            run_wtype(args, "-M", "ctrl", "j", "-m", "ctrl")
+            time.sleep(0.5)
+            ime_input(args, "306b")
         input_status = wait_for(
             process,
             10,
@@ -382,17 +497,133 @@ def main() -> int:
             raise SystemExit(
                 f"native editing values did not survive later interaction: {chained}"
             )
+
+        restored_inner = status_number(chained_fields, "inner")
+        restored_root = status_number(chained_fields, "root")
+        first_load = status_number(chained_fields, "load")
+        history_shortcut(args, "Left")
+        wait_for(
+            process,
+            10,
+            "native back navigation",
+            lambda: named_accessible(process.pid, "DOM Basic"),
+        )
+        history_shortcut(args, "Right")
+        forward_status = wait_for(
+            process,
+            15,
+            "native forward navigation with restored scrolling",
+            lambda: (
+                status
+                if (status := current_status(process.pid))
+                and status_number(status_fields(status), "load") != first_load
+                and status_number_matches(
+                    status_fields(status), "inner", restored_inner
+                )
+                and status_number_matches(
+                    status_fields(status),
+                    "root",
+                    restored_root,
+                    ROOT_RESTORE_CLAMP_TOLERANCE,
+                )
+                else None
+            ),
+        )
+        forward_fields = status_fields(forward_status)
+        forward_load = status_number(forward_fields, "load")
+        restored_root = status_number(forward_fields, "root")
+
+        run_wtype(args, "-M", "ctrl", "r", "-m", "ctrl")
+        reload_status = wait_for(
+            process,
+            15,
+            "native reload with restored scrolling",
+            lambda: (
+                status
+                if (status := current_status(process.pid))
+                and status_number(status_fields(status), "load") != forward_load
+                and status_number_matches(
+                    status_fields(status), "inner", restored_inner
+                )
+                and status_number_matches(status_fields(status), "root", restored_root)
+                else None
+            ),
+        )
+        reload_fields = status_fields(reload_status)
+
+        os.mkfifo(stop_fifo, 0o600)
+
+        def hold_fifo_open() -> None:
+            with stop_fifo.open("wb", buffering=0):
+                fifo_opened.set()
+                fifo_release.wait(args.timeout)
+
+        fifo_thread = threading.Thread(target=hold_fifo_open, daemon=True)
+        fifo_thread.start()
+        activate_ibus_engine(args, direct_engine)
+        navigate_via_chrome(args, process, stop_fifo.resolve().as_uri())
+        wait_for(
+            process,
+            10,
+            "active gated file navigation",
+            lambda: (
+                status
+                if fifo_opened.is_set()
+                and (status := current_browser_status(process.pid)) not in {None, "Done"}
+                else None
+            ),
+        )
+        stopped_browser_status = None
+        for x, y in [(93, 77)] * 3:
+            run_pointer(args, "click", str(x), str(y))
+            deadline = time.monotonic() + 0.75
+            while time.monotonic() < deadline:
+                status = current_browser_status(process.pid)
+                if status in {"Stopped", "Navigation cancelled"}:
+                    stopped_browser_status = status
+                    break
+                time.sleep(0.05)
+            if stopped_browser_status is not None:
+                break
+        if stopped_browser_status is None:
+            raise SystemExit(
+                "native stop control did not cancel the gated navigation; "
+                f"status={current_browser_status(process.pid)!r}"
+            )
+        stopped_page_status = wait_for(
+            process,
+            10,
+            "visible page recovery after stop",
+            lambda: (
+                status
+                if (status := current_status(process.pid))
+                and status_number(status_fields(status), "load")
+                == status_number(reload_fields, "load")
+                and status_number_matches(
+                    status_fields(status), "inner", restored_inner
+                )
+                and status_number_matches(status_fields(status), "root", restored_root)
+                else None
+            ),
+        )
+        stopped_fields = status_fields(stopped_page_status)
         print(
             "native interaction ok:",
             f"input={input_value!r}",
             f"editor={editor_value!r}",
-            f"inner={chained_fields['inner']}",
-            f"root={chained_fields['root']}",
+            f"inner={stopped_fields['inner']}",
+            f"root={stopped_fields['root']}",
+            f"loads={stopped_fields['load']}",
+            f"stop={stopped_browser_status!r}",
             f"wheels={chained_fields['wheelCount']}",
             f"canceled={chained_fields['canceledWheelCount']}",
         )
         return 0
     finally:
+        fifo_release.set()
+        if fifo_thread is not None:
+            fifo_thread.join(timeout=5)
+        stop_fifo.unlink(missing_ok=True)
         if process.poll() is None:
             process.send_signal(signal.SIGTERM)
             try:
@@ -401,7 +632,7 @@ def main() -> int:
                 process.kill()
                 process.wait(timeout=5)
         subprocess.run(
-            [args.ibus, "engine", previous_engine or "xkb:us::eng"],
+            [args.ibus, "engine", previous_engine or direct_engine],
             check=False,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,

@@ -65,8 +65,9 @@ As of 2026-07-14 the repository has these building blocks:
   chrome, real BrowserCore FFI, visible WebRender output through a bounded RGBA texture,
   input/accessibility projection, and a deterministic release/AOT archive with
   clean extraction and Impeller Cage/headless-Wayland launch smoke. The Linux
-  GUI now rejects X11/XWayland. One controlled native IBus/Wayland interaction
-  vertical is gated; FlatPark review, broader IME/device evidence,
+  GUI now rejects X11/XWayland. One controlled native Wayland vertical covers
+  physical chrome navigation, back/forward/reload/active stop, restored root/
+  nested scrolling, and IBus input; FlatPark review, broader IME/device evidence,
   host services, complete accessibility, and Flutter parity remain open.
 
 These are substantial components now routed through one initial browser owner,
@@ -308,7 +309,11 @@ The semantic projection now distinguishes multiline hosts and carries normalized
 standard `inputmode`, supported input-type, and `enterkeyhint` intent. Flutter
 maps those values to the corresponding platform keyboard/action configuration,
 then routes platform actions through exact-generation Enter down/up dispatch.
-Real Linux IME evidence remains.
+The release-process Wayland smoke now enters a controlled URL through chrome,
+uses native back/forward/reload with restored root/nested offsets, cancels a
+FIFO-gated active file navigation through the visible stop control, requires the
+prior page to recover, and retains IBus Anthy composition evidence. Broader native
+navigation, IME/device, restoration-event, and real-site matrices remain.
 Ctrl+F now crosses the exact active context/document ABI boundary. Page owns a
 10,000-match-bounded rendered-text result and one-based active match; Enter/F3
 plus Previous/Next traverse with wrapping and move the shared root offset to
@@ -630,18 +635,13 @@ it is not permission to implement the whole subsystem in one batch.
 
 **Linux Flutter lane**
 
-1. **Close the controlled basic-navigation proof.** Extend the release-process
-   interaction smoke to enter a controlled URL through chrome and exercise
-   visible navigation, back, forward, reload, stop, and restored root/nested
-   scrolling. The existing controls and BrowserCore commands count as complete
-   only when this native Wayland path passes.
-2. **Separate CSS and physical scale.** Make Flutter device scale, BrowserCore CSS
+1. **Separate CSS and physical scale.** Make Flutter device scale, BrowserCore CSS
    viewport, input conversion, texture dimensions, and Semantics bounds use one
    explicit transform; prove non-1.0 scale without frontend coordinate repair.
-3. **Recover a real native surface/lifecycle fault.** Add deterministic runner or
+2. **Recover a real native surface/lifecycle fault.** Add deterministic runner or
    presenter fault injection for detach/resume and texture loss, retain bounded
    retries, reject stale frames, and prove a newer frame becomes visible.
-4. **Widen native interaction evidence.** Add the next highest-value IME/device
+3. **Widen native interaction evidence.** Add the next highest-value IME/device
    case and restoration-event/gesture fidelity, then broaden AT/screen-reader
    actions. Keep each language, device, or relationship mapping independently
    reviewable.

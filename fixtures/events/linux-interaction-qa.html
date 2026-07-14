@@ -33,6 +33,7 @@
   let canceledWheelCount = 0;
   let focused = 'none';
   let lastClick = 'none';
+  const loadToken = Date.now();
 
   const recordTextEvent = (name, event) => {
     const data = event.data === undefined || event.data === null ? '' : event.data;
@@ -98,6 +99,7 @@
       `inner=${nestedScroll.scrollTop}`,
       `innerMax=${nestedScroll.scrollHeight - nestedScroll.clientHeight}`,
       `root=${scrollY}`,
+      `load=${loadToken}`,
       `focus=${focused}`,
       `click=${lastClick}`,
       `cancelWheel=${cancelWheel}`,
