@@ -196,8 +196,18 @@ not reported as a page exception, and the isolate remains reusable. Runtime
 worker-local cancellation path drops the in-flight reqwest future, joins the
 worker, and cannot commit cookie/cache state. Gated peers observe the fetch and
 preflight connections close before sending a response. Runtime construction and
-other local native host calls remain open. There is still no HTTP download
-manager or Playwright context-tracing archive implementation.
+other local native host calls remain open. Parser-discovered non-alternate
+`<link rel="stylesheet">` now uses the same cancellable bounded text-resource
+worker before author scripts. Relative file and HTTP(S) sheets apply in document
+order to Page cascade/layout/paint and refreshed runtime computed-style/geometry
+hosts. Redirect hops recheck `style-src`, mixed-content, and URL policy; accepted
+HTTP responses pass status/`nosniff` checks before cookie, bounded profile-cache,
+or style commit. A checked-in file fixture proves visible red 120×40 output, and
+gated HTTP/supersede tests prove request-id events and rejection of late cookie,
+cache, and style commits. Link media is currently limited to absent/`all`/
+`screen`; alternate sheets, dynamic links, `@import`, SRI, cache reuse/freshness,
+and complete external-sheet CSSOM objects remain unsupported. There is still no
+HTTP download manager or Playwright context-tracing archive implementation.
 
 ---
 
@@ -402,7 +412,7 @@ feed the same `vixen-wpt` check types and reporting.
 |------|-------------|------------------------|-------|
 | HTML parsing/tree construction | Broad smoke subset green | High | `html5ever` carries parser behavior; Vixen must preserve node ids/tree shape. |
 | Selectors | Modern selector subset green | High | Backed by Stylo/`selectors`; include combinators, attributes, `:is`, `:where`, `:has`, form/link pseudos. |
-| CSS cascade/computed values | Author stylesheet + inline subset green | High after full Stylo slice | Compact cascade is temporary; full Stylo should unlock wider WPT coverage. |
+| CSS cascade/computed values | Inline plus one external stylesheet vertical green | High after full Stylo slice | Compact cascade is temporary; external-sheet media/import/CSSOM breadth and full Stylo remain. |
 | CSS layout: block/inline | v1 visual/ref subset green | Medium | Vixen-owned layout; start with normal flow, margin/border/padding, inline line boxes. |
 | CSS layout: flex/grid | Useful common-case subset green | Medium | Pure helpers exist; full WPT edge coverage is post-v1. |
 | CSS layout: tables/floats/fragmentation | Not v1 release-blocking | Low for v1 | Document as unsupported/partial until implemented. |

@@ -229,23 +229,26 @@ preflight network calls return through cancellation-polled worker channels. On
 cancel, a worker-local signal wins against and drops the reqwest future, aborting
 the active transport before the owner joins the worker. Cookie/preflight/HTTP-
 cache writes remain outside the worker under the exact still-active runtime guard.
-Runtime construction, other local native host calls, and non-script discovered
-resources still need interruptible paths.
+Runtime construction, other local native host calls, and discovered resources
+beyond the first external stylesheet still need interruptible paths.
 
-Parser-discovered external classic scripts are the first post-commit resource on
-that worker model. The owner resolves the URL and current script policy, then
-sends only network/profile-cookie data to the existing bounded Tokio runtime.
-Manual redirect handling validates URL policy, script CSP, and active mixed-
-content policy before every hop and does not buffer redirect bodies. Completion
+Parser-discovered external classic scripts and non-alternate external stylesheets
+are the first post-commit resources on that worker model. The owner resolves the
+URL and current script/style policy, then sends only network/profile-cookie data
+to the existing bounded Tokio runtime. Manual redirect handling validates URL
+policy, destination CSP, and active mixed-content policy before every hop and
+does not buffer redirect bodies. Completion
 carries context, navigation, document, runtime, and resource request ids plus an
 isolated cookie delta. The owner rechecks every id and final HTTP status/`nosniff`
-before exposing source or resuming script work. Accepted cookie deltas apply to
+before exposing source, updating the bounded profile cache, applying style to the
+Page cascade/runtime hosts, or resuming script work. Accepted cookie deltas apply to
 the core, active runtime, and each current profile-store origin partition; delta-
 against-current persistence preserves unrelated writes from other contexts and
 makes accepted cookies visible after profile reopen. Stop, supersede, close, and
 shutdown cancel the task and emit one bounded request/failure sequence; late
 completions are inert. File documents and file scripts share one async reader that
-checks the configured body limit both before allocation and while reading.
+checks the configured body limit both before allocation and while reading;
+external file stylesheets use that reader as well.
 
 ADR-010 is superseded by ADR-018 and ADR-021, and the Rust GTK shell has been
 removed. Every frontend has one browser adapter (or factory-injected browser

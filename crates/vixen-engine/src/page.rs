@@ -26,7 +26,7 @@ use crate::display_list::{
     BackgroundAttachment, BackgroundBox, Color, DisplayListBuilder, DrawItem, PaintCommand,
     PaintStats, Rect, TextRun, dump_paint_commands, dump_paint_stats,
 };
-use crate::doc::{Document, DocumentParser, ParseError};
+use crate::doc::{Document, DocumentParser, DocumentStyleItem, ParseError};
 use crate::history::{HistoryElementScroll, HistoryEntry, HistoryScrollState, SessionHistory};
 use crate::layout_tree::{
     LayoutFragment, LayoutFragmentKind, LayoutNodeId, LayoutNodeKind, LayoutPosition, LayoutTree,
@@ -50,6 +50,7 @@ pub struct Page {
     history: SessionHistory,
     csp: ContentSecurityPolicy,
     author_stylesheet: AuthorStylesheet,
+    external_stylesheets: std::collections::BTreeMap<usize, String>,
     diagnostics: Vec<EngineDiagnostic>,
     focused_element_node_id: Option<usize>,
     accessibility_mutation_epoch: u64,
@@ -156,6 +157,7 @@ impl Page {
             history,
             csp,
             author_stylesheet,
+            external_stylesheets: std::collections::BTreeMap::new(),
             diagnostics: Vec::new(),
             focused_element_node_id: None,
             accessibility_mutation_epoch: 1,
@@ -467,7 +469,47 @@ impl Page {
     }
 
     fn refresh_author_stylesheet(&mut self) {
-        self.author_stylesheet = AuthorStylesheet::from_blocks(&self.document.style_blocks());
+        let blocks = self
+            .document
+            .style_execution_items()
+            .into_iter()
+            .filter_map(|item| match item {
+                DocumentStyleItem::InlineStyle(source) => Some(source),
+                DocumentStyleItem::ExternalStylesheet { index, .. } => {
+                    self.external_stylesheets.get(&index).cloned()
+                }
+                DocumentStyleItem::CspMeta(_) => None,
+            })
+            .collect::<Vec<_>>();
+        self.author_stylesheet = AuthorStylesheet::from_blocks(&blocks);
+    }
+
+    /// Apply one exact parser-discovered external stylesheet to the live
+    /// cascade after BrowserCore has completed resource policy checks.
+    pub(crate) fn apply_external_stylesheet(
+        &mut self,
+        index: usize,
+        source: String,
+    ) -> Result<(), String> {
+        let known = self.document.style_execution_items().iter().any(|item| {
+            matches!(
+                item,
+                DocumentStyleItem::ExternalStylesheet {
+                    index: candidate,
+                    ..
+                } if *candidate == index
+            )
+        });
+        if !known {
+            return Err(format!(
+                "external stylesheet {index} is not in the document"
+            ));
+        }
+        self.external_stylesheets.insert(index, source);
+        self.refresh_author_stylesheet();
+        self.clamp_scroll_offsets();
+        self.bump_accessibility_mutation_epoch();
+        Ok(())
     }
 
     fn bump_accessibility_mutation_epoch(&mut self) {

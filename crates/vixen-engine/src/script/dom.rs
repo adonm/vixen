@@ -223,6 +223,21 @@ pub(super) fn extension(page: &Page, mutations: DomMutationSink) -> Result<Exten
     Ok(extension)
 }
 
+pub(super) fn refresh(
+    runtime: &mut deno_core::JsRuntime,
+    page: &Page,
+    mutations: DomMutationSink,
+) -> Result<(), EngineError> {
+    let host = dom_host_state(page, mutations).map_err(|err| {
+        EngineError::script(
+            codes::SCRIPT_EVAL,
+            format!("failed to refresh DOM host snapshot: {err}"),
+        )
+    })?;
+    runtime.op_state().borrow_mut().put(DomHost(Arc::new(host)));
+    Ok(())
+}
+
 pub(super) fn element_scroll_state_source(page: &Page, emit_scroll: bool) -> String {
     let identities = page
         .query_selector_all("*")

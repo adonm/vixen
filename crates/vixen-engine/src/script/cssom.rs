@@ -65,6 +65,20 @@ pub(super) fn extension(page: &Page) -> Result<Extension, EngineError> {
     Ok(extension)
 }
 
+pub(super) fn refresh(runtime: &mut deno_core::JsRuntime, page: &Page) -> Result<(), EngineError> {
+    let host = cssom_host_state(page).map_err(|err| {
+        EngineError::script(
+            codes::SCRIPT_EVAL,
+            format!("failed to refresh CSSOM host snapshot: {err}"),
+        )
+    })?;
+    runtime
+        .op_state()
+        .borrow_mut()
+        .put(CssomHost(Arc::new(host)));
+    Ok(())
+}
+
 #[deno_core::op2]
 #[serde]
 fn op_vixen_cssom_snapshot(state: &mut OpState) -> deno_core::serde_json::Value {

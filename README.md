@@ -114,7 +114,13 @@ and reference material, plus:
   (`TNode`/`TElement`/`TDocument` + `Stylist::update_stylist` +
   `computed_values_for(node_id)`) remains the implementation replacement behind
   the same `Page` facade; Stylo arrives via the crates.io-published `stylo`
-  crate per ADR-011 (no Servo git dep).
+  crate per ADR-011 (no Servo git dep). Parser-discovered non-alternate external
+  stylesheets now load through BrowserCore's cancellable bounded text-resource
+  path before author scripts, with redirect CSP/mixed-content/URL policy,
+  status/`nosniff`, cookie/cache, exact-generation, live cascade/runtime-host,
+  layout, and paint checks. A checked-in file fixture plus gated HTTP/supersede
+  tests prove visible style and reject stale persistence/application; dynamic,
+  alternate, imported, broad-media, and complete CSSOM sheet behavior remain.
 - **Phase 4 prep** — `vixen-engine::box_model` implements the CSS2 § 10.3.3
   block-level horizontal-constraint solve (`auto`-width leftover absorption,
   one/two `auto`-margin centering, `box-sizing: border-box` content

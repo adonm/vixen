@@ -92,8 +92,9 @@ fetch/CORS worker wait before the bounded deadline; the isolate unwinds and
 remains reusable. A cancelled fetch/CORS worker drops its in-flight reqwest
 future, closes the peer transport, joins, and cannot commit cookies or cache state.
 Runtime construction, other local native host ops, and non-script discovered-
-resource fetches are not yet interruptible, and compatibility projections still
-coexist with the live page/runtime. Parser-discovered external classic scripts use generation-
+resource fetches beyond the first external stylesheet are not yet interruptible,
+and compatibility projections still coexist with the live page/runtime. Parser-
+discovered external classic scripts and `<link rel="stylesheet">` use generation-
 cancellable worker I/O rather than blocking the owner. Adding broad API shape
 before converging those paths would preserve plausible but disconnected state.
 
@@ -104,8 +105,9 @@ Other material gaps remain:
   owner-thread quanta. Exact-generation V8 jobs and runtime fetch/CORS worker
   waits are deadline-bounded and navigation-interruptible; runtime construction
   and other local native host calls are not yet interruptible. External classic-
-  script file/HTTP reads are cancellable worker tasks; other discovered-resource
-  fetches remain synchronous or absent;
+  script and first external-stylesheet file/HTTP reads are cancellable worker
+  tasks; image/font and other discovered-resource fetches remain synchronous or
+  absent;
 - DOM/runtime snapshots and compatibility projections still coexist with live
   page state;
 - layout uses deterministic text metrics and narrow block/inline/flex/grid
@@ -230,8 +232,17 @@ and during allocation. Stop or supersede preserves completed script mutations wh
 suppressing unstarted items and later success lifecycle events. Author exceptions
 surface as runtime effects, allow later independent scripts to run, and do not
 turn a committed document into a failed navigation. Runtime construction, other
-local native host cancellation, and non-script resource loading remain the next
-A2 boundary.
+local native host cancellation, and image/font resource loading remain the next
+A2 boundary. Parser-discovered non-alternate external stylesheets now run before
+author scripts through the same bounded text-resource worker as external classic
+scripts. File/HTTP loads carry exact request and document/runtime generations,
+recheck `style-src` and active mixed content at redirects, require successful and
+`nosniff`-compatible responses, then commit cookies, the bounded profile cache,
+the document-ordered Page cascade, refreshed runtime hosts, layout, and paint.
+The checked-in file fixture proves visible pixels; gated HTTP and supersede tests
+prove ordered settlement and no late cookie/cache/style commit. Dynamic links,
+alternate sheets, broad link-media queries, `@import`, SRI, and full CSSOM sheet
+objects remain open.
 
 The obsolete fail-closed `Page` string-expression path and headless test-only
 classifiers are deleted; all evaluation adapters use `BrowserCore`/`JsRuntime`.
@@ -409,7 +420,10 @@ and rejection of late source/cookie/document/runtime completions.
 Exact-generation navigate/reload/stop/close commands now interrupt active V8
 jobs and abort runtime fetch/CORS transport before the watchdog without emitting
 a page exception or accepting late persistence. Runtime construction, other
-local native host calls, and non-script resource loading remain.
+local native host calls, and image/font resource loading remain. The first
+parser-discovered external stylesheet shares the cancellable external text-
+resource path, applies to the live cascade before author scripts, and rejects
+late persistence/application after stop or supersede.
 
 ### A3. Live document/runtime integration
 
@@ -623,17 +637,11 @@ it is not permission to implement the whole subsystem in one batch.
 
 **Shared-core lane**
 
-1. **Load one real external stylesheet.** Route parser-discovered
-   `<link rel="stylesheet">` through the same request ids, redirect/policy,
-   cancellation, cookie/cache, and current-document checks as other core
-   resources; apply it to the authoritative cascade and repaint. One fixture must
-   prove visible style, and one race must reject a late stylesheet. Do not build a
-   generalized scheduler before this vertical works.
-2. **Decode and paint one bounded raster-image vertical.** Reuse the resource
+1. **Decode and paint one bounded raster-image vertical.** Reuse the resource
    request path, enforce response/body/decode limits before display-list exposure,
    and prove the same pixels in GUI/headless capture. Responsive selection and
    broad image formats widen only after this path is real.
-3. **Shape one text/fallback vertical.** Replace deterministic metrics for one
+2. **Shape one text/fallback vertical.** Replace deterministic metrics for one
    common script/fallback case through layout, paint, hit testing, find, and
    Semantics together; add a focused fixture before broad font-platform work.
 

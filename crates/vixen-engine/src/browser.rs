@@ -31,7 +31,7 @@ use vixen_net::{
     CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent, RedirectMode,
     TextRequest, TextResponse,
 };
-use vixen_store::{ClearDataSelection, SessionRecord, Store};
+use vixen_store::{CacheEntry, ClearDataSelection, SessionRecord, Store};
 
 use crate::data_url::parse_data_url;
 use crate::display_list::PaintCommand;
@@ -42,6 +42,7 @@ use crate::script::{
     PageScriptRunner, PreparedPageScript, RuntimeInterruptHandle, merge_profile_cookies,
     persist_profile_cookies, script_response_allowed,
 };
+use crate::stylesheet::{ExternalPageStylesheet, PageStylesheetRunner, PreparedPageStylesheet};
 
 const DEFAULT_MAX_CONTEXTS: usize = 128;
 
@@ -339,6 +340,7 @@ enum CoreMessage {
     SourceLoadProgress(SourceLoadProgress),
     SourceLoaded(SourceLoadCompletion),
     ExternalScriptLoaded(ExternalScriptLoadCompletion),
+    ExternalStylesheetLoaded(ExternalStylesheetLoadCompletion),
     Shutdown,
 }
 
@@ -374,6 +376,9 @@ fn handle_core_message(core: &mut BrowserCore, message: CoreMessage) -> bool {
         }
         CoreMessage::ExternalScriptLoaded(completion) => {
             core.complete_external_script(completion);
+        }
+        CoreMessage::ExternalStylesheetLoaded(completion) => {
+            core.complete_external_stylesheet(completion);
         }
         CoreMessage::Shutdown => {
             core.shutdown();
@@ -586,6 +591,7 @@ struct ActiveNavigation {
     cancel: Option<tokio::sync::oneshot::Sender<()>>,
     load_task: Option<tokio::task::AbortHandle>,
     pending_script: Option<PendingExternalScript>,
+    pending_stylesheet: Option<PendingExternalStylesheet>,
 }
 
 enum PreparedNavigationAction {
@@ -606,11 +612,17 @@ enum PreparedNavigationAction {
 
 enum NavigationWork {
     Parsing(Box<PageParser>),
+    Stylesheets(NavigationStylesheetWork),
     Scripts(NavigationScriptWork),
     Lifecycle {
         stage: LifecycleStage,
         actions: Vec<JsNavigationAction>,
     },
+}
+
+struct NavigationStylesheetWork {
+    runner: PageStylesheetRunner,
+    scripts: NavigationScriptWork,
 }
 
 struct NavigationScriptWork {
@@ -633,6 +645,12 @@ struct PendingExternalScript {
     work: NavigationScriptWork,
 }
 
+struct PendingExternalStylesheet {
+    key: ExternalStylesheetLoadKey,
+    request: ExternalPageStylesheet,
+    work: NavigationStylesheetWork,
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct ExternalScriptLoadKey {
     context_id: BrowsingContextId,
@@ -640,6 +658,16 @@ struct ExternalScriptLoadKey {
     document_id: DocumentId,
     runtime_context_id: RuntimeContextId,
     request_id: RequestId,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ExternalStylesheetLoadKey {
+    context_id: BrowsingContextId,
+    navigation_id: NavigationId,
+    document_id: DocumentId,
+    runtime_context_id: RuntimeContextId,
+    request_id: RequestId,
+    stylesheet_index: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -760,11 +788,17 @@ struct SourceLoadInput {
 
 struct ExternalScriptLoadCompletion {
     key: ExternalScriptLoadKey,
-    result: Result<LoadedExternalScript, ExternalScriptLoadFailure>,
+    result: Result<LoadedExternalResource, ExternalResourceLoadFailure>,
     cookie_delta: CookieJarDelta,
 }
 
-enum LoadedExternalScript {
+struct ExternalStylesheetLoadCompletion {
+    key: ExternalStylesheetLoadKey,
+    result: Result<LoadedExternalResource, ExternalResourceLoadFailure>,
+    cookie_delta: CookieJarDelta,
+}
+
+enum LoadedExternalResource {
     File {
         final_url: url::Url,
         source: String,
@@ -775,11 +809,54 @@ enum LoadedExternalScript {
     },
 }
 
-struct ExternalScriptLoadFailure {
+struct ExternalResourceLoadFailure {
     error: BrowserError,
     url: String,
     events: Vec<NetworkEvent>,
     blocked_reason: &'static str,
+}
+
+trait ExternalTextResource: Clone + Send + 'static {
+    fn url(&self) -> &url::Url;
+    fn blocked_reason(&self, url: &url::Url) -> Option<&'static str>;
+    fn is_cross_site(&self, url: &url::Url) -> bool;
+    fn kind(&self) -> &'static str;
+}
+
+impl ExternalTextResource for ExternalPageScript {
+    fn url(&self) -> &url::Url {
+        self.url()
+    }
+
+    fn blocked_reason(&self, url: &url::Url) -> Option<&'static str> {
+        self.blocked_reason(url)
+    }
+
+    fn is_cross_site(&self, url: &url::Url) -> bool {
+        self.is_cross_site(url)
+    }
+
+    fn kind(&self) -> &'static str {
+        "script"
+    }
+}
+
+impl ExternalTextResource for ExternalPageStylesheet {
+    fn url(&self) -> &url::Url {
+        self.url()
+    }
+
+    fn blocked_reason(&self, url: &url::Url) -> Option<&'static str> {
+        self.blocked_reason(url)
+    }
+
+    fn is_cross_site(&self, url: &url::Url) -> bool {
+        self.is_cross_site(url)
+    }
+
+    fn kind(&self) -> &'static str {
+        "stylesheet"
+    }
 }
 
 impl Drop for BrowserCore {
@@ -1559,6 +1636,7 @@ impl BrowserCore {
             cancel: Some(cancel),
             load_task: None,
             pending_script: None,
+            pending_stylesheet: None,
         });
         self.control.set_navigation(context_id, navigation_id);
         self.emit(BrowserEvent::NavigationRequested {
@@ -1727,6 +1805,9 @@ impl BrowserCore {
                     BrowserError::new(browser_error_codes::NAVIGATION_LOAD, error.to_string()),
                 ),
             },
+            NavigationWork::Stylesheets(stylesheets) => {
+                self.advance_stylesheet_work(context_id, navigation_id, stylesheets)
+            }
             NavigationWork::Scripts(scripts) => {
                 self.advance_script_work(context_id, navigation_id, scripts)
             }
@@ -1918,6 +1999,10 @@ impl BrowserCore {
             bypass_csp: context_config.bypass_csp,
             actions: Vec::new(),
         };
+        let stylesheet_work = NavigationStylesheetWork {
+            runner: PageStylesheetRunner::new(&page),
+            scripts: script_work,
+        };
         self.emit(BrowserEvent::RuntimeContextDestroyed {
             context_id,
             frame_id,
@@ -1942,7 +2027,7 @@ impl BrowserCore {
                 .active_navigation
                 .as_mut()
                 .expect("active navigation exists")
-                .work = Some(NavigationWork::Scripts(script_work));
+                .work = Some(NavigationWork::Stylesheets(stylesheet_work));
         }
         self.emit(BrowserEvent::NavigationCommitted {
             context_id,
@@ -1967,6 +2052,356 @@ impl BrowserCore {
         );
         self.pending_navigation_work
             .push_back((context_id, navigation_id));
+    }
+
+    fn advance_stylesheet_work(
+        &mut self,
+        context_id: BrowsingContextId,
+        navigation_id: NavigationId,
+        mut work: NavigationStylesheetWork,
+    ) {
+        let Ok(context) = self.context(context_id) else {
+            return;
+        };
+        let Some(active) = context.active_navigation.as_ref() else {
+            return;
+        };
+        if active.navigation_id != navigation_id {
+            return;
+        }
+        let document_id = context.document_id;
+        let runtime_context_id = context.runtime_context_id;
+        let runtime_slot = context.runtime_slot;
+        let frame_id = context.frame_id;
+        let document_url = context.page.url().to_owned();
+
+        let Some(step) = work.runner.prepare_next(&context.page) else {
+            let host_source = host_view_runtime_source(&context.page, context.host_view, false);
+            let result = {
+                let (contexts, runtime_slots) = (&mut self.contexts, &mut self.runtime_slots);
+                let context = contexts.get_mut(&context_id).expect("context checked");
+                let runtime = &mut runtime_slots[runtime_slot].runtime;
+                runtime.with_entered_isolate(|runtime| {
+                    runtime.refresh_page_hosts(&context.page)?;
+                    runtime.evaluate_with_page_mut(&host_source, &mut context.page)
+                })
+            };
+            if let Err(error) = result {
+                self.fail_navigation(
+                    context_id,
+                    navigation_id,
+                    self.context(context_id)
+                        .ok()
+                        .and_then(|context| context.active_navigation.as_ref())
+                        .map(|active| active.request_id),
+                    engine_error(error),
+                );
+                return;
+            }
+            self.restore_navigation_work(
+                context_id,
+                navigation_id,
+                NavigationWork::Scripts(work.scripts),
+            );
+            return;
+        };
+        let PreparedPageStylesheet::External(request) = step else {
+            self.restore_navigation_work(
+                context_id,
+                navigation_id,
+                NavigationWork::Stylesheets(work),
+            );
+            return;
+        };
+
+        let mut baseline = self.cookies.snapshots();
+        match self.runtime_slots[runtime_slot]
+            .runtime
+            .network_cookie_snapshots()
+        {
+            Ok(snapshots) => baseline.extend(snapshots),
+            Err(error) => {
+                self.emit(BrowserEvent::RuntimeEffects {
+                    context_id,
+                    frame_id,
+                    document_id,
+                    runtime_context_id,
+                    url: document_url,
+                    effects: RuntimeEffects {
+                        exceptions: vec![RuntimeExceptionEvent {
+                            error: script_error(error),
+                        }],
+                        ..RuntimeEffects::default()
+                    },
+                });
+                self.restore_navigation_work(
+                    context_id,
+                    navigation_id,
+                    NavigationWork::Stylesheets(work),
+                );
+                return;
+            }
+        }
+        let request_id = match self.ids.request() {
+            Ok(request_id) => request_id,
+            Err(error) => {
+                self.emit(BrowserEvent::RuntimeEffects {
+                    context_id,
+                    frame_id,
+                    document_id,
+                    runtime_context_id,
+                    url: document_url,
+                    effects: RuntimeEffects {
+                        exceptions: vec![RuntimeExceptionEvent { error }],
+                        ..RuntimeEffects::default()
+                    },
+                });
+                self.restore_navigation_work(
+                    context_id,
+                    navigation_id,
+                    NavigationWork::Stylesheets(work),
+                );
+                return;
+            }
+        };
+        self.start_external_stylesheet_load(
+            ExternalStylesheetLoadKey {
+                context_id,
+                navigation_id,
+                document_id,
+                runtime_context_id,
+                request_id,
+                stylesheet_index: request.index(),
+            },
+            request,
+            work,
+            baseline,
+        );
+    }
+
+    fn start_external_stylesheet_load(
+        &mut self,
+        key: ExternalStylesheetLoadKey,
+        request: ExternalPageStylesheet,
+        work: NavigationStylesheetWork,
+        baseline: Vec<vixen_net::CookieSnapshot>,
+    ) {
+        let mut worker_jar = CookieJar::from_snapshots(baseline.clone());
+        let mut network = self.network.clone();
+        let max_body_bytes = self.network_config.max_body_bytes;
+        let max_redirects = self.network_config.max_redirects;
+        let worker_request = request.clone();
+        let store = Arc::clone(&self.store);
+        let command_tx = self.command_tx.clone();
+        let (cancel, cancel_rx) = tokio::sync::oneshot::channel();
+
+        {
+            let active = self
+                .context_mut(key.context_id)
+                .expect("external stylesheet context was checked")
+                .active_navigation
+                .as_mut()
+                .expect("external stylesheet navigation was checked");
+            active.cancel = Some(cancel);
+            active.pending_stylesheet = Some(PendingExternalStylesheet { key, request, work });
+        }
+
+        let task = self
+            .network_runtime
+            .as_ref()
+            .expect("source runtime is available")
+            .spawn(async move {
+                let mut profile_baseline = baseline.clone();
+                let result = tokio::select! {
+                    _ = cancel_rx => return,
+                    result = load_external_resource(
+                        &mut network,
+                        &mut worker_jar,
+                        ExternalResourceLoadInput {
+                            store: &store,
+                            profile_baseline: &mut profile_baseline,
+                            request: worker_request,
+                            max_body_bytes,
+                            max_redirects,
+                        },
+                    ) => result,
+                };
+                let cookie_delta = worker_jar.delta_from_snapshots(&profile_baseline);
+                let _ = command_tx.send(CoreMessage::ExternalStylesheetLoaded(
+                    ExternalStylesheetLoadCompletion {
+                        key,
+                        result,
+                        cookie_delta,
+                    },
+                ));
+            });
+        self.context_mut(key.context_id)
+            .expect("external stylesheet context was checked")
+            .active_navigation
+            .as_mut()
+            .expect("external stylesheet navigation was checked")
+            .load_task = Some(task.abort_handle());
+    }
+
+    fn complete_external_stylesheet(&mut self, completion: ExternalStylesheetLoadCompletion) {
+        let ExternalStylesheetLoadCompletion {
+            key,
+            result,
+            cookie_delta,
+        } = completion;
+        let Some(context) = self.contexts.get(&key.context_id) else {
+            return;
+        };
+        if context.document_id != key.document_id
+            || context.runtime_context_id != key.runtime_context_id
+        {
+            return;
+        }
+        let runtime_slot = context.runtime_slot;
+        let frame_id = context.frame_id;
+        let document_url = context.page.url().to_owned();
+        let Some(active) = context.active_navigation.as_ref() else {
+            return;
+        };
+        if active.navigation_id != key.navigation_id
+            || active
+                .pending_stylesheet
+                .as_ref()
+                .is_none_or(|pending| pending.key != key)
+        {
+            return;
+        }
+
+        let pending = {
+            let active = self
+                .context_mut(key.context_id)
+                .expect("external stylesheet context was checked")
+                .active_navigation
+                .as_mut()
+                .expect("external stylesheet navigation was checked");
+            active.cancel.take();
+            active.load_task.take();
+            active
+                .pending_stylesheet
+                .take()
+                .expect("external stylesheet request was checked")
+        };
+        let request_url = pending.request.url().to_string();
+        let mut effects = RuntimeEffects {
+            network: external_resource_network_events(key.request_id, &request_url, &result),
+            ..RuntimeEffects::default()
+        };
+        let (source, blocked, requested_urls, cache_response) = match result {
+            Ok(LoadedExternalResource::File { final_url, source }) => {
+                if pending.request.allows_url(&final_url) {
+                    (Some(source), None, Vec::new(), None)
+                } else {
+                    (None, Some((final_url.to_string(), "csp")), Vec::new(), None)
+                }
+            }
+            Ok(LoadedExternalResource::Http {
+                response,
+                requested_urls,
+            }) => {
+                let final_url = url::Url::parse(&response.final_url).ok();
+                if final_url
+                    .as_ref()
+                    .is_none_or(|final_url| !pending.request.allows_url(final_url))
+                {
+                    (
+                        None,
+                        Some((response.final_url, "csp")),
+                        requested_urls,
+                        None,
+                    )
+                } else if !stylesheet_response_allowed(&response) {
+                    (
+                        None,
+                        Some((response.final_url, "response-policy")),
+                        requested_urls,
+                        None,
+                    )
+                } else {
+                    (
+                        Some(response.body.clone()),
+                        None,
+                        requested_urls,
+                        Some(response),
+                    )
+                }
+            }
+            Err(_) => (None, None, Vec::new(), None),
+        };
+        if let Some((url, blocked_reason)) = blocked {
+            effects.network.push(RuntimeNetworkEvent::Failure {
+                request_id: key.request_id.to_string(),
+                url,
+                error_text: "external stylesheet blocked".to_owned(),
+                blocked_reason: Some(blocked_reason.to_owned()),
+            });
+        }
+
+        let Some(source) = source else {
+            if !effects.is_empty() {
+                self.emit(BrowserEvent::RuntimeEffects {
+                    context_id: key.context_id,
+                    frame_id,
+                    document_id: key.document_id,
+                    runtime_context_id: key.runtime_context_id,
+                    url: document_url,
+                    effects,
+                });
+            }
+            self.restore_navigation_work(
+                key.context_id,
+                key.navigation_id,
+                NavigationWork::Stylesheets(pending.work),
+            );
+            return;
+        };
+
+        let commit_result = persist_profile_cookies(&self.store, &requested_urls, &cookie_delta)
+            .map_err(script_error)
+            .and_then(|()| {
+                cache_response.as_ref().map_or(Ok(()), |response| {
+                    persist_external_resource_cache(&self.store, response)
+                })
+            })
+            .and_then(|()| {
+                self.runtime_slots[runtime_slot]
+                    .runtime
+                    .apply_network_cookie_delta(cookie_delta.clone())
+                    .map_err(script_error)
+            })
+            .and_then(|()| {
+                self.context_mut(key.context_id)
+                    .expect("external stylesheet context was checked")
+                    .page
+                    .apply_external_stylesheet(key.stylesheet_index, source)
+                    .map_err(|message| {
+                        BrowserError::new(browser_error_codes::NAVIGATION_LOAD, message)
+                    })
+            });
+        if let Err(error) = commit_result {
+            effects.exceptions.push(RuntimeExceptionEvent { error });
+        } else {
+            self.cookies.apply_delta(cookie_delta);
+        }
+        if !effects.is_empty() {
+            self.emit(BrowserEvent::RuntimeEffects {
+                context_id: key.context_id,
+                frame_id,
+                document_id: key.document_id,
+                runtime_context_id: key.runtime_context_id,
+                url: document_url,
+                effects,
+            });
+        }
+        self.restore_navigation_work(
+            key.context_id,
+            key.navigation_id,
+            NavigationWork::Stylesheets(pending.work),
+        );
     }
 
     fn advance_script_work(
@@ -2200,10 +2635,10 @@ impl BrowserCore {
                 let mut profile_baseline = baseline.clone();
                 let result = tokio::select! {
                     _ = cancel_rx => return,
-                    result = load_external_script(
+                    result = load_external_resource(
                         &mut network,
                         &mut worker_jar,
-                        ExternalScriptLoadInput {
+                        ExternalResourceLoadInput {
                             store: &store,
                             profile_baseline: &mut profile_baseline,
                             request: worker_request,
@@ -2274,18 +2709,18 @@ impl BrowserCore {
         };
         let request_url = pending.request.url().to_string();
         let mut effects = RuntimeEffects {
-            network: external_script_network_events(key.request_id, &request_url, &result),
+            network: external_resource_network_events(key.request_id, &request_url, &result),
             ..RuntimeEffects::default()
         };
-        let (source, blocked, requested_urls) = match result {
-            Ok(LoadedExternalScript::File { final_url, source }) => {
+        let (source, blocked, requested_urls, cache_response) = match result {
+            Ok(LoadedExternalResource::File { final_url, source }) => {
                 if pending.request.allows_url(&final_url) {
-                    (Some(source), None, Vec::new())
+                    (Some(source), None, Vec::new(), None)
                 } else {
-                    (None, Some((final_url.to_string(), "csp")), Vec::new())
+                    (None, Some((final_url.to_string(), "csp")), Vec::new(), None)
                 }
             }
-            Ok(LoadedExternalScript::Http {
+            Ok(LoadedExternalResource::Http {
                 response,
                 requested_urls,
             }) => {
@@ -2294,18 +2729,29 @@ impl BrowserCore {
                     .as_ref()
                     .is_none_or(|final_url| !pending.request.allows_url(final_url))
                 {
-                    (None, Some((response.final_url, "csp")), requested_urls)
+                    (
+                        None,
+                        Some((response.final_url, "csp")),
+                        requested_urls,
+                        None,
+                    )
                 } else if !script_response_allowed(&response) {
                     (
                         None,
                         Some((response.final_url, "response-policy")),
                         requested_urls,
+                        None,
                     )
                 } else {
-                    (Some(response.body), None, requested_urls)
+                    (
+                        Some(response.body.clone()),
+                        None,
+                        requested_urls,
+                        Some(response),
+                    )
                 }
             }
-            Err(_) => (None, None, Vec::new()),
+            Err(_) => (None, None, Vec::new(), None),
         };
         if let Some((url, blocked_reason)) = blocked {
             effects.network.push(RuntimeNetworkEvent::Failure {
@@ -2338,6 +2784,25 @@ impl BrowserCore {
             effects.exceptions.push(RuntimeExceptionEvent {
                 error: script_error(error),
             });
+            self.emit(BrowserEvent::RuntimeEffects {
+                context_id: key.context_id,
+                frame_id,
+                document_id: key.document_id,
+                runtime_context_id: key.runtime_context_id,
+                url: document_url.clone(),
+                effects,
+            });
+            self.restore_navigation_work(
+                key.context_id,
+                key.navigation_id,
+                NavigationWork::Scripts(pending.work),
+            );
+            return;
+        }
+        if let Some(response) = cache_response
+            && let Err(error) = persist_external_resource_cache(&self.store, &response)
+        {
+            effects.exceptions.push(RuntimeExceptionEvent { error });
             self.emit(BrowserEvent::RuntimeEffects {
                 context_id: key.context_id,
                 frame_id,
@@ -3431,30 +3896,48 @@ impl BrowserCore {
         self.control.finish_navigation(context_id, navigation_id);
         let active_request_id = active.request_id;
         if matches!(&terminal, NavigationTerminal::Cancelled { .. }) {
-            let canceled_script = active.pending_script.as_ref().map(|pending| {
-                let request_id = pending.key.request_id.to_string();
-                let url = pending.request.url().to_string();
-                vec![
-                    RuntimeNetworkEvent::Request {
-                        request_id: request_id.clone(),
-                        url: url.clone(),
-                        method: Method::Get.as_str().to_owned(),
-                    },
-                    RuntimeNetworkEvent::Failure {
-                        request_id,
-                        url,
-                        error_text: "external script load canceled".to_owned(),
-                        blocked_reason: Some("canceled".to_owned()),
-                    },
-                ]
-            });
+            let canceled_resource = active
+                .pending_script
+                .as_ref()
+                .map(|pending| {
+                    (
+                        pending.key.request_id,
+                        pending.request.url().to_string(),
+                        "script",
+                    )
+                })
+                .or_else(|| {
+                    active.pending_stylesheet.as_ref().map(|pending| {
+                        (
+                            pending.key.request_id,
+                            pending.request.url().to_string(),
+                            "stylesheet",
+                        )
+                    })
+                })
+                .map(|(request_id, url, kind)| {
+                    let request_id = request_id.to_string();
+                    vec![
+                        RuntimeNetworkEvent::Request {
+                            request_id: request_id.clone(),
+                            url: url.clone(),
+                            method: Method::Get.as_str().to_owned(),
+                        },
+                        RuntimeNetworkEvent::Failure {
+                            request_id,
+                            url,
+                            error_text: format!("external {kind} load canceled"),
+                            blocked_reason: Some("canceled".to_owned()),
+                        },
+                    ]
+                });
             if let Some(cancel) = active.cancel.take() {
                 let _ = cancel.send(());
             }
             if let Some(load_task) = active.load_task.take() {
                 load_task.abort();
             }
-            if let Some(network) = canceled_script {
+            if let Some(network) = canceled_resource {
                 self.emit(BrowserEvent::RuntimeEffects {
                     context_id,
                     frame_id,
@@ -3803,20 +4286,20 @@ async fn load_source(
     }
 }
 
-struct ExternalScriptLoadInput<'a> {
+struct ExternalResourceLoadInput<'a, R> {
     store: &'a Store,
     profile_baseline: &'a mut Vec<vixen_net::CookieSnapshot>,
-    request: ExternalPageScript,
+    request: R,
     max_body_bytes: u64,
     max_redirects: usize,
 }
 
-async fn load_external_script(
+async fn load_external_resource<R: ExternalTextResource>(
     network: &mut Network,
     cookies: &mut CookieJar,
-    input: ExternalScriptLoadInput<'_>,
-) -> Result<LoadedExternalScript, ExternalScriptLoadFailure> {
-    let ExternalScriptLoadInput {
+    input: ExternalResourceLoadInput<'_, R>,
+) -> Result<LoadedExternalResource, ExternalResourceLoadFailure> {
+    let ExternalResourceLoadInput {
         store,
         profile_baseline,
         request,
@@ -3824,6 +4307,7 @@ async fn load_external_script(
         max_redirects,
     } = input;
     let url = request.url().clone();
+    let resource_kind = request.kind();
     match url.scheme() {
         "file" => {
             let mut path_url = url.clone();
@@ -3831,10 +4315,10 @@ async fn load_external_script(
             path_url.set_fragment(None);
             let path = path_url
                 .to_file_path()
-                .map_err(|_| ExternalScriptLoadFailure {
+                .map_err(|_| ExternalResourceLoadFailure {
                     error: BrowserError::new(
                         browser_error_codes::INVALID_ARGUMENT,
-                        "external script file URL has no local path",
+                        format!("external {resource_kind} file URL has no local path"),
                     ),
                     url: url.to_string(),
                     events: Vec::new(),
@@ -3847,34 +4331,40 @@ async fn load_external_script(
                         BoundedFileReadError::Inspect(error) => BrowserError::new(
                             browser_error_codes::NAVIGATION_LOAD,
                             format!(
-                                "failed to inspect external script {}: {error}",
+                                "failed to inspect external {resource_kind} {}: {error}",
                                 path.display()
                             ),
                         ),
                         BoundedFileReadError::TooLarge => BrowserError::new(
                             browser_error_codes::NAVIGATION_LOAD,
                             format!(
-                                "external script body exceeds {max_body_bytes} bytes at {}",
+                                "external {resource_kind} body exceeds {max_body_bytes} bytes at {}",
                                 path.display()
                             ),
                         ),
                         BoundedFileReadError::Open(error) => BrowserError::new(
                             browser_error_codes::NAVIGATION_LOAD,
-                            format!("failed to open external script {}: {error}", path.display()),
+                            format!(
+                                "failed to open external {resource_kind} {}: {error}",
+                                path.display()
+                            ),
                         ),
                         BoundedFileReadError::Read(error) => BrowserError::new(
                             browser_error_codes::NAVIGATION_LOAD,
-                            format!("failed to read external script {}: {error}", path.display()),
+                            format!(
+                                "failed to read external {resource_kind} {}: {error}",
+                                path.display()
+                            ),
                         ),
                     };
-                    ExternalScriptLoadFailure {
+                    ExternalResourceLoadFailure {
                         error,
                         url: url.to_string(),
                         events: Vec::new(),
                         blocked_reason: "load",
                     }
                 })?;
-            Ok(LoadedExternalScript::File {
+            Ok(LoadedExternalResource::File {
                 final_url: url,
                 source: String::from_utf8_lossy(&bytes).into_owned(),
             })
@@ -3887,10 +4377,12 @@ async fn load_external_script(
             let mut requested_urls = Vec::new();
             loop {
                 if let Some(blocked_reason) = request.blocked_reason(&current) {
-                    return Err(ExternalScriptLoadFailure {
+                    return Err(ExternalResourceLoadFailure {
                         error: BrowserError::new(
                             browser_error_codes::NAVIGATION_LOAD,
-                            format!("external script blocked by {blocked_reason}: {current}"),
+                            format!(
+                                "external {resource_kind} blocked by {blocked_reason}: {current}"
+                            ),
                         ),
                         url: current.to_string(),
                         events,
@@ -3899,7 +4391,7 @@ async fn load_external_script(
                 }
                 visited.insert(current.to_string());
                 merge_profile_cookies(store, &current, cookies, profile_baseline).map_err(
-                    |error| ExternalScriptLoadFailure {
+                    |error| ExternalResourceLoadFailure {
                         error: script_error(error),
                         url: current.to_string(),
                         events: events.clone(),
@@ -3926,10 +4418,10 @@ async fn load_external_script(
                     Ok(response) => response,
                     Err(error) => {
                         events.extend(hop_events);
-                        return Err(ExternalScriptLoadFailure {
+                        return Err(ExternalResourceLoadFailure {
                             error: BrowserError::new(
                                 browser_error_codes::NAVIGATION_LOAD,
-                                format!("external script fetch failed: {error}"),
+                                format!("external {resource_kind} fetch failed: {error}"),
                             ),
                             url: current.to_string(),
                             events,
@@ -3942,17 +4434,17 @@ async fn load_external_script(
                 if !is_followable_redirect(response.status) {
                     response.events = events;
                     response.redirects = redirects;
-                    return Ok(LoadedExternalScript::Http {
+                    return Ok(LoadedExternalResource::Http {
                         response,
                         requested_urls,
                     });
                 }
                 if redirects as usize >= max_redirects {
-                    return Err(ExternalScriptLoadFailure {
+                    return Err(ExternalResourceLoadFailure {
                         error: BrowserError::new(
                             browser_error_codes::NAVIGATION_LOAD,
                             format!(
-                                "external script fetch failed: too many redirects (>{max_redirects}) fetching {current}"
+                                "external {resource_kind} fetch failed: too many redirects (>{max_redirects}) fetching {current}"
                             ),
                         ),
                         url: current.to_string(),
@@ -3961,11 +4453,11 @@ async fn load_external_script(
                     });
                 }
                 let location = response.header("location").ok_or_else(|| {
-                    ExternalScriptLoadFailure {
+                    ExternalResourceLoadFailure {
                         error: BrowserError::new(
                             browser_error_codes::NAVIGATION_LOAD,
                             format!(
-                                "external script fetch failed: invalid redirect target from {current}"
+                                "external {resource_kind} fetch failed: invalid redirect target from {current}"
                             ),
                         ),
                         url: current.to_string(),
@@ -3973,11 +4465,11 @@ async fn load_external_script(
                         blocked_reason: "load",
                     }
                 })?;
-                let next = current.join(location).map_err(|_| ExternalScriptLoadFailure {
+                let next = current.join(location).map_err(|_| ExternalResourceLoadFailure {
                     error: BrowserError::new(
                         browser_error_codes::NAVIGATION_LOAD,
                         format!(
-                            "external script fetch failed: invalid redirect target from {current}"
+                            "external {resource_kind} fetch failed: invalid redirect target from {current}"
                         ),
                     ),
                     url: current.to_string(),
@@ -3985,11 +4477,11 @@ async fn load_external_script(
                     blocked_reason: "load",
                 })?;
                 if visited.contains(&next.to_string()) {
-                    return Err(ExternalScriptLoadFailure {
+                    return Err(ExternalResourceLoadFailure {
                         error: BrowserError::new(
                             browser_error_codes::NAVIGATION_LOAD,
                             format!(
-                                "external script fetch failed: redirect loop detected at {next}"
+                                "external {resource_kind} fetch failed: redirect loop detected at {next}"
                             ),
                         ),
                         url: next.to_string(),
@@ -3998,11 +4490,11 @@ async fn load_external_script(
                     });
                 }
                 if let Err(error) = vixen_net::validate_http_url(&next) {
-                    return Err(ExternalScriptLoadFailure {
+                    return Err(ExternalResourceLoadFailure {
                         error: BrowserError::new(
                             browser_error_codes::NAVIGATION_LOAD,
                             format!(
-                                "external script fetch failed: URL rejected by policy: {error}"
+                                "external {resource_kind} fetch failed: URL rejected by policy: {error}"
                             ),
                         ),
                         url: next.to_string(),
@@ -4023,10 +4515,10 @@ async fn load_external_script(
                     status: response.status,
                 });
                 if let Some(blocked_reason) = request.blocked_reason(&next) {
-                    return Err(ExternalScriptLoadFailure {
+                    return Err(ExternalResourceLoadFailure {
                         error: BrowserError::new(
                             browser_error_codes::NAVIGATION_LOAD,
-                            format!("external script blocked by {blocked_reason}: {next}"),
+                            format!("external {resource_kind} blocked by {blocked_reason}: {next}"),
                         ),
                         url: next.to_string(),
                         events,
@@ -4037,10 +4529,10 @@ async fn load_external_script(
                 current = next;
             }
         }
-        scheme => Err(ExternalScriptLoadFailure {
+        scheme => Err(ExternalResourceLoadFailure {
             error: BrowserError::new(
                 browser_error_codes::INVALID_ARGUMENT,
-                format!("unsupported external script URL scheme: {scheme}"),
+                format!("unsupported external {resource_kind} URL scheme: {scheme}"),
             ),
             url: url.to_string(),
             events: Vec::new(),
@@ -4287,14 +4779,14 @@ fn apply_runtime_config(runtime: &mut JsRuntime, config: &BrowsingContextConfig)
     }
 }
 
-fn external_script_network_events(
+fn external_resource_network_events(
     request_id: RequestId,
     request_url: &str,
-    result: &Result<LoadedExternalScript, ExternalScriptLoadFailure>,
+    result: &Result<LoadedExternalResource, ExternalResourceLoadFailure>,
 ) -> Vec<RuntimeNetworkEvent> {
     let request_id = request_id.to_string();
     match result {
-        Ok(LoadedExternalScript::File { final_url, .. }) => vec![
+        Ok(LoadedExternalResource::File { final_url, .. }) => vec![
             RuntimeNetworkEvent::Request {
                 request_id: request_id.clone(),
                 url: request_url.to_owned(),
@@ -4306,7 +4798,7 @@ fn external_script_network_events(
                 status: 200,
             },
         ],
-        Ok(LoadedExternalScript::Http { response, .. }) => response
+        Ok(LoadedExternalResource::Http { response, .. }) => response
             .events
             .iter()
             .map(|event| match event {
@@ -4367,6 +4859,58 @@ fn external_script_network_events(
             events
         }
     }
+}
+
+fn stylesheet_response_allowed(response: &TextResponse) -> bool {
+    if !(200..300).contains(&response.status) {
+        return false;
+    }
+    let nosniff = response
+        .header("x-content-type-options")
+        .is_some_and(vixen_net::is_nosniff);
+    let mime_essence = response.content_type().unwrap_or("text/plain");
+    matches!(
+        vixen_net::enforce_nosniff(nosniff, mime_essence, vixen_net::Destination::Style),
+        vixen_net::NosniffOutcome::Allow
+    )
+}
+
+fn persist_external_resource_cache(
+    store: &Store,
+    response: &TextResponse,
+) -> Result<(), BrowserError> {
+    let final_url = url::Url::parse(&response.final_url).map_err(|error| {
+        BrowserError::new(
+            browser_error_codes::NAVIGATION_LOAD,
+            format!("external resource returned an invalid final URL: {error}"),
+        )
+    })?;
+    let origin_key = vixen_net::Origin::from_url(&final_url).partition_key();
+    let fetched_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or_default();
+    store
+        .put_cache(
+            &origin_key,
+            &response.final_url,
+            &CacheEntry {
+                status: response.status,
+                headers: response
+                    .headers
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone()))
+                    .collect(),
+                body: response.body.as_bytes().to_vec(),
+                fetched_unix,
+            },
+        )
+        .map_err(|error| {
+            BrowserError::new(
+                browser_error_codes::PROFILE,
+                format!("external resource cache write failed: {error}"),
+            )
+        })
 }
 
 fn drain_runtime_effects(
@@ -4921,7 +5465,9 @@ mod tests {
                 .and_then(|active| active.work.as_ref());
             match work {
                 Some(NavigationWork::Scripts(_)) => return,
-                Some(NavigationWork::Parsing(_)) => assert!(core.advance_navigation_work()),
+                Some(NavigationWork::Parsing(_) | NavigationWork::Stylesheets(_)) => {
+                    assert!(core.advance_navigation_work())
+                }
                 _ => panic!("navigation did not reach script work"),
             }
         }
@@ -5182,8 +5728,18 @@ mod tests {
         )
     }
 
-    fn loaded_script_response(final_url: &str, source: &str) -> LoadedExternalScript {
-        LoadedExternalScript::Http {
+    fn stylesheet_response(source: &str, set_cookie: Option<&str>) -> String {
+        let cookie = set_cookie
+            .map(|value| format!("Set-Cookie: {value}\r\n"))
+            .unwrap_or_default();
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/css\r\nX-Content-Type-Options: nosniff\r\n{cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{source}",
+            source.len()
+        )
+    }
+
+    fn loaded_script_response(final_url: &str, source: &str) -> LoadedExternalResource {
+        LoadedExternalResource::Http {
             response: TextResponse {
                 body: source.to_owned(),
                 headers: BTreeMap::from([(
@@ -7911,6 +8467,194 @@ mod tests {
 
         server.join();
         drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn gated_external_stylesheet_reaches_live_cascade_paint_and_runtime() {
+        let server = GatedHttpServer::start(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = "http://same.test/gated-stylesheet-success";
+        let stylesheet_url = server.url("/visible.css");
+        config.document_overrides.insert(
+            page_url.to_owned(),
+            format!(
+                "<!doctype html><link rel='stylesheet' href='{}'><main id='target'>Styled</main><script>globalThis.externalStyleSeenByAuthor = getComputedStyle(document.querySelector('#target')).width</script>",
+                stylesheet_url
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/visible.css");
+        assert_eq!(
+            state(&mut handle, context_id).active_navigation_id,
+            Some(navigation_id)
+        );
+        request
+            .respond
+            .send(stylesheet_response(
+                "html,body{margin:0}#target{display:block;width:120px;height:40px;background-color:red}",
+                Some("stylesheet_cookie=accepted; Path=/"),
+            ))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("external stylesheet response watchdog");
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        let settled = state(&mut handle, context_id);
+
+        assert_eq!(
+            eval(
+                &mut handle,
+                &settled,
+                "`${externalStyleSeenByAuthor}:${getComputedStyle(document.querySelector('#target')).backgroundColor}`"
+            ),
+            ScriptValue::String("120px:red".to_owned())
+        );
+        let paint = handle
+            .capture_paint_snapshot(context_id, settled.document_id, (320, 200))
+            .unwrap();
+        assert!(paint.commands.iter().any(|command| matches!(
+            command,
+            PaintCommand::Background { fill, color, .. }
+                if fill.w == 120.0 && fill.h == 40.0
+                    && color.r == 255 && color.g == 0 && color.b == 0
+        )));
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        let stylesheet_url = url::Url::parse(&stylesheet_url).unwrap();
+        let origin_key = vixen_net::Origin::from_url(&stylesheet_url).partition_key();
+        let cached = store
+            .get_cache(&origin_key, stylesheet_url.as_str())
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.status, 200);
+        assert!(String::from_utf8_lossy(&cached.body).contains("#target"));
+        drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn external_stylesheet_fixture_changes_visible_file_page() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../fixtures/css/external-stylesheet.html")
+            .canonicalize()
+            .unwrap();
+        let url = url::Url::from_file_path(fixture).unwrap().to_string();
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, &url);
+        let settled = state(&mut handle, context_id);
+
+        assert_eq!(
+            settled.title.as_deref(),
+            Some("External stylesheet — Vixen fixture")
+        );
+        assert_eq!(
+            eval(
+                &mut handle,
+                &settled,
+                "`${getComputedStyle(document.querySelector('#external-style-target')).width}:${getComputedStyle(document.querySelector('#external-style-target')).backgroundColor}`"
+            ),
+            ScriptValue::String("120px:red".to_owned())
+        );
+        let paint = handle
+            .capture_paint_snapshot(context_id, settled.document_id, (320, 200))
+            .unwrap();
+        assert!(paint.commands.iter().any(|command| matches!(
+            command,
+            PaintCommand::Background { fill, color, .. }
+                if fill.w == 120.0 && fill.h == 40.0
+                    && color.r == 255 && color.g == 0 && color.b == 0
+        )));
+    }
+
+    #[test]
+    fn supersede_cancels_external_stylesheet_without_late_cookie_or_cache_commit() {
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = "http://same.test/gated-stylesheet-supersede";
+        let stylesheet_url = server.url("/superseded.css");
+        config.document_overrides.insert(
+            page_url.to_owned(),
+            format!(
+                "<!doctype html><title>old</title><link rel='stylesheet' href='{stylesheet_url}'><main id='old'>Old</main>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/superseded.css");
+        let replacement = dispatch_navigation(&mut handle, context_id, "https://same.test/b");
+        let mut events = wait_for_navigation(&mut handle, context_id, replacement).unwrap();
+
+        request
+            .respond
+            .send(stylesheet_response(
+                "#old{background-color:red}",
+                Some("late_stylesheet=blocked; Path=/"),
+            ))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("late external stylesheet response watchdog");
+        assert_eq!(state(&mut handle, context_id).title.as_deref(), Some("B"));
+
+        let probe_navigation = dispatch_navigation(&mut handle, context_id, &server.url("/probe"));
+        let probe = server.request();
+        assert_eq!(probe.path, "/probe");
+        assert!(
+            !probe
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("late_stylesheet=blocked")
+        );
+        probe
+            .respond
+            .send("<!doctype html><title>Probe</title>".to_owned())
+            .unwrap();
+        probe
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("stylesheet probe response watchdog");
+        events.extend(wait_for_navigation(&mut handle, context_id, probe_navigation).unwrap());
+
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Superseded,
+        );
+        assert_no_lifecycle_success(&events, navigation_id);
+
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        let stylesheet_url = url::Url::parse(&stylesheet_url).unwrap();
+        let origin_key = vixen_net::Origin::from_url(&stylesheet_url).partition_key();
+        assert!(
+            store
+                .get_cache(&origin_key, stylesheet_url.as_str())
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
         let _ = std::fs::remove_file(profile_path);
     }
 

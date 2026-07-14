@@ -64,6 +64,18 @@ pub enum DocumentScriptItem {
     ExternalClassicScript(ExternalScript),
 }
 
+/// Document-ordered author-style items used by the core resource loader and
+/// authoritative cascade.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DocumentStyleItem {
+    /// `<meta http-equiv="Content-Security-Policy" content="...">`.
+    CspMeta(String),
+    /// Raw text from an inline `<style>` element.
+    InlineStyle(String),
+    /// A parser-discovered non-alternate `<link rel="stylesheet" href>`.
+    ExternalStylesheet { index: usize, href: String },
+}
+
 impl Document {
     /// Parse an HTML string.
     pub fn parse(html: &str) -> Result<Self, ParseError> {
@@ -141,12 +153,82 @@ impl Document {
 
     /// Raw text contents of author `<style>` blocks, in document order.
     pub fn style_blocks(&self) -> Vec<String> {
+        self.style_execution_items()
+            .into_iter()
+            .filter_map(|item| match item {
+                DocumentStyleItem::InlineStyle(source) => Some(source),
+                DocumentStyleItem::CspMeta(_) | DocumentStyleItem::ExternalStylesheet { .. } => {
+                    None
+                }
+            })
+            .collect()
+    }
+
+    /// Document-ordered CSP-meta, inline-style, and external stylesheet items.
+    pub fn style_execution_items(&self) -> Vec<DocumentStyleItem> {
         let mut out = Vec::new();
+        let mut external_index = 0;
         walk(&self.dom.document, &mut |node| {
-            if let NodeData::Element { name, .. } = &node.data
-                && name.local.as_ref() == "style"
+            let NodeData::Element { name, attrs, .. } = &node.data else {
+                return;
+            };
+            let tag = name.local.as_ref();
+            if tag == "meta" {
+                if let Some(policy) = csp_meta_policy(&attrs.borrow()) {
+                    out.push(DocumentStyleItem::CspMeta(policy));
+                }
+                return;
+            }
+            if tag == "style" {
+                out.push(DocumentStyleItem::InlineStyle(text_content_of(node)));
+                return;
+            }
+            if tag != "link" {
+                return;
+            }
+            let attrs = attrs.borrow();
+            let rel = attrs
+                .iter()
+                .find(|attr| attr.name.local.as_ref() == "rel")
+                .map(|attr| attr.value.as_ref())
+                .unwrap_or_default();
+            let is_stylesheet = rel
+                .split_ascii_whitespace()
+                .any(|token| token.eq_ignore_ascii_case("stylesheet"));
+            let is_alternate = rel
+                .split_ascii_whitespace()
+                .any(|token| token.eq_ignore_ascii_case("alternate"));
+            if !is_stylesheet || is_alternate {
+                return;
+            }
+            let media_supported = attrs
+                .iter()
+                .find(|attr| attr.name.local.as_ref() == "media")
+                .map(|attr| attr.value.trim())
+                .is_none_or(|media| {
+                    media.is_empty()
+                        || media.eq_ignore_ascii_case("all")
+                        || media.eq_ignore_ascii_case("screen")
+                });
+            let type_supported = attrs
+                .iter()
+                .find(|attr| attr.name.local.as_ref() == "type")
+                .map(|attr| attr.value.trim())
+                .is_none_or(|kind| kind.is_empty() || kind.eq_ignore_ascii_case("text/css"));
+            if !media_supported || !type_supported {
+                return;
+            }
+            if let Some(href) = attrs
+                .iter()
+                .find(|attr| attr.name.local.as_ref() == "href")
+                .map(|attr| attr.value.to_string())
+                .filter(|href| !href.trim().is_empty())
             {
-                out.push(text_content_of(node));
+                out.push(DocumentStyleItem::ExternalStylesheet {
+                    index: external_index,
+                    href,
+                });
+                external_index += 1;
             }
         });
         out
@@ -428,6 +510,22 @@ impl Document {
         });
         found
     }
+}
+
+fn csp_meta_policy(attrs: &[Attribute]) -> Option<String> {
+    let is_csp = attrs.iter().any(|attr| {
+        attr.name.local.as_ref() == "http-equiv"
+            && attr
+                .value
+                .trim()
+                .eq_ignore_ascii_case("Content-Security-Policy")
+    });
+    is_csp.then(|| {
+        attrs
+            .iter()
+            .find(|attr| attr.name.local.as_ref() == "content")
+            .map(|attr| attr.value.to_string())
+    })?
 }
 
 impl DocumentParser {
@@ -745,6 +843,36 @@ mod tests {
         assert_eq!(blocks.len(), 2);
         assert!(blocks[0].contains("color: red"));
         assert!(blocks[1].contains("display: grid"));
+    }
+
+    #[test]
+    fn style_items_keep_csp_inline_and_external_order() {
+        let doc = Document::parse(
+            "<meta http-equiv='Content-Security-Policy' content=\"style-src 'self'\">\
+             <style>body { color: red }</style>\
+             <link rel='icon stylesheet' href='/first.css'>\
+             <link rel='alternate stylesheet' href='/alternate.css'>\
+             <link rel='stylesheet' media='print' href='/print.css'>\
+             <link rel='stylesheet' type='text/plain' href='/plain.css'>\
+             <link rel='stylesheet' href='/second.css'>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            doc.style_execution_items(),
+            vec![
+                DocumentStyleItem::CspMeta("style-src 'self'".to_owned()),
+                DocumentStyleItem::InlineStyle("body { color: red }".to_owned()),
+                DocumentStyleItem::ExternalStylesheet {
+                    index: 0,
+                    href: "/first.css".to_owned(),
+                },
+                DocumentStyleItem::ExternalStylesheet {
+                    index: 1,
+                    href: "/second.css".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]

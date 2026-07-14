@@ -568,6 +568,20 @@ impl JsRuntime {
         self.realm_key = RealmKey::NoPage;
     }
 
+    /// Refresh page-backed host snapshots after parser-blocking resources have
+    /// changed style/layout but before any author script executes.
+    pub(crate) fn refresh_page_hosts(&mut self, page: &Page) -> Result<(), EngineError> {
+        let runtime = self.runtime.as_mut().ok_or_else(|| {
+            EngineError::script(codes::SCRIPT_EVAL, "page runtime is not initialised")
+        })?;
+        cssom::refresh(runtime, page)?;
+        if let Some(mutations) = self.dom_mutations.clone() {
+            dom::refresh(runtime, page, mutations)?;
+        }
+        self.realm_key = RealmKey::Page(page_realm_key(page));
+        Ok(())
+    }
+
     /// Drain console calls recorded in the current realm. CDP uses this after
     /// `Runtime.evaluate`, page-script execution, and synthetic input dispatch;
     /// callers that have not created a realm simply get an empty list.
