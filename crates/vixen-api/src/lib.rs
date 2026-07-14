@@ -35,8 +35,8 @@ pub use browser::{
 pub use ids::{
     BrowserId, BrowsingContextId, DocumentId, DownloadId, FrameId, InvalidId, NavigationId,
     ProfileId, RenderCommitId, RenderFragmentId, RenderHandleId, RenderNodeId, RenderQueryId,
-    RenderResourceId, RenderScrollCommandId, RenderScrollNodeId, RequestId, RuntimeContextId,
-    SemanticActionRequestId, SemanticNodeId,
+    RenderRequestId, RenderResourceId, RenderScrollCommandId, RenderScrollNodeId, RequestId,
+    RuntimeContextId, SemanticActionRequestId, SemanticNodeId,
 };
 pub use render::*;
 

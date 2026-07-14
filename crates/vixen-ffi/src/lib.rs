@@ -5,6 +5,9 @@
 pub mod c_abi;
 pub mod c_frame;
 mod frame;
+mod renderer_broker;
+
+pub use renderer_broker::{RenderBroker, RenderBrokerError};
 
 use std::path::PathBuf;
 use std::time::Duration;

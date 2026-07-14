@@ -4,9 +4,11 @@
 //! declared before payload details, validation happens before state changes,
 //! and every top-level exchange names protocol version and exact generations.
 
+mod broker;
 mod commit;
 mod source;
 
+pub use broker::*;
 pub use commit::*;
 pub use source::*;
 

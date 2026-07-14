@@ -86,6 +86,7 @@ define_id!(RenderHandleId);
 define_id!(RenderQueryId);
 define_id!(RenderScrollNodeId);
 define_id!(RenderScrollCommandId);
+define_id!(RenderRequestId);
 define_id!(SemanticNodeId);
 define_id!(SemanticActionRequestId);
 
