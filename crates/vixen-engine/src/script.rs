@@ -29,6 +29,8 @@ mod runtime;
 mod webapi;
 mod webidl;
 
+pub(crate) use runtime::RuntimeInterruptHandle;
+
 /// Vixen's JavaScript runtime seam, backed by `deno_core`/V8.
 pub struct JsRuntime {
     network_config: vixen_net::NetworkConfig,
@@ -41,6 +43,7 @@ pub struct JsRuntime {
     cache_disabled: webapi::CacheDisabledFlag,
     permission_overrides: webapi::PermissionOverrides,
     runtime_network_state: webapi::RuntimeNetworkState,
+    runtime_interrupt: RuntimeInterruptHandle,
     runtime: Option<deno_core::JsRuntime>,
     dom_mutations: Option<dom::DomMutationSink>,
     realm_key: RealmKey,
@@ -332,6 +335,7 @@ impl JsRuntime {
         let cache_disabled = webapi::CacheDisabledFlag::default();
         let permission_overrides = webapi::PermissionOverrides::default();
         let runtime_network_state = webapi::RuntimeNetworkState::default();
+        let runtime_interrupt = RuntimeInterruptHandle::default();
         let init = runtime::new_deno_runtime(
             initial_page,
             network_config.clone(),
@@ -361,6 +365,7 @@ impl JsRuntime {
             cache_disabled,
             permission_overrides,
             runtime_network_state,
+            runtime_interrupt,
             runtime: Some(init.runtime),
             dom_mutations: init.dom_mutations,
             realm_key,
@@ -399,6 +404,10 @@ impl JsRuntime {
         unsafe { (*isolate).enter() };
         let _exit = ExitGuard(isolate);
         operation(self)
+    }
+
+    pub(crate) fn interrupt_handle(&self) -> RuntimeInterruptHandle {
+        self.runtime_interrupt.clone()
     }
 
     /// Evaluate `src` in the persistent non-page JS global and return the
@@ -564,6 +573,7 @@ impl JsRuntime {
             runtime,
             "vixen-console-drain.js",
             "JSON.stringify(globalThis.__vixenDrainConsoleEvents ? globalThis.__vixenDrainConsoleEvents() : [])".to_owned(),
+            &self.runtime_interrupt,
         )?;
         match runtime::js_value_from_global(runtime, result)? {
             JsValue::String(json) => parse_console_events(&json),
@@ -581,6 +591,7 @@ impl JsRuntime {
             runtime,
             "vixen-dialog-drain.js",
             "JSON.stringify(globalThis.__vixenDrainDialogEvents ? globalThis.__vixenDrainDialogEvents() : [])".to_owned(),
+            &self.runtime_interrupt,
         )?;
         match runtime::js_value_from_global(runtime, result)? {
             JsValue::String(json) => parse_dialog_events(&json),
@@ -597,6 +608,7 @@ impl JsRuntime {
             runtime,
             "vixen-binding-drain.js",
             "JSON.stringify(globalThis.__vixenDrainBindingEvents ? globalThis.__vixenDrainBindingEvents() : [])".to_owned(),
+            &self.runtime_interrupt,
         )?;
         match runtime::js_value_from_global(runtime, result)? {
             JsValue::String(json) => parse_binding_events(&json),
@@ -613,6 +625,7 @@ impl JsRuntime {
             runtime,
             "vixen-network-drain.js",
             "JSON.stringify(globalThis.__vixenDrainNetworkEvents ? globalThis.__vixenDrainNetworkEvents() : [])".to_owned(),
+            &self.runtime_interrupt,
         )?;
         match runtime::js_value_from_global(runtime, result)? {
             JsValue::String(json) => parse_network_events(&json),
@@ -631,6 +644,7 @@ impl JsRuntime {
             runtime,
             "vixen-navigation-drain.js",
             "JSON.stringify(globalThis.__vixenDrainNavigationActions ? globalThis.__vixenDrainNavigationActions() : [])".to_owned(),
+            &self.runtime_interrupt,
         )?;
         match runtime::js_value_from_global(runtime, result)? {
             JsValue::String(json) => parse_navigation_actions(&json),
@@ -654,7 +668,12 @@ impl JsRuntime {
         self.ensure_realm(page)?;
 
         let runtime = self.runtime.as_mut().expect("realm initialised");
-        let result = runtime::execute_script(runtime, "inline.js", src.to_owned())?;
+        let result = runtime::execute_script(
+            runtime,
+            "inline.js",
+            src.to_owned(),
+            &self.runtime_interrupt,
+        )?;
         runtime::js_value_from_global(runtime, result)
     }
 
@@ -2053,6 +2072,29 @@ mod tests {
             .expect_err("an unresolved promise must be bounded");
         assert_eq!(promise_error.code(), codes::SCRIPT_EVAL);
         assert_eq!(runtime.evaluate("6 * 7").unwrap(), JsValue::Int32(42));
+    }
+
+    #[test]
+    fn runtime_interrupt_is_immediate_and_leaves_the_isolate_reusable() {
+        let mut runtime = JsRuntime::new().expect("engine init");
+        let interrupt = runtime.interrupt_handle();
+        let interrupter = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(25));
+            assert!(interrupt.interrupt());
+        });
+        let started = std::time::Instant::now();
+
+        let error = runtime
+            .evaluate("for (;;) {}")
+            .expect_err("browser lifecycle interruption must stop JavaScript");
+        interrupter.join().unwrap();
+
+        assert_eq!(error.code(), codes::SCRIPT_INTERRUPTED);
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(150),
+            "external interruption waited for the runtime timeout"
+        );
+        assert_eq!(runtime.evaluate("20 + 22").unwrap(), JsValue::Int32(42));
     }
 
     #[test]

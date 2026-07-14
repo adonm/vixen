@@ -85,22 +85,24 @@ with bounded generation-scoped remote handles.
 The largest remaining delivery risk has moved from frontend ownership
 duplication to the live document lifecycle. HTML parsing, configured/author
 script items, and terminal lifecycle stages now yield cooperatively on the core
-owner. Individual V8 execution and promise pumping have a bounded deadline with
-isolate recovery, but navigation cancellation cannot yet interrupt them before
-that deadline, native host ops and non-script discovered-resource fetches remain
-synchronous, and compatibility projections still coexist with the live page/
-runtime. Parser-discovered external classic scripts now use generation-cancellable
-worker I/O rather than blocking the owner. Adding broad API shape before
-converging those paths would preserve plausible but disconnected state.
+owner. Accepted navigate/reload/stop/close commands snapshot the exact active
+runtime generation and interrupt its V8 execution or promise pumping before the
+bounded deadline; the isolate unwinds and remains reusable. Runtime construction,
+synchronous native host ops, and non-script discovered-resource fetches are not
+yet interruptible, and compatibility projections still coexist with the live
+page/runtime. Parser-discovered external classic scripts use generation-
+cancellable worker I/O rather than blocking the owner. Adding broad API shape
+before converging those paths would preserve plausible but disconnected state.
 
 Other material gaps remain:
 
 - main-document source loading is asynchronous; HTML parsing, configured/author
   script items, and DOMContentLoaded/load/settle stages are generation-checked
-  owner-thread quanta. Runtime construction and native host calls are not yet
-  interruptible; individual V8 jobs are deadline-bounded but not navigation-
-  cancellation-aware. External classic-script file/HTTP reads are cancellable
-  worker tasks; other discovered-resource fetches remain synchronous or absent;
+  owner-thread quanta. Exact-generation V8 jobs are deadline-bounded and
+  navigation-interruptible; runtime construction and synchronous native host
+  calls are not yet interruptible. External classic-script file/HTTP reads are
+  cancellable worker tasks; other discovered-resource fetches remain synchronous
+  or absent;
 - DOM/runtime snapshots and compatibility projections still coexist with live
   page state;
 - layout uses deterministic text metrics and narrow block/inline/flex/grid
@@ -195,6 +197,13 @@ deadline; V8 termination is cancelled after the stack unwinds so the isolate is
 reusable, author timeouts surface as `script.timeout`, later scripts continue,
 failed/timed-out evaluations discard their deferred DOM mutation sink before the
 reusable realm accepts later work, and the committed navigation still settles.
+Successfully queued navigate/reload/stop/close commands snapshot the exact
+current context/runtime generation before enqueue, terminate active V8 work,
+suppress interrupted-job mutations/effects, and make the owner drain queued
+commands before advancing another navigation quantum. Focused infinite-script
+tests prove stop returns before the watchdog, emits one cancellation without a
+spurious runtime exception, suppresses the next script, and leaves the isolate
+reusable.
 Configured and parser-discovered
 scripts now advance one item per generation-checked quantum, followed by separate
 DOMContentLoaded, load, and settle quanta. External classic scripts resolve and
@@ -210,9 +219,9 @@ document and script `file:` reads also enforce the configured body limit before
 and during allocation. Stop or supersede preserves completed script mutations while
 suppressing unstarted items and later success lifecycle events. Author exceptions
 surface as runtime effects, allow later independent scripts to run, and do not
-turn a committed document into a failed navigation. Navigation-triggered runtime
-interruption, synchronous native host calls, and non-script resource loading
-remain the next A2 boundary.
+turn a committed document into a failed navigation. Runtime construction,
+synchronous native host cancellation, and non-script resource loading remain the
+next A2 boundary.
 
 The obsolete fail-closed `Page` string-expression path and headless test-only
 classifiers are deleted; all evaluation adapters use `BrowserCore`/`JsRuntime`.
@@ -375,8 +384,9 @@ and navigation settlement. Gated external-script tests prove in-order execution,
 same-owner stop/supersede responsiveness, pre-request redirect-CSP and active-
 mixed-content checks, profile-wide cookie sharing/persistence, bounded file reads,
 and rejection of late source/cookie/document/runtime completions.
-Navigation-aware V8 interruption, synchronous native host calls, and non-script
-resource loading remain.
+Exact-generation navigate/reload/stop/close commands now interrupt active V8
+jobs before the watchdog without emitting a page exception. Runtime construction,
+synchronous native host calls, and non-script resource loading remain.
 
 ### A3. Live document/runtime integration
 
@@ -586,8 +596,8 @@ correctness. Neither may starve the other.
    path with a broader native IME/device matrix, the landed nested scrollport
    path extended with richer gesture/DOM event fidelity and scroll restoration, CSS/physical
    scale correctness, and lifecycle recovery. In parallel, finish
-   navigation-aware runtime/native-host cancellation and preserve one BrowserCore
-   terminal outcome.
+   runtime-construction/native-host cancellation beyond the landed exact-
+   generation V8 interruption, and preserve one BrowserCore terminal outcome.
 2. Move parser-discovered resources and supported DOM mutations onto the live
    document/runtime rather than creating compatibility state.
 3. Harden and measure the implemented WebRender-to-RGBA texture transport while

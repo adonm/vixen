@@ -13,6 +13,7 @@ pub mod codes {
     pub const SCRIPT_CSP_BLOCKED: &str = "script.csp-blocked";
     pub const UNSUPPORTED_SCREENSHOT: &str = "unsupported.screenshot";
     pub const INVALID_SELECTOR: &str = "invalid-selector";
+    pub const SCRIPT_INTERRUPTED: &str = "script.interrupted";
 }
 
 /// Engine-level error carrying a stable code.

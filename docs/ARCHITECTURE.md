@@ -219,9 +219,13 @@ DOMContentLoaded, load, and settle quanta. Individual V8 execution, promise
 pumping, microtask checkpoints, and runtime-effect drains share a five-second
 production watchdog. Timeout terminates V8, unwinds the job, cancels the
 termination state, and joins the exact watchdog before another job can start, so
-a late timeout cannot poison or terminate the next evaluation. This bounds pure
-V8/promise work but does not yet let a queued stop command interrupt it early;
-synchronous native host calls and non-script discovered resources still need
+a late timeout cannot poison or terminate the next evaluation. The command-side
+control registry snapshots the exact context runtime before enqueueing an
+accepted navigate/reload/stop/close intent; it can terminate only that active
+generation, not a replacement runtime created by the command. Interrupted work
+discards deferred DOM mutations and runtime outputs, and the owner checks queued
+commands before advancing another navigation quantum. Runtime construction,
+synchronous native host calls, and non-script discovered resources still need
 sendable, generation-cancellable worker paths.
 
 Parser-discovered external classic scripts are the first post-commit resource on

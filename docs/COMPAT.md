@@ -188,8 +188,11 @@ between items; a committed author exception emits
 `Runtime.exceptionThrown`, later independent scripts continue, and normal load
 settlement follows. Individual V8 jobs are deadline-bounded, failed/timed-out
 evaluations discard deferred DOM mutations before isolate reuse, and parser-discovered
-external classic-script reads are generation-cancellable; navigation-aware V8
-interruption and synchronous native host calls remain open. There is still no HTTP download manager or Playwright
+external classic-script reads are generation-cancellable. Navigate/reload/stop/
+close commands snapshot and interrupt the exact active runtime generation before
+the deadline; interrupted mutations/effects are discarded, the cancellation is
+not reported as a page exception, and the isolate remains reusable. Runtime
+construction and synchronous native host calls remain open. There is still no HTTP download manager or Playwright
 context-tracing archive implementation.
 
 ---

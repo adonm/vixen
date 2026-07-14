@@ -39,8 +39,8 @@ use crate::history::{HistoryEntry, SessionHistory};
 use crate::page::{Page, PageParser};
 use crate::script::{
     ExternalPageScript, JsConsoleValue, JsNavigationAction, JsNetworkEvent, JsRuntime, JsValue,
-    PageScriptRunner, PreparedPageScript, merge_profile_cookies, persist_profile_cookies,
-    script_response_allowed,
+    PageScriptRunner, PreparedPageScript, RuntimeInterruptHandle, merge_profile_cookies,
+    persist_profile_cookies, script_response_allowed,
 };
 
 const DEFAULT_MAX_CONTEXTS: usize = 128;
@@ -103,6 +103,7 @@ impl BrowserConfig {
 pub struct EngineBrowserHandle {
     commands: mpsc::SyncSender<CoreMessage>,
     events: Arc<EventChannel>,
+    control: Arc<CoreControl>,
     join: Option<std::thread::JoinHandle<()>>,
 }
 
@@ -171,6 +172,7 @@ impl EngineBrowserHandle {
         url: String,
         html: String,
     ) -> Result<BrowserCommandResult, BrowserError> {
+        let interrupt = self.control.interrupt_target(context_id, false);
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.commands
             .try_send(CoreMessage::NavigateHtml {
@@ -180,6 +182,9 @@ impl EngineBrowserHandle {
                 reply: reply_tx,
             })
             .map_err(command_send_error)?;
+        if let Some(interrupt) = interrupt {
+            let _ = interrupt.interrupt();
+        }
         reply_rx.recv().map_err(|_| {
             BrowserError::new(
                 browser_error_codes::CLOSED,
@@ -191,6 +196,10 @@ impl EngineBrowserHandle {
 
 impl BrowserHandle for EngineBrowserHandle {
     fn dispatch(&mut self, command: BrowserCommand) -> Result<BrowserCommandResult, BrowserError> {
+        let interrupt = command_interrupt(&command).and_then(|(context_id, require_navigation)| {
+            self.control
+                .interrupt_target(context_id, require_navigation)
+        });
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.commands
             .try_send(CoreMessage::Dispatch {
@@ -198,6 +207,9 @@ impl BrowserHandle for EngineBrowserHandle {
                 reply: reply_tx,
             })
             .map_err(command_send_error)?;
+        if let Some(interrupt) = interrupt {
+            let _ = interrupt.interrupt();
+        }
         reply_rx.recv().map_err(|_| {
             BrowserError::new(
                 browser_error_codes::CLOSED,
@@ -213,6 +225,7 @@ impl BrowserHandle for EngineBrowserHandle {
 
 impl Drop for EngineBrowserHandle {
     fn drop(&mut self) {
+        self.control.interrupt_all();
         let _ = self.commands.send(CoreMessage::Shutdown);
         if let Some(join) = self.join.take() {
             let _ = join.join();
@@ -226,13 +239,16 @@ pub fn spawn_browser(config: BrowserConfig) -> Result<EngineBrowserHandle, Brows
     let command_capacity = config.command_capacity.max(1);
     let events = Arc::new(EventChannel::new(config.event_capacity.max(1)));
     let core_events = Arc::clone(&events);
+    let control = Arc::new(CoreControl::default());
+    let core_control = Arc::clone(&control);
     let (command_tx, command_rx) = mpsc::sync_channel(command_capacity);
     let core_commands = command_tx.clone();
     let (start_tx, start_rx) = mpsc::sync_channel(1);
     let join = std::thread::Builder::new()
         .name("vixen-browser-core".to_owned())
         .spawn(move || {
-            let mut core = match BrowserCore::new(config, core_events, core_commands) {
+            let mut core = match BrowserCore::new(config, core_events, core_commands, core_control)
+            {
                 Ok(core) => {
                     let _ = start_tx.send(Ok(()));
                     core
@@ -247,14 +263,15 @@ pub fn spawn_browser(config: BrowserConfig) -> Result<EngineBrowserHandle, Brows
                     break;
                 }
                 loop {
-                    core.advance_navigation_work();
                     match command_rx.try_recv() {
                         Ok(message) => {
                             if handle_core_message(&mut core, message) {
                                 break 'owner;
                             }
                         }
-                        Err(mpsc::TryRecvError::Empty) if core.has_navigation_work() => {}
+                        Err(mpsc::TryRecvError::Empty) if core.has_navigation_work() => {
+                            core.advance_navigation_work();
+                        }
                         Err(mpsc::TryRecvError::Empty) => break,
                         Err(mpsc::TryRecvError::Disconnected) => break 'owner,
                     }
@@ -273,6 +290,7 @@ pub fn spawn_browser(config: BrowserConfig) -> Result<EngineBrowserHandle, Brows
         Ok(Ok(())) => Ok(EngineBrowserHandle {
             commands: command_tx,
             events,
+            control,
             join: Some(join),
         }),
         Ok(Err(error)) => {
@@ -286,6 +304,18 @@ pub fn spawn_browser(config: BrowserConfig) -> Result<EngineBrowserHandle, Brows
                 "browser core exited during startup",
             ))
         }
+    }
+}
+
+fn command_interrupt(command: &BrowserCommand) -> Option<(BrowsingContextId, bool)> {
+    match command {
+        BrowserCommand::Navigate { context_id, url } if url.len() <= MAX_URL_BYTES => {
+            Some((*context_id, false))
+        }
+        BrowserCommand::Reload { context_id }
+        | BrowserCommand::CloseBrowsingContext { context_id } => Some((*context_id, false)),
+        BrowserCommand::Stop { context_id } => Some((*context_id, true)),
+        _ => None,
     }
 }
 
@@ -356,6 +386,91 @@ fn handle_core_message(core: &mut BrowserCore, message: CoreMessage) -> bool {
 struct EventChannel {
     queue: Mutex<EventQueue>,
     ready: Condvar,
+}
+
+#[derive(Default)]
+struct CoreControl {
+    contexts: Mutex<BTreeMap<BrowsingContextId, ContextControl>>,
+}
+
+struct ContextControl {
+    runtime: RuntimeInterruptHandle,
+    active_navigation_id: Option<NavigationId>,
+}
+
+impl CoreControl {
+    fn install_runtime(&self, context_id: BrowsingContextId, runtime: RuntimeInterruptHandle) {
+        let mut contexts = self
+            .contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let active_navigation_id = contexts
+            .get(&context_id)
+            .and_then(|context| context.active_navigation_id);
+        contexts.insert(
+            context_id,
+            ContextControl {
+                runtime,
+                active_navigation_id,
+            },
+        );
+    }
+
+    fn set_navigation(&self, context_id: BrowsingContextId, navigation_id: NavigationId) {
+        if let Some(context) = self
+            .contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_mut(&context_id)
+        {
+            context.active_navigation_id = Some(navigation_id);
+        }
+    }
+
+    fn finish_navigation(&self, context_id: BrowsingContextId, navigation_id: NavigationId) {
+        if let Some(context) = self
+            .contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get_mut(&context_id)
+            && context.active_navigation_id == Some(navigation_id)
+        {
+            context.active_navigation_id = None;
+        }
+    }
+
+    fn remove_context(&self, context_id: BrowsingContextId) {
+        self.contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&context_id);
+    }
+
+    fn interrupt_target(
+        &self,
+        context_id: BrowsingContextId,
+        require_navigation: bool,
+    ) -> Option<RuntimeInterruptHandle> {
+        self.contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .get(&context_id)
+            .filter(|context| !require_navigation || context.active_navigation_id.is_some())
+            .map(|context| context.runtime.clone())
+    }
+
+    fn interrupt_all(&self) {
+        let runtimes = self
+            .contexts
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .values()
+            .map(|context| context.runtime.clone())
+            .collect::<Vec<_>>();
+        for runtime in runtimes {
+            let _ = runtime.interrupt();
+        }
+    }
 }
 
 impl EventChannel {
@@ -432,6 +547,7 @@ struct BrowserCore {
     active_context: Option<BrowsingContextId>,
     max_contexts: usize,
     events: Arc<EventChannel>,
+    control: Arc<CoreControl>,
     command_tx: mpsc::SyncSender<CoreMessage>,
     store: Arc<Store>,
     network_config: NetworkConfig,
@@ -683,6 +799,7 @@ impl BrowserCore {
         config: BrowserConfig,
         events: Arc<EventChannel>,
         command_tx: mpsc::SyncSender<CoreMessage>,
+        control: Arc<CoreControl>,
     ) -> Result<Self, BrowserError> {
         if let Some(parent) = config.profile_path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| {
@@ -726,6 +843,7 @@ impl BrowserCore {
             active_context: None,
             max_contexts: config.max_contexts.max(1),
             events,
+            control,
             command_tx,
             store,
             network_config: config.network,
@@ -1300,6 +1418,10 @@ impl BrowserCore {
             runtime,
             active: true,
         });
+        self.control.install_runtime(
+            context_id,
+            self.runtime_slots[runtime_slot].runtime.interrupt_handle(),
+        );
         self.contexts.insert(
             context_id,
             BrowsingContext {
@@ -1346,6 +1468,7 @@ impl BrowserCore {
             )?;
         }
         let context = self.contexts.remove(&context_id).expect("context checked");
+        self.control.remove_context(context_id);
         self.runtime_slots[context.runtime_slot].active = false;
         self.emit(BrowserEvent::RuntimeContextDestroyed {
             context_id,
@@ -1418,6 +1541,7 @@ impl BrowserCore {
             load_task: None,
             pending_script: None,
         });
+        self.control.set_navigation(context_id, navigation_id);
         self.emit(BrowserEvent::NavigationRequested {
             context_id,
             frame_id,
@@ -1761,6 +1885,10 @@ impl BrowserCore {
             runtime,
             active: true,
         });
+        self.control.install_runtime(
+            context_id,
+            self.runtime_slots[runtime_slot].runtime.interrupt_handle(),
+        );
         self.runtime_slots[old_runtime_slot].active = false;
         let script_work = NavigationScriptWork {
             preload_scripts: context_config.preload_scripts.into(),
@@ -1948,15 +2076,27 @@ impl BrowserCore {
                             unreachable!("external scripts start before entering the isolate")
                         }
                     };
-                    let effects = drain_runtime_effects(runtime);
-                    let actions = runtime.drain_navigation_actions();
+                    let interrupted = item_result
+                        .as_ref()
+                        .is_some_and(|result| result.as_ref().is_err_and(is_script_interrupted));
+                    let (effects, actions) = if interrupted {
+                        discard_runtime_outputs(runtime);
+                        (Ok(RuntimeEffects::default()), Ok(Vec::new()))
+                    } else {
+                        (
+                            drain_runtime_effects(runtime),
+                            runtime.drain_navigation_actions(),
+                        )
+                    };
                     (item_result, effects, actions)
                 })
         };
 
         let mut effects = RuntimeEffects::default();
         let advanced_item = item_result.is_some();
-        if let Some(Err(error)) = item_result {
+        if let Some(Err(error)) = item_result
+            && !is_script_interrupted(&error)
+        {
             effects.exceptions.push(RuntimeExceptionEvent {
                 error: script_error(error),
             });
@@ -2227,13 +2367,23 @@ impl BrowserCore {
                     let item_result = runtime
                         .evaluate_with_page_mut(&source, &mut context.page)
                         .map(|_| ());
-                    let effects = drain_runtime_effects(runtime);
-                    let actions = runtime.drain_navigation_actions();
+                    let interrupted = item_result.as_ref().is_err_and(is_script_interrupted);
+                    let (effects, actions) = if interrupted {
+                        discard_runtime_outputs(runtime);
+                        (Ok(RuntimeEffects::default()), Ok(Vec::new()))
+                    } else {
+                        (
+                            drain_runtime_effects(runtime),
+                            runtime.drain_navigation_actions(),
+                        )
+                    };
                     (item_result, effects, actions)
                 })
         };
 
-        if let Err(error) = item_result {
+        if let Err(error) = item_result
+            && !is_script_interrupted(&error)
+        {
             effects.exceptions.push(RuntimeExceptionEvent {
                 error: script_error(error),
             });
@@ -3187,22 +3337,26 @@ impl BrowserCore {
         terminal: NavigationTerminal,
         emit_state: bool,
     ) -> Result<bool, BrowserError> {
-        let context = self.context_mut(context_id)?;
-        let Some(active) = context.active_navigation.as_ref() else {
-            return Ok(false);
+        let (mut active, frame_id, document_id, runtime_context_id, document_url) = {
+            let context = self.context_mut(context_id)?;
+            let Some(active) = context.active_navigation.as_ref() else {
+                return Ok(false);
+            };
+            if active.navigation_id != navigation_id {
+                return Ok(false);
+            }
+            (
+                context
+                    .active_navigation
+                    .take()
+                    .expect("matching navigation is active"),
+                context.frame_id,
+                context.document_id,
+                context.runtime_context_id,
+                context.page.url().to_owned(),
+            )
         };
-        if active.navigation_id != navigation_id {
-            return Ok(false);
-        }
-
-        let mut active = context
-            .active_navigation
-            .take()
-            .expect("matching navigation is active");
-        let frame_id = context.frame_id;
-        let document_id = context.document_id;
-        let runtime_context_id = context.runtime_context_id;
-        let document_url = context.page.url().to_owned();
+        self.control.finish_navigation(context_id, navigation_id);
         let active_request_id = active.request_id;
         if matches!(&terminal, NavigationTerminal::Cancelled { .. }) {
             let canceled_script = active.pending_script.as_ref().map(|pending| {
@@ -4354,6 +4508,10 @@ fn script_error(error: crate::engine_error::EngineError) -> BrowserError {
     BrowserError::new(error.code(), error.to_string())
 }
 
+fn is_script_interrupted(error: &crate::engine_error::EngineError) -> bool {
+    error.code() == crate::engine_error::codes::SCRIPT_INTERRUPTED
+}
+
 #[cfg(test)]
 mod tests {
     use std::io::{Read, Write};
@@ -4538,7 +4696,13 @@ mod tests {
         let profile_path = config.profile_path.clone();
         let events = Arc::new(EventChannel::new(config.event_capacity));
         let (command_tx, command_rx) = mpsc::sync_channel(config.command_capacity);
-        let core = BrowserCore::new(config, Arc::clone(&events), command_tx).unwrap();
+        let core = BrowserCore::new(
+            config,
+            Arc::clone(&events),
+            command_tx,
+            Arc::new(CoreControl::default()),
+        )
+        .unwrap();
         (core, events, command_rx, profile_path)
     }
 
@@ -8063,7 +8227,13 @@ mod tests {
         let profile_path = config.profile_path.clone();
         let events = Arc::new(EventChannel::new(config.event_capacity));
         let (command_tx, command_rx) = mpsc::sync_channel(config.command_capacity);
-        let mut core = BrowserCore::new(config, Arc::clone(&events), command_tx).unwrap();
+        let mut core = BrowserCore::new(
+            config,
+            Arc::clone(&events),
+            command_tx,
+            Arc::new(CoreControl::default()),
+        )
+        .unwrap();
         let context_id = direct_create(&mut core);
         drain_direct_events(&events);
         let script_url = server.url("/stale.js");
@@ -8183,7 +8353,13 @@ mod tests {
         let profile_path = config.profile_path.clone();
         let events = Arc::new(EventChannel::new(config.event_capacity));
         let (command_tx, command_rx) = mpsc::sync_channel(config.command_capacity);
-        let mut core = BrowserCore::new(config, Arc::clone(&events), command_tx).unwrap();
+        let mut core = BrowserCore::new(
+            config,
+            Arc::clone(&events),
+            command_tx,
+            Arc::new(CoreControl::default()),
+        )
+        .unwrap();
         let context_id = direct_create(&mut core);
         drain_direct_events(&events);
         let script_url = server.url("/stopped-completion.js");
@@ -8268,7 +8444,13 @@ mod tests {
         let profile_path = config.profile_path.clone();
         let events = Arc::new(EventChannel::new(config.event_capacity));
         let (command_tx, command_rx) = mpsc::sync_channel(config.command_capacity);
-        let mut core = BrowserCore::new(config, Arc::clone(&events), command_tx).unwrap();
+        let mut core = BrowserCore::new(
+            config,
+            Arc::clone(&events),
+            command_tx,
+            Arc::new(CoreControl::default()),
+        )
+        .unwrap();
         let context_id = direct_create(&mut core);
         drain_direct_events(&events);
         let script_url = server.url("/superseded-completion.js");
@@ -8601,6 +8783,76 @@ mod tests {
         drop(core);
         drop(command_rx);
         let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn stop_interrupts_an_active_author_script_without_a_spurious_exception() {
+        let server = GatedHttpServer::start(2);
+        let page_url = server.url("/page");
+        let script_url = server.url("/loop.js");
+        let marker_url = server.url("/started");
+        let mut config = test_config();
+        server.configure(&mut config);
+        config.document_overrides.insert(
+            page_url.clone(),
+            format!(
+                "<!doctype html><title>running</title><script src=\"{script_url}\"></script><script>document.title = 'stale'</script>"
+            ),
+        );
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/loop.js");
+        request
+            .respond
+            .send(script_response(
+                &format!("fetch('{marker_url}'); for (;;) {{}}"),
+                None,
+            ))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let marker = server.request();
+        assert_eq!(marker.path, "/started");
+        marker.respond.send(String::new()).unwrap();
+        marker
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(25));
+
+        let started = std::time::Instant::now();
+        assert_eq!(
+            handle
+                .dispatch(BrowserCommand::Stop { context_id })
+                .unwrap(),
+            BrowserCommandResult::Accepted
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "stop waited for the author-script runtime timeout"
+        );
+
+        let events = drain_events(&mut handle);
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Stopped,
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.exceptions.iter().any(|exception|
+                    matches!(exception.error.code, crate::engine_error::codes::SCRIPT_INTERRUPTED | crate::engine_error::codes::SCRIPT_TIMEOUT))
+        )));
+        let state = state(&mut handle, context_id);
+        assert_eq!(state.title.as_deref(), Some("running"));
+        assert_eq!(eval(&mut handle, &state, "20 + 22"), ScriptValue::Int32(42));
+        drop(handle);
+        server.join();
     }
 
     #[test]

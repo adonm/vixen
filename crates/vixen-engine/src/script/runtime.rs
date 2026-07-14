@@ -30,6 +30,56 @@ pub(super) struct DenoRuntimeInit {
     pub(super) dom_mutations: Option<dom::DomMutationSink>,
 }
 
+#[derive(Clone, Default)]
+pub(crate) struct RuntimeInterruptHandle {
+    active: Arc<Mutex<Option<ActiveExecution>>>,
+}
+
+struct ActiveExecution {
+    state: Arc<DeadlineState>,
+    isolate: v8::IsolateHandle,
+}
+
+impl RuntimeInterruptHandle {
+    pub(crate) fn interrupt(&self) -> bool {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let Some(active) = active.as_ref() else {
+            return false;
+        };
+        if active.state.complete.load(Ordering::Acquire) {
+            return false;
+        }
+        active.state.interrupted.store(true, Ordering::Release);
+        let interrupted = active.isolate.terminate_execution();
+        active.state.wake();
+        interrupted
+    }
+
+    fn install(&self, state: Arc<DeadlineState>, isolate: v8::IsolateHandle) {
+        *self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+            Some(ActiveExecution { state, isolate });
+    }
+
+    fn clear(&self, state: &Arc<DeadlineState>) {
+        let mut active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if active
+            .as_ref()
+            .is_some_and(|active| Arc::ptr_eq(&active.state, state))
+        {
+            *active = None;
+        }
+    }
+}
+
 pub(super) fn new_deno_runtime(
     page: Option<&Page>,
     network_config: NetworkConfig,
@@ -84,20 +134,21 @@ pub(super) fn execute_script(
     runtime: &mut DenoJsRuntime,
     name: &'static str,
     source: String,
+    interrupt: &RuntimeInterruptHandle,
 ) -> Result<v8::Global<v8::Value>, EngineError> {
-    let deadline = RuntimeDeadline::start(runtime, SCRIPT_EXECUTION_TIMEOUT);
+    let deadline = RuntimeDeadline::start(runtime, SCRIPT_EXECUTION_TIMEOUT, interrupt.clone());
     let global = match runtime.execute_script(name, source) {
         Ok(global) => global,
         Err(error) => {
-            return Err(deadline
-                .finish(runtime)
-                .then(timeout_error)
-                .unwrap_or_else(|| {
+            return Err(deadline.finish(runtime).map_or_else(
+                || {
                     EngineError::script(
                         codes::SCRIPT_EVAL,
                         format!("script evaluation raised an exception: {error}"),
                     )
-                }));
+                },
+                termination_error,
+            ));
         }
     };
 
@@ -121,26 +172,29 @@ pub(super) fn execute_script(
     };
 
     let Some(outcome) = outcome else {
-        let _ = deadline.finish(runtime);
-        return Err(timeout_error());
+        return Err(termination_error(
+            deadline
+                .finish(runtime)
+                .unwrap_or(TerminationReason::Timeout),
+        ));
     };
     let value = match outcome {
         Ok(value) => value,
         Err(error) => {
-            return Err(deadline
-                .finish(runtime)
-                .then(timeout_error)
-                .unwrap_or_else(|| {
+            return Err(deadline.finish(runtime).map_or_else(
+                || {
                     EngineError::script(
                         codes::SCRIPT_EVAL,
                         format!("script evaluation raised an exception: {error}"),
                     )
-                }));
+                },
+                termination_error,
+            ));
         }
     };
     runtime.v8_isolate().perform_microtask_checkpoint();
-    if deadline.finish(runtime) {
-        return Err(timeout_error());
+    if let Some(reason) = deadline.finish(runtime) {
+        return Err(termination_error(reason));
     }
     Ok(value)
 }
@@ -149,59 +203,93 @@ pub(super) fn execute_script_immediate(
     runtime: &mut DenoJsRuntime,
     name: &'static str,
     source: String,
+    interrupt: &RuntimeInterruptHandle,
 ) -> Result<v8::Global<v8::Value>, EngineError> {
-    let deadline = RuntimeDeadline::start(runtime, SCRIPT_EXECUTION_TIMEOUT);
+    let deadline = RuntimeDeadline::start(runtime, SCRIPT_EXECUTION_TIMEOUT, interrupt.clone());
     let value = match runtime.execute_script(name, source) {
         Ok(value) => value,
         Err(error) => {
-            return Err(deadline
-                .finish(runtime)
-                .then(timeout_error)
-                .unwrap_or_else(|| {
+            return Err(deadline.finish(runtime).map_or_else(
+                || {
                     EngineError::script(
                         codes::SCRIPT_EVAL,
                         format!("script evaluation raised an exception: {error}"),
                     )
-                }));
+                },
+                termination_error,
+            ));
         }
     };
-    if deadline.finish(runtime) {
-        return Err(timeout_error());
+    if let Some(reason) = deadline.finish(runtime) {
+        return Err(termination_error(reason));
     }
     Ok(value)
 }
 
-fn timeout_error() -> EngineError {
-    EngineError::script(
-        codes::SCRIPT_TIMEOUT,
-        "script execution exceeded the bounded runtime deadline",
-    )
+#[derive(Clone, Copy)]
+enum TerminationReason {
+    Timeout,
+    Interrupted,
+}
+
+fn termination_error(reason: TerminationReason) -> EngineError {
+    match reason {
+        TerminationReason::Timeout => EngineError::script(
+            codes::SCRIPT_TIMEOUT,
+            "script execution exceeded the bounded runtime deadline",
+        ),
+        TerminationReason::Interrupted => EngineError::script(
+            codes::SCRIPT_INTERRUPTED,
+            "script execution was interrupted by a browser lifecycle command",
+        ),
+    }
 }
 
 struct RuntimeDeadline {
     state: Arc<DeadlineState>,
     watchdog: JoinHandle<()>,
+    interrupt: RuntimeInterruptHandle,
 }
 
 struct DeadlineState {
     complete: AtomicBool,
     timed_out: AtomicBool,
+    interrupted: AtomicBool,
     wait_lock: Mutex<()>,
     wait: Condvar,
     waker: Mutex<Option<Waker>>,
 }
 
+impl DeadlineState {
+    fn wake(&self) {
+        if let Some(waker) = self
+            .waker
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .take()
+        {
+            waker.wake();
+        }
+    }
+}
+
 impl RuntimeDeadline {
-    fn start(runtime: &mut DenoJsRuntime, timeout: Duration) -> Self {
+    fn start(
+        runtime: &mut DenoJsRuntime,
+        timeout: Duration,
+        interrupt: RuntimeInterruptHandle,
+    ) -> Self {
         let state = Arc::new(DeadlineState {
             complete: AtomicBool::new(false),
             timed_out: AtomicBool::new(false),
+            interrupted: AtomicBool::new(false),
             wait_lock: Mutex::new(()),
             wait: Condvar::new(),
             waker: Mutex::new(None),
         });
         let watchdog_state = state.clone();
         let isolate = runtime.v8_isolate().thread_safe_handle();
+        interrupt.install(state.clone(), isolate.clone());
         let watchdog = std::thread::spawn(move || {
             let guard = watchdog_state
                 .wait_lock
@@ -216,20 +304,17 @@ impl RuntimeDeadline {
             if result.timed_out() && !watchdog_state.complete.load(Ordering::Acquire) {
                 watchdog_state.timed_out.store(true, Ordering::Release);
                 let _ = isolate.terminate_execution();
-                if let Some(waker) = watchdog_state
-                    .waker
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner())
-                    .take()
-                {
-                    waker.wake();
-                }
+                watchdog_state.wake();
             }
         });
-        Self { state, watchdog }
+        Self {
+            state,
+            watchdog,
+            interrupt,
+        }
     }
 
-    fn finish(self, runtime: &mut DenoJsRuntime) -> bool {
+    fn finish(self, runtime: &mut DenoJsRuntime) -> Option<TerminationReason> {
         let guard = self
             .state
             .wait_lock
@@ -238,12 +323,20 @@ impl RuntimeDeadline {
         self.state.complete.store(true, Ordering::Release);
         self.state.wait.notify_all();
         drop(guard);
+        self.interrupt.clear(&self.state);
         let _ = self.watchdog.join();
         let timed_out = self.state.timed_out.load(Ordering::Acquire);
-        if timed_out {
+        let interrupted = self.state.interrupted.load(Ordering::Acquire);
+        if timed_out || interrupted {
             let _ = runtime.v8_isolate().cancel_terminate_execution();
         }
-        timed_out
+        if interrupted {
+            Some(TerminationReason::Interrupted)
+        } else if timed_out {
+            Some(TerminationReason::Timeout)
+        } else {
+            None
+        }
     }
 }
 
@@ -260,7 +353,9 @@ impl Future for DeadlineFuture {
             .waker
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if self.state.timed_out.load(Ordering::Acquire) {
+        if self.state.timed_out.load(Ordering::Acquire)
+            || self.state.interrupted.load(Ordering::Acquire)
+        {
             Poll::Ready(())
         } else {
             *waker = Some(cx.waker().clone());
