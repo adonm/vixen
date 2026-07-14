@@ -26,6 +26,7 @@ final class _BrowserShellState extends State<BrowserShell>
   final FocusNode _addressFocus = FocusNode();
   final FocusNode _findFocus = FocusNode();
   bool _findVisible = false;
+  BrowserHostLifecycle _hostLifecycle = BrowserHostLifecycle.resumed;
 
   @override
   void initState() {
@@ -70,13 +71,17 @@ final class _BrowserShellState extends State<BrowserShell>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    widget.coordinator.updateApplicationLifecycle(switch (state) {
+    final lifecycle = switch (state) {
       AppLifecycleState.resumed => BrowserHostLifecycle.resumed,
       AppLifecycleState.inactive => BrowserHostLifecycle.inactive,
       AppLifecycleState.hidden => BrowserHostLifecycle.hidden,
       AppLifecycleState.paused => BrowserHostLifecycle.paused,
       AppLifecycleState.detached => BrowserHostLifecycle.detached,
-    });
+    };
+    if (_hostLifecycle != lifecycle && mounted) {
+      setState(() => _hostLifecycle = lifecycle);
+    }
+    widget.coordinator.updateApplicationLifecycle(lifecycle);
   }
 
   @override
@@ -161,6 +166,7 @@ final class _BrowserShellState extends State<BrowserShell>
                   child: BrowserContentSurface(
                     contextState: coordinator.selectedContext,
                     frame: coordinator.frame,
+                    lifecycle: _hostLifecycle,
                     accessibility: coordinator.accessibility,
                     onPhysicalViewportChanged:
                         coordinator.updatePhysicalViewport,

@@ -192,6 +192,7 @@ final class BrowserContentSurface extends StatefulWidget {
   const BrowserContentSurface({
     required this.contextState,
     required this.frame,
+    this.lifecycle = BrowserHostLifecycle.resumed,
     this.onPhysicalViewportChanged,
     this.onFocusChanged,
     this.onMouseEvent,
@@ -208,6 +209,7 @@ final class BrowserContentSurface extends StatefulWidget {
 
   final BrowsingContextState? contextState;
   final BrowserFrame? frame;
+  final BrowserHostLifecycle lifecycle;
   final void Function(int width, int height, double scaleFactor)?
   onPhysicalViewportChanged;
   final ValueChanged<bool>? onFocusChanged;
@@ -267,6 +269,8 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   int _controllerEpoch = 0;
   int _presentationFailures = 0;
   bool _presenting = false;
+  Completer<void>? _presentationIdle;
+  Future<void> _surfaceRelease = Future<void>.value();
   bool _disposed = false;
   bool _contentFocused = false;
   bool _presentationRecoveryFailed = false;
@@ -290,7 +294,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.textureController != widget.textureController) {
       _controllerEpoch++;
-      unawaited(_controller.dispose());
+      _queueControllerDispose(_controller);
       _controller = widget.textureController ?? LinuxTextureController();
       _createOperation = null;
       _textureId = null;
@@ -298,11 +302,20 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
       _displayedFrame = null;
       _clearPresentationFailures();
     }
+    final wasEnabled = _lifecycleAllowsPresentation(oldWidget.lifecycle);
+    final isEnabled = _lifecycleAllowsPresentation(widget.lifecycle);
+    if (wasEnabled && !isEnabled) {
+      _suspendPresentation();
+    }
     _queueFrame(widget.frame);
     _syncTextInput();
   }
 
   void _queueFrame(BrowserFrame? frame) {
+    if (!_presentationEnabled) {
+      _pendingFrame = null;
+      return;
+    }
     if (frame == null) {
       _pendingFrame = null;
       _displayedFrame = null;
@@ -320,6 +333,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
 
   Future<void> _presentFrames() async {
     _presenting = true;
+    _presentationIdle = Completer<void>();
     BrowserFrame? attemptedFrame;
     BrowserTextureController? attemptedController;
     int? attemptedControllerEpoch;
@@ -329,25 +343,21 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         attemptedFrame = frame;
         _pendingFrame = null;
         if (!_isNewer(frame, _publishedFrame)) continue;
+        await _surfaceRelease;
+        if (_disposed || !_presentationEnabled) return;
         final controller = _controller;
         final controllerEpoch = _controllerEpoch;
         attemptedController = controller;
         attemptedControllerEpoch = controllerEpoch;
         final textureId = await (_createOperation ??= controller.create());
-        if (_disposed) return;
-        if (controllerEpoch != _controllerEpoch) {
-          await controller.dispose();
-          continue;
-        }
+        if (_disposed || !_presentationEnabled) return;
+        if (controllerEpoch != _controllerEpoch) return;
         if (_pendingFrame case final newer? when _isNewer(newer, frame)) {
           continue;
         }
         await controller.publish(frame);
-        if (_disposed) return;
-        if (controllerEpoch != _controllerEpoch) {
-          await controller.dispose();
-          continue;
-        }
+        if (_disposed || !_presentationEnabled) return;
+        if (controllerEpoch != _controllerEpoch) return;
         _textureId = textureId;
         _publishedFrame = frame;
         _clearPresentationFailures();
@@ -357,21 +367,23 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         }
       }
     } catch (_) {
+      final attemptIsCurrent =
+          attemptedControllerEpoch == _controllerEpoch && _presentationEnabled;
       _displayedFrame = null;
       _publishedFrame = null;
       _textureId = null;
       _createOperation = null;
-      if (attemptedControllerEpoch == _controllerEpoch) {
+      if (attemptIsCurrent) {
         _controllerEpoch++;
-      }
-      try {
-        await attemptedController?.dispose();
-      } catch (_) {
-        // The original create/publish failure remains the recovery signal.
+        try {
+          await attemptedController?.dispose();
+        } catch (_) {
+          // The original create/publish failure remains the recovery signal.
+        }
       }
       final newer = _pendingFrame;
       final retry = newer ?? attemptedFrame;
-      if (!_disposed && retry != null) {
+      if (!_disposed && attemptIsCurrent && retry != null) {
         if (newer != null && _frameKey(newer) != _frameKey(attemptedFrame!)) {
           _clearPresentationFailures();
           _pendingFrame = newer;
@@ -384,7 +396,54 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
       if (mounted) setState(() {});
     } finally {
       _presenting = false;
-      if (!_disposed && _pendingFrame != null) unawaited(_presentFrames());
+      _presentationIdle?.complete();
+      _presentationIdle = null;
+      if (!_disposed && _presentationEnabled && _pendingFrame != null) {
+        unawaited(_presentFrames());
+      }
+    }
+  }
+
+  bool get _presentationEnabled =>
+      _lifecycleAllowsPresentation(widget.lifecycle);
+
+  void _suspendPresentation() {
+    _controllerEpoch++;
+    _pendingFrame = null;
+    _publishedFrame = null;
+    _displayedFrame = null;
+    _textureId = null;
+    _createOperation = null;
+    _clearPresentationFailures();
+    _queueControllerDispose(_controller);
+  }
+
+  void _queueControllerDispose(BrowserTextureController controller) {
+    final previousRelease = _surfaceRelease;
+    final presentationIdle = _presentationIdle?.future;
+    _surfaceRelease = _disposeAfterPresentation(
+      previousRelease,
+      presentationIdle,
+      controller,
+    );
+    unawaited(_surfaceRelease);
+  }
+
+  Future<void> _disposeAfterPresentation(
+    Future<void> previousRelease,
+    Future<void>? presentationIdle,
+    BrowserTextureController controller,
+  ) async {
+    try {
+      await previousRelease;
+    } catch (_) {
+      // A later release must still run after an earlier disposal failure.
+    }
+    if (presentationIdle != null) await presentationIdle;
+    try {
+      await controller.dispose();
+    } catch (_) {
+      // Lifecycle recovery is driven by recreation, not disposal success.
     }
   }
 
@@ -992,9 +1051,10 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   @override
   void dispose() {
     _disposed = true;
+    _controllerEpoch++;
     _textInputClient.close();
     _contentFocus.dispose();
-    unawaited(_controller.dispose());
+    _queueControllerDispose(_controller);
     super.dispose();
   }
 }
@@ -1314,3 +1374,7 @@ bool _sameFrame(BrowserFrame? first, BrowserFrame second) =>
 
 (int, int, int) _frameKey(BrowserFrame frame) =>
     (frame.contextId, frame.documentId, frame.frameId);
+
+bool _lifecycleAllowsPresentation(BrowserHostLifecycle lifecycle) =>
+    lifecycle == BrowserHostLifecycle.resumed ||
+    lifecycle == BrowserHostLifecycle.inactive;

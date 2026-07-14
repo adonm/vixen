@@ -442,6 +442,11 @@ Rules:
   backend or CPU renderer.
 - Texture dimensions, stride, byte length, pool depth, frame queue, and lifetime
   are bounded and generation checked. Flutter cannot mutate WebRender resources.
+- Flutter visible lifecycle states (`resumed`/`inactive`) may present. Hidden,
+  paused, or detached states advance the presenter epoch, clear visible/pending
+  frames, and serialize texture disposal after any in-flight publish. A later
+  visible state waits for that release before creating a replacement; stale
+  completions cannot publish into the replacement generation.
 
 Pixels are not accessibility. BrowserCore must produce a bounded incremental
 accessibility projection from the authoritative DOM/layout state, with stable

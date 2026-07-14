@@ -352,8 +352,7 @@ while inactive. Flutter now derives one bounded logical/physical viewport
 transform; BrowserCore uses its effective scale for the CSS viewport and runtime
 `devicePixelRatio`, then applies the same physical projection to paint, hit
 testing, pointer/wheel input, and accessibility bounds. Widget and BrowserCore
-tests prove the 2.0-scale path. Platform lifecycle/native surface recovery is not
-established by this slice.
+tests prove the 2.0-scale path.
 
 The Flutter coordinator now retries a failing current-generation BrowserCore
 frame or Semantics capture twice while preserving the exact context/document/
@@ -361,8 +360,14 @@ viewport/projection keys. The texture presenter also disposes and recreates its
 controller after a failed create/publish, with two retries per frame; exhaustion
 shows a recovery-failed placeholder rather than looping, and a newer frame gets
 a fresh bounded attempt. Deterministic fake-controller/widget tests prove this
-policy. Real compositor surface loss, GPU reset, application lifecycle recovery,
-and native runner evidence remain open.
+policy. The presenter now also consumes Flutter lifecycle directly: hidden,
+paused, and detached states invalidate the controller epoch, clear pending and
+visible frames, and queue texture disposal behind an in-flight publish;
+resumed/inactive presentation waits for that release before recreation. A
+deterministic blocked-publish fault proves the old generation remains invisible,
+then injects one texture loss into the newer post-resume frame and proves it is
+visible after one bounded recreation. Real compositor loss/GPU reset and
+process-recreation evidence remain open.
 
 The first interactive root-scrolling slice is BrowserCore-owned. Flutter scales
 wheel deltas into the physical frame coordinate space; the live runtime receives

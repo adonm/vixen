@@ -643,10 +643,7 @@ it is not permission to implement the whole subsystem in one batch.
 
 **Linux Flutter lane**
 
-1. **Recover a real native surface/lifecycle fault.** Add deterministic runner or
-   presenter fault injection for detach/resume and texture loss, retain bounded
-   retries, reject stale frames, and prove a newer frame becomes visible.
-2. **Widen native interaction evidence.** Add the next highest-value IME/device
+1. **Widen native interaction evidence.** Add the next highest-value IME/device
    case and restoration-event/gesture fidelity, then broaden AT/screen-reader
    actions. Keep each language, device, or relationship mapping independently
    reviewable.

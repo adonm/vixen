@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -162,6 +164,57 @@ void main() {
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
   });
+
+  testWidgets(
+    'detach and resume reject stale publish and recover newer texture loss',
+    (tester) async {
+      final controller = _LifecycleFaultTextureController(
+        blockedFrameId: 31,
+        failingFrameId: 32,
+      );
+      Widget surface(BrowserFrame frame, BrowserHostLifecycle lifecycle) =>
+          MaterialApp(
+            home: BrowserContentSurface(
+              contextState: null,
+              frame: frame,
+              lifecycle: lifecycle,
+              textureController: controller,
+            ),
+          );
+
+      await tester.pumpWidget(
+        surface(testFrame(frameId: 30), BrowserHostLifecycle.resumed),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.widget<Texture>(find.byType(Texture)).textureId, 1);
+
+      await tester.pumpWidget(
+        surface(testFrame(frameId: 31), BrowserHostLifecycle.resumed),
+      );
+      await tester.pump();
+      expect(controller.publishedFrameIds, [30, 31]);
+
+      await tester.pumpWidget(
+        surface(testFrame(frameId: 31), BrowserHostLifecycle.detached),
+      );
+      await tester.pumpWidget(
+        surface(testFrame(frameId: 32), BrowserHostLifecycle.resumed),
+      );
+      expect(find.byKey(const Key('browser-texture')), findsNothing);
+
+      controller.releaseBlockedPublish();
+      await tester.pumpAndSettle();
+
+      expect(controller.publishedFrameIds, [30, 31, 32, 32]);
+      expect(controller.createCount, 3);
+      expect(controller.disposeCount, 2);
+      expect(tester.widget<Texture>(find.byType(Texture)).textureId, 3);
+      expect(find.byKey(const Key('surface-recovery-failed')), findsNothing);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    },
+  );
 
   testWidgets('content surface normalizes pointer and keyboard input', (
     tester,
@@ -809,6 +862,44 @@ final class _FlakyTextureController implements BrowserTextureController {
       throw StateError('surface lost');
     }
   }
+
+  @override
+  Future<void> dispose() async {
+    disposeCount++;
+  }
+}
+
+final class _LifecycleFaultTextureController
+    implements BrowserTextureController {
+  _LifecycleFaultTextureController({
+    required this.blockedFrameId,
+    required this.failingFrameId,
+  });
+
+  final int blockedFrameId;
+  final int failingFrameId;
+  final Completer<void> _blockedPublish = Completer<void>();
+  final List<int> publishedFrameIds = [];
+  int createCount = 0;
+  int disposeCount = 0;
+  bool _failedNewerFrame = false;
+
+  @override
+  Future<int> create() async => ++createCount;
+
+  @override
+  Future<void> publish(BrowserFrame frame) async {
+    publishedFrameIds.add(frame.frameId);
+    if (frame.frameId == blockedFrameId && !_blockedPublish.isCompleted) {
+      await _blockedPublish.future;
+    }
+    if (frame.frameId == failingFrameId && !_failedNewerFrame) {
+      _failedNewerFrame = true;
+      throw StateError('texture lost after resume');
+    }
+  }
+
+  void releaseBlockedPublish() => _blockedPublish.complete();
 
   @override
   Future<void> dispose() async {

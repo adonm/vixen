@@ -50,13 +50,13 @@ copies the frame through `TransferableTypedData`; and the Linux runner publishes
 it through one `FlPixelBufferTexture` with a mutex-protected three-buffer pool.
 Dimensions are capped at 4096 per axis and 64 MiB per frame, with at most three
 retained native frames and one in-flight Dart capture plus one newest
-replacement. `just gate-flutter-shell` runs format, analysis, 60 Dart/widget/
+replacement. `just gate-flutter-shell` runs format, analysis, 62 Dart/widget/
 native smoke tests, and the native ABI gate. A Fedora 43 container build also
 produced a relocatable debug bundle containing the executable, Flutter embedder,
 and `libvixen_ffi.so`.
 
 This does not establish Linux parity: advanced gesture/restoration-event input
-fidelity, a broader native IME/device matrix, complete lifecycle recovery and scale handling, complete
+fidelity, a broader native IME/device matrix, compositor/GPU-reset and process-recreation recovery, complete scale handling, complete
 semantic relationships/actions and native AT smoke,
 downloads/permissions,
 host services, broader FlatPark host/portal coverage, release size/performance,
@@ -112,7 +112,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime; native Wayland only | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Locked Yaru/Adwaita-blue chrome with an integrated native-window titlebar, explicit X11/XWayland rejection, BrowserCore bridge, RGBA texture, viewport/input, controlled release-process address navigation plus back/forward/reload/active-stop recovery with root/nested scroll restoration, root/nested wheel and key/script/single-touch scrolling, native/contenteditable text-input state, controlled IBus Anthy preedit/commit evidence, normalized `inputmode`/input-type/`enterkeyhint` keyboard and action intent, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Cage/Wayland smoke implemented; broader IME/device, gesture, and restoration-event matrices, native lifecycle/surface recovery, full semantics/native AT, host services, and parity remain open; FlatPark publishing is deferred |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime; native Wayland only | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Locked Yaru/Adwaita-blue chrome with an integrated native-window titlebar, explicit X11/XWayland rejection, BrowserCore bridge, RGBA texture, viewport/input, controlled release-process address navigation plus back/forward/reload/active-stop recovery with root/nested scroll restoration, root/nested wheel and key/script/single-touch scrolling, native/contenteditable text-input state, controlled IBus Anthy preedit/commit evidence, normalized `inputmode`/input-type/`enterkeyhint` keyboard and action intent, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery plus lifecycle disposal/recreation and stale-publish rejection, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Cage/Wayland smoke implemented; broader IME/device, gesture, and restoration-event matrices, compositor/GPU-reset and process-recreation recovery, full semantics/native AT, host services, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -175,14 +175,19 @@ a Flutter external texture:
 This is one WebRender path with a transport copy, not a second renderer. Flutter
 must not repaint or reinterpret Vixen's display list.
 
-The first bounded presentation-recovery slice is implemented. The coordinator
+The bounded presentation and lifecycle-recovery slice is implemented. The coordinator
 retries a failing current-generation BrowserCore frame or Semantics capture
 twice with unchanged context/document/viewport/projection keys. A texture
 create/publish failure disposes and recreates the controller, also with two
 retries per frame. Exhaustion produces a visible recovery-failed placeholder
-instead of a loop; a newer frame receives a fresh bounded attempt. This is
-deterministic Dart/fake-controller evidence, not native compositor surface-loss,
-GPU-reset, or full application-lifecycle recovery proof.
+instead of a loop; a newer frame receives a fresh bounded attempt. Hidden,
+paused, and detached Flutter lifecycle states invalidate the presentation epoch,
+clear pending/visible frames, and serialize texture disposal after any in-flight
+publish. Resumed/inactive presentation waits for that release before creating a
+replacement. Deterministic fault injection blocks an old publish across
+detach/resume, proves it cannot become visible, fails the newer publish once,
+and proves the newer frame after bounded recreation. Native compositor/GPU-reset
+and process-recreation evidence remain open.
 
 ### 3. Input, viewport, accessibility, and host services
 
@@ -215,7 +220,7 @@ device-scale test covers the core and widget paths without a frontend-selected
 node or coordinate repair.
 
 The remaining target adds broader native IME/device evidence, richer gesture/DOM
-event and restoration-event fidelity, and platform lifecycle/surface recovery.
+event and restoration-event fidelity, and compositor/GPU-reset plus process-recreation recovery.
 BrowserCore continues to own hit testing, selection, DOM event dispatch, and
 navigation effects. Platform-specific raw data may be retained in bounded DTOs
 where web semantics require it.
@@ -279,7 +284,7 @@ CSS viewport from the physical target, scales the single display list back to
 the frame, converts hit testing and wheel events into CSS coordinates, and
 projects Semantics bounds into physical display coordinates. Zoom resets only
 on explicit Ctrl+0 and survives navigation in the context; profile persistence,
-text-shaping fidelity, and native surface recovery remain open.
+text-shaping fidelity, and compositor/process surface recovery remain open.
 
 The initial accessibility hierarchy is implemented. BrowserCore/Page derives native
 and explicit ARIA roles, bounded names (including `aria-labelledby` and HTML

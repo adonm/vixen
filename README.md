@@ -58,7 +58,12 @@ one matching transform to WebRender commands, hit testing, wheel coordinates,
 and Semantics bounds;
 current-generation frame and Semantics captures retry twice before surfacing a
 structured error, while texture create/publish failures dispose and recreate
-the bounded Linux texture twice before showing a recovery-failed placeholder;
+the bounded Linux texture twice before showing a recovery-failed placeholder.
+Flutter lifecycle detach/hidden/paused now invalidates the texture epoch and
+serializes native disposal behind any in-flight publish; resume/inactive waits
+for disposal before recreating. A deterministic widget/controller fault proves
+an in-flight stale frame cannot become visible and a newer frame survives one
+injected post-resume texture loss within the same two-retry bound;
 single-touch drags cross platform touch slop, cancel the pending synthetic press,
 and reuse BrowserCore's cancelable physical-delta scroll path; Page-owned nested
 scrollports now share paint, clipped hit testing, Semantics bounds, wheel
