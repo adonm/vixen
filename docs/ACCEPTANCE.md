@@ -43,6 +43,10 @@ Alpha architecture and delivery order are defined in
 
 Done when R1/R2 from `ROADMAP.md` prove:
 
+R1's dependency-free DTO/reference-validation half is landed and covered by
+`just test-api`; C ABI/Dart round trips, retained-payload release, and the
+worker-blocked renderer broker remain R2 work.
+
 - compound revisions include context/document/source/style/viewport/resource
   generations;
 - incremental batches require exact base revisions and deterministically request

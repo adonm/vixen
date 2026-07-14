@@ -138,9 +138,11 @@ just gate-architecture
 ```
 
 These gates currently prove the transitional JSON/frame wire, registry, worker,
-texture/input presenter, and native smoke. ADR-022 adds revision/mutation/commit/
-query ABI and Canvas/Paragraph evidence, then deletes frame/texture-specific
-proof at cutover. Existing checks remain comparison coverage, not target APIs.
+texture/input presenter, and native smoke. `just test-api` proves ADR-022's
+landed dependency-free R1 revision/mutation/commit/query model; R2 carries it
+through C/Dart and adds the renderer broker before Canvas/Paragraph evidence.
+Cutover then deletes frame/texture-specific proof. Existing checks remain
+comparison coverage, not target renderer APIs.
 
 ## Larger alpha batches
 

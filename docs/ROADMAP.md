@@ -50,6 +50,10 @@ As of 2026-07-14 the repository has:
 - one seven-crate Rust workspace with hk/`just` gates, stable diagnostics, fuzz
   targets, a fixture/WPT harness, and a committed **270 fixture / 2,027 check**
   100% baseline;
+- dependency-free renderer protocol v1 DTOs and reference validation in
+  `vixen-api` for exact revisions, bounded source snapshots/mutations/resync,
+  atomic commit/presented state, geometry/text/scroll queries, displayed-commit
+  input, semantic actions, replay rejection, and explicit handle retirement;
 - one `BrowserCore` owner for profile services, contexts, navigation generations,
   DOM/Page state, V8 runtimes, history, input intent, inspection, and ordered
   events used by Flutter, native headless, CDP, and WPT;
@@ -133,9 +137,9 @@ Web API shape while it would create porting work for the renderer transition.
 **Proof:** no current-direction document names WebRender or Rust layout as the
 target; `git diff --check`, docs build, and architecture references are clean.
 
-### R1. Renderer protocol types
+### R1. Renderer protocol types — landed
 
-Add dependency-free, versioned, bounded DTOs in `vixen-api`:
+Dependency-free, versioned, bounded DTOs in `vixen-api` now provide:
 
 - compound `RenderRevision` with context, document, source/style, viewport, and
   resource generations;
@@ -154,10 +158,15 @@ Add dependency-free, versioned, bounded DTOs in `vixen-api`:
 Define limits before payload details. Prefer plain arrays/records and explicit
 release over a generic scene framework.
 
-**Proof:** round-trip/property tests for malformed ids, non-finite geometry,
-oversized/deep snapshots, missed batch bases, stale commits, unknown resources,
-truncation, forged/stale/replayed semantic actions, and deterministic full-resync
-recovery. No production renderer change.
+**Proof:** `just test-api` covers malformed/round-tripped ids, exact monotonic
+source and viewport generations, non-finite geometry, oversized/deep snapshots,
+unknown resources, atomic invalid-batch rejection, missed bases, deterministic
+full-resync recovery, equal-revision idempotence, stale/late commits, separate
+presentation, query correlation, bounded UTF-16 ranges, truncation policy,
+scroll-command replay, forged/stale/replayed semantic actions, and explicit
+opaque-handle retirement. Strict API Clippy and the all-target workspace check
+pass. This is model-only evidence: no C ABI, Dart bridge, broker, or production
+renderer changed.
 
 ### R2. Native/Dart bridge and broker
 
@@ -462,13 +471,12 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **R1 protocol core:** bounded revisions, mutation/full snapshot/resync,
-   commit/presented, geometry/hit-handle/text/scroll/semantic/input/action DTOs
-   and adversarial tests in `vixen-api`.
-2. **R2 bridge broker:** C ABI and Dart round trips plus a dedicated renderer
+1. **R2 bridge broker:** C ABI and Dart round trips plus a dedicated renderer
    request/response path that remains serviceable during a blocked evaluation.
-3. **R3 fixture vertical:** one test-only Flutter background/text/PNG document
+2. **R3 fixture vertical:** one test-only Flutter background/text/PNG document
    producing an atomic scene/geometry/hit-handle/text/scroll/semantic commit.
+3. **R4 interactive commit:** route displayed-commit input, scrolling, text
+   queries, zoom, Semantics, and lifecycle suppression through that vertical.
 
 Do not start another native interaction, font, Rust layout, paint, texture, or
 packaging slice before these are complete unless it fixes a security/data-loss or

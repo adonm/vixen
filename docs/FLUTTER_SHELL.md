@@ -132,11 +132,13 @@ runtime dependencies disappear from Linux packages.
 ## ADR-022 renderer migration
 
 The existing WebRender/EGL/RGBA texture remains the implemented comparison path
-only. Do not add renderer breadth there. The next delivery sequence is:
+only. Do not add renderer breadth there. R1's dependency-free bounded protocol
+DTOs and reference validation are implemented in `vixen-api`. The remaining
+delivery sequence is:
 
-1. Add versioned, bounded revision/mutation/full-resync, atomic-commit/presented,
-   geometry/hit-handle/text/scroll/semantic/input/action DTOs through `vixen-api`,
-   C ABI, and Dart while production still presents the old frame.
+1. Carry R1 through the C ABI and handwritten Dart models, including explicit
+   payload/handle release, then add the dedicated renderer request/response
+   broker while production still presents the old frame.
 2. Add one test-only Flutter `CustomPainter`/Paragraph vertical for a controlled
    background, text, and image document. Return one atomic commit and prove pixels,
    hit testing, find/range geometry, Semantics bounds, and scene capture.

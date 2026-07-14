@@ -6,16 +6,17 @@ in [`PLAN.md`](PLAN.md); measured compatibility lives in
 [`COMPAT.md`](COMPAT.md). This file answers only: “which checked-in command proves
 which layer today?”
 
-**ADR-022 transition status:** no checked-in command yet proves the target
-mutation/commit Flutter web renderer. Existing layout, paint, frame, texture, and
-native-headless gates below describe the transitional comparison baseline. R1
-must add focused protocol tests before this index can name target renderer proof;
-R7 deletes or rewrites superseded gates.
+**ADR-022 transition status:** `just test-api` proves the landed R1 dependency-free
+mutation/commit/query model and adversarial validation. No checked-in command yet
+proves its C ABI/Dart transport, broker, or the target Flutter web renderer.
+Existing layout, paint, frame, texture, and native-headless gates below describe
+the transitional comparison baseline. R7 deletes or rewrites superseded gates.
 
 ## Gate index
 
 | Command | Current evidence |
 |---------|------------------|
+| `just test-api` | R1 renderer protocol v1 DTO/reference-state tests: typed nonzero ids, exact compound revisions and viewport values, bounded snapshot/mutation/resync, atomic commit/presented identity, immutable geometry, opaque handle retirement, bounded hit/text/scroll exchanges, displayed-commit input, and stale/late/replayed semantic-action rejection; model-only, not ABI/Dart/Flutter evidence |
 | `just gate-alpha` | formatting, all-target/all-feature Clippy, host workspace checks, generated WebIDL/runtime seams, BrowserCore ownership tests, BrowserCore-backed committed fixture runner, and stable crate-boundary allowlist |
 | `just gate-architecture` | leaf-crate dependency rules plus frontend rules that forbid headless/FFI direct leaf composition; production frontends may use only `vixen-api` and `vixen-engine` |
 | `just test-flutter-controller` | Safe controller and native boundary crate tests: one non-clone BrowserCore/event owner, immediate navigation acceptance, exact terminal events, active-load stop, contexts/profile session, and C ABI unit/integration coverage; not Dart or Flutter proof |

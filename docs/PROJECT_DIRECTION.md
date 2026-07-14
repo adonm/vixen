@@ -166,10 +166,12 @@ Flutter alpha additionally requires the browser-scoped Rust bridge contract,
 bounded mutation/full-snapshot/resync and atomic-commit protocols, a Linux fake
 and real renderer/shell, input and viewport routing, exact-commit scene capture, and
 the accessibility projection shape. The older WebRender/RGBA bridge remains the
-implemented transitional baseline; ADR-022's Flutter web renderer is not yet
-landed. Native IME evidence exists on that baseline, while renderer cutover,
-synchronous geometry flushing, richer gesture/DOM event input, and complete
-semantics/native AT behavior remain open.
+implemented transitional baseline. ADR-022's dependency-free R1 revision/
+mutation/commit/query protocol and adversarial reference validation are landed,
+but its C/Dart broker and Flutter web renderer are not. Native IME evidence exists
+on the old baseline, while renderer transport/vertical/cutover, synchronous
+geometry flushing, richer gesture/DOM event input, and complete semantics/native
+AT behavior remain open.
 
 Alpha also requires a production browser core: one profile service, one context
 registry, one generational navigation/document lifecycle, and one command/event

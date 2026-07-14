@@ -44,7 +44,7 @@ Linux runtime is not GTK-free even though Vixen owns no second GTK widget tree.
 
 | Crate | Implemented responsibility | Target boundary |
 |-------|----------------------------|-----------------|
-| `vixen-api` | Browser-scoped typed lifecycle ids, command/event/error/handle contracts, diagnostics, transitional graphics-context trait, and bounded DTOs | GUI/protocol-neutral browser plus renderer mutation/commit/query contracts; no implementation dependencies |
+| `vixen-api` | Browser-scoped typed lifecycle ids, command/event/error/handle contracts, diagnostics, transitional graphics-context trait, plus R1 versioned/bounded renderer revision, mutation/resync, commit/presented, geometry, query, target, and semantic-action DTO/reference validation | GUI/protocol-neutral browser plus renderer mutation/commit/query contracts; no implementation dependencies |
 | `vixen-net` | HTTP client primitives and URL/cookie/CSP/CORS/referrer/mixed-content/permissions/security policy | Pure network and policy leaf; no DOM, runtime, GTK, or profile orchestration |
 | `vixen-store` | Bounded redb profile tables and clear-data operations | Persistence leaf using opaque partition/id keys; no network or UI policy |
 | `vixen-engine` | Initial production BrowserCore/thread/profile/context lifecycle, HTML, DOM/Page, Stylo integration, V8 host runtime, forms/history, plus transitional Rust layout/display-list/WebRender integration | Sole owner of browser/profile/context/document/navigation/resource lifecycle; produces revisions/mutations and validates returned commits, but owns no paint backend after cutover |
@@ -122,8 +122,10 @@ Rules:
   `FlPixelBufferTexture` runner, and strict generation-tagged pointer/wheel/key
   commands that hit-test only in BrowserCore. BrowserCore also exposes a bounded,
   mutation-generation-tagged semantic projection that Flutter maps without a
-  second DOM. ADR-022 next adds bounded mutation/full-resync, atomic-commit, and
-  query protocols before deleting frame capture/texture transport. Single-touch root
+  second DOM. ADR-022's bounded R1 mutation/full-resync, atomic-commit, query,
+  target, replay, and explicit handle-retirement model is implemented in
+  `vixen-api`; R2 next carries it through C/Dart and adds the dedicated broker
+  before frame capture/texture transport can be deleted. Single-touch root
   dragging reuses the bounded cancelable wheel path. Complete renderer cutover,
   semantics/native AT, richer gesture/lifecycle, and non-Linux runners remain
   open.
