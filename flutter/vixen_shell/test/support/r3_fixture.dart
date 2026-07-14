@@ -48,7 +48,7 @@ FullRenderSnapshot r3Snapshot({int generation = 1, bool updated = false}) {
       name: 'h1',
       semantic: RenderSemanticDescriptor(
         id: 1,
-        role: RenderSemanticRole.heading,
+        role: 'heading',
         name: updated ? 'Updated Vixen' : 'Vixen renderer',
         actionGeneration: generation,
       ),
@@ -77,7 +77,7 @@ FullRenderSnapshot r3Snapshot({int generation = 1, bool updated = false}) {
       styles: const {'margin': '4'},
       semantic: RenderSemanticDescriptor(
         id: 2,
-        role: RenderSemanticRole.text,
+        role: 'text',
         name: 'Styled wrapped body text',
         actionGeneration: generation,
       ),
@@ -102,7 +102,7 @@ FullRenderSnapshot r3Snapshot({int generation = 1, bool updated = false}) {
       styles: const {'margin': '4'},
       semantic: RenderSemanticDescriptor(
         id: 3,
-        role: RenderSemanticRole.link,
+        role: 'link',
         name: 'Read more',
         actionGeneration: generation,
       ),

@@ -4,6 +4,8 @@ import 'dart:collection';
 import '../browser_controller.dart';
 import '../browser_models.dart';
 import '../native/native_renderer_protocol.dart';
+import '../render_models.dart';
+import '../renderer_transport.dart';
 
 typedef BrowserCommandHandler = FutureOr<BrowserResponse> Function(
   BrowserCommand command,
@@ -24,7 +26,8 @@ typedef BrowserAccessibilityHandler = BrowserAccessibilitySnapshot Function(
 
 /// An in-memory command/event transport for shell tests. It models BrowserCore's
 /// authoritative registry but never renders or interprets page content.
-final class ScriptedBrowserController extends BrowserController {
+final class ScriptedBrowserController extends BrowserController
+    implements RendererTransport {
   ScriptedBrowserController({
     this.session = const ProfileSessionState(),
     BrowserSnapshot snapshot = const BrowserSnapshot(),
@@ -51,7 +54,7 @@ final class ScriptedBrowserController extends BrowserController {
   final StreamController<SequencedBrowserEvent> _events =
       StreamController<SequencedBrowserEvent>.broadcast();
   final List<BrowserCommand> commands = [];
-  final Queue<NativeRendererRequest> rendererRequests = Queue();
+  final Queue<NativeRendererMessage> rendererRequests = Queue();
   final List<Map<String, Object?>> rendererResponses = [];
   final Map<int, BrowsingContextState> _contexts;
   ProfileSessionState session;
@@ -76,14 +79,52 @@ final class ScriptedBrowserController extends BrowserController {
     contexts: List.unmodifiable(_contexts.values),
   );
 
-  void enqueueRendererRequest(NativeRendererRequest request) =>
-      rendererRequests.addLast(request);
+  void enqueueRendererRequest(NativeRendererMessage request) {
+    if (_shutdown) {
+      throw const RenderProtocolException('render.closed', 'closed');
+    }
+    if (rendererRequests.length >= renderBrokerQueueCapacity) {
+      throw const RenderProtocolException(
+        'render.queue-full',
+        'renderer queue is full',
+      );
+    }
+    validateRendererMessagePayload(request);
+    rendererRequests.addLast(request);
+  }
 
-  NativeRendererRequest? pollRenderer({int timeoutMilliseconds = 0}) =>
-      rendererRequests.isEmpty ? null : rendererRequests.removeFirst();
+  @override
+  NativeRendererMessage? pollRenderer({int timeoutMilliseconds = 0}) {
+    if (_shutdown) {
+      throw const RenderProtocolException('render.closed', 'closed');
+    }
+    return rendererRequests.isEmpty ? null : rendererRequests.removeFirst();
+  }
 
+  @override
   void respondRenderer(Map<String, Object?> response) {
+    encodeRendererResponse(response);
+    _retainRendererResponse();
     rendererResponses.add(Map.unmodifiable(response));
+  }
+
+  @override
+  void submitRenderer(Map<String, Object?> submission) {
+    encodeRendererSubmission(submission);
+    _retainRendererResponse();
+    rendererResponses.add(Map.unmodifiable(submission));
+  }
+
+  void _retainRendererResponse() {
+    if (_shutdown) {
+      throw const RenderProtocolException('render.closed', 'closed');
+    }
+    if (rendererResponses.length >= renderBrokerQueueCapacity) {
+      throw const RenderProtocolException(
+        'render.queue-full',
+        'renderer response queue is full',
+      );
+    }
   }
 
   @override

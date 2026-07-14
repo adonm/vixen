@@ -2,13 +2,15 @@ import 'dart:async';
 
 import '../browser_controller.dart';
 import '../browser_models.dart';
+import '../renderer_transport.dart';
 import 'native_protocol.dart';
 import 'native_renderer_protocol.dart';
 import 'native_worker.dart';
 
 /// Production adapter from the shell's typed controller seam to the isolated
 /// C ABI transport.
-final class NativeBrowserController extends BrowserController {
+final class NativeBrowserController extends BrowserController
+    implements RendererTransport {
   NativeBrowserController({this.libraryPath, this.profilePath});
 
   static Future<NativeBrowserController> open({
@@ -104,7 +106,8 @@ final class NativeBrowserController extends BrowserController {
     }
   }
 
-  NativeRendererRequest? pollRenderer({int timeoutMilliseconds = 0}) {
+  @override
+  NativeRendererMessage? pollRenderer({int timeoutMilliseconds = 0}) {
     final worker = _worker;
     if (worker == null || _shutdown) {
       throw const BrowserFailure('render.closed', 'Renderer broker is closed');
@@ -112,12 +115,22 @@ final class NativeBrowserController extends BrowserController {
     return worker.pollRenderer(timeoutMilliseconds: timeoutMilliseconds);
   }
 
+  @override
   void respondRenderer(Map<String, Object?> response) {
     final worker = _worker;
     if (worker == null || _shutdown) {
       throw const BrowserFailure('render.closed', 'Renderer broker is closed');
     }
     worker.respondRenderer(response);
+  }
+
+  @override
+  void submitRenderer(Map<String, Object?> submission) {
+    final worker = _worker;
+    if (worker == null || _shutdown) {
+      throw const BrowserFailure('render.closed', 'Renderer broker is closed');
+    }
+    worker.submitRenderer(submission);
   }
 
   @override

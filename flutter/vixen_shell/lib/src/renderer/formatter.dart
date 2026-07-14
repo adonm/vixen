@@ -1,7 +1,10 @@
 import 'dart:ui' as ui;
+import 'dart:convert';
 import 'dart:typed_data';
 
 import '../bridge/render_models.dart';
+
+const int _maxDecodedImagePixels = 64 * 1024 * 1024;
 
 sealed class RenderApplyResult {
   const RenderApplyResult();
@@ -90,6 +93,35 @@ final class FormatterCommitView {
     return null;
   }
 
+  RenderInputTarget? answerHitTest(RenderHitTestQuery query) {
+    _requireLive();
+    if (query.contextId != commit.revision.contextId ||
+        query.documentId != commit.revision.documentId ||
+        query.displayedCommitId != commit.commitId ||
+        query.revision != commit.revision ||
+        query.handle != commit.hitTestHandle) {
+      throw const RenderProtocolException(
+        'render.stale',
+        'hit-test query does not name this displayed commit',
+      );
+    }
+    final point = ui.Offset(query.point.x, query.point.y);
+    final hit = hitTest(point, handle: query.handle);
+    if (hit == null) return null;
+    return RenderInputTarget(
+      queryId: query.queryId,
+      contextId: query.contextId,
+      documentId: query.documentId,
+      displayedCommitId: query.displayedCommitId,
+      revision: query.revision,
+      handle: query.handle,
+      nodeId: hit.nodeId,
+      fragmentId: hit.fragmentId,
+      viewportPoint: query.point,
+      localPoint: RenderPoint(hit.localPoint.dx, hit.localPoint.dy),
+    );
+  }
+
   List<RenderRect> rangeBoxes({
     required int handle,
     required int nodeId,
@@ -157,6 +189,153 @@ final class FormatterCommitView {
         .clamp(0, range.length);
   }
 
+  RenderTextQueryBatchResult answerTextQueries(RenderTextQueryBatch batch) {
+    _requireLive();
+    if (batch.contextId != commit.revision.contextId ||
+        batch.documentId != commit.revision.documentId ||
+        batch.commitId != commit.commitId ||
+        batch.revision != commit.revision ||
+        batch.handle != commit.textQueryHandle) {
+      throw const RenderProtocolException(
+        'render.stale',
+        'text query does not name this accepted commit',
+      );
+    }
+    if (batch.queries.length > renderMaxTextQueries) {
+      throw const RenderProtocolException(
+        'render.limit',
+        'text query batch exceeds the query limit',
+      );
+    }
+    final seen = <int>{};
+    var textBoxCount = 0;
+    final results = batch.queries
+        .map((query) {
+          if (!seen.add(query.queryId)) {
+            throw const RenderProtocolException(
+              'render.duplicate-id',
+              'text query repeats a query id',
+            );
+          }
+          final value = switch (query.kind) {
+            RenderOffsetForPoint(:final point) => () {
+              final state = _paragraphState(query.nodeId);
+              final range = state.ranges[query.nodeId]!;
+              final position = state.paragraph.getPositionForOffset(
+                ui.Offset(point.x, point.y) - state.origin,
+              );
+              return RenderTextOffsetValue(
+                (position.offset - range.start).clamp(0, range.length),
+                position.affinity == ui.TextAffinity.upstream
+                    ? RenderTextAffinity.upstream
+                    : RenderTextAffinity.downstream,
+              );
+            }(),
+            RenderCaretForOffset(:final utf16Offset, :final affinity) =>
+              RenderTextCaretValue(
+                _caretRect(query.nodeId, utf16Offset),
+                affinity,
+              ),
+            RenderRangeBoxes(:final utf16Start, :final utf16End) => () {
+              final boxes = _rangeTextBoxes(query.nodeId, utf16Start, utf16End);
+              textBoxCount += boxes.length;
+              if (textBoxCount > renderMaxTextBoxes) {
+                throw const RenderProtocolException(
+                  'render.limit',
+                  'text query response exceeds the text box limit',
+                );
+              }
+              return RenderTextRangeBoxesValue(boxes);
+            }(),
+          };
+          return RenderTextQueryResult(queryId: query.queryId, value: value);
+        })
+        .toList(growable: false);
+    return RenderTextQueryBatchResult(
+      contextId: batch.contextId,
+      documentId: batch.documentId,
+      commitId: batch.commitId,
+      revision: batch.revision,
+      results: results,
+    );
+  }
+
+  _ParagraphState _paragraphState(int nodeId) {
+    final state = _paragraphs
+        .where((entry) => entry.ranges.containsKey(nodeId))
+        .firstOrNull;
+    if (state == null) {
+      throw const RenderProtocolException(
+        'render.unknown-id',
+        'text query names an unknown text node',
+      );
+    }
+    return state;
+  }
+
+  List<RenderTextBox> _rangeTextBoxes(int nodeId, int start, int end) {
+    final state = _paragraphState(nodeId);
+    final range = state.ranges[nodeId]!;
+    if (start < 0 || end < start || end > range.length) {
+      throw const RenderProtocolException(
+        'render.invalid-geometry',
+        'text range is outside the source text',
+      );
+    }
+    return state.paragraph
+        .getBoxesForRange(range.start + start, range.start + end)
+        .map(
+          (box) => RenderTextBox(
+            rect: RenderRect(
+              state.origin.dx + box.left,
+              state.origin.dy + box.top,
+              box.right - box.left,
+              box.bottom - box.top,
+            ),
+            direction: box.direction == ui.TextDirection.rtl
+                ? RenderTextDirection.rtl
+                : RenderTextDirection.ltr,
+          ),
+        )
+        .toList(growable: false);
+  }
+
+  RenderRect _caretRect(int nodeId, int offset) {
+    final state = _paragraphState(nodeId);
+    final range = state.ranges[nodeId]!;
+    if (offset < 0 || offset > range.length) {
+      throw const RenderProtocolException(
+        'render.invalid-geometry',
+        'caret offset is outside the source text',
+      );
+    }
+    if (range.length == 0) {
+      return RenderRect(
+        state.origin.dx,
+        state.origin.dy,
+        1,
+        state.paragraph.height,
+      );
+    }
+    final atEnd = offset == range.length;
+    final glyphOffset = range.start + (atEnd ? offset - 1 : offset);
+    final boxes = state.paragraph.getBoxesForRange(
+      glyphOffset,
+      glyphOffset + 1,
+    );
+    if (boxes.isEmpty) {
+      return RenderRect(
+        state.origin.dx,
+        state.origin.dy,
+        1,
+        state.paragraph.height,
+      );
+    }
+    final box = boxes.first;
+    final x = state.origin.dx + (atEnd ? box.right : box.left);
+    return RenderRect(x, state.origin.dy + box.top, 1, box.bottom - box.top);
+  }
+
   Future<ui.Image> capture() async {
     _requireLive();
     final scene = (ui.SceneBuilder()..addPicture(ui.Offset.zero, _picture))
@@ -187,60 +366,119 @@ final class FormatterCommitView {
   }
 }
 
+final class _FormatterSource {
+  _FormatterSource({
+    required this.revision,
+    required this.viewport,
+    required Map<int, RenderNode> nodes,
+    required Map<int, RenderResource> resources,
+    required Map<int, RenderScrollIntent> scrollIntents,
+    int? sourceNodeCount,
+    int? sourceResourceCount,
+    int? sourceScrollIntentCount,
+  }) : nodes = Map.unmodifiable(nodes),
+       resources = Map.unmodifiable(resources),
+       scrollIntents = Map.unmodifiable(scrollIntents),
+       sourceNodeCount = sourceNodeCount ?? nodes.length,
+       sourceResourceCount = sourceResourceCount ?? resources.length,
+       sourceScrollIntentCount =
+           sourceScrollIntentCount ?? scrollIntents.length;
+
+  final RenderRevision revision;
+  final RenderViewport viewport;
+  final Map<int, RenderNode> nodes;
+  final Map<int, RenderResource> resources;
+  final Map<int, RenderScrollIntent> scrollIntents;
+  final int sourceNodeCount;
+  final int sourceResourceCount;
+  final int sourceScrollIntentCount;
+}
+
 final class VixenFormatter {
-  final Map<int, RenderNode> _nodes = {};
-  final Map<int, RenderResource> _resources = {};
-  RenderRevision? _revision;
-  RenderViewport? _viewport;
+  _FormatterSource? _source;
   FormatterCommitView? _staged;
   FormatterCommitView? _presented;
   int _nextCommitId = 1;
   int _nextHandle = 1;
+  int _stageEpoch = 0;
+  bool _disposed = false;
 
-  RenderRevision? get sourceRevision => _revision;
+  RenderRevision? get sourceRevision => _source?.revision;
+  FormatterCommitView? get acceptedView => _staged;
   FormatterCommitView? get displayedView => _presented;
 
   Future<RenderApplyResult> acceptFullSnapshot(
     FullRenderSnapshot snapshot,
   ) async {
+    _requireOpen();
     _validateSnapshot(snapshot);
-    if (_revision case final current?) {
-      if (snapshot.revision == current && !_snapshotMatches(snapshot)) {
+    final candidate = _FormatterSource(
+      revision: snapshot.revision,
+      viewport: snapshot.viewport,
+      nodes: {for (final node in snapshot.nodes) node.id: node},
+      resources: {
+        for (final resource in snapshot.resources) resource.id: resource,
+      },
+      scrollIntents: {
+        for (final intent in snapshot.scrollIntents)
+          intent.scrollNodeId: intent,
+      },
+    );
+    if (_source case final current?) {
+      if (snapshot.revision == current.revision &&
+          !_sourceMatches(candidate, current)) {
         throw const RenderProtocolException(
           'render.revision',
           'equal revision contains different state',
         );
       }
-      if (_regresses(snapshot.revision, current)) {
+      if (snapshot.revision == current.revision) {
+        final staged = _staged;
+        if (staged == null) {
+          throw const RenderProtocolException(
+            'render.stale',
+            'equal revision has no retained commit',
+          );
+        }
+        return RenderApplied(staged);
+      }
+      if (_regresses(snapshot.revision, current.revision)) {
         throw const RenderProtocolException(
           'render.stale',
           'full snapshot regresses the current revision',
         );
       }
+      if (snapshot.revision.contextId == current.revision.contextId &&
+          snapshot.revision.documentId == current.revision.documentId &&
+          snapshot.revision.viewportGeneration ==
+              current.revision.viewportGeneration &&
+          snapshot.viewport != current.viewport) {
+        throw const RenderProtocolException(
+          'render.revision',
+          'snapshot changed viewport without advancing its generation',
+        );
+      }
     }
-    _nodes
-      ..clear()
-      ..addEntries(snapshot.nodes.map((node) => MapEntry(node.id, node)));
-    _resources
-      ..clear()
-      ..addEntries(
-        snapshot.resources.map((resource) => MapEntry(resource.id, resource)),
-      );
-    _revision = snapshot.revision;
-    _viewport = snapshot.viewport;
-    return RenderApplied(await _stage());
+    return RenderApplied(await _stageAndPublish(candidate));
   }
 
   Future<RenderApplyResult> applyMutationBatch(
     RenderMutationBatch batch,
   ) async {
-    final current = _revision;
-    if (current == null || batch.baseRevision != current) {
+    _requireOpen();
+    if (batch.mutations.length > renderMaxMutations) {
+      throw const RenderProtocolException(
+        'render.limit',
+        'mutation batch exceeds the mutation limit',
+      );
+    }
+    final current = _source;
+    if (current == null || batch.baseRevision != current.revision) {
       return RenderResyncRequired(
         RenderResyncRequest(
           contextId: batch.targetRevision.contextId,
           documentId: batch.targetRevision.documentId,
-          currentRevision: current,
+          currentRevision: current?.revision,
           rejectedBaseRevision: batch.baseRevision,
           reason: current == null ? 'missing_state' : 'missed_base_revision',
         ),
@@ -252,7 +490,13 @@ final class VixenFormatter {
         'mutation target is not an exact successor',
       );
     }
-    final next = Map<int, RenderNode>.of(_nodes);
+    final next = Map<int, RenderNode>.of(current.nodes);
+    final resources = Map<int, RenderResource>.of(current.resources);
+    final scrollIntents = Map<int, RenderScrollIntent>.of(
+      current.scrollIntents,
+    );
+    var viewport = current.viewport;
+    var viewportMutations = 0;
     for (final mutation in batch.mutations) {
       switch (mutation) {
         case UpsertRenderNode(:final node):
@@ -264,22 +508,60 @@ final class VixenFormatter {
               'mutation removes an unknown node',
             );
           }
+        case SetRenderViewport(viewport: final nextViewport):
+          viewport = nextViewport;
+          viewportMutations++;
+          if (viewportMutations > 1) {
+            throw const RenderProtocolException(
+              'render.invalid-graph',
+              'mutation batch repeats the viewport',
+            );
+          }
+        case UpsertRenderResource(:final resource):
+          resources[resource.id] = resource;
+        case RemoveRenderResource(:final resourceId):
+          if (resources.remove(resourceId) == null) {
+            throw const RenderProtocolException(
+              'render.unknown-id',
+              'mutation removes an unknown resource',
+            );
+          }
+        case SetRenderScrollIntent(:final intent):
+          scrollIntents[intent.scrollNodeId] = intent;
+        case RemoveRenderScrollIntent(:final scrollNodeId):
+          if (scrollIntents.remove(scrollNodeId) == null) {
+            throw const RenderProtocolException(
+              'render.unknown-id',
+              'mutation removes an unknown scroll intent',
+            );
+          }
       }
     }
-    _validateNodeGraph(
-      next.values.toList(growable: false),
-      _resources.keys.toSet(),
+    final viewportAdvanced =
+        batch.targetRevision.viewportGeneration !=
+        batch.baseRevision.viewportGeneration;
+    if (viewportAdvanced != (viewportMutations == 1)) {
+      throw const RenderProtocolException(
+        'render.revision',
+        'viewport generation and mutation must advance together',
+      );
+    }
+    final candidate = _FormatterSource(
+      revision: batch.targetRevision,
+      viewport: viewport,
+      nodes: next,
+      resources: resources,
+      scrollIntents: scrollIntents,
     );
-    _nodes
-      ..clear()
-      ..addAll(next);
-    _revision = batch.targetRevision;
-    return RenderApplied(await _stage());
+    _validateSource(candidate);
+    return RenderApplied(await _stageAndPublish(candidate));
   }
 
   FormatterCommitView present(RenderPresented presented) {
     final staged = _staged;
     if (staged == null ||
+        presented.contextId != staged.commit.revision.contextId ||
+        presented.documentId != staged.commit.revision.documentId ||
         staged.commit.commitId != presented.commitId ||
         staged.commit.revision != presented.revision) {
       throw const RenderProtocolException(
@@ -293,15 +575,35 @@ final class VixenFormatter {
     return staged;
   }
 
+  bool releaseHandles(RenderHandleRelease release) {
+    final staged = _staged;
+    final presented = _presented;
+    final view = staged?.commit.commitId == release.commitId
+        ? staged
+        : presented?.commit.commitId == release.commitId
+        ? presented
+        : null;
+    if (view == null || view.isRetired) return false;
+    if (view.commit.hitTestHandle != release.hitTestHandle ||
+        view.commit.textQueryHandle != release.textQueryHandle) {
+      throw const RenderProtocolException(
+        'render.stale',
+        'handle release does not match its commit',
+      );
+    }
+    if (identical(_staged, view)) _staged = null;
+    if (identical(_presented, view)) _presented = null;
+    view.retire();
+    return true;
+  }
+
   RenderResyncRequest reset({required int contextId, required int documentId}) {
+    _stageEpoch++;
     _staged?.retire();
     if (!identical(_presented, _staged)) _presented?.retire();
     _staged = null;
     _presented = null;
-    _nodes.clear();
-    _resources.clear();
-    _revision = null;
-    _viewport = null;
+    _source = null;
     return RenderResyncRequest(
       contextId: contextId,
       documentId: documentId,
@@ -311,27 +613,76 @@ final class VixenFormatter {
     );
   }
 
-  void dispose() => reset(contextId: 1, documentId: 1);
+  void dispose() {
+    if (_disposed) return;
+    reset(contextId: 1, documentId: 1);
+    _disposed = true;
+  }
 
-  Future<FormatterCommitView> _stage() async {
-    final revision = _revision!;
-    final viewport = _viewport!;
+  Future<FormatterCommitView> _stageAndPublish(
+    _FormatterSource candidate,
+  ) async {
+    final epoch = ++_stageEpoch;
+    final view = await _stage(candidate);
+    if (_disposed || epoch != _stageEpoch) {
+      view.retire();
+      throw const RenderProtocolException(
+        'render.stale',
+        'formatter build was superseded before publication',
+      );
+    }
+    if (_staged != null && !identical(_staged, _presented)) {
+      _staged!.retire();
+    }
+    _source = candidate;
+    _staged = view;
+    return view;
+  }
+
+  Future<FormatterCommitView> _stage(_FormatterSource source) async {
+    final revision = source.revision;
+    final viewport = source.viewport;
     final decodedImages = <int, ui.Image>{};
+    _LayoutResult? layout;
+    ui.Picture? picture;
     try {
-      for (final resource in _resources.values) {
-        if (resource.mime != 'image/png') {
+      var decodedPixels = 0;
+      for (final resource in source.resources.values) {
+        if (resource.kind != RenderResourceKind.image ||
+            resource.mime != 'image/png') {
           throw const RenderProtocolException(
             'render.resource',
             'R3 accepts only policy-approved PNG resources',
           );
         }
-        decodedImages[resource.id] = await _decodePng(resource.bytes);
+        final image = await _decodePng(resource.bytes);
+        decodedPixels += image.width * image.height;
+        if (decodedPixels > _maxDecodedImagePixels) {
+          image.dispose();
+          throw const RenderProtocolException(
+            'render.limit',
+            'decoded images exceed the formatter pixel limit',
+          );
+        }
+        decodedImages[resource.id] = image;
       }
-      final layout = _FixtureLayout(
-        nodes: _nodes,
+      layout = _FixtureLayout(
+        nodes: source.nodes,
         images: decodedImages,
         viewport: viewport,
       ).build();
+      final semanticRectCount = layout.semanticBounds.fold(
+        0,
+        (count, bounds) => count + bounds.rects.length,
+      );
+      if (layout.geometry.length > renderMaxGeometryEntries ||
+          layout.semanticBounds.length > renderMaxSemanticBounds ||
+          semanticRectCount > renderMaxGeometryEntries) {
+        throw const RenderProtocolException(
+          'render.limit',
+          'formatter output exceeds a commit geometry limit',
+        );
+      }
       final recorder = ui.PictureRecorder();
       final canvas = ui.Canvas(
         recorder,
@@ -353,8 +704,18 @@ final class VixenFormatter {
       );
       layout.paint(canvas);
       canvas.restore();
-      final picture = recorder.endRecording();
+      picture = recorder.endRecording();
       final commitId = _nextCommitId++;
+      final maxScrollY = (layout.contentHeight - viewport.height)
+          .clamp(0, double.infinity)
+          .toDouble();
+      final rootIntent = source.scrollIntents.values
+          .where((intent) => intent.nodeId == layout!.rootNodeId)
+          .firstOrNull;
+      final scrollX = (rootIntent?.point.x ?? 0).clamp(0, 0).toDouble();
+      final scrollY = (rootIntent?.point.y ?? 0)
+          .clamp(0, maxScrollY)
+          .toDouble();
       final view = FormatterCommitView._(
         commit: RenderCommit(
           commitId: commitId,
@@ -367,13 +728,10 @@ final class VixenFormatter {
             RenderScrollState(
               scrollNodeId: 1,
               nodeId: layout.rootNodeId,
-              offsetX: 0,
-              offsetY: 0,
+              offsetX: scrollX,
+              offsetY: scrollY,
               maxOffsetX: 0,
-              maxOffsetY: (layout.contentHeight - viewport.height).clamp(
-                0,
-                double.infinity,
-              ),
+              maxOffsetY: maxScrollY,
               viewport: RenderRect(
                 0,
                 0,
@@ -391,12 +749,10 @@ final class VixenFormatter {
         images: decodedImages.values.toList(growable: false),
         semanticRegions: layout.semanticRegions,
       );
-      if (_staged != null && !identical(_staged, _presented)) {
-        _staged!.retire();
-      }
-      _staged = view;
       return view;
     } catch (_) {
+      picture?.dispose();
+      layout?.disposeParagraphs();
       for (final image in decodedImages.values) {
         image.dispose();
       }
@@ -405,16 +761,138 @@ final class VixenFormatter {
   }
 
   void _validateSnapshot(FullRenderSnapshot snapshot) {
-    if (snapshot.viewport.width <= 0 || snapshot.viewport.height <= 0) {
+    _validateSource(
+      _FormatterSource(
+        revision: snapshot.revision,
+        viewport: snapshot.viewport,
+        nodes: {for (final node in snapshot.nodes) node.id: node},
+        resources: {
+          for (final resource in snapshot.resources) resource.id: resource,
+        },
+        scrollIntents: {
+          for (final intent in snapshot.scrollIntents)
+            intent.scrollNodeId: intent,
+        },
+        sourceNodeCount: snapshot.nodes.length,
+        sourceResourceCount: snapshot.resources.length,
+        sourceScrollIntentCount: snapshot.scrollIntents.length,
+      ),
+    );
+  }
+
+  void _validateSource(_FormatterSource source) {
+    source.revision.validate();
+    final viewport = source.viewport;
+    if (viewport.width <= 0 ||
+        viewport.height <= 0 ||
+        viewport.width > renderMaxViewportDimension ||
+        viewport.height > renderMaxViewportDimension ||
+        !viewport.deviceScale.isFinite ||
+        !viewport.pageZoom.isFinite ||
+        viewport.deviceScale <= 0 ||
+        viewport.pageZoom <= 0 ||
+        viewport.deviceScale > renderMaxScale ||
+        viewport.pageZoom > renderMaxScale) {
       throw const RenderProtocolException(
         'render.invalid-geometry',
-        'viewport must be positive',
+        'viewport is outside the renderer limits',
       );
     }
-    _validateNodeGraph(
-      snapshot.nodes,
-      snapshot.resources.map((resource) => resource.id).toSet(),
-    );
+    if (source.sourceNodeCount > renderMaxNodes ||
+        source.sourceResourceCount > renderMaxResources ||
+        source.sourceScrollIntentCount > renderMaxScrollEntries ||
+        source.nodes.length != source.sourceNodeCount ||
+        source.resources.length != source.sourceResourceCount ||
+        source.scrollIntents.length != source.sourceScrollIntentCount) {
+      throw const RenderProtocolException(
+        'render.limit',
+        'renderer source count exceeds a protocol limit or repeats an id',
+      );
+    }
+    var totalResourceBytes = 0;
+    for (final resource in source.resources.values) {
+      if (resource.id <= 0 ||
+          resource.bytes.length > renderMaxResourceBytes ||
+          utf8.encode(resource.mime).length > renderMaxStringBytes) {
+        throw const RenderProtocolException(
+          'render.limit',
+          'renderer resource exceeds a protocol limit',
+        );
+      }
+      totalResourceBytes += resource.bytes.length;
+      if (totalResourceBytes > renderMaxTotalResourceBytes) {
+        throw const RenderProtocolException(
+          'render.limit',
+          'renderer resources exceed the aggregate byte limit',
+        );
+      }
+    }
+    var totalStringBytes = 0;
+    for (final node in source.nodes.values) {
+      if (node.depth > renderMaxTreeDepth ||
+          node.styles.length > renderMaxStylesPerNode ||
+          node.resourceIds.length > renderMaxResourcesPerNode ||
+          (node.semantic?.actions.length ?? 0) >
+              renderMaxSemanticActionsPerNode) {
+        throw const RenderProtocolException(
+          'render.limit',
+          'renderer node exceeds a protocol limit',
+        );
+      }
+      final strings = <String>[
+        node.name,
+        node.text,
+        ...node.styles.keys,
+        ...node.styles.values,
+        if (node.semantic case final semantic?) semantic.name,
+        if (node.semantic case final semantic?) semantic.role,
+        ?node.semantic?.value,
+      ];
+      for (final value in strings) {
+        final length = utf8.encode(value).length;
+        if (length > renderMaxStringBytes) {
+          throw const RenderProtocolException(
+            'render.limit',
+            'renderer string exceeds its byte limit',
+          );
+        }
+        totalStringBytes += length;
+        if (totalStringBytes > renderMaxTotalStringBytes) {
+          throw const RenderProtocolException(
+            'render.limit',
+            'renderer strings exceed the aggregate byte limit',
+          );
+        }
+      }
+    }
+    _validateNodeGraph(source.nodes.values, source.resources.keys.toSet());
+    final semanticIds = <int>{};
+    for (final node in source.nodes.values) {
+      final semantic = node.semantic;
+      if (semantic != null &&
+          (semantic.id <= 0 ||
+              semantic.actionGeneration <= 0 ||
+              !semanticIds.add(semantic.id) ||
+              semantic.actions.toSet().length != semantic.actions.length)) {
+        throw const RenderProtocolException(
+          'render.invalid-graph',
+          'semantic ids, generations, and actions must be valid and unique',
+        );
+      }
+    }
+    for (final intent in source.scrollIntents.values) {
+      if (intent.scrollNodeId <= 0 ||
+          !source.nodes.containsKey(intent.nodeId) ||
+          !intent.point.x.isFinite ||
+          !intent.point.y.isFinite ||
+          intent.point.x.abs() > renderMaxCoordinate ||
+          intent.point.y.abs() > renderMaxCoordinate) {
+        throw const RenderProtocolException(
+          'render.invalid-geometry',
+          'scroll intent is invalid',
+        );
+      }
+    }
   }
 
   void _validateNodeGraph(Iterable<RenderNode> nodes, Set<int> resourceIds) {
@@ -433,6 +911,12 @@ final class VixenFormatter {
           'render node references an unknown resource',
         );
       }
+      if (node.resourceIds.toSet().length != node.resourceIds.length) {
+        throw const RenderProtocolException(
+          'render.duplicate-id',
+          'render node repeats a resource reference',
+        );
+      }
     }
     for (final node in byId.values) {
       final parent = node.parentId == null ? null : byId[node.parentId];
@@ -447,32 +931,36 @@ final class VixenFormatter {
     }
   }
 
-  bool _snapshotMatches(FullRenderSnapshot snapshot) {
-    if (_viewport != snapshot.viewport ||
-        _nodes.length != snapshot.nodes.length ||
-        _resources.length != snapshot.resources.length) {
+  bool _sourceMatches(_FormatterSource next, _FormatterSource current) {
+    if (current.viewport != next.viewport ||
+        current.nodes.length != next.nodes.length ||
+        current.resources.length != next.resources.length ||
+        current.scrollIntents.length != next.scrollIntents.length) {
       return false;
     }
-    final nodesMatch = snapshot.nodes.every((node) {
-      final current = _nodes[node.id];
-      return current != null &&
-          current.parentId == node.parentId &&
-          current.siblingIndex == node.siblingIndex &&
-          current.depth == node.depth &&
-          current.kind == node.kind &&
-          current.name == node.name &&
-          current.text == node.text &&
-          _mapEquals(current.styles, node.styles) &&
-          _listEquals(current.resourceIds, node.resourceIds) &&
-          _semanticsEqual(current.semantic, node.semantic);
+    final nodesMatch = next.nodes.values.every((node) {
+      final existing = current.nodes[node.id];
+      return existing != null &&
+          existing.parentId == node.parentId &&
+          existing.siblingIndex == node.siblingIndex &&
+          existing.depth == node.depth &&
+          existing.kind == node.kind &&
+          existing.name == node.name &&
+          existing.text == node.text &&
+          _mapEquals(existing.styles, node.styles) &&
+          _listEquals(existing.resourceIds, node.resourceIds) &&
+          _semanticsEqual(existing.semantic, node.semantic);
+    });
+    final resourcesMatch = next.resources.values.every((resource) {
+      final existing = current.resources[resource.id];
+      return existing != null &&
+          existing.kind == resource.kind &&
+          existing.mime == resource.mime &&
+          _listEquals(existing.bytes, resource.bytes);
     });
     return nodesMatch &&
-        snapshot.resources.every((resource) {
-          final current = _resources[resource.id];
-          return current != null &&
-              current.mime == resource.mime &&
-              _listEquals(current.bytes, resource.bytes);
-        });
+        resourcesMatch &&
+        _scrollIntentsEqual(next.scrollIntents, current.scrollIntents);
   }
 
   bool _regresses(RenderRevision next, RenderRevision current) =>
@@ -482,6 +970,15 @@ final class VixenFormatter {
           next.styleGeneration < current.styleGeneration ||
           next.viewportGeneration < current.viewportGeneration ||
           next.resourceGeneration < current.resourceGeneration);
+
+  void _requireOpen() {
+    if (_disposed) {
+      throw const RenderProtocolException(
+        'render.closed',
+        'formatter is disposed',
+      );
+    }
+  }
 }
 
 Future<ui.Image> _decodePng(Uint8List bytes) async {
@@ -594,6 +1091,12 @@ final class _LayoutResult {
       item.paint(canvas);
     }
   }
+
+  void disposeParagraphs() {
+    for (final paragraph in paragraphs) {
+      paragraph.paragraph.dispose();
+    }
+  }
 }
 
 final class _FixtureLayout {
@@ -614,6 +1117,17 @@ final class _FixtureLayout {
   int _paintOrder = 0;
 
   _LayoutResult build() {
+    try {
+      return _build();
+    } catch (_) {
+      for (final paragraph in _paragraphs) {
+        paragraph.paragraph.dispose();
+      }
+      rethrow;
+    }
+  }
+
+  _LayoutResult _build() {
     final roots = nodes.values.where((node) => node.parentId == null).toList();
     if (roots.length != 1) {
       throw const RenderProtocolException(
@@ -675,7 +1189,7 @@ final class _FixtureLayout {
       final rect = ui.Rect.fromLTWH(left, top, imageWidth, imageHeight);
       _items.add(_ImagePaint(image, rect));
       _addGeometry(node, rect);
-      _addSemantic(node, rect);
+      _addSemantic(node, [rect]);
       return rect.bottom + margin;
     }
 
@@ -684,6 +1198,7 @@ final class _FixtureLayout {
     final textChildren = children
         .where((child) => child.kind == RenderNodeKind.text)
         .toList();
+    var semanticRects = <ui.Rect>[];
     var cursor = top + padding;
     if (textChildren.isNotEmpty) {
       final (paragraph, ranges) = _paragraph(textChildren, innerWidth);
@@ -702,8 +1217,45 @@ final class _FixtureLayout {
           ranges: Map.unmodifiable(ranges),
         ),
       );
+      final textLength = ranges.values.fold(
+        0,
+        (length, range) => length + range.length,
+      );
+      semanticRects = paragraph
+          .getBoxesForRange(0, textLength)
+          .map(
+            (box) => ui.Rect.fromLTRB(
+              origin.dx + box.left,
+              origin.dy + box.top,
+              origin.dx + box.right,
+              origin.dy + box.bottom,
+            ),
+          )
+          .toList(growable: false);
       for (final text in textChildren) {
-        _addGeometry(text, rect);
+        final range = ranges[text.id]!;
+        final boxes = paragraph.getBoxesForRange(
+          range.start,
+          range.start + range.length,
+        );
+        if (boxes.isEmpty) {
+          _addGeometry(
+            text,
+            ui.Rect.fromLTWH(origin.dx, origin.dy, 0, paragraph.height),
+          );
+        } else {
+          for (final box in boxes) {
+            _addGeometry(
+              text,
+              ui.Rect.fromLTRB(
+                origin.dx + box.left,
+                origin.dy + box.top,
+                origin.dx + box.right,
+                origin.dy + box.bottom,
+              ),
+            );
+          }
+        }
       }
       cursor = rect.bottom;
     }
@@ -724,8 +1276,21 @@ final class _FixtureLayout {
         _RectPaint(rect, _color(background, 0x00000000)),
       );
     }
-    _addGeometry(node, rect, paintOrder: elementPaintOrder);
-    _addSemantic(node, rect);
+    final paddingRect = rect;
+    final contentRect = ui.Rect.fromLTWH(
+      rect.left + padding,
+      rect.top + padding,
+      (rect.width - padding * 2).clamp(0, double.infinity),
+      (rect.height - padding * 2).clamp(0, double.infinity),
+    );
+    _addGeometry(
+      node,
+      rect,
+      paddingBox: paddingRect,
+      contentBox: contentRect,
+      paintOrder: elementPaintOrder,
+    );
+    _addSemantic(node, semanticRects.isEmpty ? [rect] : semanticRects);
     return rect.bottom + margin;
   }
 
@@ -758,13 +1323,20 @@ final class _FixtureLayout {
       offset += length;
     }
     final paragraph = builder.build();
-    paragraph.layout(ui.ParagraphConstraints(width: width));
+    try {
+      paragraph.layout(ui.ParagraphConstraints(width: width));
+    } catch (_) {
+      paragraph.dispose();
+      rethrow;
+    }
     return (paragraph, ranges);
   }
 
   void _addGeometry(
     RenderNode node,
     ui.Rect rect, {
+    ui.Rect? paddingBox,
+    ui.Rect? contentBox,
     ui.Rect? clip,
     int? paintOrder,
   }) {
@@ -773,8 +1345,8 @@ final class _FixtureLayout {
         nodeId: node.id,
         fragmentId: _nextFragment++,
         borderBox: rect.renderRect,
-        paddingBox: rect.renderRect,
-        contentBox: rect.renderRect,
+        paddingBox: (paddingBox ?? rect).renderRect,
+        contentBox: (contentBox ?? rect).renderRect,
         clip: clip?.renderRect,
         scrollNodeId: 1,
         paintOrder: paintOrder ?? _paintOrder++,
@@ -782,18 +1354,21 @@ final class _FixtureLayout {
     );
   }
 
-  void _addSemantic(RenderNode node, ui.Rect rect) {
+  void _addSemantic(RenderNode node, List<ui.Rect> rects) {
     final semantic = node.semantic;
     if (semantic == null) return;
     _semanticBounds.add(
       RenderSemanticBounds(
         semanticNodeId: semantic.id,
         nodeId: node.id,
-        rects: [rect.renderRect],
+        rects: rects.map((rect) => rect.renderRect).toList(growable: false),
       ),
     );
+    final union = rects
+        .skip(1)
+        .fold(rects.first, (bounds, rect) => bounds.expandToInclude(rect));
     _semanticRegions.add(
-      FormatterSemanticRegion(descriptor: semantic, rect: rect),
+      FormatterSemanticRegion(descriptor: semantic, rect: union),
     );
   }
 
@@ -816,8 +1391,19 @@ ui.Color _color(String? value, int fallback) {
   return ui.Color(normalized.length == 6 ? 0xff000000 | parsed : parsed);
 }
 
-double _number(String? value, double fallback) =>
-    value == null ? fallback : double.parse(value.replaceAll('px', ''));
+double _number(String? value, double fallback) {
+  if (value == null) return fallback;
+  final parsed = double.tryParse(value.replaceAll('px', ''));
+  if (parsed == null ||
+      !parsed.isFinite ||
+      parsed.abs() > renderMaxCoordinate) {
+    throw RenderProtocolException(
+      'render.style',
+      'invalid finite numeric style $value',
+    );
+  }
+  return parsed;
+}
 
 bool _mapEquals(Map<String, String> a, Map<String, String> b) {
   if (a.length != b.length) return false;
@@ -842,7 +1428,24 @@ bool _semanticsEqual(
         a.id == b.id &&
         a.role == b.role &&
         a.name == b.name &&
-        a.actionGeneration == b.actionGeneration;
+        a.value == b.value &&
+        a.actionGeneration == b.actionGeneration &&
+        _listEquals(a.actions, b.actions);
+
+bool _scrollIntentsEqual(
+  Map<int, RenderScrollIntent> a,
+  Map<int, RenderScrollIntent> b,
+) {
+  if (a.length != b.length) return false;
+  return a.entries.every((entry) {
+    final other = b[entry.key];
+    return other != null &&
+        entry.value.nodeId == other.nodeId &&
+        entry.value.kind == other.kind &&
+        entry.value.point.x == other.point.x &&
+        entry.value.point.y == other.point.y;
+  });
+}
 
 extension on RenderRect {
   ui.Rect get uiRect => ui.Rect.fromLTWH(x, y, width, height);

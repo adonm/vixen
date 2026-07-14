@@ -15,6 +15,7 @@ extern "C" {
 #define VIXEN_MAX_OUTPUT_BYTES 1048576u
 #define VIXEN_MAX_OUTSTANDING_BUFFERS 64u
 #define VIXEN_MAX_WAIT_MILLISECONDS 60000u
+#define VIXEN_MAX_RENDER_UPDATE_SOURCE_BYTES 524288u
 #define VIXEN_MAX_FRAME_DIMENSION 4096u
 #define VIXEN_MAX_FRAME_BYTES 67108864u
 #define VIXEN_MAX_OUTSTANDING_FRAMES 3u
@@ -92,9 +93,11 @@ typedef struct VixenFrame {
  * - Do not concurrently destroy a handle with another call on that handle.
  *   Destroy is explicit; zero, unknown, and repeated destruction fail safely.
  * - There are no callbacks. Commands and events are copied across this ABI.
- * - Renderer poll/respond use a dedicated bounded broker and do not take the
- *   serialized BrowserCore controller lock. They remain serviceable while a
- *   browser command or V8 evaluation waits for renderer work.
+ * - Renderer poll/respond/submit/shutdown use a dedicated bounded broker and
+ *   do not take the serialized BrowserCore controller lock. They remain
+ *   serviceable while a browser command or V8 evaluation waits for renderer
+ *   work. Ordinary renderer updates are capped by
+ *   VIXEN_MAX_RENDER_UPDATE_SOURCE_BYTES before JSON encoding.
  * - Input pointers must address their declared readable byte ranges for the
  *   duration of the call. Output pointers must be writable for the call.
  *   Null input/output pointers fail when detectable; arbitrary invalid non-null
@@ -203,8 +206,9 @@ uint32_t vixen_wait_event(VixenHandle handle,
                           VixenBuffer *out_json);
 
 /*
- * Polls the dedicated renderer request queue. Successful output is a strict
- * renderer_request JSON envelope. NO_EVENT writes an empty descriptor.
+ * Polls the dedicated renderer queue. Successful output is a strict
+ * renderer_request or asynchronous renderer_update JSON envelope. NO_EVENT
+ * writes an empty descriptor.
  */
 uint32_t vixen_renderer_poll(VixenHandle handle,
                              uint64_t timeout_milliseconds,
@@ -218,6 +222,15 @@ uint32_t vixen_renderer_respond(VixenHandle handle,
                                 const uint8_t *message,
                                 size_t message_len,
                                 VixenBuffer *out_json);
+
+/* Submits an ordinary asynchronous commit, presentation, or resync envelope. */
+uint32_t vixen_renderer_submit(VixenHandle handle,
+                               const uint8_t *message,
+                               size_t message_len,
+                               VixenBuffer *out_json);
+
+/* Cancels pending renderer work and wakes renderer polls before destruction. */
+uint32_t vixen_renderer_shutdown(VixenHandle handle, VixenBuffer *out_json);
 
 /* Releases an output allocation by token. Safe failure is UNKNOWN_BUFFER. */
 uint32_t vixen_buffer_release(uint64_t token);

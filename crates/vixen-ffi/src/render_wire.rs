@@ -2,19 +2,31 @@
 
 use serde_json::{Map, Value, json};
 use vixen_api::{
-    BrowsingContextId, DocumentId, RENDER_MAX_GEOMETRY_ENTRIES, RENDER_MAX_SCROLL_ENTRIES,
-    RENDER_MAX_SEMANTIC_BOUNDS, RENDER_MAX_TEXT_BOXES, RENDER_MAX_TRUNCATION_DIAGNOSTICS,
-    RENDER_PROTOCOL_VERSION, RenderBrokerCancellation, RenderBrokerRequest,
-    RenderBrokerRequestKind, RenderBrokerResponse, RenderBrokerResponseKind, RenderCommit,
-    RenderCommitId, RenderFragmentId, RenderGeometryEntry, RenderHitTestHandle, RenderInputTarget,
-    RenderLimitDomain, RenderNodeId, RenderPoint, RenderProtocolError, RenderQueryId, RenderRect,
-    RenderRequestId, RenderRevision, RenderScrollNodeId, RenderScrollState, RenderSemanticBounds,
-    RenderSize, RenderTextAffinity, RenderTextBox, RenderTextDirection, RenderTextQueryBatchResult,
+    BrowsingContextId, DocumentId, FullRenderSnapshot, RENDER_MAX_GEOMETRY_ENTRIES,
+    RENDER_MAX_SCROLL_ENTRIES, RENDER_MAX_SEMANTIC_BOUNDS, RENDER_MAX_TEXT_BOXES,
+    RENDER_MAX_TRUNCATION_DIAGNOSTICS, RENDER_PROTOCOL_VERSION, RenderBridgeSubmission,
+    RenderBridgeUpdate, RenderBrokerCancellation, RenderBrokerRequest, RenderBrokerRequestKind,
+    RenderBrokerResponse, RenderBrokerResponseKind, RenderCommit, RenderCommitId, RenderFragmentId,
+    RenderGeometryEntry, RenderHandleRelease, RenderHitTestHandle, RenderInputTarget,
+    RenderLimitDomain, RenderMutation, RenderMutationBatch, RenderNode, RenderNodeId,
+    RenderNodeKind, RenderPoint, RenderPresented, RenderProtocolError, RenderQueryId, RenderRect,
+    RenderRequestId, RenderResource, RenderResourceKind, RenderResyncReason, RenderResyncRequest,
+    RenderRevision, RenderScrollIntent, RenderScrollIntentKind, RenderScrollNodeId,
+    RenderScrollState, RenderSemanticActionKind, RenderSemanticBounds, RenderSize,
+    RenderTextAffinity, RenderTextBox, RenderTextDirection, RenderTextQueryBatchResult,
     RenderTextQueryHandle, RenderTextQueryKind, RenderTextQueryResult, RenderTextQueryValue,
     RenderTruncationDiagnostic, RenderViewport, SemanticNodeId,
 };
 
+use crate::RenderBrokerMessage;
 use crate::c_abi::AbiError;
+
+pub(crate) fn message_json(message: &RenderBrokerMessage) -> Value {
+    match message {
+        RenderBrokerMessage::Request(request) => request_json(request),
+        RenderBrokerMessage::Update(update) => update_json(update),
+    }
+}
 
 pub(crate) fn request_json(request: &RenderBrokerRequest) -> Value {
     let body = match &request.kind {
@@ -64,6 +76,147 @@ pub(crate) fn request_json(request: &RenderBrokerRequest) -> Value {
         "request_id": request.request_id.get(),
         "request": body,
     })
+}
+
+pub(crate) fn update_json(update: &RenderBridgeUpdate) -> Value {
+    let update = match update {
+        RenderBridgeUpdate::FullSnapshot(snapshot) => snapshot_json(snapshot),
+        RenderBridgeUpdate::MutationBatch(batch) => mutation_batch_json(batch),
+        RenderBridgeUpdate::ReleaseHandles(release) => handle_release_json(*release),
+    };
+    json!({
+        "v": RENDER_PROTOCOL_VERSION,
+        "type": "renderer_update",
+        "update": update,
+    })
+}
+
+fn snapshot_json(snapshot: &FullRenderSnapshot) -> Value {
+    json!({
+        "type": "full_snapshot",
+        "revision": revision_json(snapshot.revision),
+        "viewport": viewport_json(snapshot.viewport),
+        "nodes": snapshot.nodes.iter().map(node_json).collect::<Vec<_>>(),
+        "resources": snapshot.resources.iter().map(resource_json).collect::<Vec<_>>(),
+        "scroll_intents": snapshot.scroll_intents.iter().map(|intent| scroll_intent_json(*intent)).collect::<Vec<_>>(),
+    })
+}
+
+fn mutation_batch_json(batch: &RenderMutationBatch) -> Value {
+    json!({
+        "type": "mutation_batch",
+        "base_revision": revision_json(batch.base_revision),
+        "target_revision": revision_json(batch.target_revision),
+        "mutations": batch.mutations.iter().map(mutation_json).collect::<Vec<_>>(),
+    })
+}
+
+fn mutation_json(mutation: &RenderMutation) -> Value {
+    match mutation {
+        RenderMutation::SetViewport(viewport) => {
+            json!({"type": "set_viewport", "viewport": viewport_json(*viewport)})
+        }
+        RenderMutation::UpsertNode(node) => {
+            json!({"type": "upsert_node", "node": node_json(node)})
+        }
+        RenderMutation::RemoveNode { node_id } => {
+            json!({"type": "remove_node", "node_id": node_id.get()})
+        }
+        RenderMutation::UpsertResource(resource) => {
+            json!({"type": "upsert_resource", "resource": resource_json(resource)})
+        }
+        RenderMutation::RemoveResource { resource_id } => {
+            json!({"type": "remove_resource", "resource_id": resource_id.get()})
+        }
+        RenderMutation::SetScrollIntent(intent) => {
+            json!({"type": "set_scroll_intent", "intent": scroll_intent_json(*intent)})
+        }
+        RenderMutation::RemoveScrollIntent { scroll_node_id } => {
+            json!({"type": "remove_scroll_intent", "scroll_node_id": scroll_node_id.get()})
+        }
+    }
+}
+
+fn node_json(node: &RenderNode) -> Value {
+    let kind = match &node.kind {
+        RenderNodeKind::Element { local_name } => {
+            json!({"type": "element", "local_name": local_name})
+        }
+        RenderNodeKind::Text { text } => json!({"type": "text", "text": text}),
+        RenderNodeKind::PseudoBefore { text } => {
+            json!({"type": "pseudo_before", "text": text})
+        }
+        RenderNodeKind::PseudoAfter { text } => {
+            json!({"type": "pseudo_after", "text": text})
+        }
+    };
+    let semantic = node.semantic.as_ref().map(|semantic| {
+        json!({
+            "id": semantic.id.get(),
+            "role": semantic.role,
+            "name": semantic.name,
+            "value": semantic.value,
+            "action_generation": semantic.action_generation,
+            "actions": semantic.actions.iter().map(|action| semantic_action_name(*action)).collect::<Vec<_>>(),
+        })
+    });
+    json!({
+        "id": node.id.get(),
+        "parent_id": node.parent_id.map(|id| id.get()),
+        "sibling_index": node.sibling_index,
+        "depth": node.depth,
+        "kind": kind,
+        "styles": node.styles.iter().map(|style| json!({"name": style.name, "value": style.value})).collect::<Vec<_>>(),
+        "resource_ids": node.resource_ids.iter().map(|id| id.get()).collect::<Vec<_>>(),
+        "semantic": semantic,
+    })
+}
+
+fn resource_json(resource: &RenderResource) -> Value {
+    json!({
+        "id": resource.id.get(),
+        "kind": match resource.kind {
+            RenderResourceKind::Image => "image",
+            RenderResourceKind::Font => "font",
+        },
+        "mime": resource.mime,
+        "bytes": encode_base64(&resource.bytes),
+    })
+}
+
+fn scroll_intent_json(intent: RenderScrollIntent) -> Value {
+    let (kind, point) = match intent.kind {
+        RenderScrollIntentKind::By(point) => ("by", point),
+        RenderScrollIntentKind::To(point) => ("to", point),
+        RenderScrollIntentKind::Restore(point) => ("restore", point),
+    };
+    json!({
+        "scroll_node_id": intent.scroll_node_id.get(),
+        "node_id": intent.node_id.get(),
+        "kind": kind,
+        "point": point_json(point),
+    })
+}
+
+fn handle_release_json(release: RenderHandleRelease) -> Value {
+    json!({
+        "type": "handle_release",
+        "commit_id": release.commit_id.get(),
+        "hit_test_handle": release.hit_test_handle.get(),
+        "text_query_handle": release.text_query_handle.get(),
+    })
+}
+
+fn semantic_action_name(action: RenderSemanticActionKind) -> &'static str {
+    match action {
+        RenderSemanticActionKind::Activate => "activate",
+        RenderSemanticActionKind::Focus => "focus",
+        RenderSemanticActionKind::SetValue => "set_value",
+        RenderSemanticActionKind::SetSelection => "set_selection",
+        RenderSemanticActionKind::Increase => "increase",
+        RenderSemanticActionKind::Decrease => "decrease",
+        RenderSemanticActionKind::ScrollIntoView => "scroll_into_view",
+    }
 }
 
 pub(crate) fn parse_response(input: &str) -> Result<RenderBrokerResponse, AbiError> {
@@ -117,6 +270,71 @@ pub(crate) fn parse_response(input: &str) -> Result<RenderBrokerResponse, AbiErr
         version: RENDER_PROTOCOL_VERSION,
         request_id,
         kind,
+    })
+}
+
+pub(crate) fn parse_submission(input: &str) -> Result<RenderBridgeSubmission, AbiError> {
+    let value: Value = serde_json::from_str(input)
+        .map_err(|error| invalid(format!("invalid renderer JSON: {error}")))?;
+    let envelope = object(&value, "renderer submission")?;
+    keys(envelope, &["submission", "type", "v"])?;
+    if u64_field(envelope, "v")? != u64::from(RENDER_PROTOCOL_VERSION)
+        || string(envelope, "type")? != "renderer_submission"
+    {
+        return Err(invalid("unsupported renderer submission envelope"));
+    }
+    let submission = object_field(envelope, "submission")?;
+    let submission = match string(submission, "type")? {
+        "commit" => RenderBridgeSubmission::Commit(parse_commit(submission)?),
+        "presented" => RenderBridgeSubmission::Presented(parse_presented(submission)?),
+        "resync" => RenderBridgeSubmission::Resync(parse_resync(submission)?),
+        _ => return Err(invalid("unknown renderer submission type")),
+    };
+    submission
+        .validate_transport()
+        .map_err(|error| invalid(error.message))?;
+    Ok(submission)
+}
+
+fn parse_presented(value: &Map<String, Value>) -> Result<RenderPresented, AbiError> {
+    keys(
+        value,
+        &["commit_id", "context_id", "document_id", "revision", "type"],
+    )?;
+    Ok(RenderPresented {
+        version: RENDER_PROTOCOL_VERSION,
+        context_id: context_id(value)?,
+        document_id: document_id(value)?,
+        commit_id: RenderCommitId::new(u64_field(value, "commit_id")?)
+            .ok_or_else(|| invalid("commit_id must be nonzero"))?,
+        revision: parse_revision(object_field(value, "revision")?)?,
+    })
+}
+
+fn parse_resync(value: &Map<String, Value>) -> Result<RenderResyncRequest, AbiError> {
+    keys(
+        value,
+        &[
+            "context_id",
+            "current_revision",
+            "document_id",
+            "reason",
+            "rejected_base_revision",
+            "type",
+        ],
+    )?;
+    Ok(RenderResyncRequest {
+        version: RENDER_PROTOCOL_VERSION,
+        context_id: context_id(value)?,
+        document_id: document_id(value)?,
+        current_revision: optional_revision(value, "current_revision")?,
+        rejected_base_revision: optional_revision(value, "rejected_base_revision")?,
+        reason: match string(value, "reason")? {
+            "missing_state" => RenderResyncReason::MissingState,
+            "missed_base_revision" => RenderResyncReason::MissedBaseRevision,
+            "renderer_reset" => RenderResyncReason::RendererReset,
+            _ => return Err(invalid("unknown renderer resync reason")),
+        },
     })
 }
 
@@ -399,6 +617,15 @@ fn revision_json(revision: RenderRevision) -> Value {
     })
 }
 
+fn viewport_json(viewport: RenderViewport) -> Value {
+    json!({
+        "width": viewport.width,
+        "height": viewport.height,
+        "device_scale": viewport.device_scale,
+        "page_zoom": viewport.page_zoom,
+    })
+}
+
 fn parse_revision(value: &Map<String, Value>) -> Result<RenderRevision, AbiError> {
     keys(
         value,
@@ -564,6 +791,20 @@ fn optional_object<'a>(
     }
 }
 
+fn optional_revision(
+    value: &Map<String, Value>,
+    field: &str,
+) -> Result<Option<RenderRevision>, AbiError> {
+    let value = value
+        .get(field)
+        .ok_or_else(|| invalid(format!("{field} is required")))?;
+    if value.is_null() {
+        Ok(None)
+    } else {
+        parse_revision(object(value, field)?).map(Some)
+    }
+}
+
 fn array<'a>(value: &'a Map<String, Value>, field: &str) -> Result<&'a [Value], AbiError> {
     value
         .get(field)
@@ -633,9 +874,34 @@ fn invalid(message: impl Into<String>) -> AbiError {
     AbiError::invalid_command(message)
 }
 
+fn encode_base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut encoded = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let first = chunk[0];
+        let second = chunk.get(1).copied().unwrap_or(0);
+        let third = chunk.get(2).copied().unwrap_or(0);
+        encoded.push(ALPHABET[usize::from(first >> 2)] as char);
+        encoded.push(ALPHABET[usize::from(((first & 0b0000_0011) << 4) | (second >> 4))] as char);
+        if chunk.len() > 1 {
+            encoded
+                .push(ALPHABET[usize::from(((second & 0b0000_1111) << 2) | (third >> 6))] as char);
+        } else {
+            encoded.push('=');
+        }
+        if chunk.len() > 2 {
+            encoded.push(ALPHABET[usize::from(third & 0b0011_1111)] as char);
+        } else {
+            encoded.push('=');
+        }
+    }
+    encoded
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vixen_api::{RenderResourceId, RenderStyleProperty};
 
     fn revision() -> RenderRevision {
         RenderRevision {
@@ -691,6 +957,64 @@ mod tests {
         ));
         assert!(parse_response(
             r#"{"v":1,"type":"renderer_response","request_id":7,"response":{"type":"cancelled","reason":"stop","extra":true}}"#
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn full_snapshot_update_has_stable_data_oriented_shape() {
+        let mut snapshot = FullRenderSnapshot::new(
+            revision(),
+            RenderViewport {
+                width: 240,
+                height: 160,
+                device_scale: 1.0,
+                page_zoom: 1.0,
+            },
+        );
+        snapshot.resources.push(RenderResource {
+            id: RenderResourceId::new(9).unwrap(),
+            kind: RenderResourceKind::Image,
+            mime: "image/png".to_owned(),
+            bytes: vec![0, 1, 2],
+        });
+        snapshot.nodes.push(RenderNode {
+            id: RenderNodeId::new(10).unwrap(),
+            parent_id: None,
+            sibling_index: 0,
+            depth: 0,
+            kind: RenderNodeKind::Element {
+                local_name: "main".to_owned(),
+            },
+            styles: vec![RenderStyleProperty {
+                name: "display".to_owned(),
+                value: "block".to_owned(),
+            }],
+            resource_ids: vec![RenderResourceId::new(9).unwrap()],
+            semantic: None,
+        });
+        let update = update_json(&RenderBridgeUpdate::FullSnapshot(snapshot));
+        assert_eq!(update["type"], "renderer_update");
+        assert_eq!(update["update"]["type"], "full_snapshot");
+        assert_eq!(update["update"]["resources"][0]["bytes"], "AAEC");
+        assert_eq!(update["update"]["nodes"][0]["kind"]["type"], "element");
+        assert_eq!(update["update"]["nodes"][0]["styles"][0]["name"], "display");
+    }
+
+    #[test]
+    fn asynchronous_submissions_are_strict_and_identity_checked() {
+        let presented = parse_submission(
+            r#"{"v":1,"type":"renderer_submission","submission":{"type":"presented","context_id":1,"document_id":2,"commit_id":3,"revision":{"context_id":1,"document_id":2,"source_generation":3,"style_generation":4,"viewport_generation":5,"resource_generation":6}}}"#,
+        )
+        .unwrap();
+        assert!(matches!(presented, RenderBridgeSubmission::Presented(_)));
+        let resync = parse_submission(
+            r#"{"v":1,"type":"renderer_submission","submission":{"type":"resync","context_id":1,"document_id":2,"current_revision":null,"rejected_base_revision":null,"reason":"renderer_reset"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(resync, RenderBridgeSubmission::Resync(_)));
+        assert!(parse_submission(
+            r#"{"v":1,"type":"renderer_submission","submission":{"type":"presented","context_id":9,"document_id":2,"commit_id":3,"revision":{"context_id":1,"document_id":2,"source_generation":3,"style_generation":4,"viewport_generation":5,"resource_generation":6}}}"#,
         )
         .is_err());
     }

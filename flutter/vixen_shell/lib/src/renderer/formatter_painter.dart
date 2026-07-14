@@ -41,19 +41,24 @@ final class RenderCommitPainter extends CustomPainter {
 
 SemanticsProperties _properties(RenderSemanticDescriptor descriptor) =>
     switch (descriptor.role) {
-      RenderSemanticRole.heading => SemanticsProperties(
+      'heading' => SemanticsProperties(
         label: descriptor.name,
         textDirection: TextDirection.ltr,
         header: true,
         headingLevel: 1,
       ),
-      RenderSemanticRole.link => SemanticsProperties(
+      'link' => SemanticsProperties(
         label: descriptor.name,
         textDirection: TextDirection.ltr,
         link: true,
       ),
-      RenderSemanticRole.text => SemanticsProperties(
+      'text' => SemanticsProperties(
         label: descriptor.name,
+        textDirection: TextDirection.ltr,
+      ),
+      _ => SemanticsProperties(
+        label: descriptor.name,
+        value: descriptor.value,
         textDirection: TextDirection.ltr,
       ),
     };

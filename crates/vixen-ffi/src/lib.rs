@@ -9,7 +9,9 @@ mod frame;
 mod render_wire;
 mod renderer_broker;
 
-pub use renderer_broker::{RenderBroker, RenderBrokerError};
+pub use renderer_broker::{
+    RENDER_BROKER_MAX_UPDATE_SOURCE_BYTES, RenderBroker, RenderBrokerError, RenderBrokerMessage,
+};
 
 use std::path::PathBuf;
 use std::time::Duration;

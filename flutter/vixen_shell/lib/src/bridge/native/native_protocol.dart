@@ -412,7 +412,17 @@ void _validateEnvelope(Map<String, Object?> envelope) {
       }
       _requireTaggedObject(envelope['request'], 'renderer request');
       return;
+    case 'renderer_update':
+      _expectEnvelopeKeys(envelope, const <String>{'v', 'type', 'update'});
+      _requireTaggedObject(envelope['update'], 'renderer update');
+      return;
     case 'renderer_accepted':
+      _expectEnvelopeKeys(envelope, const <String>{'v', 'type'});
+      return;
+    case 'renderer_shutdown':
+      _expectEnvelopeKeys(envelope, const <String>{'v', 'type'});
+      return;
+    case 'renderer_submitted':
       _expectEnvelopeKeys(envelope, const <String>{'v', 'type'});
       return;
     case 'error':

@@ -117,6 +117,10 @@ typedef _RendererRespondDart = int Function(
   int,
   Pointer<VixenBuffer>,
 );
+typedef _RendererSubmitNative = _RendererRespondNative;
+typedef _RendererSubmitDart = _RendererRespondDart;
+typedef _RendererShutdownNative = Uint32 Function(Uint64, Pointer<VixenBuffer>);
+typedef _RendererShutdownDart = int Function(int, Pointer<VixenBuffer>);
 typedef _BufferReleaseNative = Uint32 Function(Uint64);
 typedef _BufferReleaseDart = int Function(int);
 typedef _CaptureFrameNative = Uint32 Function(
@@ -166,6 +170,14 @@ class _VixenNativeBindings {
           .lookupFunction<_RendererRespondNative, _RendererRespondDart>(
             'vixen_renderer_respond',
           ),
+      rendererSubmit = library
+          .lookupFunction<_RendererSubmitNative, _RendererSubmitDart>(
+            'vixen_renderer_submit',
+          ),
+      rendererShutdown = library
+          .lookupFunction<_RendererShutdownNative, _RendererShutdownDart>(
+            'vixen_renderer_shutdown',
+          ),
       bufferRelease = library
           .lookupFunction<_BufferReleaseNative, _BufferReleaseDart>(
             'vixen_buffer_release',
@@ -187,6 +199,8 @@ class _VixenNativeBindings {
   final _WaitEventDart waitEvent;
   final _RendererPollDart rendererPoll;
   final _RendererRespondDart rendererRespond;
+  final _RendererSubmitDart rendererSubmit;
+  final _RendererShutdownDart rendererShutdown;
   final _BufferReleaseDart bufferRelease;
   final _CaptureFrameDart captureFrame;
   final _FrameReleaseDart frameRelease;
@@ -297,7 +311,7 @@ class VixenNativeApi {
     }
   }
 
-  NativeRendererRequest? pollRenderer(
+  NativeRendererMessage? pollRenderer(
     int handle, {
     int timeoutMilliseconds = 0,
   }) {
@@ -315,10 +329,10 @@ class VixenNativeApi {
       final envelope = _consumeOutput(
         status,
         output,
-        expectedType: 'renderer_request',
+        expectedType: const {'renderer_request', 'renderer_update'},
         allowNoEvent: true,
       );
-      return envelope == null ? null : decodeRendererRequest(envelope);
+      return envelope == null ? null : decodeRendererMessage(envelope);
     } finally {
       calloc.free(output);
     }
@@ -339,6 +353,34 @@ class VixenNativeApi {
     } finally {
       calloc.free(output);
       malloc.free(input);
+    }
+  }
+
+  void submitRenderer(int handle, Map<String, Object?> submission) {
+    final bytes = encodeRendererSubmission(submission);
+    final input = _copyInput(bytes);
+    final output = calloc<VixenBuffer>();
+    try {
+      final status = _bindings.rendererSubmit(
+        handle,
+        input,
+        bytes.length,
+        output,
+      );
+      _consumeOutput(status, output, expectedType: 'renderer_submitted');
+    } finally {
+      calloc.free(output);
+      malloc.free(input);
+    }
+  }
+
+  void shutdownRenderer(int handle) {
+    final output = calloc<VixenBuffer>();
+    try {
+      final status = _bindings.rendererShutdown(handle, output);
+      _consumeOutput(status, output, expectedType: 'renderer_shutdown');
+    } finally {
+      calloc.free(output);
     }
   }
 
@@ -449,7 +491,7 @@ class VixenNativeApi {
   Map<String, Object?>? _consumeOutput(
     int statusValue,
     Pointer<VixenBuffer> output, {
-    required String expectedType,
+    required Object expectedType,
     bool allowNoEvent = false,
   }) {
     final payload = _copyDecodeAndRelease(output.ref);
@@ -464,7 +506,13 @@ class VixenNativeApi {
       return null;
     }
     if (status == NativeStatus.ok) {
-      if (payload == null || payload['type'] != expectedType) {
+      final actualType = payload?['type'];
+      final matches = switch (expectedType) {
+        String value => actualType == value,
+        Set<String> values => values.contains(actualType),
+        _ => false,
+      };
+      if (payload == null || !matches) {
         throw NativeProtocolException(
           'successful native call did not return a $expectedType envelope',
         );

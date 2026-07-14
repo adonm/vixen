@@ -62,7 +62,7 @@ class NativeWorkerClient {
 
   Stream<Map<String, Object?>> get events => _events.stream;
 
-  NativeRendererRequest? pollRenderer({int timeoutMilliseconds = 0}) {
+  NativeRendererMessage? pollRenderer({int timeoutMilliseconds = 0}) {
     if (_closing ||
         _finished ||
         _rendererApi == null ||
@@ -89,6 +89,19 @@ class NativeWorkerClient {
       );
     }
     _rendererApi!.respondRenderer(_rendererHandle!, response);
+  }
+
+  void submitRenderer(Map<String, Object?> submission) {
+    if (_closing ||
+        _finished ||
+        _rendererApi == null ||
+        _rendererHandle == null) {
+      throw const NativeBridgeException(
+        'native renderer broker is closed',
+        code: 'render.closed',
+      );
+    }
+    _rendererApi!.submitRenderer(_rendererHandle!, submission);
   }
 
   Future<Map<String, Object?>> command(Map<Object?, Object?> command) {
@@ -135,8 +148,13 @@ class NativeWorkerClient {
     if (_finished) {
       return;
     }
+    final rendererApi = _rendererApi;
+    final rendererHandle = _rendererHandle;
     _closing = true;
     try {
+      if (rendererApi != null && rendererHandle != null) {
+        rendererApi.shutdownRenderer(rendererHandle);
+      }
       await _request('shutdown').timeout(_shutdownTimeout);
     } finally {
       await _finish();

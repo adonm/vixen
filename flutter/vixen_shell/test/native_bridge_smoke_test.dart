@@ -3,6 +3,8 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vixen_shell/src/bridge/browser_models.dart';
 import 'package:vixen_shell/src/bridge/native/native_browser_controller.dart';
+import 'package:vixen_shell/src/bridge/native/native_renderer_protocol.dart';
+import 'package:vixen_shell/src/bridge/render_models.dart';
 
 void main() {
   final libraryPath = Platform.environment['VIXEN_FFI_LIBRARY'];
@@ -32,6 +34,17 @@ void main() {
         await settled.timeout(const Duration(seconds: 30));
         final snapshot = await controller.browserSnapshot();
         final state = await controller.contextState(contextId);
+        controller.submitRenderer(
+          rendererResyncSubmission(
+            RenderResyncRequest(
+              contextId: contextId,
+              documentId: state.documentId,
+              currentRevision: null,
+              rejectedBaseRevision: null,
+              reason: 'renderer_reset',
+            ),
+          ),
+        );
 
         expect(contextId, greaterThan(0));
         expect(

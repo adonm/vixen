@@ -1753,6 +1753,7 @@ mod tests {
             "#define VIXEN_MAX_OUTPUT_BYTES 1048576u",
             "#define VIXEN_MAX_OUTSTANDING_BUFFERS 64u",
             "#define VIXEN_MAX_WAIT_MILLISECONDS 60000u",
+            "#define VIXEN_MAX_RENDER_UPDATE_SOURCE_BYTES 524288u",
             "#define VIXEN_MAX_FRAME_DIMENSION 4096u",
             "#define VIXEN_MAX_FRAME_BYTES 67108864u",
             "#define VIXEN_MAX_OUTSTANDING_FRAMES 3u",
@@ -1768,12 +1769,17 @@ mod tests {
         assert!(header.contains("uint32_t vixen_open(const uint8_t *profile_path,"));
         assert!(header.contains("uint32_t vixen_command(VixenHandle handle,"));
         assert!(header.contains("uint32_t vixen_wait_event(VixenHandle handle,"));
+        assert!(header.contains("uint32_t vixen_renderer_poll(VixenHandle handle,"));
+        assert!(header.contains("uint32_t vixen_renderer_respond(VixenHandle handle,"));
+        assert!(header.contains("uint32_t vixen_renderer_submit(VixenHandle handle,"));
+        assert!(header.contains("uint32_t vixen_renderer_shutdown(VixenHandle handle,"));
         assert!(header.contains("uint32_t vixen_capture_frame(VixenHandle handle,"));
         assert_eq!(VIXEN_MAX_PROFILE_PATH_BYTES, 4096);
         assert_eq!(VIXEN_MAX_MESSAGE_BYTES, 65_536);
         assert_eq!(VIXEN_MAX_OUTPUT_BYTES, 1_048_576);
         assert_eq!(VIXEN_MAX_OUTSTANDING_BUFFERS, 64);
         assert_eq!(VIXEN_MAX_WAIT_MILLISECONDS, 60_000);
+        assert_eq!(crate::RENDER_BROKER_MAX_UPDATE_SOURCE_BYTES, 512 * 1024);
         assert_eq!(VIXEN_MAX_FRAME_DIMENSION, 4096);
         assert_eq!(VIXEN_MAX_FRAME_BYTES, 64 * 1024 * 1024);
         assert_eq!(VIXEN_MAX_OUTSTANDING_FRAMES, 3);
