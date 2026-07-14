@@ -117,6 +117,17 @@ final class RenderViewport {
     'device_scale': deviceScale,
     'page_zoom': pageZoom,
   };
+
+  @override
+  bool operator ==(Object other) =>
+      other is RenderViewport &&
+      width == other.width &&
+      height == other.height &&
+      deviceScale == other.deviceScale &&
+      pageZoom == other.pageZoom;
+
+  @override
+  int get hashCode => Object.hash(width, height, deviceScale, pageZoom);
 }
 
 enum RenderNodeKind { element, text, pseudoBefore, pseudoAfter }

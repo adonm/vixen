@@ -103,9 +103,14 @@ gate-native-abi:
     cc -std=c11 -Wall -Wextra -Werror -fsyntax-only crates/vixen-ffi/tests/header_smoke.c
     cargo test -p vixen-ffi c_abi::tests
 
+# Test-only R3 Canvas/Paragraph/PNG formatter and exact scene evidence with the
+# pinned engine asked to use Impeller. This does not change production frames.
+test-flutter-formatter-impeller: _flutter-sdk-present
+    cd flutter/vixen_shell && FLUTTER_TEST_IMPELLER=true flutter test --enable-impeller --dart-define=VIXEN_REQUIRE_IMPELLER=true test/formatter_test.dart
+
 # Dart/widget/native bridge evidence for the checked-in Linux Flutter shell.
 # The native smoke test loads the exact cdylib built by gate-native-abi.
-gate-flutter-shell: _flutter-sdk-present gate-native-abi
+gate-flutter-shell: _flutter-sdk-present gate-native-abi test-flutter-formatter-impeller
     cd flutter/vixen_shell && dart format --output=none --set-exit-if-changed lib test
     cd flutter/vixen_shell && flutter analyze
     cd flutter/vixen_shell && VIXEN_FFI_LIBRARY="{{justfile_directory()}}/target/debug/libvixen_ffi.so" flutter test
