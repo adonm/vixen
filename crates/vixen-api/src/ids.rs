@@ -78,6 +78,16 @@ define_id!(DocumentId);
 define_id!(RequestId);
 define_id!(RuntimeContextId);
 define_id!(DownloadId);
+define_id!(RenderNodeId);
+define_id!(RenderResourceId);
+define_id!(RenderFragmentId);
+define_id!(RenderCommitId);
+define_id!(RenderHandleId);
+define_id!(RenderQueryId);
+define_id!(RenderScrollNodeId);
+define_id!(RenderScrollCommandId);
+define_id!(SemanticNodeId);
+define_id!(SemanticActionRequestId);
 
 #[cfg(test)]
 mod tests {

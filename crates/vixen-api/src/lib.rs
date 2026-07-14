@@ -14,6 +14,7 @@
 
 mod browser;
 mod ids;
+mod render;
 
 pub use browser::{
     ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, ACCESSIBILITY_MAX_VALUE_BYTES,
@@ -33,8 +34,11 @@ pub use browser::{
 };
 pub use ids::{
     BrowserId, BrowsingContextId, DocumentId, DownloadId, FrameId, InvalidId, NavigationId,
-    ProfileId, RequestId, RuntimeContextId,
+    ProfileId, RenderCommitId, RenderFragmentId, RenderHandleId, RenderNodeId, RenderQueryId,
+    RenderResourceId, RenderScrollCommandId, RenderScrollNodeId, RequestId, RuntimeContextId,
+    SemanticActionRequestId, SemanticNodeId,
 };
+pub use render::*;
 
 // ---------------------------------------------------------------------------
 // Diagnostics (docs/SPEC.md "Diagnostics shape")
