@@ -192,7 +192,10 @@ external classic-script reads are generation-cancellable. Navigate/reload/stop/
 close commands snapshot and interrupt the exact active runtime generation before
 the deadline; interrupted mutations/effects are discarded, the cancellation is
 not reported as a page exception, and the isolate remains reusable. Runtime
-construction and synchronous native host calls remain open. There is still no HTTP download manager or Playwright
+`fetch()` and CORS preflight waits also return promptly on that signal; a late
+worker has no cookie/cache persistence capability, though its already-started
+bounded transport is not yet actively aborted. Runtime construction and other
+local native host calls remain open. There is still no HTTP download manager or Playwright
 context-tracing archive implementation.
 
 ---

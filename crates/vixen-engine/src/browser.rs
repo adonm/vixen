@@ -8786,7 +8786,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_interrupts_an_active_author_script_without_a_spurious_exception() {
+    fn stop_interrupts_an_active_fetch_without_stale_effects_or_a_spurious_exception() {
         let server = GatedHttpServer::start(2);
         let page_url = server.url("/page");
         let script_url = server.url("/loop.js");
@@ -8817,12 +8817,6 @@ mod tests {
             .unwrap();
         let marker = server.request();
         assert_eq!(marker.path, "/started");
-        marker.respond.send(String::new()).unwrap();
-        marker
-            .completed
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(25));
 
         let started = std::time::Instant::now();
         assert_eq!(
@@ -8833,8 +8827,14 @@ mod tests {
         );
         assert!(
             started.elapsed() < Duration::from_millis(150),
-            "stop waited for the author-script runtime timeout"
+            "stop waited for the active native fetch"
         );
+        marker.respond.send(String::new()).unwrap();
+        marker
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        std::thread::sleep(Duration::from_millis(25));
 
         let events = drain_events(&mut handle);
         assert_navigation_cancelled(
@@ -8850,6 +8850,10 @@ mod tests {
         )));
         let state = state(&mut handle, context_id);
         assert_eq!(state.title.as_deref(), Some("running"));
+        let ScriptValue::String(cookie) = eval(&mut handle, &state, "document.cookie") else {
+            panic!("document.cookie must be a string");
+        };
+        assert!(!cookie.contains("source=started"));
         assert_eq!(eval(&mut handle, &state, "20 + 22"), ScriptValue::Int32(42));
         drop(handle);
         server.join();

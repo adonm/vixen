@@ -224,9 +224,13 @@ control registry snapshots the exact context runtime before enqueueing an
 accepted navigate/reload/stop/close intent; it can terminate only that active
 generation, not a replacement runtime created by the command. Interrupted work
 discards deferred DOM mutations and runtime outputs, and the owner checks queued
-commands before advancing another navigation quantum. Runtime construction,
-synchronous native host calls, and non-script discovered resources still need
-sendable, generation-cancellable worker paths.
+commands before advancing another navigation quantum. Runtime `fetch()` and CORS
+preflight network calls return through cancellation-polled worker channels. A
+cancelled wait drops its receiver; the detached worker owns only cloned network/
+read state, and cookie/preflight/HTTP-cache writes run afterward under the exact
+still-active runtime guard. The underlying bounded transport is not yet actively
+aborted. Runtime construction, other local native host calls, and non-script
+discovered resources still need interruptible paths.
 
 Parser-discovered external classic scripts are the first post-commit resource on
 that worker model. The owner resolves the URL and current script policy, then

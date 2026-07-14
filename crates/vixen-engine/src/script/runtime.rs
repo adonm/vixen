@@ -30,6 +30,16 @@ pub(super) struct DenoRuntimeInit {
     pub(super) dom_mutations: Option<dom::DomMutationSink>,
 }
 
+pub(super) struct DenoRuntimeConfig {
+    pub(super) network: NetworkConfig,
+    pub(super) storage: webapi::WebStorageHost,
+    pub(super) network_state: webapi::RuntimeNetworkState,
+    pub(super) extra_http_headers: webapi::ExtraHttpHeaders,
+    pub(super) cache_disabled: webapi::CacheDisabledFlag,
+    pub(super) permission_overrides: webapi::PermissionOverrides,
+    pub(super) interrupt: RuntimeInterruptHandle,
+}
+
 #[derive(Clone, Default)]
 pub(crate) struct RuntimeInterruptHandle {
     active: Arc<Mutex<Option<ActiveExecution>>>,
@@ -58,6 +68,32 @@ impl RuntimeInterruptHandle {
         interrupted
     }
 
+    pub(crate) fn is_terminated(&self) -> bool {
+        self.active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .as_ref()
+            .is_some_and(|active| {
+                active.state.interrupted.load(Ordering::Acquire)
+                    || active.state.timed_out.load(Ordering::Acquire)
+            })
+    }
+
+    pub(crate) fn with_active_execution<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
+        let active = self
+            .active
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let active = active.as_ref()?;
+        if active.state.complete.load(Ordering::Acquire)
+            || active.state.interrupted.load(Ordering::Acquire)
+            || active.state.timed_out.load(Ordering::Acquire)
+        {
+            return None;
+        }
+        Some(operation())
+    }
+
     fn install(&self, state: Arc<DeadlineState>, isolate: v8::IsolateHandle) {
         *self
             .active
@@ -82,12 +118,7 @@ impl RuntimeInterruptHandle {
 
 pub(super) fn new_deno_runtime(
     page: Option<&Page>,
-    network_config: NetworkConfig,
-    storage: webapi::WebStorageHost,
-    runtime_network_state: webapi::RuntimeNetworkState,
-    extra_http_headers: webapi::ExtraHttpHeaders,
-    cache_disabled: webapi::CacheDisabledFlag,
-    permission_overrides: webapi::PermissionOverrides,
+    config: DenoRuntimeConfig,
 ) -> Result<DenoRuntimeInit, EngineError> {
     // A standalone initial about:blank target has no creator origin to inherit.
     // Keep its automation bootstrap fetch behavior equivalent to the no-page
@@ -98,15 +129,16 @@ pub(super) fn new_deno_runtime(
     let mut extensions = vec![
         webidl::extension(),
         encoding::extension(),
-        webapi::extension(
-            network_config,
-            storage,
-            runtime_network_state,
+        webapi::extension(webapi::WebApiConfig {
+            network: config.network,
+            storage: config.storage,
+            network_state: config.network_state,
             fetch_policy,
-            extra_http_headers,
-            cache_disabled,
-            permission_overrides,
-        ),
+            extra_http_headers: config.extra_http_headers,
+            cache_disabled: config.cache_disabled,
+            permission_overrides: config.permission_overrides,
+            interrupt: config.interrupt,
+        }),
     ];
     let mut dom_mutations = None;
     if let Some(page) = page {

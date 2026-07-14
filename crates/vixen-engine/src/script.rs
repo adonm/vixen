@@ -338,17 +338,20 @@ impl JsRuntime {
         let runtime_interrupt = RuntimeInterruptHandle::default();
         let init = runtime::new_deno_runtime(
             initial_page,
-            network_config.clone(),
-            web_storage_host(
-                initial_page,
-                &storage_backend,
-                &storage_session_id,
-                storage_opaque_serial,
-            ),
-            runtime_network_state.clone(),
-            extra_http_headers.clone(),
-            cache_disabled.clone(),
-            permission_overrides.clone(),
+            runtime::DenoRuntimeConfig {
+                network: network_config.clone(),
+                storage: web_storage_host(
+                    initial_page,
+                    &storage_backend,
+                    &storage_session_id,
+                    storage_opaque_serial,
+                ),
+                network_state: runtime_network_state.clone(),
+                extra_http_headers: extra_http_headers.clone(),
+                cache_disabled: cache_disabled.clone(),
+                permission_overrides: permission_overrides.clone(),
+                interrupt: runtime_interrupt.clone(),
+            },
         )?;
         let realm_key = initial_page
             .map(page_realm_key)
@@ -693,12 +696,15 @@ impl JsRuntime {
             );
             let init = runtime::new_deno_runtime(
                 page,
-                self.network_config.clone(),
-                storage,
-                self.runtime_network_state.clone(),
-                self.extra_http_headers.clone(),
-                self.cache_disabled.clone(),
-                self.permission_overrides.clone(),
+                runtime::DenoRuntimeConfig {
+                    network: self.network_config.clone(),
+                    storage,
+                    network_state: self.runtime_network_state.clone(),
+                    extra_http_headers: self.extra_http_headers.clone(),
+                    cache_disabled: self.cache_disabled.clone(),
+                    permission_overrides: self.permission_overrides.clone(),
+                    interrupt: self.runtime_interrupt.clone(),
+                },
             )?;
             self.runtime = Some(init.runtime);
             self.dom_mutations = init.dom_mutations;

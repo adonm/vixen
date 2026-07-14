@@ -11,7 +11,7 @@ use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use deno_core::serde_json::{Value, json};
@@ -38,6 +38,8 @@ use crate::storage_key::{
     validate_storage_value,
 };
 
+use super::RuntimeInterruptHandle;
+
 struct WebApiHost {
     storage: WebStorageHost,
     network: Result<Network, String>,
@@ -47,6 +49,19 @@ struct WebApiHost {
     cache_disabled: CacheDisabledFlag,
     preflight_cache: Arc<Mutex<PreflightCache>>,
     permission_overrides: PermissionOverrides,
+    runtime_interrupt: RuntimeInterruptHandle,
+}
+
+#[derive(Clone)]
+pub(super) struct WebApiConfig {
+    pub(super) network: NetworkConfig,
+    pub(super) storage: WebStorageHost,
+    pub(super) network_state: RuntimeNetworkState,
+    pub(super) fetch_policy: Option<FetchPolicy>,
+    pub(super) extra_http_headers: ExtraHttpHeaders,
+    pub(super) cache_disabled: CacheDisabledFlag,
+    pub(super) permission_overrides: PermissionOverrides,
+    pub(super) interrupt: RuntimeInterruptHandle,
 }
 
 #[derive(Clone, Default)]
@@ -87,24 +102,17 @@ type StorageEntries = Vec<(String, String)>;
 type MemoryStorageMap = Arc<Mutex<HashMap<String, StorageEntries>>>;
 
 impl WebApiHost {
-    fn new(
-        network_config: NetworkConfig,
-        storage: WebStorageHost,
-        runtime_network_state: RuntimeNetworkState,
-        fetch_policy: Option<FetchPolicy>,
-        extra_http_headers: ExtraHttpHeaders,
-        cache_disabled: CacheDisabledFlag,
-        permission_overrides: PermissionOverrides,
-    ) -> Self {
+    fn new(config: WebApiConfig) -> Self {
         Self {
-            storage,
-            network: Network::new(network_config).map_err(|err| err.to_string()),
-            cookies: runtime_network_state.cookies,
-            fetch_policy,
-            extra_http_headers,
-            cache_disabled,
-            preflight_cache: runtime_network_state.preflight_cache,
-            permission_overrides,
+            storage: config.storage,
+            network: Network::new(config.network).map_err(|err| err.to_string()),
+            cookies: config.network_state.cookies,
+            fetch_policy: config.fetch_policy,
+            extra_http_headers: config.extra_http_headers,
+            cache_disabled: config.cache_disabled,
+            preflight_cache: config.network_state.preflight_cache,
+            permission_overrides: config.permission_overrides,
+            runtime_interrupt: config.interrupt,
         }
     }
 }
@@ -373,26 +381,10 @@ deno_core::extension!(
     ],
 );
 
-pub(super) fn extension(
-    network_config: NetworkConfig,
-    storage: WebStorageHost,
-    runtime_network_state: RuntimeNetworkState,
-    fetch_policy: Option<FetchPolicy>,
-    extra_http_headers: ExtraHttpHeaders,
-    cache_disabled: CacheDisabledFlag,
-    permission_overrides: PermissionOverrides,
-) -> Extension {
+pub(super) fn extension(config: WebApiConfig) -> Extension {
     let mut extension = vixen_webapi::init();
     extension.op_state_fn = Some(Box::new(move |state| {
-        state.put(WebApiHost::new(
-            network_config.clone(),
-            storage.clone(),
-            runtime_network_state.clone(),
-            fetch_policy.clone(),
-            extra_http_headers.clone(),
-            cache_disabled.clone(),
-            permission_overrides.clone(),
-        ));
+        state.put(WebApiHost::new(config.clone()));
     }));
     extension.js_files = Cow::Owned(vec![ExtensionFileSource::new_computed(
         "ext:vixen_webapi/bootstrap.js",
@@ -585,6 +577,7 @@ fn op_vixen_fetch(
         extra_http_headers,
         cache_disabled,
         preflight_cache,
+        runtime_interrupt,
     ) = {
         let state = state.borrow();
         let host = state.borrow::<WebApiHost>();
@@ -607,6 +600,7 @@ fn op_vixen_fetch(
             host.extra_http_headers.snapshot(),
             host.cache_disabled.snapshot(),
             host.preflight_cache.clone(),
+            host.runtime_interrupt.clone(),
         )
     };
     headers.extend(extra_http_headers);
@@ -664,12 +658,15 @@ fn op_vixen_fetch(
         if cors_preflight_required(method, &unsafe_header_names)
             && let Err(message) = cors_preflight_blocking(
                 network.clone(),
-                url.clone(),
-                method,
-                policy.cors_origin(),
-                unsafe_header_names,
-                credentials_mode.cors_mode(),
+                CorsPreflightRequest {
+                    url: url.clone(),
+                    method,
+                    origin: policy.cors_origin(),
+                    unsafe_header_names,
+                    credentials_mode: credentials_mode.cors_mode(),
+                },
                 preflight_cache,
+                runtime_interrupt.clone(),
             )
         {
             return fetch_failure(url.as_str(), method, message, "cors");
@@ -740,6 +737,7 @@ fn op_vixen_fetch(
         send_credentials,
         cookies,
         cookie_store.clone(),
+        runtime_interrupt.clone(),
     ) {
         Ok(response) => {
             let response = revalidated_response(response, revalidation_candidate);
@@ -753,11 +751,13 @@ fn op_vixen_fetch(
                 && method == Method::Get
                 && cache_mode != FetchCacheMode::NoStore
                 && response.status != 304
-                && let Err(message) = persist_fetch_cache(
-                    cookie_store.as_deref(),
-                    &cookie_origin_key(&url),
-                    &response,
-                )
+                && let Err(message) = commit_host_effect(&runtime_interrupt, || {
+                    persist_fetch_cache(
+                        cookie_store.as_deref(),
+                        &cookie_origin_key(&url),
+                        &response,
+                    )
+                })
             {
                 return fetch_failure(url.as_str(), method, message, "cache");
             }
@@ -1080,15 +1080,27 @@ fn cors_preflight_required(method: Method, unsafe_header_names: &[String]) -> bo
     !matches!(method, Method::Get | Method::Head | Method::Post) || !unsafe_header_names.is_empty()
 }
 
-fn cors_preflight_blocking(
-    network: Network,
+struct CorsPreflightRequest {
     url: Url,
     method: Method,
-    request_origin: String,
+    origin: String,
     unsafe_header_names: Vec<String>,
     credentials_mode: CorsCredentialsMode,
+}
+
+fn cors_preflight_blocking(
+    network: Network,
+    request: CorsPreflightRequest,
     cache: Arc<Mutex<PreflightCache>>,
+    runtime_interrupt: RuntimeInterruptHandle,
 ) -> Result<(), String> {
+    let CorsPreflightRequest {
+        url,
+        method,
+        origin: request_origin,
+        unsafe_header_names,
+        credentials_mode,
+    } = request;
     let key = PreflightCacheKey {
         request_origin: request_origin.clone(),
         target_origin: Origin::from_url(&url).partition_key(),
@@ -1102,53 +1114,56 @@ fn cors_preflight_blocking(
         return Ok(());
     }
 
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
     let handle = std::thread::Builder::new()
         .name("vixen-fetch-preflight".to_owned())
         .spawn(move || {
-            let mut headers = vec![
-                ("origin".to_owned(), request_origin.clone()),
-                (
-                    "access-control-request-method".to_owned(),
-                    method.as_str().to_owned(),
-                ),
-            ];
-            if !unsafe_header_names.is_empty() {
-                headers.push((
-                    "access-control-request-headers".to_owned(),
-                    unsafe_header_names.join(", "),
-                ));
-            }
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| format!("network runtime unavailable: {err}"))?;
-            let mut network = network;
-            let mut jar = CookieJar::default();
-            let response = rt
-                .block_on(network.get_text_with_cookies_request(
-                    &mut jar,
-                    TextRequest {
-                        url,
-                        cross_site: true,
-                        method: Method::Options,
-                        redirect_mode: RedirectMode::Error,
-                        headers,
-                        body: None,
-                    },
-                ))
-                .map_err(|err| err.to_string())?;
-            validate_cors_preflight_response(
-                response,
-                &request_origin,
-                method,
-                &unsafe_header_names,
-                credentials_mode,
-            )
+            let result = (|| {
+                let mut headers = vec![
+                    ("origin".to_owned(), request_origin.clone()),
+                    (
+                        "access-control-request-method".to_owned(),
+                        method.as_str().to_owned(),
+                    ),
+                ];
+                if !unsafe_header_names.is_empty() {
+                    headers.push((
+                        "access-control-request-headers".to_owned(),
+                        unsafe_header_names.join(", "),
+                    ));
+                }
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|err| format!("network runtime unavailable: {err}"))?;
+                let mut network = network;
+                let mut jar = CookieJar::default();
+                let response = rt
+                    .block_on(network.get_text_with_cookies_request(
+                        &mut jar,
+                        TextRequest {
+                            url,
+                            cross_site: true,
+                            method: Method::Options,
+                            redirect_mode: RedirectMode::Error,
+                            headers,
+                            body: None,
+                        },
+                    ))
+                    .map_err(|err| err.to_string())?;
+                validate_cors_preflight_response(
+                    response,
+                    &request_origin,
+                    method,
+                    &unsafe_header_names,
+                    credentials_mode,
+                )
+            })();
+            let _ = result_tx.send(result);
         })
         .map_err(|err| format!("fetch preflight worker spawn failed: {err}"))?;
-    let cors_headers = handle
-        .join()
-        .map_err(|_| "fetch preflight worker panicked".to_owned())??;
+    let cors_headers =
+        wait_for_host_worker(result_rx, handle, &runtime_interrupt, "fetch preflight")?;
     let max_age = Duration::from_secs(
         cors_headers
             .max_age
@@ -1156,15 +1171,18 @@ fn cors_preflight_blocking(
     )
     .min(MAX_PREFLIGHT_CACHE_AGE);
     if !max_age.is_zero() {
-        cache
-            .lock()
-            .map_err(|_| "CORS preflight cache poisoned".to_owned())?
-            .insert(PreflightCacheEntry {
-                key,
-                allow_methods: cors_headers.allow_methods,
-                allow_headers: cors_headers.allow_headers,
-                expires_at: Instant::now() + max_age,
-            });
+        commit_host_effect(&runtime_interrupt, || {
+            cache
+                .lock()
+                .map_err(|_| "CORS preflight cache poisoned".to_owned())?
+                .insert(PreflightCacheEntry {
+                    key,
+                    allow_methods: cors_headers.allow_methods,
+                    allow_headers: cors_headers.allow_headers,
+                    expires_at: Instant::now() + max_age,
+                });
+            Ok(())
+        })?;
     }
     Ok(())
 }
@@ -1243,41 +1261,110 @@ fn fetch_http_text_blocking(
     send_credentials: bool,
     cookies: Arc<Mutex<CookieJar>>,
     cookie_store: Option<Arc<Store>>,
+    runtime_interrupt: RuntimeInterruptHandle,
 ) -> Result<TextResponse, String> {
+    let worker_cookies = Arc::clone(&cookies);
+    let worker_store = cookie_store.clone();
+    let (result_tx, result_rx) = mpsc::sync_channel(1);
     let handle = std::thread::Builder::new()
         .name("vixen-fetch".to_owned())
         .spawn(move || {
-            let url = request.url.clone();
-            let origin_key = cookie_origin_key(&url);
-            let origin_host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-            let mut jar = if send_credentials {
-                load_cookie_jar(&cookies, cookie_store.as_deref(), &origin_key)?
-            } else {
-                CookieJar::default()
-            };
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|err| format!("network runtime unavailable: {err}"))?;
-            let mut network = network;
-            let response = rt
-                .block_on(network.get_text_with_cookies_request(&mut jar, request))
-                .map_err(|err| err.to_string())?;
-            if send_credentials {
-                persist_cookie_jar(
-                    &cookies,
-                    cookie_store.as_deref(),
-                    &origin_key,
-                    &origin_host,
-                    jar,
-                )?;
-            }
-            Ok(response)
+            let result = (|| {
+                let url = request.url.clone();
+                let origin_key = cookie_origin_key(&url);
+                let origin_host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+                let mut jar = if send_credentials {
+                    load_cookie_jar(&worker_cookies, worker_store.as_deref(), &origin_key)?
+                } else {
+                    CookieJar::default()
+                };
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|err| format!("network runtime unavailable: {err}"))?;
+                let mut network = network;
+                let response = rt
+                    .block_on(network.get_text_with_cookies_request(&mut jar, request))
+                    .map_err(|err| err.to_string())?;
+                Ok(FetchWorkerResult {
+                    response,
+                    credentials: send_credentials.then_some(FetchWorkerCredentials {
+                        origin_key,
+                        origin_host,
+                        jar,
+                    }),
+                })
+            })();
+            let _ = result_tx.send(result);
         })
         .map_err(|err| format!("fetch worker spawn failed: {err}"))?;
-    handle
-        .join()
-        .map_err(|_| "fetch worker panicked".to_owned())?
+    let result = wait_for_host_worker(result_rx, handle, &runtime_interrupt, "fetch")?;
+    if let Some(credentials) = result.credentials {
+        commit_host_effect(&runtime_interrupt, || {
+            persist_cookie_jar(
+                &cookies,
+                cookie_store.as_deref(),
+                &credentials.origin_key,
+                &credentials.origin_host,
+                credentials.jar,
+            )
+        })?;
+    }
+    Ok(result.response)
+}
+
+struct FetchWorkerResult {
+    response: TextResponse,
+    credentials: Option<FetchWorkerCredentials>,
+}
+
+struct FetchWorkerCredentials {
+    origin_key: String,
+    origin_host: String,
+    jar: CookieJar,
+}
+
+const HOST_WORKER_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const HOST_CALL_INTERRUPTED: &str = "runtime host call interrupted";
+
+fn wait_for_host_worker<T>(
+    result_rx: mpsc::Receiver<Result<T, String>>,
+    handle: std::thread::JoinHandle<()>,
+    runtime_interrupt: &RuntimeInterruptHandle,
+    name: &str,
+) -> Result<T, String> {
+    loop {
+        if runtime_interrupt.is_terminated() {
+            return Err(HOST_CALL_INTERRUPTED.to_owned());
+        }
+        match result_rx.recv_timeout(HOST_WORKER_POLL_INTERVAL) {
+            Ok(result) => {
+                handle
+                    .join()
+                    .map_err(|_| format!("{name} worker panicked"))?;
+                if runtime_interrupt.is_terminated() {
+                    return Err(HOST_CALL_INTERRUPTED.to_owned());
+                }
+                return result;
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                handle
+                    .join()
+                    .map_err(|_| format!("{name} worker panicked"))?;
+                return Err(format!("{name} worker closed without a result"));
+            }
+        }
+    }
+}
+
+fn commit_host_effect<T>(
+    runtime_interrupt: &RuntimeInterruptHandle,
+    operation: impl FnOnce() -> Result<T, String>,
+) -> Result<T, String> {
+    runtime_interrupt
+        .with_active_execution(operation)
+        .ok_or_else(|| HOST_CALL_INTERRUPTED.to_owned())?
 }
 
 fn add_cache_revalidation_headers(headers: &mut Vec<(String, String)>, cached: &TextResponse) {
