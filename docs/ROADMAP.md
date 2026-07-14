@@ -600,55 +600,96 @@ After v1, prioritize these programs by measured site impact:
 
 ## Immediate execution order
 
-The core ownership and local headless measurement foundations are landed. The
-next work has two interleaved tracks: Flutter GUI delivery and browser
-correctness. Neither may starve the other.
+The ownership, cancellation, scrolling, and local measurement foundations are
+landed. To improve implementation velocity, keep at most **two active slices**:
+one Linux Flutter usability slice and one shared-core correctness slice. Finish,
+document, and commit a slice before widening its lane. An environment-blocked GUI
+slice may yield to the next shared-core slice, and vice versa; it does not open a
+third lane.
 
-1. Extend the landed physical viewport, pointer/wheel/keyboard, root
-   wheel/key/script scrolling, native text-control IME, and monotonic
-   focus/visibility/lifecycle
-   path with a broader native IME/device matrix, the landed nested scrollport
-   path extended with richer gesture/DOM event and restoration-event fidelity, CSS/physical
-   scale correctness, and lifecycle recovery. In parallel, finish
-   runtime-construction/local-native-host cancellation and active fetch transport
-   abort beyond the landed exact-generation V8/fetch-wait interruption, and
-   preserve one BrowserCore terminal outcome.
-2. Move parser-discovered resources and supported DOM mutations onto the live
-   document/runtime rather than creating compatibility state.
-3. Harden and measure the implemented WebRender-to-RGBA texture transport while
-   continuing font shaping/fallback,
-   image decode, and WPT-driven layout/rendering work on the shared core.
-4. Extend the landed bounded hierarchical accessibility projection beyond its
-   `aria-controls`/`aria-describedby`/`aria-details` relationships, descriptions,
-   and native/authored-range increase/decrease and live-region slices: add
-   general document-range selection, long-tail relationship/state mappings,
-   and broader native AT/screen-reader evidence. Add platform
-   host-service UI; both remain cross-cutting through every later platform.
-5. Complete the Linux basic-browser gate: visible controlled-site navigation,
-   advanced nested scrolling plus broader native IME evidence,
-   back/forward/reload/stop, and finish bounded navigation/runtime plus native
-   surface recovery beyond the landed capture/texture retry policy. Keep
-   release-archive smoke green, but defer FlatPark submission/review/publishing
-   until this gate passes.
-6. Use the landed checked-in hello-Flutter peer, controlled release-bundle
-   build, component/delta analyzer, and initial clean x86_64 size report to
-   reproduce and review Linux size/performance baselines. Add compressed/install
-   attribution after browser usability; adopt warning thresholds only after
-   reviewed evidence and do not invent hard budgets.
-7. Expand the same bridge/chrome contract to macOS and Windows, with native
+### Active acceleration queue
+
+Work top-to-bottom within each lane. Each item names the smallest useful proof;
+it is not permission to implement the whole subsystem in one batch.
+
+**Shared-core lane**
+
+1. **Abort active runtime transport.** Extend the landed cancellation-polled
+   runtime `fetch()`/CORS wait so cancellation also aborts the in-flight transport
+   rather than only detaching its no-write worker. Preserve exact runtime/
+   navigation generations and one terminal outcome. Prove with a gated server,
+   `just test-browser-core`, and `just gate-phase6`.
+2. **Load one real external stylesheet.** Route parser-discovered
+   `<link rel="stylesheet">` through the same request ids, redirect/policy,
+   cancellation, cookie/cache, and current-document checks as other core
+   resources; apply it to the authoritative cascade and repaint. One fixture must
+   prove visible style, and one race must reject a late stylesheet. Do not build a
+   generalized scheduler before this vertical works.
+3. **Decode and paint one bounded raster-image vertical.** Reuse the resource
+   request path, enforce response/body/decode limits before display-list exposure,
+   and prove the same pixels in GUI/headless capture. Responsive selection and
+   broad image formats widen only after this path is real.
+4. **Shape one text/fallback vertical.** Replace deterministic metrics for one
+   common script/fallback case through layout, paint, hit testing, find, and
+   Semantics together; add a focused fixture before broad font-platform work.
+
+**Linux Flutter lane**
+
+1. **Close the controlled basic-navigation proof.** Extend the release-process
+   interaction smoke to enter a controlled URL through chrome and exercise
+   visible navigation, back, forward, reload, stop, and restored root/nested
+   scrolling. The existing controls and BrowserCore commands count as complete
+   only when this native Wayland path passes.
+2. **Separate CSS and physical scale.** Make Flutter device scale, BrowserCore CSS
+   viewport, input conversion, texture dimensions, and Semantics bounds use one
+   explicit transform; prove non-1.0 scale without frontend coordinate repair.
+3. **Recover a real native surface/lifecycle fault.** Add deterministic runner or
+   presenter fault injection for detach/resume and texture loss, retain bounded
+   retries, reject stale frames, and prove a newer frame becomes visible.
+4. **Widen native interaction evidence.** Add the next highest-value IME/device
+   case and restoration-event/gesture fidelity, then broaden AT/screen-reader
+   actions. Keep each language, device, or relationship mapping independently
+   reviewable.
+
+### Ordered horizon after the active queue
+
+1. Complete loader breadth, DOM/runtime convergence, font/image/layout coverage,
+   downloads, host services, accessibility, WPT/CDP reductions, and reliability
+   from measured corridor failures.
+2. Reproduce Linux release size/performance baselines after the basic-browser
+   smoke is green; add warning thresholds only after reviewed measurements.
+3. Resume FlatPark submission/review/publishing only after the Linux usability
+   gate, host services, and release evidence pass.
+4. Expand the same bridge/chrome contract to macOS and Windows with native
    texture, accessibility, host-service, packaging/signing, ABI, size, and
    performance proof.
-8. Bring up Android with pinned V8 source/toolchain, GLES, lifecycle, input/
+5. Bring up Android with pinned V8 source/toolchain, GLES, lifecycle, input/
    accessibility, and split-ABI proof.
-9. Widen the existing V8 WebAssembly path with the same API, resource-limit,
-   malformed-module, and conformance proof on every declared target.
-10. Bring up `aarch64-apple-ios-sim` with the same Flutter bridge, V8 JavaScript/
-    WebAssembly, rendering, simulated lifecycle, input, accessibility, and host-
-    service behavior. Physical iOS/TestFlight/App Store work requires a new ADR.
+6. Widen WebAssembly with the same API, resource limits, malformed-module, and
+   conformance proof on every declared target.
+7. Bring up `aarch64-apple-ios-sim` with the same Flutter bridge, V8 JavaScript/
+   WebAssembly, rendering, simulated lifecycle, input, accessibility, and host-
+   service behavior. Physical iOS/TestFlight/App Store work requires a new ADR.
 
-Shared browser work continues throughout: live document/runtime convergence,
-resource loading, fonts/images/layout, downloads, network/security, storage,
-WPT/CDP, real-site reductions, and reliability remain release-critical.
+## Velocity policy
+
+- **Cap work in progress.** One active slice per lane; do not start adjacent API
+  breadth while its state owner, cancellation path, or visible proof is open.
+- **Reduce before abstracting.** Start from one controlled failure/fixture and
+  reuse existing owners. Generalize only when a second landed consumer exposes
+  real duplication.
+- **Keep one failure domain per commit.** Split at a new trust boundary, state
+  owner, platform dependency, or independently revertible behavior. A coherent
+  follow-up tock is allowed; unrelated cleanup is not bundled.
+- **Use the test ladder once.** Run focused checks during editing, the relevant
+  slice gate before commit, and `just gate-push` once before pushing the coherent
+  batch. Do not repeatedly run release/container gates for Rust-only inner loops.
+- **Prefer executable evidence over status prose.** A fixture, race test, native
+  smoke, or measured report moves an item. API shape, screenshots without a
+  reduction, and framework capability do not.
+- **Keep handoffs cheap.** Every commit updates compatibility/limitations when
+  behavior changes and leaves the next smallest widening step in this queue.
+  Delete completed queue text instead of accumulating another landed inventory.
 
 ## Working rule
 
