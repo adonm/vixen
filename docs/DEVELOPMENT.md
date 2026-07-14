@@ -139,10 +139,10 @@ just gate-architecture
 
 These gates currently prove the transitional JSON/frame wire, registry, worker,
 texture/input presenter, and native smoke. `just test-api` proves ADR-022's
-landed dependency-free R1 revision/mutation/commit/query model; R2 carries it
-through C/Dart and adds the renderer broker before Canvas/Paragraph evidence.
-Cutover then deletes frame/texture-specific proof. Existing checks remain
-comparison coverage, not target renderer APIs.
+landed dependency-free R1 model; R2 adds the dedicated C/Dart broker and
+`just test-flutter-formatter-impeller` proves the R3 test-only
+Canvas/Paragraph/PNG vertical. Cutover later deletes frame/texture-specific
+proof. Existing checks remain comparison coverage, not target renderer APIs.
 
 ## Larger alpha batches
 

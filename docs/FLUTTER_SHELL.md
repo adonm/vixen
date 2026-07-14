@@ -132,22 +132,16 @@ runtime dependencies disappear from Linux packages.
 ## ADR-022 renderer migration
 
 The existing WebRender/EGL/RGBA texture remains the implemented comparison path
-only. Do not add renderer breadth there. R1's dependency-free bounded protocol
-DTOs and reference validation are implemented in `vixen-api`. The remaining
-delivery sequence is:
+only. Do not add renderer breadth there. R1 protocol validation, the R2 C/Dart
+broker, and the R3 test-only formatter are implemented. The remaining delivery
+sequence is:
 
-1. Carry R1 through the C ABI and handwritten Dart models, including explicit
-   payload/handle release, then add the dedicated renderer request/response
-   broker while production still presents the old frame.
-2. Add one test-only Flutter `CustomPainter`/Paragraph vertical for a controlled
-   background, text, and image document. Return one atomic commit and prove pixels,
-   hit testing, find/range geometry, Semantics bounds, and scene capture.
-3. Route Linux input, scrolling, zoom, and accessibility through accepted
+1. Route Linux input, scrolling, zoom, and accessibility through accepted
    geometry; prove lifecycle recovery without pixel-buffer texture ownership.
-4. Add a chrome-less Flutter host under Cage for visual fixtures and CDP capture.
-5. Solve bounded synchronous layout flush for same-task DOM mutation plus
+2. Add a chrome-less Flutter host under Cage for visual fixtures and CDP capture.
+3. Solve bounded synchronous layout flush for same-task DOM mutation plus
    geometry reads.
-6. Cut over once and apply the full R7 deletion inventory: native renderer/image
+4. Cut over once and apply the full R7 deletion inventory: native renderer/image
    upload, EGL/frame transport, Dart frame worker, texture plugin/presenter/tests,
    superseded Rust layout/paint, duplicate projections, obsolete fixtures/gates/
    docs/dependencies, and renderer-internal CLI flags. Two production renderers

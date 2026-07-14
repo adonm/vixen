@@ -124,8 +124,9 @@ Rules:
   mutation-generation-tagged semantic projection that Flutter maps without a
   second DOM. ADR-022's bounded R1 mutation/full-resync, atomic-commit, query,
   target, replay, and explicit handle-retirement model is implemented in
-  `vixen-api`; R2 next carries it through C/Dart and adds the dedicated broker
-  before frame capture/texture transport can be deleted. Single-touch root
+  `vixen-api`; R2's dedicated C/Dart broker and R3's test-only formatter vertical
+  are implemented without changing normal frame presentation. R4–R6 connect
+  production displayed commits before frame transport can be deleted. Single-touch root
   dragging reuses the bounded cancelable wheel path. Complete renderer cutover,
   semantics/native AT, richer gesture/lifecycle, and non-Linux runners remain
   open.

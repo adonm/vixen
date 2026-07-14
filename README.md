@@ -41,9 +41,9 @@ synchronous layout, cancellation, resync, and renderer-loss gates pass, Vixen
 will cut over once and delete WebRender/EGL/frame transport and superseded Rust
 layout/paint rather than carry two renderers.
 
-The dependency-free R1 renderer protocol core is implemented in `vixen-api`;
-the next gate is its C ABI/Dart transport and dedicated renderer broker. This
-does not yet change the production WebRender/RGBA presentation path.
+The R1 protocol core, R2 dedicated C/Dart broker, and one R3 test-only
+Canvas/Paragraph/PNG formatter vertical are implemented. The next gate is R4
+displayed-commit interaction; normal browsing still uses WebRender/RGBA.
 
 The checked-in transitional Linux Flutter alpha shell uses handwritten Dart FFI over the
 one-owner `vixen-ffi` controller and presents real BrowserCore/WebRender output

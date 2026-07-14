@@ -168,7 +168,7 @@ opaque-handle retirement. Strict API Clippy and the all-target workspace check
 pass. This is model-only evidence: no C ABI, Dart bridge, broker, or production
 renderer changed.
 
-### R2. Native/Dart bridge and broker
+### R2. Native/Dart bridge and broker — landed
 
 - Carry R1 DTOs through the safe Rust controller, C ABI, handwritten Dart models,
   and fake controller.
@@ -184,7 +184,16 @@ renderer changed.
 stale wire tests, cancellation/timeout tests, queue bounds, worker-blocked broker
 service, shutdown, and full resync. Production still displays the old frame.
 
-### R3. First Flutter-rendered document
+**Implemented evidence:** the bounded `RenderBroker` is independent of the
+serialized BrowserCore controller lock; C `renderer_poll`/`renderer_respond`
+entrypoints and handwritten Dart records use strict correlated envelopes and the
+existing tokenized output release contract. Timeout, late response, cancellation,
+shutdown, malformed wire, double release, worker-blocked progress, native header,
+and Rust/Dart golden tests are checked in. The native worker shares only its
+opaque process token with the UI-side broker endpoint, and the scripted fake has
+the same queue/response shape. Normal browsing still uses the old frame.
+
+### R3. First Flutter-rendered document — landed test-only
 
 Use one controlled fixture containing:
 
@@ -202,6 +211,14 @@ bounds.
 line/range checks, image pixels, geometry index, renderer hit tests, Semantics
 bounds, scene capture, mutation update, stale rejection, and full resync. This
 path remains test-only.
+
+**Implemented evidence:** `just test-flutter-formatter-impeller` drives one
+immutable snapshot through a small flow formatter over `dart:ui` Paragraph,
+Canvas/Picture, encoded PNG decode, Scene capture, geometry, reverse-paint-order
+hit testing, UTF-16 range/point queries, scroll limits, semantic bounds, mutation,
+presentation, stale/equal-snapshot rejection, deterministic resync, and reset.
+Software and Impeller-requested captures have separate exact raw-RGBA hashes.
+The formatter is not connected to normal shell presentation.
 
 ### R4. One interactive commit vertical
 
@@ -471,12 +488,12 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **R2 bridge broker:** C ABI and Dart round trips plus a dedicated renderer
-   request/response path that remains serviceable during a blocked evaluation.
-2. **R3 fixture vertical:** one test-only Flutter background/text/PNG document
-   producing an atomic scene/geometry/hit-handle/text/scroll/semantic commit.
-3. **R4 interactive commit:** route displayed-commit input, scrolling, text
+1. **R4 interactive commit:** route displayed-commit input, scrolling, text
    queries, zoom, Semantics, and lifecycle suppression through that vertical.
+2. **R5 automation host:** add the chrome-less Flutter host and migrate coherent
+   fixture/screenshot/CDP groups to exact presented commits.
+3. **R6 synchronous layout:** connect BrowserCore mutation flushes to the landed
+   broker with cancellation, deadlines, loss, and full-resync recovery.
 
 Do not start another native interaction, font, Rust layout, paint, texture, or
 packaging slice before these are complete unless it fixes a security/data-loss or

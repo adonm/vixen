@@ -43,9 +43,10 @@ Alpha architecture and delivery order are defined in
 
 Done when R1/R2 from `ROADMAP.md` prove:
 
-R1's dependency-free DTO/reference-validation half is landed and covered by
-`just test-api`; C ABI/Dart round trips, retained-payload release, and the
-worker-blocked renderer broker remain R2 work.
+R1's dependency-free DTO validation and R2's strict C/Dart dedicated broker are
+landed. R3 adds a test-only Flutter formatter consumer; R4–R6 still must connect
+production BrowserCore mutations, displayed input, and synchronous layout before
+the combined protocol gate is release-complete.
 
 - compound revisions include context/document/source/style/viewport/resource
   generations;
