@@ -19,7 +19,7 @@ use std::io::Read;
 use crate::doc::DocumentScriptItem;
 use crate::engine_error::{EngineError, codes};
 use crate::mime::MimeType;
-use crate::page::Page;
+use crate::page::{ElementScrollRequest, Page};
 use crate::storage_key::{StorageKind, StoragePartition};
 
 mod cssom;
@@ -428,8 +428,25 @@ impl JsRuntime {
                 return Err(error);
             }
         };
-        self.apply_dom_mutations(page)?;
-        Ok(value)
+        if !self.apply_dom_mutations(page)? {
+            return Ok(value);
+        }
+        const MAX_SCROLL_SYNC_ROUNDS: usize = 8;
+        for _ in 0..MAX_SCROLL_SYNC_ROUNDS {
+            let source = dom::element_scroll_state_source(page, true);
+            if let Err(error) = self.evaluate_with_page_context(&source, Some(&*page)) {
+                self.discard_dom_mutations();
+                return Err(error);
+            }
+            if !self.apply_dom_mutations(page)? {
+                return Ok(value);
+            }
+        }
+        self.discard_dom_mutations();
+        Err(EngineError::script(
+            codes::SCRIPT_EVAL,
+            "element scroll synchronization exceeded the mutation round limit",
+        ))
     }
 
     /// Set browser-controlled extra HTTP headers for subsequent runtime fetches.
@@ -689,23 +706,26 @@ impl JsRuntime {
             })
     }
 
-    fn apply_dom_mutations(&mut self, page: &mut Page) -> Result<(), EngineError> {
+    fn apply_dom_mutations(&mut self, page: &mut Page) -> Result<bool, EngineError> {
         let Some(sink) = self.dom_mutations.as_ref() else {
-            return Ok(());
+            return Ok(false);
         };
         let mutations = sink.take();
         if mutations.is_empty() {
-            return Ok(());
+            return Ok(false);
         }
 
+        let mut element_scrolls = std::collections::HashMap::new();
         for mutation in mutations {
             match mutation {
                 dom::DomMutation::SetDocumentTitle { value } => page
                     .set_title(&value)
                     .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
-                dom::DomMutation::SetTextContent { node_id, value } => page
-                    .set_element_text_content(node_id, &value)
-                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+                dom::DomMutation::SetTextContent { node_id, value } => {
+                    page.set_element_text_content(node_id, &value)
+                        .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
+                    element_scrolls.clear();
+                }
                 dom::DomMutation::SetAttribute {
                     node_id,
                     name,
@@ -716,9 +736,11 @@ impl JsRuntime {
                 dom::DomMutation::RemoveAttribute { node_id, name } => page
                     .remove_element_attribute(node_id, &name)
                     .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
-                dom::DomMutation::SetInnerHtml { node_id, html } => page
-                    .set_element_inner_html(node_id, &html)
-                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+                dom::DomMutation::SetInnerHtml { node_id, html } => {
+                    page.set_element_inner_html(node_id, &html)
+                        .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
+                    element_scrolls.clear();
+                }
                 dom::DomMutation::SetControlValue {
                     node_id,
                     element_id,
@@ -768,10 +790,28 @@ impl JsRuntime {
                 dom::DomMutation::SetRootScroll { x, y } => {
                     page.scroll_root_to((x, y));
                 }
+                dom::DomMutation::SetElementScroll {
+                    node_id,
+                    element_id,
+                    tag,
+                    x,
+                    y,
+                } => {
+                    element_scrolls.insert(
+                        node_id,
+                        ElementScrollRequest {
+                            node_id,
+                            element_id,
+                            tag,
+                            position: (x, y),
+                        },
+                    );
+                }
             }
         }
+        page.scroll_elements_to(element_scrolls.into_values());
         self.realm_key = RealmKey::Page(page_realm_key(page));
-        Ok(())
+        Ok(true)
     }
 
     fn discard_dom_mutations(&self) {
@@ -1190,6 +1230,10 @@ pub(crate) fn merge_profile_cookies(
 ) -> Result<(), EngineError> {
     webapi::merge_profile_cookies(store, url, jar, profile_baseline)
         .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))
+}
+
+pub(crate) fn element_scroll_state_source(page: &Page, emit_scroll: bool) -> String {
+    dom::element_scroll_state_source(page, emit_scroll)
 }
 
 pub(crate) fn persist_profile_cookies(
@@ -3126,7 +3170,7 @@ mod tests {
                 &geometry_page
             )
             .unwrap(),
-            JsValue::String("40:20:7.5:3".to_owned())
+            JsValue::String("40:20:0:0".to_owned())
         );
         assert_eq!(
             rt.evaluate_with_page(
@@ -5285,6 +5329,60 @@ mod tests {
             )
             .unwrap(),
             JsValue::Bool(true)
+        );
+    }
+
+    #[test]
+    fn structural_mutation_resynchronizes_page_owned_element_scroll_state() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///scroll-sync.html",
+            "<style>#scroller{width:100px;height:50px;overflow:auto}#content{height:200px}</style><div id='scroller'><div id='content'>Content</div></div><p id='other'>Before</p>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "globalThis.scrollEvents = 0; const scroller = document.querySelector('#scroller'); scroller.addEventListener('scroll', () => scrollEvents++); scroller.scrollTop = 45; document.querySelector('#other').textContent = 'After'; 'done'",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("done".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "document.querySelector('#scroller').scrollTop + ':' + scrollEvents",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("0:2".to_owned())
+        );
+    }
+
+    #[test]
+    fn layout_mutation_clamps_and_resynchronizes_element_scroll_state() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///scroll-clamp.html",
+            "<div id='scroller' style='width:100px;height:50px;overflow:auto'><div style='height:200px'>Content</div></div>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "globalThis.scrollEvents = 0; const scroller = document.querySelector('#scroller'); scroller.addEventListener('scroll', () => scrollEvents++); scroller.scrollTop = 140; scroller.style.height = '190px'; 'done'",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("done".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "document.querySelector('#scroller').scrollTop + ':' + scrollEvents",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("10:2".to_owned())
         );
     }
 

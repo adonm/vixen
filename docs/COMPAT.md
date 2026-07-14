@@ -10,13 +10,14 @@ feature.
 
 ## Current measured committed fixture baseline
 
-As of 2026-07-10, `fixtures/manifest.json` contains 70 local fixtures plus
-199 imported smoke fixtures:
+As of 2026-07-14, `fixtures/manifest.json` contains 70 local fixtures plus
+200 imported smoke fixtures:
 
 | Category | Fixtures |
 |----------|---------:|
 | css      | 17 |
 | css-cascade/css-values | 50 |
+| cssom-view | 1 |
 | dom      | 25 |
 | dom-core | 50 |
 | events | 1 |
@@ -30,9 +31,9 @@ As of 2026-07-10, `fixtures/manifest.json` contains 70 local fixtures plus
 | paint/ref-equivalent | 8 |
 | security | 9 |
 | selectors | 50 |
-| **Total** | **269** |
+| **Total** | **270** |
 
-Total manifest checks: **2015**.
+Total manifest checks: **2027**.
 
 Current check mix:
 
@@ -40,14 +41,14 @@ Current check mix:
 |------------|------:|
 | `selector-count` | 398 |
 | `selectors-exact` | 223 |
-| `title` | 268 |
-| `js-eval` | 587 |
+| `title` | 269 |
+| `js-eval` | 597 |
 | `computed-style` | 170 |
 | `element-attribute` | 132 |
 | `layout-box` | 104 |
 | `body-contains` | 68 |
 | `visual-hash` | 25 |
-| `no-critical-diagnostics` | 21 |
+| `no-critical-diagnostics` | 22 |
 | `ref-equivalent` | 11 |
 | `display-list-contains` | 3 |
 | `dom-nodes-range` | 1 |
@@ -198,7 +199,10 @@ context-tracing archive implementation.
 Flutter is the sole rendered GUI. `just gate-flutter-shell` covers its
 BrowserCore controller, tabs, input, texture, and Semantics seams;
 `just linux-release-smoke` covers the exact release archive under native
-Wayland. These are integration gates rather than WPT surfaces.
+Wayland. `just linux-interaction-smoke` separately drives that release bundle
+through Cage's virtual-keyboard and wlr virtual-pointer protocols, with GTK/IBus
+preedit/commit and native nested-wheel evidence. These are integration gates
+rather than WPT surfaces.
 
 The Flutter semantics projection additionally carries bounded `aria-controls`,
 `aria-describedby`, and `aria-details` relationships to retained semantic nodes.
@@ -235,8 +239,10 @@ runtime ids. BrowserCore validates every range against the value, applies it to
 the live focused editing host, and emits composition-shaped events plus
 cancelable `beforeinput` and `input`; stale or non-writable targets fail closed.
 Widget/wire tests cover the shared transport, and BrowserCore tests cover native
-non-ASCII plus contenteditable surrogate-pair composition. A real Linux desktop-
-IME smoke or language matrix remains open. BrowserCore normalizes all standard
+non-ASCII plus contenteditable surrogate-pair composition. The release-process
+interaction smoke uses IBus Anthy through Flutter's real Linux text-input client
+for native and contenteditable preedit/commit; broader desktop-IME/language
+coverage remains open. BrowserCore normalizes all standard
 `inputmode` values plus supported native input types into bounded keyboard
 intent and all standard `enterkeyhint` values into action intent. Flutter maps
 those values to its none/text/multiline/numeric/decimal/telephone/email/URL/search
@@ -256,12 +262,16 @@ viewport changes, and zoom changes emit one non-cancelable bubbling document
 `scroll` event, coalesced after the current script evaluation, with synchronized
 offsets; document and window listeners observe the new value. Canceled defaults
 and clamped no-ops stay silent, and recursive synchronous dispatch is
-suppressed. Nested element scrolling remains
-runtime-local, and smooth scrolling, nested-element scroll events, DOM
-touch/pointer events, inertia/multi-touch gestures, and restoration are not
-claimed. Flutter single-touch drags do cross platform touch slop, cancel the
-pending synthetic press, and reuse the cancelable physical-delta root wheel
-path.
+suppressed. Nested `auto`/`scroll` element offsets are now Page-owned and shared
+by paint, clipped hit testing, accessibility geometry, script-visible
+`scrollTop`/`scrollLeft`, and `scroll()`/`scrollTo()`/`scrollBy()`. Element scroll
+events are non-bubbling, non-cancelable, and coalesced; uncanceled wheel input
+prefers the nearest scrollport, chains unconsumed deltas through ancestors/root,
+and `scrollIntoView()` drives the same nested offsets for CDP/Playwright. Smooth
+scrolling, axis-specific overflow behavior, DOM touch/pointer events,
+inertia/multi-touch gestures, and history restoration are not claimed. Flutter
+single-touch drags cross platform touch slop, cancel the pending synthetic press,
+and reuse the cancelable physical-delta wheel path.
 
 Bounded `aria-owns` references now reparent only retained later semantic nodes;
 the first valid owner wins, parent-before-child ordering remains enforced, and
@@ -285,6 +295,15 @@ process and requires the BrowserCore-derived `DOM Basic` heading. This is
 concrete Linux native-bridge evidence, not a screen-reader interaction matrix or
 evidence for non-Linux accessibility backends. The Linux GUI rejects X11 and
 XWayland at startup.
+
+`just linux-interaction-smoke` uses AT-SPI only to locate and observe the
+release-process controls. Focus/click, IBus composition, and scrolling enter via
+Wayland virtual keyboard/pointer protocols; the test does not use AT-SPI
+`setText` or direct BrowserCore input commands. It requires composition
+start/update/end for both a native input and direct contenteditable host, proves
+an uncanceled wheel selects the nested scrollport, verifies authored
+`preventDefault()` leaves both offsets unchanged, and proves unconsumed wheel
+delta chains to the root at the inner boundary.
 
 Flutter also sends one monotonic BrowserCore-owned host-view state for content
 focus, visibility, effective scale, and application lifecycle. Current documents
@@ -338,8 +357,8 @@ derives the CSS layout viewport from the physical frame, scales the same display
 list into that frame, maps physical hit-test/wheel coordinates back to CSS
 pixels, and scales accessibility bounds into the displayed coordinate space.
 Zoom survives document navigation in the context but is not yet persisted in
-the profile session. Text shaping quality, nested scrolling, device-scale
-correctness, and native surface-loss evidence remain separate gaps.
+the profile session. Text shaping quality, advanced scroll behavior,
+device-scale correctness, and native surface-loss evidence remain separate gaps.
 
 ---
 

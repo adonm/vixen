@@ -21,7 +21,7 @@ use crate::dataset::collect_dataset;
 use crate::engine_error::{EngineError, codes};
 use crate::form_submission::{FormEntry, FormEntryValue};
 use crate::media_query::Viewport;
-use crate::page::{Page, PageSelection};
+use crate::page::{ElementScrollMetrics, Page, PageSelection};
 use crate::responsive_select::select_from as select_responsive_image_source;
 use crate::style_dom::ElementRelation;
 
@@ -87,6 +87,13 @@ pub(super) enum DomMutation {
         x: f64,
         y: f64,
     },
+    SetElementScroll {
+        node_id: usize,
+        element_id: Option<String>,
+        tag: String,
+        x: f64,
+        y: f64,
+    },
 }
 
 #[derive(Clone, Default)]
@@ -102,10 +109,23 @@ impl DomMutationSink {
     }
 
     fn push(&self, mutation: DomMutation) {
-        self.0
-            .lock()
-            .expect("DOM mutation sink poisoned")
-            .push(mutation);
+        let mut pending = self.0.lock().expect("DOM mutation sink poisoned");
+        if let DomMutation::SetElementScroll { node_id, .. } = &mutation {
+            for existing in pending.iter_mut().rev() {
+                match existing {
+                    DomMutation::SetElementScroll {
+                        node_id: existing_node_id,
+                        ..
+                    } if existing_node_id == node_id => {
+                        *existing = mutation;
+                        return;
+                    }
+                    DomMutation::SetTextContent { .. } | DomMutation::SetInnerHtml { .. } => break,
+                    _ => {}
+                }
+            }
+        }
+        pending.push(mutation);
     }
 }
 
@@ -120,6 +140,11 @@ struct DomElementRecord {
     inner_html: String,
     outer_html: String,
     bbox: Option<(f64, f64, f64, f64)>,
+    scroll_position: (f32, f32),
+    scroll_max: (f32, f32),
+    user_scrollable: bool,
+    overflow_clips: bool,
+    fixed_position: bool,
     form_entries: Option<Vec<FormEntry>>,
     class_tokens: Vec<String>,
     rel_tokens: Vec<String>,
@@ -173,6 +198,7 @@ deno_core::extension!(
         op_vixen_dom_set_focused_element,
         op_vixen_dom_set_selection,
         op_vixen_dom_set_root_scroll,
+        op_vixen_dom_set_element_scroll,
     ],
     options = {
         host: Arc<DomHostState>,
@@ -195,6 +221,43 @@ pub(super) fn extension(page: &Page, mutations: DomMutationSink) -> Result<Exten
         Arc::<str>::from(DOM_API_BOOTSTRAP),
     )]);
     Ok(extension)
+}
+
+pub(super) fn element_scroll_state_source(page: &Page, emit_scroll: bool) -> String {
+    let identities = page
+        .query_selector_all("*")
+        .unwrap_or_default()
+        .into_iter()
+        .map(|element| (element.node_id, (element.id, element.tag)))
+        .collect::<HashMap<_, _>>();
+    let mut metrics = page
+        .element_scroll_metrics_snapshot()
+        .into_iter()
+        .collect::<Vec<_>>();
+    metrics.sort_by_key(|(node_id, _)| *node_id);
+    let metrics = metrics
+        .into_iter()
+        .map(|(node_id, metrics)| {
+            let (id, tag) = identities
+                .get(&node_id)
+                .cloned()
+                .unwrap_or((None, String::new()));
+            json!({
+                "nodeId": node_id,
+                "id": id,
+                "tag": tag,
+                "left": metrics.position.0,
+                "top": metrics.position.1,
+                "maxX": metrics.max.0,
+                "maxY": metrics.max.1,
+                "userScrollable": metrics.user_scrollable,
+            })
+        })
+        .collect::<Vec<_>>();
+    format!(
+        "globalThis.__vixenSyncElementScrollState ? globalThis.__vixenSyncElementScrollState({}, {emit_scroll}) : false",
+        deno_core::serde_json::Value::Array(metrics)
+    )
 }
 
 #[deno_core::op2]
@@ -541,6 +604,33 @@ fn op_vixen_dom_set_root_scroll(
 
 #[deno_core::op2]
 #[serde]
+fn op_vixen_dom_set_element_scroll(
+    state: &mut OpState,
+    node_id: u32,
+    x: f64,
+    y: f64,
+) -> deno_core::serde_json::Value {
+    if !x.is_finite() || !y.is_finite() {
+        return json!({ "ok": false, "message": "element scroll coordinates must be finite" });
+    }
+    let host = state.borrow::<DomHost>().0.clone();
+    let node_id = node_id as usize;
+    if element_record_by_node_id(&host, node_id).is_none() {
+        return missing_element_result(node_id as u32);
+    }
+    let record = element_record_by_node_id(&host, node_id).expect("element checked");
+    host.mutations.push(DomMutation::SetElementScroll {
+        node_id,
+        element_id: record.id.clone(),
+        tag: record.tag.clone(),
+        x,
+        y,
+    });
+    json!({ "ok": true })
+}
+
+#[deno_core::op2]
+#[serde]
 fn op_vixen_dom_element_attribute(
     state: &mut OpState,
     node_id: u32,
@@ -621,10 +711,17 @@ fn op_vixen_dom_form_entries(state: &mut OpState, node_id: u32) -> deno_core::se
 }
 
 fn dom_host_state(page: &Page, mutations: DomMutationSink) -> Result<DomHostState, String> {
-    let elements = page.query_selector_all("*")?;
+    let elements = page.query_selector_all_in_viewport("*", page.layout_viewport())?;
+    let element_scroll_metrics = page.element_scroll_metrics_snapshot();
     let records = elements
         .iter()
-        .map(|info| element_record(page, info))
+        .map(|info| {
+            element_record(
+                page,
+                info,
+                element_scroll_metrics.get(&info.node_id).copied(),
+            )
+        })
         .collect::<Vec<_>>();
     let document_element_node_id = records
         .iter()
@@ -686,12 +783,26 @@ fn dom_host_state(page: &Page, mutations: DomMutationSink) -> Result<DomHostStat
     })
 }
 
-fn element_record(page: &Page, info: &ElementInfo) -> DomElementRecord {
+fn element_record(
+    page: &Page,
+    info: &ElementInfo,
+    scroll_metrics: Option<ElementScrollMetrics>,
+) -> DomElementRecord {
     let text_content = page
         .document()
         .element_text_content(info.node_id)
         .unwrap_or_else(|| info.text.clone());
 
+    let overflow_clips = scroll_metrics.is_some();
+    let scroll_metrics = scroll_metrics.unwrap_or(ElementScrollMetrics {
+        position: (0.0, 0.0),
+        max: (0.0, 0.0),
+        user_scrollable: false,
+    });
+    let fixed_position = page
+        .computed_style_for_viewport(info.node_id, page.layout_viewport())
+        .iter()
+        .any(|(name, value)| name == "position" && value.eq_ignore_ascii_case("fixed"));
     DomElementRecord {
         node_id: info.node_id,
         tag: info.tag.clone(),
@@ -708,6 +819,11 @@ fn element_record(page: &Page, info: &ElementInfo) -> DomElementRecord {
             .element_outer_html(info.node_id)
             .unwrap_or_default(),
         bbox: info.bbox,
+        scroll_position: scroll_metrics.position,
+        scroll_max: scroll_metrics.max,
+        user_scrollable: scroll_metrics.user_scrollable,
+        overflow_clips,
+        fixed_position,
         form_entries: form_entries_for_element(page, info),
         class_tokens: dom_token_list(info, "class"),
         rel_tokens: dom_token_list(info, "rel"),
@@ -775,6 +891,15 @@ fn element_record_value(record: &DomElementRecord) -> deno_core::serde_json::Val
         "innerHTML": &record.inner_html,
         "outerHTML": &record.outer_html,
         "bbox": record.bbox.map(rect_value),
+        "scrollLeft": record.scroll_position.0,
+        "scrollTop": record.scroll_position.1,
+        "scrollOriginLeft": record.scroll_position.0,
+        "scrollOriginTop": record.scroll_position.1,
+        "scrollMaxX": record.scroll_max.0,
+        "scrollMaxY": record.scroll_max.1,
+        "userScrollable": record.user_scrollable,
+        "overflowClips": record.overflow_clips,
+        "fixedPosition": record.fixed_position,
         "parentNodeId": record.parent_node_id,
         "childNodeIds": &record.child_element_node_ids,
         "previousSiblingNodeId": record.previous_element_sibling_node_id,
@@ -1112,6 +1237,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     op_vixen_dom_set_focused_element,
     op_vixen_dom_set_selection,
     op_vixen_dom_set_root_scroll,
+    op_vixen_dom_set_element_scroll,
     op_vixen_document_cookie_get,
     op_vixen_document_cookie_set,
   } = Deno.core.ops;
@@ -1155,9 +1281,12 @@ const DOM_API_BOOTSTRAP: &str = r#"
   let historyScrollRestoration = data.historyScrollRestoration === 'manual' ? 'manual' : 'auto';
   let topLevelScrollX = Math.max(0, Number(data.scrollX) || 0);
   let topLevelScrollY = Math.max(0, Number(data.scrollY) || 0);
+  const initialTopLevelScrollX = topLevelScrollX;
+  const initialTopLevelScrollY = topLevelScrollY;
   let topLevelScrollMaxX = Math.max(0, Number(data.scrollMaxX) || 0);
   let topLevelScrollMaxY = Math.max(0, Number(data.scrollMaxY) || 0);
   let rootScrollEventQueued = false;
+  const elementScrollEventsQueued = new Set();
   const navigationActions = [];
   const maxNavigationActions = 64;
 
@@ -1383,9 +1512,31 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   function elementRect(nodeId) {
     const record = recordForElementNodeId(nodeId);
-    if (record && Object.prototype.hasOwnProperty.call(record, 'bbox')) return normalizedElementRect(record, record.bbox);
+    if (record && Object.prototype.hasOwnProperty.call(record, 'bbox')) return liveElementRect(record);
     if (record && Number(nodeId) < 0) return normalizedElementRect(record, { x: 0, y: 0, width: 0, height: 0 });
     return normalizedElementRect(record, unwrapDomOp(op_vixen_dom_element_rect(nodeId)).rect);
+  }
+
+  function liveElementRect(record) {
+    const raw = normalizedElementRect(record, record.bbox);
+    if (!raw) return raw;
+    let x = Number(raw.x) || 0;
+    let y = Number(raw.y) || 0;
+    let fixedSubtree = record.fixedPosition === true;
+    let parentId = record.parentNodeId;
+    while (Number.isInteger(parentId) && !fixedSubtree) {
+      const parent = recordForElementNodeId(parentId);
+      if (!parent) break;
+      x -= (Number(parent.scrollLeft) || 0) - (Number(parent.scrollOriginLeft) || 0);
+      y -= (Number(parent.scrollTop) || 0) - (Number(parent.scrollOriginTop) || 0);
+      fixedSubtree = parent.fixedPosition === true;
+      parentId = parent.parentNodeId;
+    }
+    if (!fixedSubtree) {
+      x -= topLevelScrollX - initialTopLevelScrollX;
+      y -= topLevelScrollY - initialTopLevelScrollY;
+    }
+    return { x, y, width: Number(raw.width) || 0, height: Number(raw.height) || 0 };
   }
 
   function normalizedElementRect(record, rect) {
@@ -1433,11 +1584,24 @@ const DOM_API_BOOTSTRAP: &str = r#"
     const px = Number(x);
     const py = Number(y);
     if (!Number.isFinite(px) || !Number.isFinite(py)) return [];
+    if (px < 0 || py < 0 || px >= globalThis.innerWidth || py >= globalThis.innerHeight) return [];
     const hits = [];
     for (const nodeId of knownElementIds()) {
       const record = recordForElementNodeId(nodeId);
       if (!record || record.isConnected === false) continue;
-      if (rectContainsPoint(elementRect(nodeId), px, py)) hits.push(nodeId);
+      if (!rectContainsPoint(elementRect(nodeId), px, py)) continue;
+      let parentId = record.parentNodeId;
+      let clipped = false;
+      while (Number.isInteger(parentId)) {
+        const parent = recordForElementNodeId(parentId);
+        if (!parent) break;
+        if (parent.overflowClips && !rectContainsPoint(elementRect(parentId), px, py)) {
+          clipped = true;
+          break;
+        }
+        parentId = parent.parentNodeId;
+      }
+      if (!clipped) hits.push(nodeId);
     }
     return hits.reverse().sort((a, b) => hitTestPriority(b) - hitTestPriority(a));
   }
@@ -1989,6 +2153,26 @@ const DOM_API_BOOTSTRAP: &str = r#"
     return wrapElementByNodeId(nodeId);
   }
 
+  function wrapPageElementByIdentity(nodeId, id, tag) {
+    const expectedId = id === null || id === undefined || String(id) === '' ? null : String(id);
+    const expectedTag = String(tag || '').toLowerCase();
+    let target = null;
+    try { target = wrapElementByNodeId(nodeId); } catch (_) {}
+    const matches = (element) => {
+      if (element === null) return false;
+      const record = elementRecord(element);
+      return (expectedTag === '' || String(record.tag || '').toLowerCase() === expectedTag)
+        && (expectedId === null || record.id === expectedId);
+    };
+    if (matches(target)) return target;
+    if (expectedId === null) return null;
+    for (const candidateId of knownElementIds()) {
+      const candidate = wrapElementByNodeId(candidateId);
+      if (matches(candidate)) return candidate;
+    }
+    return null;
+  }
+
   function interfaceNameForTag(tag) {
     return htmlElementInterfaceByTag.get(String(tag).toLowerCase()) || 'HTMLElement';
   }
@@ -2320,6 +2504,245 @@ const DOM_API_BOOTSTRAP: &str = r#"
     );
   }
 
+  function dispatchElementScrollEvent(element) {
+    const nodeId = element && element.__vixenNodeId;
+    if (!Number.isInteger(nodeId) || elementScrollEventsQueued.has(nodeId)) return;
+    elementScrollEventsQueued.add(nodeId);
+    queueMicrotask(() => {
+      try {
+        element.dispatchEvent(new Event('scroll', { bubbles: false, cancelable: false }));
+      } finally {
+        elementScrollEventsQueued.delete(nodeId);
+      }
+    });
+  }
+
+  Object.defineProperty(globalThis, '__vixenSyncElementScrollState', {
+    value(states = [], emitScroll = false) {
+      const byNodeId = new Map();
+      const byElementId = new Map();
+      for (const state of Array.isArray(states) ? states : []) {
+        const nodeId = Number(state && state.nodeId);
+        if (Number.isInteger(nodeId) && nodeId > 0) byNodeId.set(nodeId, state);
+        const id = state && typeof state.id === 'string' && state.id !== '' ? state.id : null;
+        if (id !== null) byElementId.set(id, byElementId.has(id) ? null : state);
+      }
+      for (const nodeId of knownElementIds()) {
+        const record = recordForElementNodeId(nodeId);
+        if (!record) continue;
+        let state = byNodeId.get(nodeId);
+        if (state && (String(state.tag || '') !== String(record.tag || '')
+            || (state.id || null) !== (record.id || null))) state = undefined;
+        if (state === undefined && record.id) {
+          const byId = byElementId.get(record.id);
+          if (byId && String(byId.tag || '') === String(record.tag || '')) state = byId;
+        }
+        const nextLeft = Math.max(0, Number(state && state.left) || 0);
+        const nextTop = Math.max(0, Number(state && state.top) || 0);
+        const changed = nextLeft !== (Number(record.scrollLeft) || 0)
+          || nextTop !== (Number(record.scrollTop) || 0);
+        record.scrollLeft = nextLeft;
+        record.scrollTop = nextTop;
+        record.scrollMaxX = Math.max(0, Number(state && state.maxX) || 0);
+        record.scrollMaxY = Math.max(0, Number(state && state.maxY) || 0);
+        record.userScrollable = Boolean(state && state.userScrollable);
+        record.overflowClips = state !== undefined;
+        if (changed && emitScroll) {
+          const element = wrapElementByNodeId(nodeId);
+          if (element !== null) dispatchElementScrollEvent(element);
+        }
+      }
+      return true;
+    },
+    configurable: true,
+  });
+
+  function applyElementScroll(element, x, y) {
+    const record = elementRecord(element);
+    if (!record || !Number.isInteger(record.nodeId) || record.nodeId <= 0) return false;
+    const maxX = Math.max(0, Number(record.scrollMaxX) || 0);
+    const maxY = Math.max(0, Number(record.scrollMaxY) || 0);
+    const currentX = Math.min(maxX, Math.max(0, Number(record.scrollLeft) || 0));
+    const currentY = Math.min(maxY, Math.max(0, Number(record.scrollTop) || 0));
+    const nextX = Math.min(maxX, Math.max(0, finiteScrollCoordinate(x)));
+    const nextY = Math.min(maxY, Math.max(0, finiteScrollCoordinate(y)));
+    if (nextX === currentX && nextY === currentY) return false;
+    record.scrollLeft = nextX;
+    record.scrollTop = nextY;
+    unwrapDomOp(op_vixen_dom_set_element_scroll(record.nodeId, nextX, nextY));
+    dispatchElementScrollEvent(element);
+    return true;
+  }
+
+  function elementScrollTo(element, leftOrOptions = 0, top = 0) {
+    const record = elementRecord(element);
+    if (!record) return;
+    if (leftOrOptions !== null && typeof leftOrOptions === 'object') {
+      const left = leftOrOptions.left === undefined ? record.scrollLeft : leftOrOptions.left;
+      const nextTop = leftOrOptions.top === undefined ? record.scrollTop : leftOrOptions.top;
+      applyElementScroll(element, left, nextTop);
+      return;
+    }
+    applyElementScroll(element, leftOrOptions, top);
+  }
+
+  function elementScrollBy(element, leftOrOptions = 0, top = 0) {
+    const record = elementRecord(element);
+    if (!record) return;
+    if (leftOrOptions !== null && typeof leftOrOptions === 'object') {
+      applyElementScroll(
+        element,
+        (Number(record.scrollLeft) || 0) + finiteScrollCoordinate(leftOrOptions.left),
+        (Number(record.scrollTop) || 0) + finiteScrollCoordinate(leftOrOptions.top),
+      );
+      return;
+    }
+    applyElementScroll(
+      element,
+      (Number(record.scrollLeft) || 0) + finiteScrollCoordinate(leftOrOptions),
+      (Number(record.scrollTop) || 0) + finiteScrollCoordinate(top),
+    );
+  }
+
+  function applyNestedWheelDefault(target, init) {
+    if (init.ctrlKey || init.metaKey) return false;
+    let remainingX = finiteScrollCoordinate(init.deltaX);
+    let remainingY = finiteScrollCoordinate(init.deltaY);
+    let changed = false;
+    let sawNestedScrollport = false;
+    let element = target;
+    while (element && element.nodeType === 1) {
+      if (element !== vixenDocument.documentElement && element !== vixenDocument.body) {
+        const record = elementRecord(element);
+        if (record && record.userScrollable === true) {
+          sawNestedScrollport = true;
+          const beforeX = Number(record.scrollLeft) || 0;
+          const beforeY = Number(record.scrollTop) || 0;
+          if (applyElementScroll(element, beforeX + remainingX, beforeY + remainingY)) {
+            const consumedX = (Number(record.scrollLeft) || 0) - beforeX;
+            const consumedY = (Number(record.scrollTop) || 0) - beforeY;
+            remainingX -= consumedX;
+            remainingY -= consumedY;
+            changed = true;
+          }
+        }
+      }
+      element = element.parentElement;
+    }
+    if (!sawNestedScrollport) return false;
+    const beforeRootX = topLevelScrollX;
+    const beforeRootY = topLevelScrollY;
+    applyTopLevelScroll(topLevelScrollX + remainingX, topLevelScrollY + remainingY);
+    return changed || beforeRootX !== topLevelScrollX || beforeRootY !== topLevelScrollY;
+  }
+
+  function applyNestedKeyboardScrollDefault(target, init) {
+    if (init.ctrlKey || init.metaKey || init.altKey || isPlatformTextEditable(target)) return false;
+    const tag = elementTag(target);
+    if (tag === 'button' || tag === 'select') return false;
+    let scrollport = target;
+    while (scrollport && scrollport.nodeType === 1) {
+      const record = elementRecord(scrollport);
+      if (record && record.userScrollable === true) break;
+      scrollport = scrollport.parentElement;
+    }
+    if (!scrollport || scrollport.nodeType !== 1) return false;
+    const page = Math.max(1, elementClientHeight(scrollport) * 0.9);
+    let deltaY = 0;
+    switch (String(init.key || '')) {
+      case 'ArrowDown': deltaY = 40; break;
+      case 'ArrowUp': deltaY = -40; break;
+      case 'PageDown': deltaY = page; break;
+      case 'PageUp': deltaY = -page; break;
+      case 'Home': deltaY = -1e9; break;
+      case 'End': deltaY = 1e9; break;
+      case ' ': deltaY = init.shiftKey ? -page : page; break;
+      default: return false;
+    }
+    return applyNestedWheelDefault(target, { deltaX: 0, deltaY, ctrlKey: false, metaKey: false });
+  }
+
+  function scrollIntoViewOptions(value) {
+    if (typeof value === 'boolean') {
+      return { block: value ? 'start' : 'end', inline: 'nearest' };
+    }
+    const options = value !== null && typeof value === 'object' ? value : {};
+    const alignment = (candidate, fallback) => {
+      const text = String(candidate === undefined ? fallback : candidate);
+      return ['start', 'center', 'end', 'nearest'].includes(text) ? text : fallback;
+    };
+    return {
+      block: alignment(options.block, 'start'),
+      inline: alignment(options.inline, 'nearest'),
+    };
+  }
+
+  function alignedScrollOffset(current, targetStart, targetSize, viewportStart, viewportSize, alignment) {
+    if (alignment === 'start') return current + targetStart - viewportStart;
+    if (alignment === 'center') return current + targetStart + targetSize / 2 - viewportStart - viewportSize / 2;
+    if (alignment === 'end') return current + targetStart + targetSize - viewportStart - viewportSize;
+    if (targetStart < viewportStart) return current + targetStart - viewportStart;
+    if (targetStart + targetSize > viewportStart + viewportSize) {
+      return current + targetStart + targetSize - viewportStart - viewportSize;
+    }
+    return current;
+  }
+
+  function scrollElementIntoView(element, value = true) {
+    if (!element || typeof element.__vixenNodeId !== 'number') return;
+    const options = scrollIntoViewOptions(value);
+    let targetRect = elementRect(element.__vixenNodeId);
+    if (!targetRect) return;
+    let ancestor = element.parentElement;
+    while (ancestor && ancestor.nodeType === 1) {
+      const record = elementRecord(ancestor);
+      const maxX = Math.max(0, Number(record && record.scrollMaxX) || 0);
+      const maxY = Math.max(0, Number(record && record.scrollMaxY) || 0);
+      if (maxX > 0 || maxY > 0) {
+        const ancestorRect = elementRect(ancestor.__vixenNodeId);
+        if (ancestorRect) {
+          const nextX = alignedScrollOffset(
+            Number(record.scrollLeft) || 0,
+            targetRect.x,
+            targetRect.width,
+            ancestorRect.x,
+            ancestorRect.width,
+            options.inline,
+          );
+          const nextY = alignedScrollOffset(
+            Number(record.scrollTop) || 0,
+            targetRect.y,
+            targetRect.height,
+            ancestorRect.y,
+            ancestorRect.height,
+            options.block,
+          );
+          if (applyElementScroll(ancestor, nextX, nextY)) {
+            targetRect = elementRect(element.__vixenNodeId);
+          }
+        }
+      }
+      ancestor = ancestor.parentElement;
+    }
+    const nextRootX = alignedScrollOffset(
+      topLevelScrollX,
+      targetRect.x,
+      targetRect.width,
+      0,
+      globalThis.innerWidth,
+      options.inline,
+    );
+    const nextRootY = alignedScrollOffset(
+      topLevelScrollY,
+      targetRect.y,
+      targetRect.height,
+      0,
+      globalThis.innerHeight,
+      options.block,
+    );
+    applyTopLevelScroll(nextRootX, nextRootY);
+  }
+
   function elementClientWidth(element) {
     if (element === vixenDocument.documentElement || element === vixenDocument.body) return integerCssPixels(globalThis.innerWidth);
     const rect = elementRect(element.__vixenNodeId);
@@ -2336,6 +2759,9 @@ const DOM_API_BOOTSTRAP: &str = r#"
     const rect = elementRect(element.__vixenNodeId);
     const base = axis === 'x' ? elementClientWidth(element) : elementClientHeight(element);
     if (!rect) return base;
+    const record = elementRecord(element);
+    const max = Number(record && (axis === 'x' ? record.scrollMaxX : record.scrollMaxY)) || 0;
+    if (max > 0) return integerCssPixels(Math.ceil(base + max));
     let extent = axis === 'x' ? rect.x + base : rect.y + base;
     for (const child of Array.from(element.children || [])) {
       const childRect = elementRect(child.__vixenNodeId);
@@ -2486,8 +2912,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   Object.defineProperty(globalThis, '__vixenDispatchMouseEvent', {
-    value(nodeId, type, init = {}) {
-      const target = wrapElementByNodeId(Number(nodeId));
+    value(nodeId, type, init = {}, targetId = null, targetTag = '') {
+      const target = wrapPageElementByIdentity(Number(nodeId), targetId, targetTag);
       if (target === null) return false;
       const opts = Object.assign({
         bubbles: true,
@@ -2499,7 +2925,10 @@ const DOM_API_BOOTSTRAP: &str = r#"
       const eventType = String(type);
       const EventCtor = eventType === 'wheel' && typeof WheelEvent === 'function' ? WheelEvent : MouseEvent;
       const event = new EventCtor(eventType, opts);
-      return target.dispatchEvent(event);
+      const allowed = target.dispatchEvent(event);
+      if (!allowed) return false;
+      if (eventType === 'wheel' && applyNestedWheelDefault(target, opts)) return false;
+      return true;
     },
     configurable: true,
   });
@@ -2548,6 +2977,14 @@ const DOM_API_BOOTSTRAP: &str = r#"
     target.dispatchEvent(event);
   }
 
+  function finishActiveTextComposition() {
+    const composition = activeTextComposition;
+    if (composition === null) return;
+    activeTextComposition = null;
+    const target = wrapElementByNodeId(composition.nodeId);
+    if (target !== null) dispatchTextCompositionEvent(target, 'compositionend', composition.data);
+  }
+
   Object.defineProperty(globalThis, '__vixenApplyTextInputState', {
     value(state = {}) {
       const target = keyboardEventTarget();
@@ -2558,10 +2995,19 @@ const DOM_API_BOOTSTRAP: &str = r#"
       const composing = Number.isInteger(state.composingBase) && Number.isInteger(state.composingExtent)
         ? [state.composingBase, state.composingExtent]
         : null;
+      if (composing !== null && activeTextComposition !== null && activeTextComposition.nodeId !== target.__vixenNodeId) {
+        finishActiveTextComposition();
+      }
       const priorComposition = activeTextComposition;
       const compositionText = composing === null ? '' : text.slice(composing[0], composing[1]);
       if (composing !== null && (priorComposition === null || priorComposition.nodeId !== target.__vixenNodeId)) {
+        activeTextComposition = { nodeId: target.__vixenNodeId, data: compositionText };
         dispatchTextCompositionEvent(target, 'compositionstart', '');
+        if (keyboardEventTarget() !== target
+            || activeTextComposition === null
+            || activeTextComposition.nodeId !== target.__vixenNodeId) return true;
+      } else if (composing !== null) {
+        activeTextComposition = { nodeId: target.__vixenNodeId, data: compositionText };
       }
 
       const previous = platformTextValue(target);
@@ -2581,6 +3027,10 @@ const DOM_API_BOOTSTRAP: &str = r#"
           isComposing: composing !== null,
         });
         if (!target.dispatchEvent(beforeInput)) return true;
+        if (keyboardEventTarget() !== target
+            || (composing !== null
+                && (activeTextComposition === null
+                    || activeTextComposition.nodeId !== target.__vixenNodeId))) return true;
         applyPlatformTextValue(target, text, selectionBase, selectionExtent);
         target.dispatchEvent(new InputEvent('input', {
           bubbles: true,
@@ -2594,9 +3044,11 @@ const DOM_API_BOOTSTRAP: &str = r#"
       }
 
       if (composing !== null) {
-        activeTextComposition = { nodeId: target.__vixenNodeId, data: compositionText };
         dispatchTextCompositionEvent(target, 'compositionupdate', compositionText);
-      } else if (priorComposition !== null && priorComposition.nodeId === target.__vixenNodeId) {
+      } else if (priorComposition !== null
+          && priorComposition.nodeId === target.__vixenNodeId
+          && activeTextComposition !== null
+          && activeTextComposition.nodeId === target.__vixenNodeId) {
         activeTextComposition = null;
         dispatchTextCompositionEvent(target, 'compositionend', priorComposition.data);
       }
@@ -2622,7 +3074,10 @@ const DOM_API_BOOTSTRAP: &str = r#"
       const event = new KeyboardEvent(eventType, opts);
       Object.defineProperty(event, '__vixenInputText', { value: String(opts.inputText || opts.text || ''), configurable: true });
       Object.defineProperty(event, '__vixenApplyText', { value: Boolean(opts.applyText), configurable: true });
-      return target.dispatchEvent(event);
+      const allowed = target.dispatchEvent(event);
+      if (!allowed) return false;
+      if (eventType === 'keydown' && applyNestedKeyboardScrollDefault(target, opts)) return false;
+      return true;
     },
     configurable: true,
   });
@@ -3659,6 +4114,15 @@ const DOM_API_BOOTSTRAP: &str = r#"
     if (!isPlatformTextEditable(element)) return false;
     const input = String(text);
     if (input === '') return false;
+    const beforeInput = new InputEvent('beforeinput', {
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+      data: input,
+      inputType: 'insertText',
+      isComposing: false,
+    });
+    if (!element.dispatchEvent(beforeInput)) return false;
     const value = platformTextValue(element);
     const [start, end] = platformTextSelection(element);
     const next = value.slice(0, start) + input + value.slice(end);
@@ -4207,20 +4671,23 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get scrollHeight() { return elementScrollSize(this, 'y'); }
     get scrollTop() {
       if (this === vixenDocument.documentElement || this === vixenDocument.body) return topLevelScrollY;
-      return Number(elementRecord(this).__vixenScrollTop) || 0;
+      return Number(elementRecord(this).scrollTop) || 0;
     }
     set scrollTop(value) {
       if (this === vixenDocument.documentElement || this === vixenDocument.body) applyTopLevelScroll(topLevelScrollX, value);
-      else elementRecord(this).__vixenScrollTop = Math.max(0, Number(value) || 0);
+      else applyElementScroll(this, this.scrollLeft, value);
     }
     get scrollLeft() {
       if (this === vixenDocument.documentElement || this === vixenDocument.body) return topLevelScrollX;
-      return Number(elementRecord(this).__vixenScrollLeft) || 0;
+      return Number(elementRecord(this).scrollLeft) || 0;
     }
     set scrollLeft(value) {
       if (this === vixenDocument.documentElement || this === vixenDocument.body) applyTopLevelScroll(value, topLevelScrollY);
-      else elementRecord(this).__vixenScrollLeft = Math.max(0, Number(value) || 0);
+      else applyElementScroll(this, value, this.scrollTop);
     }
+    scroll(leftOrOptions = 0, top = 0) { elementScrollTo(this, leftOrOptions, top); }
+    scrollTo(leftOrOptions = 0, top = 0) { elementScrollTo(this, leftOrOptions, top); }
+    scrollBy(leftOrOptions = 0, top = 0) { elementScrollBy(this, leftOrOptions, top); }
     get offsetWidth() { const rect = elementRect(this.__vixenNodeId); return rect ? integerCssPixels(rect.width) : 0; }
     get offsetHeight() { const rect = elementRect(this.__vixenNodeId); return rect ? integerCssPixels(rect.height) : 0; }
     get offsetTop() { const rect = elementRect(this.__vixenNodeId); return rect ? Math.trunc(Number(rect.y) || 0) : 0; }
@@ -4637,6 +5104,9 @@ const DOM_API_BOOTSTRAP: &str = r#"
     focus() {
       if (activeElementNodeId === this.__vixenNodeId) return;
       const old = wrapElementByNodeId(activeElementNodeId);
+      if (activeTextComposition !== null && activeTextComposition.nodeId !== this.__vixenNodeId) {
+        finishActiveTextComposition();
+      }
       activeElementNodeId = this.__vixenNodeId;
       if (this.__vixenNodeId > 0) unwrapDomOp(op_vixen_dom_set_focused_element(this.__vixenNodeId));
       if (old) old.dispatchEvent(new FocusEvent('focusout', { bubbles: true, composed: true, relatedTarget: this }));
@@ -4650,12 +5120,15 @@ const DOM_API_BOOTSTRAP: &str = r#"
     }
     blur() {
       if (activeElementNodeId !== this.__vixenNodeId) return;
+      if (activeTextComposition !== null && activeTextComposition.nodeId === this.__vixenNodeId) {
+        finishActiveTextComposition();
+      }
       activeElementNodeId = null;
       unwrapDomOp(op_vixen_dom_set_focused_element(0));
       this.dispatchEvent(new FocusEvent('focusout', { bubbles: true, composed: true, relatedTarget: null }));
       this.dispatchEvent(new FocusEvent('blur', { composed: true, relatedTarget: null }));
     }
-    scrollIntoView() {}
+    scrollIntoView(options = true) { scrollElementIntoView(this, options); }
     attachShadow(init = {}) { return attachShadowRoot(this, init); }
     assignedNodes(_options = {}) { return new VixenNodeList([]); }
     assignedElements(_options = {}) { return new VixenHTMLCollection([]); }
@@ -5696,6 +6169,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
       }
       const nextFocus = Boolean(focused);
       if (documentHasFocus !== nextFocus) {
+        if (!nextFocus) finishActiveTextComposition();
         documentHasFocus = nextFocus;
         if (typeof globalThis.dispatchEvent === 'function') {
           globalThis.dispatchEvent(new Event(nextFocus ? 'focus' : 'blur'));
@@ -5954,5 +6428,56 @@ mod tests {
             .find(|record| record.node_id == lead_id)
             .unwrap();
         assert!(record_matches_any(lead, &selector));
+    }
+
+    #[test]
+    fn repeated_element_scroll_mutations_coalesce_until_a_structural_barrier() {
+        let sink = DomMutationSink::default();
+        for top in 0..10_000 {
+            sink.push(DomMutation::SetElementScroll {
+                node_id: 7,
+                element_id: Some("scroller".to_owned()),
+                tag: "div".to_owned(),
+                x: 0.0,
+                y: f64::from(top),
+            });
+        }
+        sink.push(DomMutation::SetTextContent {
+            node_id: 3,
+            value: "changed".to_owned(),
+        });
+        for top in 0..10_000 {
+            sink.push(DomMutation::SetElementScroll {
+                node_id: 7,
+                element_id: Some("scroller".to_owned()),
+                tag: "div".to_owned(),
+                x: 0.0,
+                y: f64::from(top),
+            });
+        }
+
+        assert_eq!(
+            sink.take(),
+            vec![
+                DomMutation::SetElementScroll {
+                    node_id: 7,
+                    element_id: Some("scroller".to_owned()),
+                    tag: "div".to_owned(),
+                    x: 0.0,
+                    y: 9_999.0,
+                },
+                DomMutation::SetTextContent {
+                    node_id: 3,
+                    value: "changed".to_owned(),
+                },
+                DomMutation::SetElementScroll {
+                    node_id: 7,
+                    element_id: Some("scroller".to_owned()),
+                    tag: "div".to_owned(),
+                    x: 0.0,
+                    y: 9_999.0,
+                },
+            ]
+        );
     }
 }

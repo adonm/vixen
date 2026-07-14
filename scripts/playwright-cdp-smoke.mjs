@@ -8,9 +8,21 @@ const fixture = path.join(root, 'fixtures', 'cdp', 'playwright-smoke.html');
 const fixtureUrl = pathToFileURL(fixture).href;
 const port = Number(process.env.VIXEN_CDP_PORT || 9322);
 const wsEndpoint = `ws://127.0.0.1:${port}`;
+const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
 function fail(message) {
   throw new Error(`playwright-cdp-smoke: ${message}`);
+}
+
+function assertPng(png, width, height, label) {
+  if (png.length < 24 || !png.subarray(0, 8).equals(pngSignature)) {
+    fail(`${label} did not return a PNG`);
+  }
+  const actualWidth = png.readUInt32BE(16);
+  const actualHeight = png.readUInt32BE(20);
+  if (actualWidth !== width || actualHeight !== height) {
+    fail(`${label} dimensions were ${actualWidth}x${actualHeight}, expected ${width}x${height}`);
+  }
 }
 
 function waitForServer(child) {
@@ -241,6 +253,13 @@ async function main() {
       fail(`Playwright page.addInitScript() did not run on navigation: ${JSON.stringify(initScriptValue)}`);
     }
 
+    const baselineScreenshot = await session.send('Page.captureScreenshot', {
+      format: 'png',
+      clip: { x: 0, y: 0, width: 160, height: 100, scale: 1 },
+    });
+    const baselinePng = Buffer.from(baselineScreenshot.data || '', 'base64');
+    assertPng(baselinePng, 160, 100, 'baseline Page.captureScreenshot');
+
     const consoleEvent = await waitForClickConsole(session, async () => {
       await session.send('Input.dispatchMouseEvent', {
         type: 'mousePressed',
@@ -281,6 +300,12 @@ async function main() {
       fail(`click structural mutations did not reach DOM: ${JSON.stringify(structural)}`);
     }
 
+    const dynamicNode = await session.send('DOM.querySelector', { nodeId: rootNodeId, selector: '#dynamic' });
+    const removedNode = await session.send('DOM.querySelector', { nodeId: rootNodeId, selector: '#gone' });
+    if (!dynamicNode.nodeId || removedNode.nodeId) {
+      fail(`live DOM mutation was not reflected through CDP DOM: ${JSON.stringify({ dynamicNode, removedNode })}`);
+    }
+
     const eventOrder = await evaluateValue(session, '__eventOrder.join(\'>\')');
     if (eventOrder !== 'document-capture>body-capture>target>body-bubble') {
       fail(`click event propagation order was wrong: ${JSON.stringify(eventOrder)}`);
@@ -303,18 +328,16 @@ async function main() {
       clip: { x: 0, y: 0, width: 160, height: 100, scale: 1 },
     });
     const png = Buffer.from(screenshot.data || '', 'base64');
-    const signature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-    if (!png.subarray(0, 8).equals(signature)) {
-      fail('Page.captureScreenshot did not return a PNG');
+    assertPng(png, 160, 100, 'post-mutation Page.captureScreenshot');
+    if (png.equals(baselinePng)) {
+      fail('post-mutation Page.captureScreenshot did not repaint changed DOM');
     }
 
     const playwrightPng = await page.screenshot({
       clip: { x: 0, y: 0, width: 160, height: 100 },
       timeout: 5000,
     });
-    if (!playwrightPng.subarray(0, 8).equals(signature)) {
-      fail('Playwright page.screenshot() did not return a PNG');
-    }
+    assertPng(playwrightPng, 160, 100, 'Playwright page.screenshot()');
 
     await page.setViewportSize({ width: 500, height: 320 });
     const viewportInfo = await page.evaluate(() => `${innerWidth}x${innerHeight}:${document.documentElement.clientWidth}x${document.documentElement.clientHeight}:${matchMedia('(max-width: 600px)').matches}`);
@@ -395,6 +418,85 @@ async function main() {
     if (wheelEvents !== '4:25:0') {
       fail(`Playwright page.mouse.wheel() events were wrong: ${JSON.stringify(wheelEvents)}`);
     }
+    await page.evaluate(() => scrollTo(0, 0));
+
+    const nestedBox = await page.locator('#nested-scroll').boundingBox({ timeout: 5000 });
+    if (!nestedBox) {
+      fail('Playwright locator.boundingBox() returned no nested scrollport');
+    }
+    const clippedMarkerBox = await page.locator('#nested-marker').boundingBox({ timeout: 5000 });
+    if (!clippedMarkerBox) {
+      fail('Playwright locator.boundingBox() returned no clipped nested marker');
+    }
+    const clippedMarkerHit = await page.evaluate(({ x, y }) => {
+      const marker = document.querySelector('#nested-marker');
+      const scroller = document.querySelector('#nested-scroll');
+      return {
+        hit: document.elementFromPoint(x, y)?.id || '',
+        marker: marker.getBoundingClientRect().toJSON(),
+        scroller: scroller.getBoundingClientRect().toJSON(),
+        scrollTop: scroller.scrollTop,
+      };
+    }, {
+      x: clippedMarkerBox.x + clippedMarkerBox.width / 2,
+      y: clippedMarkerBox.y + clippedMarkerBox.height / 2,
+    });
+    if (clippedMarkerHit.hit === 'nested-marker') {
+      fail(`document.elementFromPoint() exposed a descendant outside its overflow clip: ${JSON.stringify(clippedMarkerHit)}`);
+    }
+    await page.mouse.click(
+      clippedMarkerBox.x + clippedMarkerBox.width / 2,
+      clippedMarkerBox.y + clippedMarkerBox.height / 2,
+    );
+    if (await page.evaluate(() => globalThis.__nestedMarkerClicks) !== 0) {
+      fail('CDP mouse input clicked a descendant outside its overflow clip');
+    }
+    await page.mouse.move(nestedBox.x + 10, nestedBox.y + 10);
+    await page.mouse.wheel(0, 35);
+    const nestedScroll = await page.evaluate(() => {
+      const inner = document.querySelector('#nested-scroll');
+      return `${inner.scrollTop}:${scrollY}:${globalThis.__nestedScrollEvents.join('>')}`;
+    });
+    if (nestedScroll !== '35:0:nested-scroll:false:false') {
+      fail(`wheel did not prefer the nested scrollport: ${JSON.stringify(nestedScroll)}`);
+    }
+
+    await page.evaluate(() => {
+      globalThis.__cancelNestedWheel = true;
+      globalThis.__nestedScrollEvents = [];
+    });
+    await page.mouse.wheel(0, 20);
+    const canceledNestedScroll = await page.evaluate(() => {
+      const inner = document.querySelector('#nested-scroll');
+      return `${inner.scrollTop}:${scrollY}:${globalThis.__nestedScrollEvents.length}`;
+    });
+    if (canceledNestedScroll !== '35:0:0') {
+      fail(`preventDefault did not block nested scrolling: ${JSON.stringify(canceledNestedScroll)}`);
+    }
+
+    await page.evaluate(() => {
+      globalThis.__cancelNestedWheel = false;
+      document.querySelector('#nested-scroll').scrollTo(0, 1e9);
+    });
+    await page.evaluate(() => { globalThis.__nestedScrollEvents = []; });
+    await page.mouse.wheel(0, 25);
+    const chainedScroll = await page.evaluate(() => `${scrollY}:${globalThis.__nestedScrollEvents.length}`);
+    if (chainedScroll !== '25:0') {
+      fail(`wheel did not chain from nested boundary to root: ${JSON.stringify(chainedScroll)}`);
+    }
+    await page.evaluate(() => {
+      scrollTo(0, 0);
+      document.querySelector('#nested-scroll').scrollTo(0, 0);
+    });
+    await page.locator('#nested-marker').click({ timeout: 5000 });
+    const nestedAutoScroll = await page.evaluate(() => {
+      const inner = document.querySelector('#nested-scroll');
+      return `${inner.scrollTop > 0}:${scrollY}:${globalThis.__nestedMarkerClicks}`;
+    });
+    if (nestedAutoScroll !== 'true:0:1') {
+      fail(`locator.click() did not scroll the nearest container and click its target: ${JSON.stringify(nestedAutoScroll)}`);
+    }
+    await page.evaluate(() => document.querySelector('#nested-scroll').scrollTo(0, 0));
 
     const roleText = await page.getByRole('button', { name: 'Hit me' }).textContent({ timeout: 5000 });
     if (roleText !== 'Hit me') {
@@ -448,6 +550,13 @@ async function main() {
     const keyboardInput = await page.locator('#typed-name').inputValue({ timeout: 5000 });
     if (keyboardInput !== 'Keyed') {
       fail(`Playwright high-level keyboard input did not update focused input: ${JSON.stringify(keyboardInput)}`);
+    }
+    await page.keyboard.press('Control+A');
+    await page.keyboard.insertText('é🦊');
+    const insertedUnicode = await page.locator('#typed-name').inputValue({ timeout: 5000 });
+    const insertedSelection = await page.locator('#typed-name').evaluate((element) => `${element.selectionStart}:${element.selectionEnd}`);
+    if (insertedUnicode !== 'é🦊' || insertedSelection !== '3:3') {
+      fail(`Playwright keyboard.insertText() did not preserve UTF-16 text state: ${JSON.stringify({ insertedUnicode, insertedSelection })}`);
     }
 
     await page.evaluate(() => {

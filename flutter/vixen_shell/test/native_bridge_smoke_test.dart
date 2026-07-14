@@ -96,6 +96,127 @@ void main() {
           ),
           isTrue,
         );
+        final valuedName = valuedAccessibility.nodes.singleWhere(
+          (node) => node.id == name.id,
+        );
+        await controller.dispatchAccessibilityFocus(
+          contextId: contextId,
+          documentId: state.documentId,
+          runtimeContextId: state.runtimeContextId!,
+          viewportWidth: 64,
+          viewportHeight: 48,
+          sourceGeneration: valuedAccessibility.sourceGeneration,
+          generation: valuedAccessibility.generation,
+          nodeId: valuedName.id,
+        );
+        await controller.dispatchTextInput(
+          contextId: contextId,
+          documentId: state.documentId,
+          runtimeContextId: state.runtimeContextId!,
+          viewportWidth: 64,
+          viewportHeight: 48,
+          state: const BrowserTextInputState(
+            text: 'Adaに',
+            selection: BrowserAccessibilityTextSelection(
+              baseOffset: 4,
+              extentOffset: 4,
+            ),
+            composing: BrowserAccessibilityTextSelection(
+              baseOffset: 3,
+              extentOffset: 4,
+            ),
+          ),
+        );
+        await controller.dispatchTextInput(
+          contextId: contextId,
+          documentId: state.documentId,
+          runtimeContextId: state.runtimeContextId!,
+          viewportWidth: 64,
+          viewportHeight: 48,
+          state: const BrowserTextInputState(
+            text: 'Adaに',
+            selection: BrowserAccessibilityTextSelection(
+              baseOffset: 4,
+              extentOffset: 4,
+            ),
+          ),
+        );
+        final composedInput = await controller.accessibilitySnapshot(
+          contextId: contextId,
+          documentId: state.documentId,
+          viewportWidth: 64,
+          viewportHeight: 48,
+        );
+        expect(
+          composedInput.nodes.any(
+            (node) =>
+                node.id == name.id &&
+                node.value == 'Adaに' &&
+                node.textSelection?.baseOffset == 4,
+          ),
+          isTrue,
+        );
+
+        final editor = composedInput.nodes.singleWhere(
+          (node) => node.label == 'Editor',
+        );
+        await controller.dispatchAccessibilityFocus(
+          contextId: contextId,
+          documentId: state.documentId,
+          runtimeContextId: state.runtimeContextId!,
+          viewportWidth: 64,
+          viewportHeight: 48,
+          sourceGeneration: composedInput.sourceGeneration,
+          generation: composedInput.generation,
+          nodeId: editor.id,
+        );
+        await controller.dispatchTextInput(
+          contextId: contextId,
+          documentId: state.documentId,
+          runtimeContextId: state.runtimeContextId!,
+          viewportWidth: 64,
+          viewportHeight: 48,
+          state: const BrowserTextInputState(
+            text: 'draft🦊',
+            selection: BrowserAccessibilityTextSelection(
+              baseOffset: 7,
+              extentOffset: 7,
+            ),
+            composing: BrowserAccessibilityTextSelection(
+              baseOffset: 5,
+              extentOffset: 7,
+            ),
+          ),
+        );
+        await controller.dispatchTextInput(
+          contextId: contextId,
+          documentId: state.documentId,
+          runtimeContextId: state.runtimeContextId!,
+          viewportWidth: 64,
+          viewportHeight: 48,
+          state: const BrowserTextInputState(
+            text: 'draft🦊',
+            selection: BrowserAccessibilityTextSelection(
+              baseOffset: 7,
+              extentOffset: 7,
+            ),
+          ),
+        );
+        final composedEditor = await controller.accessibilitySnapshot(
+          contextId: contextId,
+          documentId: state.documentId,
+          viewportWidth: 64,
+          viewportHeight: 48,
+        );
+        expect(
+          composedEditor.nodes.any(
+            (node) =>
+                node.id == editor.id &&
+                node.value == 'draft🦊' &&
+                node.textSelection?.baseOffset == 7,
+          ),
+          isTrue,
+        );
         try {
           final frame = await controller.captureFrame(
             contextId: contextId,

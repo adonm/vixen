@@ -1194,6 +1194,121 @@ mod tests {
     }
 
     #[test]
+    fn controller_hit_test_wheel_scrolls_nested_container_before_root() {
+        let profile = TestProfile::new();
+        let url = "https://ffi.test/nested-scroll";
+        let mut config = BrowserConfig::new(&profile.0);
+        config.document_overrides.insert(
+            url.to_owned(),
+            r#"<!doctype html>
+                <style>
+                  html,body{margin:0}
+                  #inner{width:160px;height:80px;overflow:auto}
+                  #inside{height:260px}
+                  #nested-marker{display:block;margin-top:120px;width:120px;height:30px}
+                  #tail{height:700px}
+                </style>
+                <div id="inner"><div id="inside"><button id="nested-marker">Nested marker</button></div></div>
+                <button id="root-marker">Root marker</button><div id="tail"></div>
+                <script>document.querySelector('#inner').addEventListener('wheel', event => { if (event.shiftKey) event.preventDefault(); });</script>"#
+                .to_owned(),
+        );
+        let mut controller = FlutterBrowserController::from_config(config).unwrap();
+        let context_id = controller.create_context().unwrap();
+        let navigation_id = controller.navigate(context_id, url).unwrap();
+        wait_for_settled(&mut controller, navigation_id);
+        let state = controller.context_state(context_id).unwrap();
+        let viewport = (200, 140);
+        controller
+            .dispatch(ControllerCommand::UpdateHostViewState {
+                context_id,
+                state: HostViewState {
+                    generation: 1,
+                    viewport,
+                    scale_factor: 1.0,
+                    focused: true,
+                    visible: true,
+                    lifecycle: HostLifecycle::Resumed,
+                },
+            })
+            .unwrap();
+        let marker_positions = |controller: &mut FlutterBrowserController| {
+            let snapshot = controller
+                .accessibility_snapshot(context_id, state.document_id, viewport)
+                .unwrap();
+            let y = |label: &str| {
+                snapshot
+                    .nodes
+                    .iter()
+                    .find(|node| node.label == label)
+                    .and_then(|node| node.bbox)
+                    .unwrap()
+                    .y
+            };
+            (y("Nested marker"), y("Root marker"))
+        };
+        let before = marker_positions(&mut controller);
+
+        let mut wheel = mouse_event(20.0, 20.0, 0, 0);
+        wheel.delta_y = 35.0;
+        controller
+            .dispatch(ControllerCommand::DispatchMouseEvent {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                viewport,
+                event_type: "wheel".to_owned(),
+                event: wheel.clone(),
+            })
+            .unwrap();
+        let nested = marker_positions(&mut controller);
+        assert_eq!(nested.0, before.0 - 35.0);
+        assert_eq!(nested.1, before.1);
+
+        wheel.shift_key = true;
+        wheel.delta_y = 20.0;
+        controller
+            .dispatch(ControllerCommand::DispatchMouseEvent {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                viewport,
+                event_type: "wheel".to_owned(),
+                event: wheel.clone(),
+            })
+            .unwrap();
+        assert_eq!(marker_positions(&mut controller), nested);
+
+        wheel.shift_key = false;
+        wheel.delta_y = 145.0;
+        controller
+            .dispatch(ControllerCommand::DispatchMouseEvent {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                viewport,
+                event_type: "wheel".to_owned(),
+                event: wheel.clone(),
+            })
+            .unwrap();
+        let at_boundary = marker_positions(&mut controller);
+        wheel.delta_y = 25.0;
+        controller
+            .dispatch(ControllerCommand::DispatchMouseEvent {
+                context_id,
+                document_id: state.document_id,
+                runtime_context_id: state.runtime_context_id.unwrap(),
+                viewport,
+                event_type: "wheel".to_owned(),
+                event: wheel,
+            })
+            .unwrap();
+        let chained = marker_positions(&mut controller);
+        assert_eq!(chained.0, at_boundary.0 - 25.0);
+        assert_eq!(chained.1, at_boundary.1 - 25.0);
+    }
+
+    #[test]
     fn controller_find_text_uses_exact_document_and_bounded_query() {
         let profile = TestProfile::new();
         let url = "https://ffi.test/find";

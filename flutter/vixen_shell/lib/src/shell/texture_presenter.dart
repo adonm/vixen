@@ -391,6 +391,14 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
     callback('keyup', event);
   }
 
+  void _handleSemanticFocus(
+    BrowserAccessibilitySnapshot snapshot,
+    BrowserAccessibilityNode node,
+  ) {
+    _contentFocus.requestFocus();
+    widget.onSemanticFocus?.call(snapshot, node);
+  }
+
   void _syncTextInput() {
     final contextState = widget.contextState;
     final snapshot = widget.accessibility;
@@ -626,6 +634,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
     final character = event.character ?? '';
     final applyText =
         eventType == 'keydown' &&
+        _textInputTarget == null &&
         character.isNotEmpty &&
         !keyboard.isControlPressed &&
         !keyboard.isAltPressed &&
@@ -644,7 +653,9 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         repeat: event is KeyRepeatEvent,
       ),
     );
-    return KeyEventResult.handled;
+    return _textInputTarget == null
+        ? KeyEventResult.handled
+        : KeyEventResult.ignored;
   }
 
   bool _isShellShortcut(KeyEvent event) {
@@ -842,7 +853,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
                   ? () => widget.onSemanticTap?.call(snapshot, node)
                   : null,
               onFocus: node.actions.contains('focus') && !node.disabled
-                  ? () => widget.onSemanticFocus?.call(snapshot, node)
+                  ? () => _handleSemanticFocus(snapshot, node)
                   : null,
               onSetText: node.actions.contains('set_value') && !node.disabled
                   ? (value) =>
@@ -935,6 +946,7 @@ final class _BrowserTextInputClient with TextInputClient {
   }
 
   void reconcile(TextEditingValue value) {
+    if (_value.composing.isValid) return;
     final next = _value.text == value.text
         ? value.copyWith(composing: _value.composing)
         : value;
@@ -955,6 +967,8 @@ final class _BrowserTextInputClient with TextInputClient {
         !value.selection.isValid ||
         value.selection.baseOffset > value.text.length ||
         value.selection.extentOffset > value.text.length ||
+        (value.composing.isValid &&
+            value.composing.start > value.composing.end) ||
         (value.composing.isValid && value.composing.end > value.text.length)) {
       _connection?.setEditingState(_value);
       return;

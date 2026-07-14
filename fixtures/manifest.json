@@ -3757,6 +3757,25 @@
         { "type": "selectors-exact", "selector": "form:not(:has(input, button))", "expected": ["empty"] },
         { "type": "js-eval", "expr": "document.querySelector('#login').childElementCount", "expected": "2" }
       ]
+    },
+    {
+      "url": "fixtures/imported/wpt/cssom-view/element-scroll.html",
+      "category": "cssom-view",
+      "source": "imported",
+      "checks": [
+        { "type": "title", "expected": "WPT CSSOM View smoke: element scrolling" },
+        { "type": "js-eval", "expr": "document.querySelector('#scroller').scrollLeft", "expected": "25" },
+        { "type": "js-eval", "expr": "document.querySelector('#scroller').scrollTop", "expected": "45" },
+        { "type": "js-eval", "expr": "document.querySelector('#scroller').scrollWidth + 'x' + document.querySelector('#scroller').scrollHeight", "expected": "280x320" },
+        { "type": "js-eval", "expr": "elementScrollEvents.join('>')", "expected": "scroller:false:false:25:45" },
+        { "type": "js-eval", "expr": "document.querySelector('#visible').scrollTop", "expected": "0" },
+        { "type": "js-eval", "expr": "document.querySelector('#clipped').scrollTop", "expected": "0" },
+        { "type": "js-eval", "expr": "(() => { const child = document.querySelector('#clip-child'); const rect = child.getBoundingClientRect(); return document.elementFromPoint(rect.x + 1, rect.y + 1) === child; })()", "expected": "false" },
+        { "type": "js-eval", "expr": "scrollX + ':' + scrollY", "expected": "0:0" },
+        { "type": "js-eval", "expr": "(() => { const scroller = document.querySelector('#scroller'); scroller.scrollTo(0, 0); document.querySelector('#target').scrollIntoView(); return scroller.scrollTop > 0 && scrollY === 0; })()", "expected": "true" },
+        { "type": "js-eval", "expr": "(() => { const scroller = document.querySelector('#scroller').getBoundingClientRect(); const target = document.querySelector('#target').getBoundingClientRect(); return target.top === scroller.top; })()", "expected": "true" },
+        { "type": "no-critical-diagnostics" }
+      ]
     }
   ]
 }

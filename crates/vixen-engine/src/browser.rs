@@ -2707,7 +2707,21 @@ impl BrowserCore {
                 navigation_actions: Vec::new(),
             }));
         }
+        let (target_id, target_tag) = self
+            .context_for_document(context_id, document_id)?
+            .page
+            .document()
+            .element_by_node_id(node_id)
+            .map(|element| (element.id, element.tag))
+            .unwrap_or((None, String::new()));
         let event_type = json_string(&event_type)?;
+        let target_id = deno_core::serde_json::to_string(&target_id).map_err(|error| {
+            BrowserError::new(
+                browser_error_codes::INVALID_ARGUMENT,
+                format!("failed to encode mouse target identity: {error}"),
+            )
+        })?;
+        let target_tag = json_string(&target_tag)?;
         let init = deno_core::serde_json::json!({
             "bubbles": event.bubbles,
             "clientX": event.x,
@@ -2728,7 +2742,7 @@ impl BrowserCore {
             "deltaMode": 0,
         });
         let source = format!(
-            "globalThis.__vixenDispatchMouseEvent ? globalThis.__vixenDispatchMouseEvent({node_id}, {event_type}, {init}) : false"
+            "globalThis.__vixenDispatchMouseEvent ? globalThis.__vixenDispatchMouseEvent({node_id}, {event_type}, {init}, {target_id}, {target_tag}) : false"
         );
         let root_scroll_default = if is_wheel && !event.ctrl_key && !event.meta_key {
             Some((
@@ -4250,8 +4264,9 @@ fn host_view_runtime_source(page: &Page, state: HostViewState, emit_scroll: bool
     let (viewport_width, viewport_height) = page.layout_viewport();
     let (max_scroll_x, max_scroll_y) = page.root_scroll_max();
     let (scroll_x, scroll_y) = page.root_scroll();
+    let element_scroll_source = crate::script::element_scroll_state_source(page, emit_scroll);
     format!(
-        "globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}, {viewport_width}, {viewport_height}, {max_scroll_x}, {max_scroll_y}, {scroll_x}, {scroll_y}, {emit_scroll}) : false",
+        "(() => {{ const applied = globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}, {viewport_width}, {viewport_height}, {max_scroll_x}, {max_scroll_y}, {scroll_x}, {scroll_y}, {emit_scroll}) : false; {element_scroll_source}; return applied; }})()",
         state.focused, state.visible,
     )
 }
@@ -4374,6 +4389,10 @@ mod tests {
         config.document_overrides.insert(
             "https://same.test/scroll".to_owned(),
             "<!doctype html><style>body{margin:0}#spacer{height:800px}</style><div id='spacer'>Top</div><div id='marker'>Bottom</div><input id='field' value='abc'><script>document.addEventListener('keydown', event => { if (event.key === 'PageUp') event.preventDefault(); });</script>".to_owned(),
+        );
+        config.document_overrides.insert(
+            "https://same.test/nested-scroll".to_owned(),
+            "<!doctype html><style>body{margin:0}#inner{width:160px;height:80px;overflow:auto}#content{height:260px;background:#0f0}#clipped{display:block;margin-top:120px;width:100px;height:20px}#tail{height:800px}</style><div id='inner'><div id='content'>Nested<button id='clipped'>Clipped</button></div></div><div id='tail'>Tail</div>".to_owned(),
         );
         config
     }
@@ -5011,12 +5030,21 @@ mod tests {
         state: &BrowsingContextState,
         delta_y: f64,
     ) {
+        dispatch_test_wheel_at(handle, state, 0, delta_y);
+    }
+
+    fn dispatch_test_wheel_at(
+        handle: &mut EngineBrowserHandle,
+        state: &BrowsingContextState,
+        node_id: usize,
+        delta_y: f64,
+    ) {
         let result = handle
             .dispatch(BrowserCommand::DispatchMouseEvent {
                 context_id: state.context_id,
                 document_id: state.document_id,
                 runtime_context_id: state.runtime_context_id.unwrap(),
-                node_id: 0,
+                node_id,
                 event_type: "wheel".to_owned(),
                 event: MouseEventData {
                     x: 10.0,
@@ -5727,6 +5755,96 @@ mod tests {
     }
 
     #[test]
+    fn nested_wheel_scrolls_nearest_container_then_chains_to_root() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/nested-scroll");
+        let current = state(&mut handle, context_id);
+        let inner_id = match eval(
+            &mut handle,
+            &current,
+            "const inner = document.querySelector('#inner'); globalThis.nestedScrollEvents = []; globalThis.cancelNestedWheel = false; inner.addEventListener('scroll', event => nestedScrollEvents.push(event.target.id + ':' + event.bubbles + ':' + event.cancelable)); inner.addEventListener('wheel', event => { if (cancelNestedWheel) event.preventDefault(); }); inner.__vixenNodeId",
+        ) {
+            ScriptValue::Int32(node_id) => node_id as usize,
+            other => panic!("unexpected inner node id: {other:?}"),
+        };
+        let before_y = element_y(&mut handle, &current, "#content", (800, 600));
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "(() => { const marker = document.querySelector('#clipped'); const rect = marker.getBoundingClientRect(); return document.elementFromPoint(rect.x + 1, rect.y + 1) === marker; })()"
+            ),
+            ScriptValue::Bool(false)
+        );
+
+        dispatch_test_wheel_at(&mut handle, &current, inner_id, 35.0);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "document.querySelector('#inner').scrollTop + ':' + scrollY + ':' + nestedScrollEvents.join('>')"
+            ),
+            ScriptValue::String("35:0:inner:false:false".to_owned())
+        );
+        assert_eq!(
+            element_y(&mut handle, &current, "#content", (800, 600)),
+            before_y - 35.0
+        );
+
+        eval(
+            &mut handle,
+            &current,
+            "cancelNestedWheel = true; nestedScrollEvents = []; document.querySelector('#inner').scrollTop",
+        );
+        dispatch_test_wheel_at(&mut handle, &current, inner_id, 20.0);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "document.querySelector('#inner').scrollTop + ':' + scrollY + ':' + nestedScrollEvents.length"
+            ),
+            ScriptValue::String("35:0:0".to_owned())
+        );
+
+        eval(
+            &mut handle,
+            &current,
+            "cancelNestedWheel = false; nestedScrollEvents = []; 0",
+        );
+        dispatch_test_wheel_at(&mut handle, &current, inner_id, 200.0);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "document.querySelector('#inner').scrollTop + ':' + scrollY"
+            ),
+            ScriptValue::String("180:55".to_owned())
+        );
+        eval(
+            &mut handle,
+            &current,
+            "scrollTo(0, 0); document.querySelector('#inner').scrollTo(0, 35); 0",
+        );
+
+        eval(
+            &mut handle,
+            &current,
+            "cancelNestedWheel = false; document.querySelector('#inner').scrollTo({ top: 1e9 }); document.querySelector('#inner').scrollTop",
+        );
+        eval(&mut handle, &current, "nestedScrollEvents = []; 0");
+        dispatch_test_wheel_at(&mut handle, &current, inner_id, 25.0);
+        assert_eq!(
+            eval(&mut handle, &current, "scrollY"),
+            ScriptValue::Int32(25)
+        );
+        assert_eq!(
+            eval(&mut handle, &current, "nestedScrollEvents.length"),
+            ScriptValue::Int32(0)
+        );
+    }
+
+    #[test]
     fn text_input_commits_bounded_ime_composition_to_the_focused_control() {
         let mut handle = spawn_browser(test_config()).unwrap();
         let context_id = create(&mut handle);
@@ -5960,6 +6078,142 @@ mod tests {
                 "document.querySelector('#editor').textContent"
             ),
             ScriptValue::String("draft🦊\n".to_owned())
+        );
+    }
+
+    #[test]
+    fn composition_ends_when_focus_or_host_focus_leaves_editing_target() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/input");
+        let current = state(&mut handle, context_id);
+        eval(
+            &mut handle,
+            &current,
+            "const field = document.querySelector('#name'); const editor = document.querySelector('#editor'); globalThis.focusImeEvents = []; field.addEventListener('compositionend', event => focusImeEvents.push('field:' + event.data)); editor.addEventListener('compositionend', event => focusImeEvents.push('editor:' + event.data)); field.focus(); 'ready'",
+        );
+        handle
+            .dispatch(BrowserCommand::DispatchTextInput {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                state: TextInputState {
+                    text: "に".to_owned(),
+                    selection: vixen_api::AccessibilityTextSelection {
+                        base_offset: 1,
+                        extent_offset: 1,
+                    },
+                    composing: Some(vixen_api::AccessibilityTextSelection {
+                        base_offset: 0,
+                        extent_offset: 1,
+                    }),
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "document.querySelector('#editor').focus(); focusImeEvents.join('>')"
+            ),
+            ScriptValue::String("field:に".to_owned())
+        );
+
+        handle
+            .dispatch(BrowserCommand::DispatchTextInput {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                state: TextInputState {
+                    text: "draft🦊".to_owned(),
+                    selection: vixen_api::AccessibilityTextSelection {
+                        base_offset: 7,
+                        extent_offset: 7,
+                    },
+                    composing: Some(vixen_api::AccessibilityTextSelection {
+                        base_offset: 5,
+                        extent_offset: 7,
+                    }),
+                },
+            })
+            .unwrap();
+        handle
+            .dispatch(BrowserCommand::UpdateHostViewState {
+                context_id,
+                state: HostViewState {
+                    generation: 1,
+                    focused: false,
+                    ..HostViewState::default()
+                },
+            })
+            .unwrap();
+        assert_eq!(
+            eval(&mut handle, &current, "focusImeEvents.join('>')"),
+            ScriptValue::String("field:に>editor:🦊".to_owned())
+        );
+    }
+
+    #[test]
+    fn composition_teardown_survives_cancellation_and_reentrant_focus() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/input");
+        let current = state(&mut handle, context_id);
+        eval(
+            &mut handle,
+            &current,
+            "const field = document.querySelector('#name'); globalThis.reentrantImeEvents = []; field.addEventListener('compositionstart', event => reentrantImeEvents.push('start:' + event.data)); field.addEventListener('compositionend', event => reentrantImeEvents.push('end:' + event.data)); field.addEventListener('beforeinput', event => event.preventDefault()); field.focus(); 'ready'",
+        );
+        let composing = TextInputState {
+            text: "に".to_owned(),
+            selection: vixen_api::AccessibilityTextSelection {
+                base_offset: 1,
+                extent_offset: 1,
+            },
+            composing: Some(vixen_api::AccessibilityTextSelection {
+                base_offset: 0,
+                extent_offset: 1,
+            }),
+        };
+        handle
+            .dispatch(BrowserCommand::DispatchTextInput {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                state: composing.clone(),
+            })
+            .unwrap();
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "(() => { const currentField = document.querySelector('#name'); currentField.blur(); return currentField.value + '|' + reentrantImeEvents.join('>'); })()"
+            ),
+            ScriptValue::String("|start:>end:に".to_owned())
+        );
+
+        navigate(&mut handle, context_id, "https://same.test/input");
+        let current = state(&mut handle, context_id);
+        eval(
+            &mut handle,
+            &current,
+            "const field = document.querySelector('#name'); const editor = document.querySelector('#editor'); globalThis.reentrantImeEvents = []; field.addEventListener('compositionstart', () => { reentrantImeEvents.push('start'); editor.focus(); }); field.addEventListener('compositionend', event => reentrantImeEvents.push('end:' + event.data)); field.focus(); 'ready'",
+        );
+        handle
+            .dispatch(BrowserCommand::DispatchTextInput {
+                context_id,
+                document_id: current.document_id,
+                runtime_context_id: current.runtime_context_id.unwrap(),
+                state: composing,
+            })
+            .unwrap();
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "document.querySelector('#name').value + '|' + document.activeElement.id + '|' + reentrantImeEvents.join('>')"
+            ),
+            ScriptValue::String("|editor|start>end:に".to_owned())
         );
     }
 

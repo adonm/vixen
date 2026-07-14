@@ -1176,6 +1176,133 @@ fn page_navigate_same_url_resets_page_realm() {
 }
 
 #[test]
+fn cdp_insert_text_and_nested_scroll_defaults_use_live_page_state() {
+    let dir = tempfile::tempdir().unwrap();
+    let html = dir.path().join("input-scroll.html");
+    std::fs::write(
+        &html,
+        r#"<!doctype html>
+        <style>
+          html, body { margin: 0; }
+          #inner { width: 160px; height: 80px; overflow: auto; }
+          #inside { height: 260px; }
+          #tail { height: 800px; }
+        </style>
+        <div id="inner"><div id="inside">Nested</div></div>
+        <form id="form"><input id="field" name="field"><input id="blocked"></form><div id="editor" contenteditable>draft</div>
+        <div id="tail">Tail</div>"#,
+    )
+    .unwrap();
+    let mut state = CdpState::default();
+    dispatch_one(
+        &mut state,
+        "Page.navigate",
+        json!({ "url": format!("file://{}", html.display()) }),
+    );
+
+    dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "const field = document.querySelector('#field'); field.focus(); field.select(); globalThis.textEvents = []; for (const type of ['beforeinput', 'input', 'change']) field.addEventListener(type, event => textEvents.push(type + ':' + (event.inputType || '') + ':' + (event.data || ''))); 'ready'" }),
+    );
+    assert_eq!(
+        dispatch_one(&mut state, "Input.insertText", json!({ "text": "é🦊" }),),
+        json!({})
+    );
+    let inserted = dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "const field = document.querySelector('#field'); [field.value, field.selectionStart, field.selectionEnd, new FormData(document.querySelector('#form')).get('field'), textEvents.join('>')].join('|')" }),
+    );
+    assert_eq!(
+        inserted["result"]["value"],
+        "é🦊|3|3|é🦊|beforeinput:insertText:é🦊>input:insertText:é🦊>change::"
+    );
+
+    dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "const blocked = document.querySelector('#blocked'); blocked.focus(); blocked.addEventListener('beforeinput', event => event.preventDefault()); blocked.select(); 'ready'" }),
+    );
+    dispatch_one(&mut state, "Input.insertText", json!({ "text": "blocked" }));
+    let blocked = dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "document.querySelector('#blocked').value" }),
+    );
+    assert_eq!(blocked["result"]["value"], "");
+
+    dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "const editor = document.querySelector('#editor'); editor.focus(); getSelection().selectAllChildren(editor); 'ready'" }),
+    );
+    dispatch_one(&mut state, "Input.insertText", json!({ "text": "編集" }));
+    let edited = dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "document.querySelector('#editor').textContent" }),
+    );
+    assert_eq!(edited["result"]["value"], "draft編集");
+
+    dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "const inner = document.querySelector('#inner'); globalThis.nestedEvents = []; globalThis.cancelWheel = false; inner.addEventListener('scroll', event => nestedEvents.push(event.target.id + ':' + event.bubbles + ':' + event.cancelable)); inner.addEventListener('wheel', event => { if (cancelWheel) event.preventDefault(); }); 'ready'" }),
+    );
+    dispatch_one(
+        &mut state,
+        "Input.dispatchMouseEvent",
+        json!({ "type": "mouseWheel", "x": 10, "y": 10, "button": "none", "deltaX": 0, "deltaY": 35 }),
+    );
+    let nested = dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "document.querySelector('#inner').scrollTop + ':' + scrollY + ':' + nestedEvents.join('>')" }),
+    );
+    assert_eq!(nested["result"]["value"], "35:0:inner:false:false");
+
+    dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "cancelWheel = true; nestedEvents = []; 'ready'" }),
+    );
+    dispatch_one(
+        &mut state,
+        "Input.dispatchMouseEvent",
+        json!({ "type": "mouseWheel", "x": 10, "y": 10, "button": "none", "deltaX": 0, "deltaY": 20 }),
+    );
+    let canceled = dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "document.querySelector('#inner').scrollTop + ':' + scrollY + ':' + nestedEvents.length" }),
+    );
+    assert_eq!(canceled["result"]["value"], "35:0:0");
+
+    dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "cancelWheel = false; document.querySelector('#inner').scrollTo(0, 1e9); 'ready'" }),
+    );
+    dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "nestedEvents = []; 'ready'" }),
+    );
+    dispatch_one(
+        &mut state,
+        "Input.dispatchMouseEvent",
+        json!({ "type": "mouseWheel", "x": 10, "y": 10, "button": "none", "deltaX": 0, "deltaY": 25 }),
+    );
+    let chained = dispatch_one(
+        &mut state,
+        "Runtime.evaluate",
+        json!({ "expression": "scrollY + ':' + nestedEvents.length" }),
+    );
+    assert_eq!(chained["result"]["value"], "25:0");
+}
+
+#[test]
 fn two_targets_route_to_independent_core_contexts() {
     let (origin, network, server) = spawn_page_server("cdp-contexts.com", 3);
     let runtime = JsRuntime::with_network_config(network).expect("JS init");

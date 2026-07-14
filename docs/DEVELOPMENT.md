@@ -110,6 +110,7 @@ just flutter-builder-update
 just linux-release-prefetch
 just linux-release-smoke
 just linux-at-spi-smoke
+just linux-interaction-smoke
 ```
 
 Native GTK3 development packages are needed only for direct host Flutter Linux

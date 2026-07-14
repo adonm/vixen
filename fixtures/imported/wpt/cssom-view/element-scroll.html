@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WPT CSSOM View smoke: element scrolling</title>
+<style>
+  html, body { margin: 0; }
+  #scroller { width: 120px; height: 80px; overflow: auto; }
+  #content { width: 280px; height: 320px; }
+  #target { display: block; margin-top: 160px; width: 80px; height: 30px; }
+  #visible { width: 40px; height: 40px; overflow: visible; }
+  #clipped { width: 40px; height: 40px; overflow: clip; }
+</style>
+<div id="scroller"><div id="content">Scrollable content<button id="target">Target</button></div></div>
+<div id="visible"><div style="height: 120px">Visible overflow</div></div>
+<div id="clipped"><button id="clip-child" style="display:block;margin-top:60px;height:20px">Clipped child</button></div>
+<script>
+  globalThis.elementScrollEvents = [];
+  const scroller = document.querySelector('#scroller');
+  scroller.addEventListener('scroll', (event) => {
+    elementScrollEvents.push([
+      event.target.id,
+      event.bubbles,
+      event.cancelable,
+      scroller.scrollLeft,
+      scroller.scrollTop,
+    ].join(':'));
+  });
+  scroller.scrollTop = 20;
+  scroller.scrollBy({ left: 15, top: 10 });
+  scroller.scrollTo({ left: 25, top: 45 });
+  document.querySelector('#visible').scrollTop = 30;
+  document.querySelector('#clipped').scrollTop = 30;
+</script>

@@ -60,7 +60,9 @@ current-generation frame and Semantics captures retry twice before surfacing a
 structured error, while texture create/publish failures dispose and recreate
 the bounded Linux texture twice before showing a recovery-failed placeholder;
 single-touch drags cross platform touch slop, cancel the pending synthetic press,
-and reuse BrowserCore's cancelable physical-delta root-scroll path;
+and reuse BrowserCore's cancelable physical-delta scroll path; Page-owned nested
+scrollports now share paint, clipped hit testing, Semantics bounds, wheel
+cancellation/boundary chaining, element scroll events, and CDP scroll-into-view;
 the bounded BrowserCore-derived Semantics hierarchy includes parent structure,
 `aria-controls`, text editing, and native range adjustment. Monotonic host-view
 updates also drive document focus/visibility and Flutter lifecycle input policy.

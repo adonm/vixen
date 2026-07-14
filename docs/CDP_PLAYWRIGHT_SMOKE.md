@@ -24,9 +24,11 @@ exercises:
 7. `Input.dispatchMouseEvent` with `mousePressed` then `mouseReleased` over the button.
 8. The click handler mutates `textContent`, attributes/classes, inline style,
    and a small `createElement`/`appendChild`/`removeChild`/`replaceChildren`
-   structural subtree; later `Runtime.evaluate` calls read those mutations back.
+   structural subtree; later `Runtime.evaluate` and `DOM.querySelector` calls
+   read the live insertion/removal back.
 9. Observe `Runtime.consoleAPICalled`, then call `Page.captureScreenshot` (`png`)
-   and Playwright's high-level `page.screenshot()` path.
+   and Playwright's high-level `page.screenshot()` path. The smoke checks PNG
+   dimensions and proves pre/post-mutation CDP frames differ.
 10. Playwright `page.setViewportSize()` plus CDP `Page.getLayoutMetrics` viewport
    reporting, page-level viewport globals, and `page.emulateMedia()` updates to
    `matchMedia()` for media type/color scheme.
@@ -34,10 +36,12 @@ exercises:
     `DOM.describeNode` / `DOM.resolveNode` / `DOM.getContentQuads` backing.
     The smoke also covers `locator.hover()` mouse lifecycle events,
     `locator.dblclick()` click/detail ordering, right-click `contextmenu`,
-    `page.mouse.wheel()` wheel-event deltas,
+    `page.mouse.wheel()` wheel-event deltas plus nearest nested-scroll ownership,
+    cancellation, boundary chaining, and `locator.click()` scroll-into-view,
     `getByRole()` button lookup by accessible text, `getByLabel()`
     lookup/check/select/fill through DOM label/control associations, high-level
-    Playwright keyboard input against a clicked form control, and
+    Playwright keyboard input plus Unicode `keyboard.insertText()` and UTF-16
+    selection offsets against a clicked form control, and
     `locator.setInputFiles()` against a file input.
 12. Submit a form through Playwright's high-level locator click and wait for the
     resulting URL/title navigation.
@@ -74,7 +78,8 @@ scopes, detached-session rejection, stable protocol error data, and the bounded
 
 Current limits are intentional: one main frame per independently scripted target,
 PNG screenshots only, Chromium JSON tracing only (not Playwright context trace
-archives), and full-viewport mouse hit testing. The WebSocket path has one
+archives), and no smooth/inertial scroll behavior or history scroll restoration.
+The WebSocket path has one
 BrowserCore event pump and keeps reading while navigation-producing requests are
 pending. Gated real-socket tests prove same-connection `Page.stopLoading`
 cancellation for page, history, and multi-action runtime navigations, clean later

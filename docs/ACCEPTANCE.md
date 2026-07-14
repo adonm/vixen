@@ -167,6 +167,9 @@ drop the flag.
   changes cross the generation-checked bridge
 - BrowserCore's accessibility projection reaches Flutter Semantics and native
   assistive-technology smoke; texture pixels alone do not satisfy accessibility
+- `just linux-interaction-smoke` proves one real Wayland keyboard/IBus and
+  virtual-pointer vertical; widget, WPT, CDP, and Playwright evidence remain
+  complementary rather than substitutes
 
 Flutter is the only rendered GUI and must satisfy this interaction list directly.
 Its Linux embedder uses GTK3 internally, but there is no separate

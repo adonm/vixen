@@ -84,10 +84,12 @@ Flutter's platform text-input client; bounded full values and UTF-16 selection/
 composing ranges cross the exact BrowserCore generation and update the live DOM.
 BrowserCore projects normalized `inputmode`, input-type, and `enterkeyhint`
 intent for writable hosts; Flutter maps it to platform keyboard and action
-configuration, and performed actions reuse exact-generation Enter down/up. Real
-native IME evidence, nested/richer gesture scrolling, CSS/physical scale
-correctness, and broader lifecycle/native surface-loss recovery remain follow-up
-work. Single-touch drags already cross platform touch slop, cancel the pending
+configuration, and performed actions reuse exact-generation Enter down/up. A
+controlled Cage/wtype/IBus Anthy gate now proves native and contenteditable
+preedit/commit plus nested wheel ownership, cancellation, and root chaining;
+broader IME/device and gesture matrices, scroll restoration, CSS/physical scale
+correctness, and lifecycle/native surface-loss recovery remain follow-up work.
+Single-touch drags already cross platform touch slop, cancel the pending
 synthetic press, and reuse the cancelable BrowserCore root-wheel path; taps remain
 taps and secondary touches are ignored.
 
@@ -160,6 +162,7 @@ The official Linux release path uses the same GNOME 50 builder environment:
 just linux-release-prefetch
 just linux-release-smoke
 just linux-at-spi-smoke
+just linux-interaction-smoke
 ```
 
 That path builds release/AOT Flutter and the Rust bridge, creates and extracts
@@ -167,7 +170,7 @@ the deterministic GitHub Release archive, and requires an Impeller launch log.
 FlatPark repackages the released archive unchanged; broader host-matrix, native
 AT, portal, and accepted size-baseline gates remain separate. FlatPark
 submission and publishing are deferred until visible navigation/rendering,
-engine-owned scrolling, native IME evidence, core navigation controls,
+broader engine-owned scrolling and IME/device coverage, core navigation controls,
 find/zoom, and bounded recovery make this a basic usable browser.
 
 Set `VIXEN_FFI_LIBRARY` to an absolute `libvixen_ffi.so` path only for the

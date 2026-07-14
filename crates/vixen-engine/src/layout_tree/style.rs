@@ -391,7 +391,8 @@ fn parse_overflow(value: &str) -> Option<LayoutOverflow> {
     let first = value.split_whitespace().next()?;
     match first.trim().to_ascii_lowercase().as_str() {
         "visible" => Some(LayoutOverflow::Visible),
-        "hidden" | "clip" => Some(LayoutOverflow::Hidden),
+        "hidden" => Some(LayoutOverflow::Hidden),
+        "clip" => Some(LayoutOverflow::Clip),
         "scroll" => Some(LayoutOverflow::Scroll),
         "auto" => Some(LayoutOverflow::Auto),
         _ => None,

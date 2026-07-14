@@ -45,7 +45,7 @@ As of 2026-07-14 the repository has these building blocks:
 
 - A seven-crate workspace, hk/`just` development gates, stable diagnostics, fuzz
   targets, and a WPT/fixture harness. The committed manifest currently measures
-  **269 fixtures / 2,015 checks at 100%**; `COMPAT.md` owns the detailed counts.
+  **270 fixtures / 2,027 checks at 100%**; `COMPAT.md` owns the detailed counts.
 - `html5ever` parsing, Stylo-backed selector/cascade integration, a Vixen-owned
   layout tree and focused formatting helpers, one display list, and one WebRender
   path used by GUI/headless screenshot surfaces.
@@ -65,7 +65,8 @@ As of 2026-07-14 the repository has these building blocks:
   chrome, real BrowserCore FFI, visible WebRender output through a bounded RGBA texture,
   input/accessibility projection, and a deterministic release/AOT archive with
   clean extraction and Impeller Cage/headless-Wayland launch smoke. The Linux
-  GUI now rejects X11/XWayland. FlatPark review, broader/native IME evidence,
+  GUI now rejects X11/XWayland. One controlled native IBus/Wayland interaction
+  vertical is gated; FlatPark review, broader IME/device evidence,
   host services, complete accessibility, and Flutter parity remain open.
 
 These are substantial components now routed through one initial browser owner,
@@ -171,7 +172,7 @@ BrowserCore owns one engine thread, profile Store/network/cookies, bounded
 context/runtime registries, history, evaluation, inspection, and paint inputs.
 WPT, headless CLI, CDP, and the Flutter FFI controller are thin adapters over
 that owner; multi-context tests prove independent globals/sessionStorage/history
-with intended profile sharing. The 2,015-check fixture manifest, controller
+with intended profile sharing. The 2,027-check fixture manifest, controller
 tests, and external Playwright smoke remain green.
 
 The first A2 slices are also landed: dispatch acknowledges navigation before
@@ -582,8 +583,8 @@ correctness. Neither may starve the other.
 1. Extend the landed physical viewport, pointer/wheel/keyboard, root
    wheel/key/script scrolling, native text-control IME, and monotonic
    focus/visibility/lifecycle
-   path with real native IME evidence, nested scrolling plus richer gesture/DOM
-   event fidelity and scroll restoration, CSS/physical
+   path with a broader native IME/device matrix, the landed nested scrollport
+   path extended with richer gesture/DOM event fidelity and scroll restoration, CSS/physical
    scale correctness, and lifecycle recovery. In parallel, finish
    navigation-aware runtime/native-host cancellation and preserve one BrowserCore
    terminal outcome.
@@ -599,7 +600,7 @@ correctness. Neither may starve the other.
    and broader native AT/screen-reader evidence. Add platform
    host-service UI; both remain cross-cutting through every later platform.
 5. Complete the Linux basic-browser gate: visible controlled-site navigation,
-   nested scrolling plus native IME evidence,
+   advanced nested scrolling plus broader native IME evidence,
    back/forward/reload/stop, and finish bounded navigation/runtime plus native
    surface recovery beyond the landed capture/texture retry policy. Keep
    release-archive smoke green, but defer FlatPark submission/review/publishing

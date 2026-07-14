@@ -29,9 +29,9 @@ use crate::display_list::{
 use crate::doc::{Document, DocumentParser, ParseError};
 use crate::history::{HistoryEntry, SessionHistory};
 use crate::layout_tree::{
-    LayoutFragment, LayoutFragmentKind, LayoutNodeKind, LayoutPosition, LayoutTree,
-    apply_root_scroll, build_layout_tree, dump_layout_tree, layout_fragments_from_tree,
-    line_boxes_from_tree,
+    LayoutFragment, LayoutFragmentKind, LayoutNodeId, LayoutNodeKind, LayoutPosition, LayoutTree,
+    apply_element_scrolls, apply_root_scroll, build_layout_tree, dump_layout_tree,
+    layout_fragments_from_tree, line_boxes_from_tree,
 };
 use crate::line_layout::{LineBox, dump_line_boxes};
 use crate::style_cascade::AuthorStylesheet;
@@ -55,7 +55,23 @@ pub struct Page {
     text_selections: std::collections::HashMap<usize, AccessibilityTextSelection>,
     layout_viewport: (u32, u32),
     root_scroll: (f32, f32),
+    element_scrolls: std::collections::HashMap<usize, (f32, f32)>,
     find_state: Option<FindState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct ElementScrollMetrics {
+    pub position: (f32, f32),
+    pub max: (f32, f32),
+    pub user_scrollable: bool,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ElementScrollRequest {
+    pub node_id: usize,
+    pub element_id: Option<String>,
+    pub tag: String,
+    pub position: (f64, f64),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,6 +161,7 @@ impl Page {
             text_selections: std::collections::HashMap::new(),
             layout_viewport: (800, 600),
             root_scroll: (0.0, 0.0),
+            element_scrolls: std::collections::HashMap::new(),
             find_state: None,
         })
     }
@@ -218,8 +235,10 @@ impl Page {
         self.document.set_element_text_content(node_id, value)?;
         self.focused_element_node_id = None;
         self.text_selections.clear();
+        self.element_scrolls.clear();
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
+        self.clamp_scroll_offsets();
         Ok(())
     }
 
@@ -233,6 +252,7 @@ impl Page {
         self.document.set_element_attribute(node_id, name, value)?;
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
+        self.clamp_scroll_offsets();
         Ok(())
     }
 
@@ -241,6 +261,7 @@ impl Page {
         self.document.remove_element_attribute(node_id, name)?;
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
+        self.clamp_scroll_offsets();
         Ok(())
     }
 
@@ -258,8 +279,10 @@ impl Page {
         self.document.set_element_inner_html(node_id, html)?;
         self.focused_element_node_id = None;
         self.text_selections.clear();
+        self.element_scrolls.clear();
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
+        self.clamp_scroll_offsets();
         Ok(())
     }
 
@@ -329,6 +352,7 @@ impl Page {
         if text_changed {
             self.document.set_element_text_content(node_id, value)?;
             self.refresh_author_stylesheet();
+            self.clamp_scroll_offsets();
         }
         if selection_changed {
             self.text_selections.insert(node_id, selection);
@@ -384,6 +408,7 @@ impl Page {
             .set_form_control_value(node_id, element_id, name, tag, value)?;
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
+        self.clamp_scroll_offsets();
         Ok(())
     }
 
@@ -496,7 +521,32 @@ impl Page {
     /// Update the live CSS viewport and clamp the retained root offset.
     pub(crate) fn set_layout_viewport(&mut self, viewport: (u32, u32)) {
         self.layout_viewport = viewport;
+        self.clamp_scroll_offsets();
+    }
+
+    fn clamp_scroll_offsets(&mut self) {
+        let viewport = self.layout_viewport;
         self.scroll_root_by(viewport, (0.0, 0.0));
+        let tree = build_layout_tree(&self.document, viewport, |node_id| {
+            self.computed_style_for_viewport(node_id, viewport)
+        });
+        let mut changed = false;
+        self.element_scrolls.retain(|node_id, position| {
+            let Some(limits) = element_scroll_limits_in_tree(&tree, *node_id) else {
+                changed = true;
+                return false;
+            };
+            let next = (
+                position.0.clamp(0.0, limits.0),
+                position.1.clamp(0.0, limits.1),
+            );
+            changed |= next != *position;
+            *position = next;
+            next != (0.0, 0.0)
+        });
+        if changed {
+            self.bump_accessibility_mutation_epoch();
+        }
     }
 
     /// Current maximum top-level scroll offset for the live CSS viewport.
@@ -517,6 +567,141 @@ impl Page {
                 position.1 - f64::from(current_y),
             ),
         )
+    }
+
+    /// Current position and maximum offset for a page-backed element
+    /// scrollport. Non-scroll containers report a zero maximum.
+    #[cfg(test)]
+    pub(crate) fn element_scroll_metrics(&self, node_id: usize) -> Option<ElementScrollMetrics> {
+        let tree = build_layout_tree(&self.document, self.layout_viewport, |node_id| {
+            self.computed_style_for_viewport(node_id, self.layout_viewport)
+        });
+        let limits = element_scroll_limits_in_tree(&tree, node_id)?;
+        let current = self
+            .element_scrolls
+            .get(&node_id)
+            .copied()
+            .unwrap_or((0.0, 0.0));
+        Some(ElementScrollMetrics {
+            position: (
+                current.0.clamp(0.0, limits.0),
+                current.1.clamp(0.0, limits.1),
+            ),
+            max: limits,
+            user_scrollable: tree.nodes.iter().any(|node| {
+                node.dom_node_id == Some(node_id) && node.style.overflow.user_scrollable()
+            }),
+        })
+    }
+
+    pub(crate) fn element_scroll_metrics_snapshot(
+        &self,
+    ) -> std::collections::HashMap<usize, ElementScrollMetrics> {
+        let tree = build_layout_tree(&self.document, self.layout_viewport, |node_id| {
+            self.computed_style_for_viewport(node_id, self.layout_viewport)
+        });
+        tree.nodes
+            .iter()
+            .filter(|node| node.style.overflow.clips_contents())
+            .filter_map(|node| {
+                let node_id = node.dom_node_id?;
+                let limits = element_scroll_limits_in_tree(&tree, node_id).unwrap_or((0.0, 0.0));
+                let current = self
+                    .element_scrolls
+                    .get(&node_id)
+                    .copied()
+                    .unwrap_or((0.0, 0.0));
+                Some((
+                    node_id,
+                    ElementScrollMetrics {
+                        position: (
+                            current.0.clamp(0.0, limits.0),
+                            current.1.clamp(0.0, limits.1),
+                        ),
+                        max: limits,
+                        user_scrollable: node.style.overflow.user_scrollable(),
+                    },
+                ))
+            })
+            .collect()
+    }
+
+    /// Apply a bounded element scroll request. Returns whether paint, hit
+    /// testing, or accessibility geometry changed.
+    #[cfg(test)]
+    pub(crate) fn scroll_element_to(&mut self, node_id: usize, position: (f64, f64)) -> bool {
+        self.scroll_elements_to([ElementScrollRequest {
+            node_id,
+            element_id: None,
+            tag: String::new(),
+            position,
+        }])
+    }
+
+    pub(crate) fn scroll_elements_to<I>(&mut self, requests: I) -> bool
+    where
+        I: IntoIterator<Item = ElementScrollRequest>,
+    {
+        let tree = build_layout_tree(&self.document, self.layout_viewport, |node_id| {
+            self.computed_style_for_viewport(node_id, self.layout_viewport)
+        });
+        let mut changed = false;
+        for request in requests {
+            let Some(node_id) = self.resolve_element_scroll_node_id(&request) else {
+                continue;
+            };
+            let position = request.position;
+            if !position.0.is_finite() || !position.1.is_finite() {
+                continue;
+            }
+            let Some(limits) = element_scroll_limits_in_tree(&tree, node_id) else {
+                continue;
+            };
+            let current = self
+                .element_scrolls
+                .get(&node_id)
+                .copied()
+                .unwrap_or((0.0, 0.0));
+            let next = (
+                position.0.clamp(0.0, f64::from(limits.0)) as f32,
+                position.1.clamp(0.0, f64::from(limits.1)) as f32,
+            );
+            if next == current {
+                continue;
+            }
+            changed = true;
+            if next == (0.0, 0.0) {
+                self.element_scrolls.remove(&node_id);
+            } else {
+                self.element_scrolls.insert(node_id, next);
+            }
+        }
+        if changed {
+            self.bump_accessibility_mutation_epoch();
+        }
+        changed
+    }
+
+    fn resolve_element_scroll_node_id(&self, request: &ElementScrollRequest) -> Option<usize> {
+        let matches_identity = |element: &crate::style_dom::MatchedElement| {
+            (request.tag.is_empty() || element.tag == request.tag)
+                && request
+                    .element_id
+                    .as_deref()
+                    .is_none_or(|id| element.id.as_deref() == Some(id))
+        };
+        if let Some(element) = self.document.element_by_node_id(request.node_id)
+            && matches_identity(&element)
+        {
+            return Some(request.node_id);
+        }
+        let id = request.element_id.as_deref()?;
+        let selector = Selector::parse(&request.tag).ok()?;
+        self.document
+            .query_all(&selector)
+            .into_iter()
+            .find(|element| matches_identity(element) && element.id.as_deref() == Some(id))
+            .map(|element| element.node_id)
     }
 
     /// Whether the focused live element owns navigation-key defaults that must
@@ -640,6 +825,9 @@ impl Page {
             if fixed {
                 continue;
             }
+            if has_clipping_ancestor(&tree, node.id, None) {
+                continue;
+            }
             right = right.max(node.boxes.margin.x + node.boxes.margin.w);
             bottom = bottom.max(node.boxes.margin.y + node.boxes.margin.h);
         }
@@ -667,6 +855,19 @@ impl Page {
         let mut tree = build_layout_tree(&self.document, viewport, |node_id| {
             self.computed_style_for_viewport(node_id, viewport)
         });
+        let offsets = self
+            .element_scrolls
+            .iter()
+            .filter_map(|(node_id, position)| {
+                let limits = element_scroll_limits_in_tree(&tree, *node_id)?;
+                let position = (
+                    position.0.clamp(0.0, limits.0),
+                    position.1.clamp(0.0, limits.1),
+                );
+                (position != (0.0, 0.0)).then_some((*node_id, position))
+            })
+            .collect::<std::collections::HashMap<_, _>>();
+        apply_element_scrolls(&mut tree, |node_id| offsets.get(&node_id).copied());
         apply_root_scroll(&mut tree, self.root_scroll);
         tree
     }
@@ -1013,6 +1214,64 @@ impl PageParser {
             self.csp.clone(),
         )?))
     }
+}
+
+fn element_scroll_limits_in_tree(tree: &LayoutTree, node_id: usize) -> Option<(f32, f32)> {
+    let scrollport = tree
+        .nodes
+        .iter()
+        .find(|node| node.dom_node_id == Some(node_id))?;
+    if !scrollport.style.overflow.programmatically_scrollable() {
+        return Some((0.0, 0.0));
+    }
+
+    let padding = scrollport.boxes.padding;
+    let mut right = padding.x + padding.w;
+    let mut bottom = padding.y + padding.h;
+    for node in &tree.nodes {
+        if node.id == scrollport.id || !is_descendant_of(tree, node.id, scrollport.id) {
+            continue;
+        }
+        if has_clipping_ancestor(tree, node.id, Some(scrollport.id)) {
+            continue;
+        }
+        right = right.max(node.boxes.margin.x + node.boxes.margin.w);
+        bottom = bottom.max(node.boxes.margin.y + node.boxes.margin.h);
+    }
+    Some((
+        (right - (padding.x + padding.w)).max(0.0),
+        (bottom - (padding.y + padding.h)).max(0.0),
+    ))
+}
+
+fn is_descendant_of(tree: &LayoutTree, node_id: LayoutNodeId, ancestor_id: LayoutNodeId) -> bool {
+    let mut parent = tree.node(node_id).parent;
+    while let Some(parent_id) = parent {
+        if parent_id == ancestor_id {
+            return true;
+        }
+        parent = tree.node(parent_id).parent;
+    }
+    false
+}
+
+fn has_clipping_ancestor(
+    tree: &LayoutTree,
+    node_id: LayoutNodeId,
+    stop_at: Option<LayoutNodeId>,
+) -> bool {
+    let mut parent = tree.node(node_id).parent;
+    while let Some(parent_id) = parent {
+        if Some(parent_id) == stop_at {
+            return false;
+        }
+        let parent_node = tree.node(parent_id);
+        if parent_node.style.overflow.clips_contents() {
+            return true;
+        }
+        parent = parent_node.parent;
+    }
+    false
 }
 
 fn viewport_background_item(rect: Rect) -> DrawItem {
@@ -2604,6 +2863,57 @@ mod tests {
         assert!(bottom_limit > 250.0);
         assert!(!page.scroll_root_by(viewport, (0.0, f64::MAX)));
         assert!(!page.scroll_root_by(viewport, (0.0, f64::NAN)));
+    }
+
+    #[test]
+    fn nested_scroll_is_bounded_moves_content_and_does_not_expand_root() {
+        let mut page = Page::from_html(
+            "file:///nested-scroll.html",
+            r#"
+                <style>
+                  html, body { margin: 0; }
+                  #scroll { width: 100px; height: 60px; overflow: auto; }
+                  #content { height: 220px; }
+                </style>
+                <div id="scroll"><div id="content">Scrollable</div></div>
+            "#,
+        )
+        .unwrap();
+        let viewport = (300, 200);
+        page.set_layout_viewport(viewport);
+        let scroll_id = page.query_selector_all("#scroll").unwrap()[0].node_id;
+        let before = page.query_selector_all("#content").unwrap()[0]
+            .bbox
+            .unwrap();
+        let metrics = page.element_scroll_metrics(scroll_id).unwrap();
+        assert_eq!(metrics.position, (0.0, 0.0));
+        assert_eq!(metrics.max.0, 0.0);
+        assert!(metrics.max.1 >= 160.0, "{metrics:?}");
+        assert!(metrics.user_scrollable);
+        assert_eq!(page.root_scroll_max(), (0.0, 0.0));
+
+        assert!(page.scroll_element_to(scroll_id, (0.0, 45.0)));
+        assert_eq!(
+            page.element_scroll_metrics(scroll_id).unwrap().position,
+            (0.0, 45.0)
+        );
+        let tree = page.layout_tree(viewport);
+        let content = tree
+            .nodes
+            .iter()
+            .find(|node| {
+                node.dom_node_id == Some(page.query_selector_all("#content").unwrap()[0].node_id)
+            })
+            .unwrap();
+        assert_eq!(content.rect.y as f64, before.1 - 45.0);
+
+        assert!(page.scroll_element_to(scroll_id, (0.0, f64::MAX)));
+        assert_eq!(
+            page.element_scroll_metrics(scroll_id).unwrap().position.1,
+            metrics.max.1
+        );
+        assert!(!page.scroll_element_to(scroll_id, (0.0, f64::MAX)));
+        assert!(!page.scroll_element_to(scroll_id, (0.0, f64::NAN)));
     }
 
     #[test]

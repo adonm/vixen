@@ -116,7 +116,7 @@ must converge on the live document lifecycle.
 The committed/external WPT adapter is no longer an exception: it creates
 BrowserCore contexts and uses generation-checked snapshot, selector, style,
 diagnostic, evaluation, display-list, reference-render, and paint-snapshot
-queries. The 269-fixture manifest therefore exercises the production owner while
+queries. The 270-fixture/2,027-check manifest therefore exercises the production owner while
 `vixen-wpt` itself remains engine-independent.
 
 The headless CLI `--eval`, screenshot, selector, textual DOM/layout/paint

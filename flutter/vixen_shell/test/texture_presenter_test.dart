@@ -316,6 +316,51 @@ void main() {
     expect(states.single.composing?.baseOffset, 0);
     expect(states.single.composing?.extentOffset, 1);
 
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'に',
+        selection: TextSelection.collapsed(offset: 1),
+      ),
+    );
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'に🦊',
+        selection: TextSelection.collapsed(offset: 3),
+        composing: TextRange(start: 1, end: 3),
+      ),
+    );
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'に🦊',
+        selection: TextSelection.collapsed(offset: 3),
+      ),
+    );
+    await tester.pump();
+    expect(states, hasLength(4));
+    expect(states[1].composing, isNull);
+    expect(states[2].text, 'に🦊');
+    expect(states[2].selection.baseOffset, 3);
+    expect(states[2].composing?.baseOffset, 1);
+    expect(states[2].composing?.extentOffset, 3);
+    expect(states[3].composing, isNull);
+
+    tester.testTextInput.updateEditingValue(
+      const TextEditingValue(
+        text: 'に🦊',
+        selection: TextSelection.collapsed(offset: 3),
+        composing: TextRange(start: 3, end: 1),
+      ),
+    );
+    await tester.pump();
+    expect(states, hasLength(4));
+
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
+    expect(keyEvents, hasLength(2));
+    expect(keyEvents.first.$2.applyText, isFalse);
+    expect(keyEvents.first.$2.text, isEmpty);
+    keyEvents.clear();
+
     await tester.testTextInput.receiveAction(TextInputAction.send);
     await tester.pump();
     expect(keyEvents.map((entry) => entry.$1), ['keydown', 'keyup']);
@@ -332,6 +377,7 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     BrowserAccessibilityNode? tapped;
     BrowserAccessibilityNode? focused;
+    final semanticKeyEvents = <(String, BrowserKeyEvent)>[];
     (BrowserAccessibilityNode, String)? setValue;
     (BrowserAccessibilityNode, bool)? adjusted;
     final parent = BrowserAccessibilityNode(
@@ -484,6 +530,7 @@ void main() {
               ),
               onSemanticTap: (_, value) => tapped = value,
               onSemanticFocus: (_, value) => focused = value,
+              onKeyEvent: (type, event) => semanticKeyEvents.add((type, event)),
               onSemanticSetValue: (_, node, value) => setValue = (node, value),
               onSemanticAdjustment: (_, node, increase) =>
                   adjusted = (node, increase),
@@ -520,8 +567,12 @@ void main() {
     );
     tester.widget<Semantics>(finder).properties.onTap!();
     tester.widget<Semantics>(finder).properties.onFocus!();
+    await tester.pump();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.keyA);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.keyA);
     expect(tapped?.id, 42);
     expect(focused?.id, 42);
+    expect(semanticKeyEvents.map((event) => event.$1), ['keydown', 'keyup']);
     final textboxFinder = find.byWidgetPredicate(
       (widget) => widget is Semantics && widget.properties.label == 'Name',
     );

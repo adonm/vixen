@@ -25,6 +25,51 @@ pub use dump::dump_layout_tree;
 pub use flow::line_boxes_from_tree;
 pub use fragments::{LayoutFragment, LayoutFragmentKind, layout_fragments_from_tree};
 
+/// Translate descendants of nested scroll containers while leaving each
+/// scrollport's own boxes in place. Fixed-position subtrees remain viewport
+/// anchored, matching [`apply_root_scroll`].
+pub fn apply_element_scrolls<F>(tree: &mut LayoutTree, mut offset_for: F)
+where
+    F: FnMut(usize) -> Option<(f32, f32)>,
+{
+    let mut fixed_subtree = vec![false; tree.nodes.len()];
+    for index in 0..tree.nodes.len() {
+        let node = &tree.nodes[index];
+        if node.id == tree.root {
+            continue;
+        }
+        let parent_fixed = node
+            .parent
+            .is_some_and(|parent| fixed_subtree[parent.index()]);
+        fixed_subtree[index] = parent_fixed || node.style.position == LayoutPosition::Fixed;
+        if fixed_subtree[index] {
+            continue;
+        }
+
+        let mut offset = (0.0, 0.0);
+        let mut parent = node.parent;
+        while let Some(parent_id) = parent {
+            let parent_node = &tree.nodes[parent_id.index()];
+            if let Some(dom_node_id) = parent_node.dom_node_id
+                && let Some(parent_offset) = offset_for(dom_node_id)
+            {
+                offset.0 += parent_offset.0;
+                offset.1 += parent_offset.1;
+            }
+            parent = parent_node.parent;
+        }
+        if offset == (0.0, 0.0) {
+            continue;
+        }
+        let node = &mut tree.nodes[index];
+        translate_rect_mut(&mut node.rect, -offset.0, -offset.1);
+        translate_rect_mut(&mut node.boxes.margin, -offset.0, -offset.1);
+        translate_rect_mut(&mut node.boxes.border, -offset.0, -offset.1);
+        translate_rect_mut(&mut node.boxes.padding, -offset.0, -offset.1);
+        translate_rect_mut(&mut node.boxes.content, -offset.0, -offset.1);
+    }
+}
+
 /// Translate the document-scrolling subtree into viewport coordinates while
 /// leaving the viewport and fixed-position subtrees anchored.
 pub fn apply_root_scroll(tree: &mut LayoutTree, offset: (f32, f32)) {
@@ -109,6 +154,7 @@ pub enum LayoutOverflow {
     #[default]
     Visible,
     Hidden,
+    Clip,
     Scroll,
     Auto,
 }
@@ -116,6 +162,17 @@ pub enum LayoutOverflow {
 impl LayoutOverflow {
     pub fn clips_contents(self) -> bool {
         !matches!(self, LayoutOverflow::Visible)
+    }
+
+    pub fn programmatically_scrollable(self) -> bool {
+        matches!(
+            self,
+            LayoutOverflow::Hidden | LayoutOverflow::Scroll | LayoutOverflow::Auto
+        )
+    }
+
+    pub fn user_scrollable(self) -> bool {
+        matches!(self, LayoutOverflow::Scroll | LayoutOverflow::Auto)
     }
 }
 
@@ -365,5 +422,33 @@ mod tests {
         assert!(dump.contains("node 0: viewport"));
         assert!(dump.contains("tag=main id=root"));
         assert!(dump.contains("text=\"A \\\"quote\\\"\""));
+    }
+
+    #[test]
+    fn nested_scroll_moves_descendants_but_not_scrollport_or_fixed_content() {
+        let mut tree = tree(
+            "<html><body><div id='scroll'><p id='child'>Child</p><div id='fixed'>Fixed</div></div></body></html>",
+        );
+        let scroll = node_with_id(&tree, "scroll").clone();
+        let child = node_with_id(&tree, "child").clone();
+        let fixed_id = node_with_id(&tree, "fixed").id;
+        tree.node_mut(fixed_id).style.position = LayoutPosition::Fixed;
+        let fixed_rect = tree.node(fixed_id).rect;
+
+        apply_element_scrolls(&mut tree, |node_id| {
+            (Some(node_id) == scroll.dom_node_id).then_some((7.0, 11.0))
+        });
+
+        assert_eq!(node_with_id(&tree, "scroll").rect, scroll.rect);
+        assert_eq!(
+            node_with_id(&tree, "child").rect,
+            Rect::new(
+                child.rect.x - 7.0,
+                child.rect.y - 11.0,
+                child.rect.w,
+                child.rect.h,
+            )
+        );
+        assert_eq!(node_with_id(&tree, "fixed").rect, fixed_rect);
     }
 }

@@ -421,6 +421,13 @@ struct CdpDomRect {
     height: f64,
 }
 
+#[derive(Deserialize)]
+struct CdpRuntimeHit {
+    node_id: usize,
+    id: Option<String>,
+    tag: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MouseButton {
     None,
@@ -647,7 +654,7 @@ impl CdpState {
                     Err(error) => CdpDispatch::error(-32603, error),
                 }
             }
-            "DOM.scrollIntoViewIfNeeded" => CdpDispatch::ok(json!({})),
+            "DOM.scrollIntoViewIfNeeded" => self.dom_scroll_into_view_if_needed(req),
             "DOM.getDocument" => self.dom_get_document(req),
             "DOM.querySelector" => self.dom_query_selector(req),
             "DOM.querySelectorAll" => self.dom_query_selector_all(req),
@@ -2996,6 +3003,32 @@ impl CdpState {
         }
     }
 
+    fn dom_scroll_into_view_if_needed(&mut self, req: &CdpRequest) -> CdpDispatch {
+        if req.params.get("rect").is_some() {
+            return CdpDispatch::error(
+                -32602,
+                "DOM.scrollIntoViewIfNeeded: node-relative `rect` is unsupported",
+            );
+        }
+        let object_expr =
+            match self.dom_object_expr_from_params(&req.params, "DOM.scrollIntoViewIfNeeded") {
+                Ok(expr) => expr,
+                Err(err) => return CdpDispatch::error(-32602, err),
+            };
+        let expr = format!(
+            r#"(() => {{
+                const __node = {object_expr};
+                if (!__node || typeof __node.scrollIntoView !== 'function') throw new Error('DOM.scrollIntoViewIfNeeded: node not found');
+                __node.scrollIntoView({{ block: 'nearest', inline: 'nearest' }});
+                return undefined;
+            }})()"#
+        );
+        match self.evaluate_js(&expr) {
+            Ok(_) => CdpDispatch::ok(json!({})),
+            Err(err) => CdpDispatch::error(-32603, err.to_string()),
+        }
+    }
+
     fn dom_get_outer_html(&mut self, req: &CdpRequest) -> CdpDispatch {
         let object_expr = match self.dom_object_expr_from_params(&req.params, "DOM.getOuterHTML") {
             Ok(expr) => expr,
@@ -3226,28 +3259,25 @@ impl CdpState {
         }
     }
 
-    fn dom_node_id_at_point_from_runtime(
+    fn dom_node_at_point_from_runtime(
         &mut self,
         x: f64,
         y: f64,
-    ) -> Result<Option<usize>, String> {
+    ) -> Result<Option<CdpRuntimeHit>, String> {
         let x = serde_json::to_string(&x).map_err(|err| err.to_string())?;
         let y = serde_json::to_string(&y).map_err(|err| err.to_string())?;
         let probe = format!(
-            "(() => {{ const __e = document.elementFromPoint({x}, {y}); const __id = __e && __e.__vixenNodeId; return Number.isInteger(__id) && __id > 0 ? __id : null; }})()"
+            "(() => {{ const __e = document.elementFromPoint({x}, {y}); const __id = __e && __e.__vixenNodeId; return Number.isInteger(__id) && __id > 0 ? JSON.stringify({{ node_id: __id, id: __e.id || null, tag: String(__e.localName || __e.tagName || '').toLowerCase() }}) : null; }})()"
         );
         match self
             .evaluate_js(&probe)
             .map_err(|err| format!("Input.dispatchMouseEvent: {err}"))?
         {
-            ScriptValue::Int32(id) if id > 0 => Ok(Some(id as usize)),
-            ScriptValue::Number(id)
-                if id.is_finite() && id.fract() == 0.0 && id > 0.0 && id <= usize::MAX as f64 =>
-            {
-                Ok(Some(id as usize))
-            }
+            ScriptValue::String(value) => serde_json::from_str(&value)
+                .map(Some)
+                .map_err(|err| format!("Input.dispatchMouseEvent: invalid point target: {err}")),
             ScriptValue::Null | ScriptValue::Undefined => Ok(None),
-            _ => Err("Input.dispatchMouseEvent: point probe returned a non-node id".to_owned()),
+            _ => Err("Input.dispatchMouseEvent: point probe returned a non-node".to_owned()),
         }
     }
 
@@ -3321,24 +3351,59 @@ impl CdpState {
             Ok(state) => state,
             Err(error) => return CdpDispatch::error(-32000, error),
         };
-        let target_node_id = self
-            .dom_node_id_at_point_from_runtime(x, y)
-            .ok()
-            .flatten()
+        let page_hit = match self.browser.dispatch(BrowserCommand::HitTest {
+            context_id: state.context_id,
+            document_id: state.document_id,
+            viewport,
+            x,
+            y,
+        }) {
+            Ok(BrowserCommandResult::HitTest(target)) => target,
+            _ => None,
+        };
+        let runtime_hit = self.dom_node_at_point_from_runtime(x, y).ok().flatten();
+        let target_node_id = runtime_hit
+            .as_ref()
+            .and_then(|runtime_hit| {
+                page_hit
+                    .as_ref()
+                    .filter(|page_hit| {
+                        page_hit.tag == runtime_hit.tag
+                            && runtime_hit
+                                .id
+                                .as_deref()
+                                .is_none_or(|id| page_hit.id.as_deref() == Some(id))
+                    })
+                    .map(|page_hit| page_hit.node_id)
+            })
             .or_else(|| {
-                match self.browser.dispatch(BrowserCommand::HitTest {
-                    context_id: state.context_id,
-                    document_id: state.document_id,
-                    viewport,
-                    x,
-                    y,
-                }) {
-                    Ok(BrowserCommandResult::HitTest(target)) => {
-                        target.map(|target| target.node_id)
-                    }
-                    _ => None,
-                }
-            });
+                let runtime_hit = runtime_hit.as_ref()?;
+                let result = self
+                    .browser
+                    .dispatch(BrowserCommand::QuerySelectorAll {
+                        context_id: state.context_id,
+                        document_id: state.document_id,
+                        selector: "*".to_owned(),
+                        viewport,
+                    })
+                    .ok()?;
+                let BrowserCommandResult::SelectorMatches(elements) = result else {
+                    return None;
+                };
+                elements
+                    .into_iter()
+                    .find(|element| {
+                        element.tag == runtime_hit.tag
+                            && runtime_hit
+                                .id
+                                .as_deref()
+                                .map_or(element.node_id == runtime_hit.node_id, |id| {
+                                    element.id.as_deref() == Some(id)
+                                })
+                    })
+                    .map(|element| element.node_id)
+            })
+            .or_else(|| page_hit.map(|page_hit| page_hit.node_id));
         let mut dom_events = Vec::new();
         let mut next_mouse_down = self.last_mouse_down.clone();
         let mut next_mouse_over_node_id = self.last_mouse_over_node_id;
@@ -6313,6 +6378,132 @@ mod tests {
             .await;
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn socket_stop_cancels_adopted_author_successor_without_late_commit() {
+        const TEST_TIMEOUT: Duration = Duration::from_secs(5);
+        tokio::task::LocalSet::new()
+            .run_until(async {
+                let (origin, network, mut requests, server) =
+                    spawn_gated_navigation_server("vixen-cdp-stop-successor.com", 3);
+                let runtime = JsRuntime::with_network_config(network).expect("JS runtime");
+                let state = Rc::new(RefCell::new(CdpState::with_runtime(runtime)));
+                let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+                let address = listener.local_addr().unwrap();
+                let server_state = Rc::clone(&state);
+                let connection = tokio::task::spawn_local(async move {
+                    let (stream, _) = listener.accept().await.unwrap();
+                    handle_connection(stream, server_state).await.unwrap();
+                });
+                let (mut socket, _) =
+                    tokio_tungstenite::connect_async(format!("ws://{address}"))
+                        .await
+                        .unwrap();
+
+                socket
+                    .send(Message::text(
+                        json!({
+                            "id": 1,
+                            "method": "Page.navigate",
+                            "params": { "url": format!("{origin}/first") }
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let first = tokio::time::timeout(TEST_TIMEOUT, requests.recv())
+                    .await
+                    .expect("first navigation reached server")
+                    .expect("first navigation request");
+                assert_eq!(first.path, "/first");
+                first
+                    .respond
+                    .send(
+                        "<!doctype html><title>Intermediate</title><script>location.assign('/successor')</script>"
+                            .to_owned(),
+                    )
+                    .unwrap();
+                let successor = tokio::time::timeout(TEST_TIMEOUT, requests.recv())
+                    .await
+                    .expect("author successor reached server")
+                    .expect("author successor request");
+                assert_eq!(successor.path, "/successor");
+
+                socket
+                    .send(Message::text(
+                        json!({ "id": 2, "method": "Page.stopLoading", "params": {} })
+                            .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let (order, responses) = tokio::time::timeout(
+                    TEST_TIMEOUT,
+                    receive_cdp_responses(&mut socket, &[1, 2]),
+                )
+                .await
+                .expect("stop and adopted-successor responses");
+                assert_eq!(order, vec![2, 1]);
+                assert_eq!(responses[&2]["result"], json!({}));
+                assert!(
+                    responses[&1]["error"]["message"]
+                        .as_str()
+                        .unwrap()
+                        .contains("cancelled")
+                );
+                successor
+                    .respond
+                    .send("<!doctype html><title>Late successor</title>".to_owned())
+                    .unwrap();
+
+                socket
+                    .send(Message::text(
+                        json!({
+                            "id": 3,
+                            "method": "Page.navigate",
+                            "params": { "url": format!("{origin}/stable") }
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let stable = tokio::time::timeout(TEST_TIMEOUT, requests.recv())
+                    .await
+                    .expect("stable navigation reached server")
+                    .expect("stable navigation request");
+                assert_eq!(stable.path, "/stable");
+                stable
+                    .respond
+                    .send("<!doctype html><title>Stable</title>".to_owned())
+                    .unwrap();
+                let (_, responses) = tokio::time::timeout(
+                    TEST_TIMEOUT,
+                    receive_cdp_responses(&mut socket, &[3]),
+                )
+                .await
+                .expect("stable navigation response");
+                assert!(responses[&3].get("error").is_none());
+
+                socket
+                    .send(Message::text(
+                        json!({
+                            "id": 4,
+                            "method": "Runtime.evaluate",
+                            "params": { "expression": "document.title" }
+                        })
+                        .to_string(),
+                    ))
+                    .await
+                    .unwrap();
+                let (_, responses) = receive_cdp_responses(&mut socket, &[4]).await;
+                assert_eq!(responses[&4]["result"]["result"]["value"], "Stable");
+
+                socket.close(None).await.unwrap();
+                connection.await.unwrap();
+                drop(state);
+                server.join().unwrap();
+            })
+            .await;
+    }
+
     #[test]
     fn socket_operation_never_adopts_successor_claimed_by_another_wire_request() {
         let mut state = CdpState::default();
@@ -8215,6 +8406,21 @@ mod tests {
             json!({ "objectId": resolved_object_id }),
         );
         assert_eq!(resolved_quads["quads"][0], quads["quads"][0]);
+        dispatch_one(
+            &mut s,
+            "DOM.scrollIntoViewIfNeeded",
+            json!({ "nodeId": node_id }),
+        );
+        let rect_error = dispatch_error(
+            &mut s,
+            "DOM.scrollIntoViewIfNeeded",
+            json!({
+                "nodeId": node_id,
+                "rect": { "x": 0, "y": 0, "width": 1, "height": 1 }
+            }),
+        );
+        assert_eq!(rect_error.code, -32602);
+        assert!(rect_error.message.contains("rect"));
 
         let input_node_id = dispatch_one(
             &mut s,

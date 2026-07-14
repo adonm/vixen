@@ -28,6 +28,7 @@ RUSTY_V8_ARCHIVE      := ".tmp/linux-release/librusty_v8_simdutf_release_x86_64-
 RUSTY_V8_SHA256       := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"
 LINUX_RELEASE_BUNDLE  := "flutter/vixen_shell/build/linux/x64/release/bundle"
 LINUX_RELEASE_ARCHIVE := ".tmp/release/vixen-linux-x86_64.tar.gz"
+WTYPE                 := env_var_or_default("WTYPE", "wtype")
 
 # Default recipe: explain yourself.
 default:
@@ -196,6 +197,37 @@ linux-at-spi-smoke: build-flutter-release-linux
         --library {{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so \
         --url file://{{justfile_directory()}}/fixtures/dom/basic.html \
         --expect "DOM Basic"
+
+_build-wayland-virtual-pointer: linux-release-check-inputs
+    rm -rf .tmp/wayland-virtual-pointer && mkdir -p .tmp/wayland-virtual-pointer
+    {{CONTAINER}} run --rm --security-opt label=disable \
+        -v {{justfile_directory()}}:/workspace -w /workspace \
+        {{FLUTTER_BUILDER_IMAGE}} sh -lc \
+        'set -eu; wayland-scanner client-header scripts/protocols/wlr-virtual-pointer-unstable-v1.xml .tmp/wayland-virtual-pointer/wlr-virtual-pointer-unstable-v1-client-protocol.h; \
+         wayland-scanner private-code scripts/protocols/wlr-virtual-pointer-unstable-v1.xml .tmp/wayland-virtual-pointer/wlr-virtual-pointer-unstable-v1-protocol.c; \
+         cc -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror \
+           -I.tmp/wayland-virtual-pointer scripts/wayland-virtual-pointer.c \
+           .tmp/wayland-virtual-pointer/wlr-virtual-pointer-unstable-v1-protocol.c \
+           $(pkg-config --cflags --libs wayland-client) -lm \
+           -o .tmp/wayland-virtual-pointer/wayland-virtual-pointer'
+
+# Real Wayland input evidence: wtype -> IBus/GTK preedit+commit for native and
+# contenteditable controls, plus a wlr virtual pointer -> nested wheel routing.
+linux-interaction-smoke: build-flutter-release-linux _build-wayland-virtual-pointer
+    test -x "{{WTYPE}}" || command -v "{{WTYPE}}" >/dev/null || { printf '%s\n' "wtype is required for native Wayland keyboard input" >&2; exit 1; }
+    command -v ibus >/dev/null && ibus list-engine | grep -q '^  anthy -' || { printf '%s\n' "IBus Anthy is required for native preedit evidence" >&2; exit 1; }
+    test -n "$DBUS_SESSION_BUS_ADDRESS" || { printf '%s\n' "an active user D-Bus/AT-SPI session is required" >&2; exit 1; }
+    python3 -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi'
+    rm -rf .tmp/linux-interaction-wayland .tmp/interaction-profile && mkdir -m 700 -p .tmp/linux-interaction-wayland
+    IBUS_ADDRESS="$(ibus address)" XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/linux-interaction-wayland" \
+        GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+        WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 timeout 120s cage -- \
+        python3 scripts/flutter-interaction-smoke.py \
+        --app {{LINUX_RELEASE_BUNDLE}}/vixen_shell \
+        --library {{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so \
+        --url file://{{justfile_directory()}}/fixtures/events/linux-interaction-qa.html \
+        --wtype "{{WTYPE}}" \
+        --pointer .tmp/wayland-virtual-pointer/wayland-virtual-pointer
 
 flutter-size-check-inputs: linux-release-check-inputs
 

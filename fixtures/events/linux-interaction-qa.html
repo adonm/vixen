@@ -1,0 +1,115 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Linux interaction QA</title>
+<style>
+  html, body { margin: 0; font: 18px sans-serif; }
+  label, #native-editor, #nested-scroll, #interaction-status { display: block; margin: 8px; }
+  input, #native-editor { display: block; width: 280px; height: 32px; border: 1px solid #555; }
+  #interaction-status { width: 600px; min-height: 32px; }
+  #nested-scroll { width: 280px; height: 100px; overflow: auto; background: #def; }
+  #nested-content { height: 360px; }
+  #nested-marker { display: block; margin-top: 220px; height: 32px; }
+  #root-tail { height: 700px; }
+</style>
+<label>Native input <input id="native-input" aria-label="Native input"></label>
+<div id="native-editor" contenteditable aria-label="Native editor">draft</div>
+<div id="nested-scroll" role="region" tabindex="0" aria-label="Nested scroll area">
+  <div id="nested-content"><button id="nested-marker">Nested marker</button></div>
+</div>
+<div id="interaction-status" role="status" aria-live="polite" aria-label="Interaction status ready">Interaction status</div>
+<div id="root-tail">Root tail</div>
+<script>
+  const nativeInput = document.querySelector('#native-input');
+  const nativeEditor = document.querySelector('#native-editor');
+  const nestedScroll = document.querySelector('#nested-scroll');
+  const interactionStatus = document.querySelector('#interaction-status');
+  const events = { input: [], editor: [], scroll: [], key: [] };
+  const composition = {
+    input: { start: false, update: false, end: false },
+    editor: { start: false, update: false, end: false },
+  };
+  let cancelWheel = false;
+  let wheelCount = 0;
+  let canceledWheelCount = 0;
+  let focused = 'none';
+  let lastClick = 'none';
+
+  const recordTextEvent = (name, event) => {
+    const data = event.data === undefined || event.data === null ? '' : event.data;
+    const inputType = event.inputType || '';
+    const composing = event.isComposing === true ? 'true' : 'false';
+    events[name].push(`${event.type}:${inputType}:${data}:${composing}`);
+    if (event.type === 'compositionstart') composition[name].start = true;
+    if (event.type === 'compositionupdate') composition[name].update = true;
+    if (event.type === 'compositionend') composition[name].end = true;
+    publishStatus();
+  };
+  for (const [name, target] of [['input', nativeInput], ['editor', nativeEditor]]) {
+    for (const type of ['compositionstart', 'compositionupdate', 'compositionend', 'beforeinput', 'input']) {
+      target.addEventListener(type, (event) => recordTextEvent(name, event));
+    }
+    target.addEventListener('focus', () => {
+      focused = name;
+      publishStatus();
+    });
+  }
+  nestedScroll.addEventListener('focus', () => {
+    focused = 'scroll';
+    publishStatus();
+  });
+  nestedScroll.addEventListener('click', () => nestedScroll.focus());
+  nestedScroll.addEventListener('wheel', (event) => {
+    wheelCount++;
+    events.scroll.push(`wheel:${event.deltaY}:${event.shiftKey}:${event.ctrlKey}`);
+    if (event.shiftKey || cancelWheel) {
+      canceledWheelCount++;
+      event.preventDefault();
+    }
+    publishStatus();
+  });
+  nestedScroll.addEventListener('keydown', (event) => {
+    events.scroll.push(`key:${event.key}:${event.shiftKey}`);
+    if (event.key === 'c') cancelWheel = !cancelWheel;
+    if (event.key === 'PageDown' && event.shiftKey) event.preventDefault();
+    publishStatus();
+  });
+  nestedScroll.addEventListener('scroll', () => {
+    events.scroll.push(`inner:${nestedScroll.scrollTop}`);
+    publishStatus();
+  });
+  document.addEventListener('scroll', () => {
+    events.scroll.push(`root:${scrollY}`);
+    publishStatus();
+  });
+  document.addEventListener('keydown', (event) => {
+    events.key.push(`${event.key}:${event.isComposing}`);
+    publishStatus();
+  });
+  document.addEventListener('click', (event) => {
+    lastClick = event.target.id || event.target.tagName;
+    publishStatus();
+  });
+
+  function publishStatus() {
+    interactionStatus.setAttribute('aria-label', [
+      'Interaction status',
+      `input=${nativeInput.value}`,
+      `editor=${nativeEditor.textContent}`,
+      `inner=${nestedScroll.scrollTop}`,
+      `innerMax=${nestedScroll.scrollHeight - nestedScroll.clientHeight}`,
+      `root=${scrollY}`,
+      `focus=${focused}`,
+      `click=${lastClick}`,
+      `cancelWheel=${cancelWheel}`,
+      `wheelCount=${wheelCount}`,
+      `canceledWheelCount=${canceledWheelCount}`,
+      `inputComposition=${composition.input.start}:${composition.input.update}:${composition.input.end}`,
+      `editorComposition=${composition.editor.start}:${composition.editor.update}:${composition.editor.end}`,
+      `inputEvents=${events.input.join('>')}`,
+      `editorEvents=${events.editor.join('>')}`,
+      `scrollEvents=${events.scroll.join('>')}`,
+      `keyEvents=${events.key.join('>')}`,
+    ].join('|'));
+  }
+  publishStatus();
+</script>
