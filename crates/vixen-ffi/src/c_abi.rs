@@ -20,8 +20,9 @@ use vixen_api::{
     BrowsingContextState, CrossDocumentNavigationKind, DiagnosticScope, DownloadEvent,
     EngineDiagnostic, EngineDiagnosticCategory, HostLifecycle, HostViewState, InputDispatchResult,
     KeyEventData, MouseEventData, NavigationActionOutcome, NavigationCancellationReason,
-    NavigationPhase, RuntimeConsoleArg, RuntimeConsoleValue, RuntimeEffects, RuntimeNetworkEvent,
-    TextInputState,
+    NavigationPhase, RenderBridgeSubmission, RenderBridgeUpdate, RenderCommitState,
+    RenderHandleRelease, RenderReplica, RuntimeConsoleArg, RuntimeConsoleValue, RuntimeEffects,
+    RuntimeNetworkEvent, TextInputState,
 };
 
 use crate::{
@@ -91,6 +92,8 @@ impl VixenBuffer {
 
 pub(crate) struct ControllerState {
     pub(crate) controller: FlutterBrowserController,
+    render_replica: RenderReplica,
+    render_commits: RenderCommitState,
     next_event_sequence: u64,
     pub(crate) next_frame_id: u64,
 }
@@ -192,6 +195,8 @@ pub unsafe extern "C" fn vixen_open(
             let entry = Arc::new(ControllerEntry {
                 state: Mutex::new(ControllerState {
                     controller,
+                    render_replica: RenderReplica::default(),
+                    render_commits: RenderCommitState::default(),
                     next_event_sequence: 1,
                     next_frame_id: 1,
                 }),
@@ -261,13 +266,80 @@ pub unsafe extern "C" fn vixen_command(
             )?;
             let command = parse_command(&message)?;
             let entry = controller_entry(handle)?;
-            let response = entry
+            let mut state = entry
                 .state
                 .lock()
-                .map_err(|_| AbiError::internal("browser handle is unavailable"))?
-                .controller
-                .dispatch(command)
-                .map_err(browser_error)?;
+                .map_err(|_| AbiError::internal("browser handle is unavailable"))?;
+            drain_renderer_submissions(&entry.renderer, &mut state)?;
+            let response = match command {
+                ControllerCommand::DispatchRendererMouseEvent(dispatch) => {
+                    let crate::RendererMouseEventDispatch {
+                        mouse,
+                        query,
+                        target,
+                    } = *dispatch;
+                    state
+                        .render_commits
+                        .validate_hit_test_query(&state.render_replica, query)
+                        .map_err(render_protocol_error)?;
+                    let presented = state.render_commits.presented_commit().ok_or_else(|| {
+                        AbiError::invalid_command(
+                            "renderer mouse input requires a presented commit",
+                        )
+                    })?;
+                    if query.context_id != mouse.context_id
+                        || query.document_id != mouse.document_id
+                        || query.point.x != mouse.event.x
+                        || query.point.y != mouse.event.y
+                        || presented.viewport.width != mouse.viewport.0
+                        || presented.viewport.height != mouse.viewport.1
+                    {
+                        return Err(AbiError::invalid_command(
+                            "renderer mouse input does not match its query and viewport",
+                        ));
+                    }
+                    if let Some(target) = target {
+                        state
+                            .render_commits
+                            .validate_input_target(&state.render_replica, &query, target)
+                            .map_err(render_protocol_error)?;
+                    }
+                    let target_node_id = target
+                        .and_then(|target| {
+                            state
+                                .render_replica
+                                .nearest_semantic_node_id(target.node_id)
+                        })
+                        .map(|node_id| {
+                            usize::try_from(node_id.get()).map_err(|_| {
+                                AbiError::invalid_command(
+                                    "renderer input target node_id must fit usize",
+                                )
+                            })
+                        })
+                        .transpose()?;
+                    state
+                        .controller
+                        .dispatch_renderer_mouse_event(mouse, target_node_id)
+                        .map_err(browser_error)?
+                }
+                command => state.controller.dispatch(command).map_err(browser_error)?,
+            };
+            let response = match response {
+                ControllerResponse::RendererUpdate(snapshot) => {
+                    let mut replica = state.render_replica.clone();
+                    replica
+                        .accept_full_snapshot(snapshot.clone())
+                        .map_err(render_protocol_error)?;
+                    entry
+                        .renderer
+                        .publish_update(RenderBridgeUpdate::FullSnapshot(snapshot))
+                        .map_err(renderer_broker_error)?;
+                    state.render_replica = replica;
+                    ControllerResponse::Accepted
+                }
+                response => response,
+            };
             write_json(
                 out_json,
                 &json!({
@@ -279,6 +351,69 @@ pub unsafe extern "C" fn vixen_command(
         })();
         finish(result, out_json)
     })
+}
+
+fn drain_renderer_submissions(
+    renderer: &crate::RenderBroker,
+    state: &mut ControllerState,
+) -> Result<(), AbiError> {
+    while let Some(submission) = renderer.peek_submission().map_err(renderer_broker_error)? {
+        let (next_commits, releases) = match &submission {
+            RenderBridgeSubmission::Commit(commit) => {
+                let mut commits = state.render_commits.clone();
+                let releases = match commits.accept_commit(&state.render_replica, commit.clone()) {
+                    Ok(releases) => releases,
+                    Err(error) => {
+                        renderer
+                            .consume_submission_with_updates(
+                                &submission,
+                                [RenderBridgeUpdate::ReleaseHandles(RenderHandleRelease {
+                                    version: vixen_api::RENDER_PROTOCOL_VERSION,
+                                    commit_id: commit.commit_id,
+                                    hit_test_handle: commit.hit_test_handle,
+                                    text_query_handle: commit.text_query_handle,
+                                })],
+                            )
+                            .map_err(renderer_broker_error)?;
+                        return Err(render_protocol_error(error));
+                    }
+                };
+                (Some(commits), releases)
+            }
+            RenderBridgeSubmission::Presented(presented) => {
+                let mut commits = state.render_commits.clone();
+                let releases = match commits.accept_presented(&state.render_replica, *presented) {
+                    Ok(releases) => releases,
+                    Err(error) => {
+                        renderer
+                            .consume_submission_with_updates(&submission, [])
+                            .map_err(renderer_broker_error)?;
+                        return Err(render_protocol_error(error));
+                    }
+                };
+                (Some(commits), releases)
+            }
+            RenderBridgeSubmission::Resync(_) => (None, Vec::new()),
+        };
+        renderer
+            .consume_submission_with_updates(
+                &submission,
+                releases.into_iter().map(RenderBridgeUpdate::ReleaseHandles),
+            )
+            .map_err(renderer_broker_error)?;
+        if let Some(commits) = next_commits {
+            state.render_commits = commits;
+        }
+    }
+    Ok(())
+}
+
+fn render_protocol_error(error: vixen_api::RenderProtocolError) -> AbiError {
+    AbiError::invalid_command(format!("{}: {}", error.code, error.message))
+}
+
+fn renderer_broker_error(error: crate::RenderBrokerError) -> AbiError {
+    AbiError::invalid_command(format!("{}: {}", error.code, error.message))
 }
 
 /// Consume the next ordered event without blocking.
@@ -700,6 +835,37 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
                 viewport: required_viewport(object)?,
             }
         }
+        "publish_renderer_snapshot" => {
+            exact_keys(
+                object,
+                &[
+                    "context_id",
+                    "document_id",
+                    "page_zoom",
+                    "type",
+                    "v",
+                    "viewport",
+                    "viewport_generation",
+                ],
+            )?;
+            let viewport_generation = required_u64(object, "viewport_generation")?;
+            if viewport_generation == 0 {
+                return Err(AbiError::invalid_command(
+                    "renderer viewport_generation must be nonzero",
+                ));
+            }
+            ControllerCommand::PublishRendererSnapshot {
+                context_id: required_context_id(object)?,
+                document_id: required_document_id(object)?,
+                viewport: required_viewport(object)?,
+                viewport_generation,
+                page_zoom: required_f64(object, "page_zoom")?,
+            }
+        }
+        "flush_renderer_submissions" => {
+            exact_keys(object, &["type", "v"])?;
+            ControllerCommand::FlushRendererSubmissions
+        }
         "dispatch_accessibility_action" => {
             let action = match required_string(object, "action")? {
                 "focus" => {
@@ -822,6 +988,59 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
                 event_type: event_type.to_owned(),
                 event: required_mouse_event(object)?,
             }
+        }
+        "dispatch_renderer_mouse_event" => {
+            exact_keys(
+                object,
+                &[
+                    "context_id",
+                    "document_id",
+                    "event",
+                    "event_type",
+                    "query",
+                    "runtime_context_id",
+                    "target",
+                    "type",
+                    "v",
+                    "viewport",
+                ],
+            )?;
+            let event_type = required_string(object, "event_type")?;
+            if !matches!(
+                event_type,
+                "mousemove" | "mousedown" | "mouseup" | "wheel" | "cancel"
+            ) {
+                return Err(AbiError::invalid_command(
+                    "event_type must be mousemove, mousedown, mouseup, wheel, or cancel",
+                ));
+            }
+            let query =
+                crate::render_wire::parse_hit_test_query(required_object(object, "query")?)?;
+            let target = match object.get("target") {
+                Some(Value::Null) => None,
+                Some(Value::Object(target)) => {
+                    Some(crate::render_wire::parse_input_target(target)?)
+                }
+                _ => {
+                    return Err(AbiError::invalid_command(
+                        "renderer mouse target must be an object or null",
+                    ));
+                }
+            };
+            ControllerCommand::DispatchRendererMouseEvent(Box::new(
+                crate::RendererMouseEventDispatch {
+                    mouse: crate::MouseEventDispatch {
+                        context_id: required_context_id(object)?,
+                        document_id: required_document_id(object)?,
+                        runtime_context_id: required_runtime_context_id(object)?,
+                        viewport: required_viewport(object)?,
+                        event_type: event_type.to_owned(),
+                        event: required_mouse_event(object)?,
+                    },
+                    query,
+                    target,
+                },
+            ))
         }
         "dispatch_key_event" => {
             exact_keys(
@@ -1146,6 +1365,7 @@ fn response_json(response: ControllerResponse) -> Value {
             "matches": result.matches,
             "active_match": result.active_match,
         }),
+        ControllerResponse::RendererUpdate(_) => json!({"type": "accepted"}),
     }
 }
 
@@ -2484,6 +2704,40 @@ mod tests {
     }
 
     #[test]
+    fn renderer_mouse_input_json_is_strict_and_commit_bound() {
+        let _scope = test_scope();
+        let parsed = parse_command(&renderer_mouse_command().to_string()).unwrap();
+        let ControllerCommand::DispatchRendererMouseEvent(dispatch) = parsed else {
+            panic!("renderer mouse command parsed as the wrong variant");
+        };
+        let target = dispatch.target.expect("renderer target");
+        assert_eq!(dispatch.query.query_id.get(), 7);
+        assert_eq!(target.query_id, dispatch.query.query_id);
+        assert_eq!(target.node_id.get(), 9);
+
+        let mut cases = Vec::new();
+        let mut value = renderer_mouse_command();
+        value["query"]["extra"] = json!(true);
+        cases.push(value);
+        let mut value = renderer_mouse_command();
+        value["query"]["point"]["x"] = json!("NaN");
+        cases.push(value);
+        let mut value = renderer_mouse_command();
+        value["target"]["fragment_id"] = json!(0);
+        cases.push(value);
+        let mut value = renderer_mouse_command();
+        value["target"] = json!(false);
+        cases.push(value);
+
+        for value in cases {
+            assert!(
+                parse_command(&value.to_string()).is_err(),
+                "accepted invalid renderer mouse command: {value}"
+            );
+        }
+    }
+
+    #[test]
     fn key_input_json_is_strict_and_bounded() {
         let _scope = test_scope();
         let parsed = parse_command(&key_command().to_string()).unwrap();
@@ -2709,6 +2963,43 @@ mod tests {
                 "delta_y": 0.0,
             },
         })
+    }
+
+    fn renderer_mouse_command() -> Value {
+        let mut command = mouse_command();
+        command["type"] = json!("dispatch_renderer_mouse_event");
+        let revision = json!({
+            "context_id": 1,
+            "document_id": 2,
+            "source_generation": 3,
+            "style_generation": 3,
+            "viewport_generation": 4,
+            "resource_generation": 1,
+        });
+        command["query"] = json!({
+            "v": 1,
+            "query_id": 7,
+            "context_id": 1,
+            "document_id": 2,
+            "displayed_commit_id": 5,
+            "revision": revision,
+            "handle": 6,
+            "point": {"x": 10.5, "y": 20.25},
+        });
+        command["target"] = json!({
+            "v": 1,
+            "query_id": 7,
+            "context_id": 1,
+            "document_id": 2,
+            "displayed_commit_id": 5,
+            "revision": revision,
+            "handle": 6,
+            "node_id": 9,
+            "fragment_id": 10,
+            "viewport_point": {"x": 10.5, "y": 20.25},
+            "local_point": {"x": 1.5, "y": 2.25},
+        });
+        command
     }
 
     fn key_command() -> Value {

@@ -45,7 +45,7 @@ profile, platform, renderer host, command, and measured result.
 
 ## Current baseline and transition debt
 
-As of 2026-07-14 the repository has:
+As of 2026-07-15 the repository has:
 
 - one seven-crate Rust workspace with hk/`just` gates, stable diagnostics, fuzz
   targets, a fixture/WPT harness, and a committed **270 fixture / 2,027 check**
@@ -232,7 +232,8 @@ Paragraph/image/Picture resources. Mixed
 text runs have run/line fragments, padded boxes retain distinct content bounds,
 and wrapped semantic text retains all Paragraph rectangles.
 Software and Impeller-requested captures have separate exact raw-RGBA hashes.
-The formatter is not connected to normal shell presentation.
+The formatter remained test-only through R3; the bounded production vertical
+below now reuses it without claiming the rest of R4.
 
 ### R4. One interactive commit vertical
 
@@ -249,6 +250,29 @@ Route one controlled Linux document through the new renderer for:
 **Proof:** widget/core/ABI tests plus a Cage interaction smoke. Every assertion
 names one commit id. The old texture path remains production-only comparison and
 is not widened.
+
+**Initial production vertical implemented:** the native Linux shell now requests
+one bounded BrowserCore projection for the selected document, carries it over the
+dedicated renderer update queue, formats it with the R3 service, validates the
+returned commit in Rust, and paints the accepted `RenderCommitPainter` view.
+The source is deliberately a basic title plus at most 64 non-hidden semantic
+elements (or bounded body-text fallback), not a claim of computed-style or
+general CSS rendering. Synthetic wrapper/text ids cannot become DOM targets;
+semantic element ids remain BrowserCore-authored.
+
+Presentation is acknowledged only from a Flutter post-frame callback. Pointer
+input uses the formatter's displayed commit, opaque hit-test handle, exact
+revision, fragment, viewport point, and local point; Rust validates all of them,
+resolves text hits to the nearest BrowserCore semantic element, and only then
+dispatches the DOM event. Snapshot replacement, submissions, releases, and
+queues stay bounded; consuming a submission and publishing all resulting handle
+releases is atomic. The WebRender/RGBA texture remains the explicit fallback
+when no current Flutter commit is available.
+
+R4 remains open for computed styled nodes/resources, DOM/script mutation batches,
+scroll/default-action round trips, Paragraph-backed find/caret/range behavior,
+semantic actions, lifecycle/Cage interaction evidence, and deletion of the
+fallback at R7.
 
 ### R5. Chrome-less Flutter automation host
 

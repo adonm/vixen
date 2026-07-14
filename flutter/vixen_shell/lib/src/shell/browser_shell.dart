@@ -166,6 +166,8 @@ final class _BrowserShellState extends State<BrowserShell>
                   child: BrowserContentSurface(
                     contextState: coordinator.selectedContext,
                     frame: coordinator.frame,
+                    rendererView: coordinator.rendererView,
+                    onRendererPresented: coordinator.rendererCommitPresented,
                     lifecycle: _hostLifecycle,
                     accessibility: coordinator.accessibility,
                     onPhysicalViewportChanged:

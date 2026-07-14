@@ -215,53 +215,26 @@ impl RenderBroker {
     }
 
     pub fn publish_update(&self, update: RenderBridgeUpdate) -> Result<(), RenderBrokerError> {
-        update
-            .validate()
-            .map_err(|error| RenderBrokerError::new(error.code, error.message))?;
-        let source_size = update_source_size(&update).ok_or_else(|| {
-            RenderBrokerError::new(
-                "render.payload-too-large",
-                "renderer update source size overflowed",
-            )
-        })?;
-        if source_size > RENDER_BROKER_MAX_UPDATE_SOURCE_BYTES {
-            return Err(RenderBrokerError::new(
-                "render.payload-too-large",
-                format!(
-                    "renderer update source is {source_size} bytes; transport source limit is {RENDER_BROKER_MAX_UPDATE_SOURCE_BYTES}"
-                ),
-            ));
-        }
-        let encoded_size = serde_json::to_vec(&crate::render_wire::update_json(&update))
-            .map_err(|_| internal_error("renderer update could not be encoded"))?
-            .len();
-        if encoded_size > crate::c_abi::VIXEN_MAX_OUTPUT_BYTES {
-            return Err(RenderBrokerError::new(
-                "render.payload-too-large",
-                format!(
-                    "renderer update is {encoded_size} bytes; transport limit is {}",
-                    crate::c_abi::VIXEN_MAX_OUTPUT_BYTES
-                ),
-            ));
+        self.publish_updates([update])
+    }
+
+    pub fn publish_updates(
+        &self,
+        updates: impl IntoIterator<Item = RenderBridgeUpdate>,
+    ) -> Result<(), RenderBrokerError> {
+        let updates = updates.into_iter().collect::<Vec<_>>();
+        for update in &updates {
+            validate_update(update)?;
         }
         let mut state = self.lock_state()?;
         if state.closed {
             return Err(closed_error());
         }
-        if state
-            .outbound
-            .iter()
-            .filter(|message| matches!(message, QueuedMessage::Update(_)))
-            .count()
-            >= RENDER_BROKER_QUEUE_CAPACITY
-        {
-            return Err(RenderBrokerError::new(
-                "render.queue-full",
-                "renderer update queue is full",
-            ));
+        ensure_update_capacity(&state, updates.len())?;
+        for update in updates {
+            state.outbound.push_back(QueuedMessage::Update(update));
         }
-        state.outbound.push_back(QueuedMessage::Update(update));
-        self.inner.request_ready.notify_one();
+        self.inner.request_ready.notify_all();
         Ok(())
     }
 
@@ -331,6 +304,43 @@ impl RenderBroker {
         Ok(())
     }
 
+    pub fn peek_submission(&self) -> Result<Option<RenderBridgeSubmission>, RenderBrokerError> {
+        let state = self.lock_state()?;
+        if state.closed {
+            return Err(closed_error());
+        }
+        Ok(state.submissions.front().cloned())
+    }
+
+    pub fn consume_submission_with_updates(
+        &self,
+        expected: &RenderBridgeSubmission,
+        updates: impl IntoIterator<Item = RenderBridgeUpdate>,
+    ) -> Result<(), RenderBrokerError> {
+        let updates = updates.into_iter().collect::<Vec<_>>();
+        for update in &updates {
+            validate_update(update)?;
+        }
+        let mut state = self.lock_state()?;
+        if state.closed {
+            return Err(closed_error());
+        }
+        if state.submissions.front() != Some(expected) {
+            return Err(RenderBrokerError::new(
+                "render.stale",
+                "renderer submission queue changed before acceptance",
+            ));
+        }
+        ensure_update_capacity(&state, updates.len())?;
+        state.submissions.pop_front();
+        for update in updates {
+            state.outbound.push_back(QueuedMessage::Update(update));
+        }
+        self.inner.request_ready.notify_all();
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub fn poll_submission(&self) -> Result<Option<RenderBridgeSubmission>, RenderBrokerError> {
         let mut state = self.lock_state()?;
         if state.closed {
@@ -435,6 +445,54 @@ impl RenderBroker {
             .lock()
             .map_err(|_| internal_error("renderer broker state is unavailable"))
     }
+}
+
+fn validate_update(update: &RenderBridgeUpdate) -> Result<(), RenderBrokerError> {
+    update
+        .validate()
+        .map_err(|error| RenderBrokerError::new(error.code, error.message))?;
+    let source_size = update_source_size(update).ok_or_else(|| {
+        RenderBrokerError::new(
+            "render.payload-too-large",
+            "renderer update source size overflowed",
+        )
+    })?;
+    if source_size > RENDER_BROKER_MAX_UPDATE_SOURCE_BYTES {
+        return Err(RenderBrokerError::new(
+            "render.payload-too-large",
+            format!(
+                "renderer update source is {source_size} bytes; transport source limit is {RENDER_BROKER_MAX_UPDATE_SOURCE_BYTES}"
+            ),
+        ));
+    }
+    let encoded_size = serde_json::to_vec(&crate::render_wire::update_json(update))
+        .map_err(|_| internal_error("renderer update could not be encoded"))?
+        .len();
+    if encoded_size > crate::c_abi::VIXEN_MAX_OUTPUT_BYTES {
+        return Err(RenderBrokerError::new(
+            "render.payload-too-large",
+            format!(
+                "renderer update is {encoded_size} bytes; transport limit is {}",
+                crate::c_abi::VIXEN_MAX_OUTPUT_BYTES
+            ),
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_update_capacity(state: &State, additional: usize) -> Result<(), RenderBrokerError> {
+    let queued = state
+        .outbound
+        .iter()
+        .filter(|message| matches!(message, QueuedMessage::Update(_)))
+        .count();
+    if queued.saturating_add(additional) > RENDER_BROKER_QUEUE_CAPACITY {
+        return Err(RenderBrokerError::new(
+            "render.queue-full",
+            "renderer update queue is full",
+        ));
+    }
+    Ok(())
 }
 
 fn closed_error() -> RenderBrokerError {
@@ -780,5 +838,43 @@ mod tests {
             assert!(broker.poll_submission().unwrap().is_some());
         }
         assert!(broker.poll_submission().unwrap().is_none());
+    }
+
+    #[test]
+    fn submission_consumption_and_release_publication_are_atomic() {
+        use vixen_api::{
+            RenderBridgeSubmission, RenderCommitId, RenderHandleRelease, RenderHitTestHandle,
+            RenderResyncRequest, RenderTextQueryHandle,
+        };
+
+        let broker = RenderBroker::new();
+        let release = RenderBridgeUpdate::ReleaseHandles(RenderHandleRelease {
+            version: RENDER_PROTOCOL_VERSION,
+            commit_id: RenderCommitId::new(1).unwrap(),
+            hit_test_handle: RenderHitTestHandle::new(2).unwrap(),
+            text_query_handle: RenderTextQueryHandle::new(3).unwrap(),
+        });
+        for _ in 0..RENDER_BROKER_QUEUE_CAPACITY - 1 {
+            broker.publish_update(release.clone()).unwrap();
+        }
+        let submission = RenderBridgeSubmission::Resync(RenderResyncRequest::renderer_reset(
+            BrowsingContextId::new(1).unwrap(),
+            DocumentId::new(2).unwrap(),
+        ));
+        broker.submit(submission.clone()).unwrap();
+
+        assert_eq!(
+            broker
+                .consume_submission_with_updates(&submission, [release.clone(), release.clone()],)
+                .unwrap_err()
+                .code,
+            "render.queue-full"
+        );
+        assert_eq!(broker.peek_submission().unwrap(), Some(submission.clone()));
+        assert!(broker.poll_message(Duration::ZERO).unwrap().is_some());
+        broker
+            .consume_submission_with_updates(&submission, [release.clone(), release])
+            .unwrap();
+        assert!(broker.peek_submission().unwrap().is_none());
     }
 }

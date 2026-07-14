@@ -7,6 +7,7 @@ import 'package:vixen_shell/src/bridge/browser_models.dart';
 import 'package:vixen_shell/src/bridge/native/native_bindings.dart';
 import 'package:vixen_shell/src/bridge/native/native_paths.dart';
 import 'package:vixen_shell/src/bridge/native/native_protocol.dart';
+import 'package:vixen_shell/src/bridge/render_models.dart';
 
 void main() {
   test('VixenBuffer matches the 64-bit Linux C layout', () {
@@ -177,6 +178,23 @@ void main() {
     });
 
     test('accepts the production accessibility and input commands', () {
+      const revision = RenderRevision(
+        contextId: 1,
+        documentId: 2,
+        sourceGeneration: 3,
+        styleGeneration: 3,
+        viewportGeneration: 4,
+        resourceGeneration: 1,
+      );
+      const hitQuery = RenderHitTestQuery(
+        queryId: 5,
+        contextId: 1,
+        documentId: 2,
+        displayedCommitId: 6,
+        revision: revision,
+        handle: 7,
+        point: RenderPoint(12.5, 9),
+      );
       final commands = <BrowserCommand>[
         BrowserCommand.updateHostViewState(
           contextId: 1,
@@ -194,6 +212,15 @@ void main() {
           viewportWidth: 320,
           viewportHeight: 200,
         ),
+        BrowserCommand.publishRendererSnapshot(
+          contextId: 1,
+          documentId: 2,
+          viewportWidth: 320,
+          viewportHeight: 200,
+          viewportGeneration: 4,
+          pageZoom: 1.25,
+        ),
+        BrowserCommand.flushRendererSubmissions(),
         BrowserCommand.dispatchAccessibilityFocus(
           contextId: 1,
           documentId: 2,
@@ -223,6 +250,28 @@ void main() {
           viewportHeight: 200,
           eventType: 'mousedown',
           event: const BrowserMouseEvent(x: 12.5, y: 9, button: 0, buttons: 1),
+        ),
+        BrowserCommand.dispatchRendererMouseEvent(
+          contextId: 1,
+          documentId: 2,
+          runtimeContextId: 3,
+          viewportWidth: 320,
+          viewportHeight: 200,
+          eventType: 'mousedown',
+          event: const BrowserMouseEvent(x: 12.5, y: 9, button: 0, buttons: 1),
+          query: hitQuery,
+          target: const RenderInputTarget(
+            queryId: 5,
+            contextId: 1,
+            documentId: 2,
+            displayedCommitId: 6,
+            revision: revision,
+            handle: 7,
+            nodeId: 8,
+            fragmentId: 9,
+            viewportPoint: RenderPoint(12.5, 9),
+            localPoint: RenderPoint(2.5, 3),
+          ),
         ),
         BrowserCommand.dispatchMouseEvent(
           contextId: 1,
@@ -288,6 +337,43 @@ void main() {
         () => normalizeNativeCommand(<String, Object?>{
           ...mouse,
           'event_type': 'pointerdown',
+        }),
+        throwsA(isA<NativeBridgeException>()),
+      );
+      const rendererRevision = RenderRevision(
+        contextId: 1,
+        documentId: 2,
+        sourceGeneration: 3,
+        styleGeneration: 3,
+        viewportGeneration: 4,
+        resourceGeneration: 1,
+      );
+      final rendererMouse = BrowserCommand.dispatchRendererMouseEvent(
+        contextId: 1,
+        documentId: 2,
+        runtimeContextId: 3,
+        viewportWidth: 320,
+        viewportHeight: 200,
+        eventType: 'mousedown',
+        event: const BrowserMouseEvent(x: 12, y: 9, button: 0, buttons: 1),
+        query: const RenderHitTestQuery(
+          queryId: 5,
+          contextId: 1,
+          documentId: 2,
+          displayedCommitId: 6,
+          revision: rendererRevision,
+          handle: 7,
+          point: RenderPoint(12, 9),
+        ),
+        target: null,
+      ).toWire();
+      expect(
+        () => normalizeNativeCommand({
+          ...rendererMouse,
+          'query': {
+            ...(rendererMouse['query']! as Map<String, Object?>),
+            'extra': true,
+          },
         }),
         throwsA(isA<NativeBridgeException>()),
       );

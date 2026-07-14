@@ -7,13 +7,13 @@ use vixen_api::{
     RENDER_MAX_TRUNCATION_DIAGNOSTICS, RENDER_PROTOCOL_VERSION, RenderBridgeSubmission,
     RenderBridgeUpdate, RenderBrokerCancellation, RenderBrokerRequest, RenderBrokerRequestKind,
     RenderBrokerResponse, RenderBrokerResponseKind, RenderCommit, RenderCommitId, RenderFragmentId,
-    RenderGeometryEntry, RenderHandleRelease, RenderHitTestHandle, RenderInputTarget,
-    RenderLimitDomain, RenderMutation, RenderMutationBatch, RenderNode, RenderNodeId,
-    RenderNodeKind, RenderPoint, RenderPresented, RenderProtocolError, RenderQueryId, RenderRect,
-    RenderRequestId, RenderResource, RenderResourceKind, RenderResyncReason, RenderResyncRequest,
-    RenderRevision, RenderScrollIntent, RenderScrollIntentKind, RenderScrollNodeId,
-    RenderScrollState, RenderSemanticActionKind, RenderSemanticBounds, RenderSize,
-    RenderTextAffinity, RenderTextBox, RenderTextDirection, RenderTextQueryBatchResult,
+    RenderGeometryEntry, RenderHandleRelease, RenderHitTestHandle, RenderHitTestQuery,
+    RenderInputTarget, RenderLimitDomain, RenderMutation, RenderMutationBatch, RenderNode,
+    RenderNodeId, RenderNodeKind, RenderPoint, RenderPresented, RenderProtocolError, RenderQueryId,
+    RenderRect, RenderRequestId, RenderResource, RenderResourceKind, RenderResyncReason,
+    RenderResyncRequest, RenderRevision, RenderScrollIntent, RenderScrollIntentKind,
+    RenderScrollNodeId, RenderScrollState, RenderSemanticActionKind, RenderSemanticBounds,
+    RenderSize, RenderTextAffinity, RenderTextBox, RenderTextDirection, RenderTextQueryBatchResult,
     RenderTextQueryHandle, RenderTextQueryKind, RenderTextQueryResult, RenderTextQueryValue,
     RenderTruncationDiagnostic, RenderViewport, SemanticNodeId,
 };
@@ -483,7 +483,41 @@ fn parse_truncation(value: &Map<String, Value>) -> Result<RenderTruncationDiagno
     })
 }
 
-fn parse_input_target(value: &Map<String, Value>) -> Result<RenderInputTarget, AbiError> {
+pub(crate) fn parse_hit_test_query(
+    value: &Map<String, Value>,
+) -> Result<RenderHitTestQuery, AbiError> {
+    keys(
+        value,
+        &[
+            "context_id",
+            "displayed_commit_id",
+            "document_id",
+            "handle",
+            "point",
+            "query_id",
+            "revision",
+            "v",
+        ],
+    )?;
+    version(value)?;
+    Ok(RenderHitTestQuery {
+        version: RENDER_PROTOCOL_VERSION,
+        query_id: RenderQueryId::new(u64_field(value, "query_id")?)
+            .ok_or_else(|| invalid("query_id must be nonzero"))?,
+        context_id: context_id(value)?,
+        document_id: document_id(value)?,
+        displayed_commit_id: RenderCommitId::new(u64_field(value, "displayed_commit_id")?)
+            .ok_or_else(|| invalid("displayed_commit_id must be nonzero"))?,
+        revision: parse_revision(object_field(value, "revision")?)?,
+        handle: RenderHitTestHandle::new(u64_field(value, "handle")?)
+            .ok_or_else(|| invalid("hit-test handle must be nonzero"))?,
+        point: parse_point(object_field(value, "point")?)?,
+    })
+}
+
+pub(crate) fn parse_input_target(
+    value: &Map<String, Value>,
+) -> Result<RenderInputTarget, AbiError> {
     keys(
         value,
         &[

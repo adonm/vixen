@@ -344,6 +344,22 @@ impl RenderReplica {
         })
     }
 
+    /// Resolve a renderer hit back to the nearest BrowserCore-authored semantic
+    /// element. Text/generated nodes remain renderer inputs and are never sent
+    /// directly to DOM event dispatch.
+    pub fn nearest_semantic_node_id(&self, node_id: RenderNodeId) -> Option<RenderNodeId> {
+        let mut current = Some(node_id);
+        for _ in 0..=RENDER_MAX_TREE_DEPTH {
+            let id = current?;
+            let node = self.nodes.get(&id)?;
+            if node.semantic.is_some() {
+                return Some(id);
+            }
+            current = node.parent_id;
+        }
+        None
+    }
+
     pub fn accept_full_snapshot(
         &mut self,
         snapshot: FullRenderSnapshot,
@@ -828,6 +844,28 @@ mod tests {
         );
         let id = RenderNodeId::try_from(41).unwrap();
         assert_eq!(RenderNodeId::try_from(id.get()).unwrap(), id);
+    }
+
+    #[test]
+    fn renderer_hits_resolve_to_the_nearest_semantic_source_element() {
+        let mut source = snapshot(1);
+        source.nodes.push(RenderNode {
+            id: id(2),
+            parent_id: Some(id(1)),
+            sibling_index: 0,
+            depth: 1,
+            kind: RenderNodeKind::Text {
+                text: "label".to_owned(),
+            },
+            styles: Vec::new(),
+            resource_ids: Vec::new(),
+            semantic: None,
+        });
+        let mut replica = RenderReplica::default();
+        replica.accept_full_snapshot(source).unwrap();
+
+        assert_eq!(replica.nearest_semantic_node_id(id(2)), Some(id(1)));
+        assert_eq!(replica.nearest_semantic_node_id(id(99)), None);
     }
 
     #[test]

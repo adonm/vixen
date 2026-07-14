@@ -1,4 +1,5 @@
 import 'browser_models.dart';
+import 'render_models.dart';
 
 /// The browser-scoped seam. Implementations own one BrowserCore handle and
 /// expose its sole ordered event stream.
@@ -148,6 +149,34 @@ abstract class BrowserController {
     ),
   ).snapshot;
 
+  Future<void> publishRendererSnapshot({
+    required int contextId,
+    required int documentId,
+    required int viewportWidth,
+    required int viewportHeight,
+    required int viewportGeneration,
+    required double pageZoom,
+  }) async {
+    _expect<AcceptedResponse>(
+      await dispatch(
+        BrowserCommand.publishRendererSnapshot(
+          contextId: contextId,
+          documentId: documentId,
+          viewportWidth: viewportWidth,
+          viewportHeight: viewportHeight,
+          viewportGeneration: viewportGeneration,
+          pageZoom: pageZoom,
+        ),
+      ),
+    );
+  }
+
+  Future<void> flushRendererSubmissions() async {
+    _expect<AcceptedResponse>(
+      await dispatch(BrowserCommand.flushRendererSubmissions()),
+    );
+  }
+
   Future<InputDispatchedResponse> dispatchAccessibilityFocus({
     required int contextId,
     required int documentId,
@@ -242,6 +271,32 @@ abstract class BrowserController {
         viewportHeight: viewportHeight,
         eventType: eventType,
         event: event,
+      ),
+    ),
+  );
+
+  Future<InputDispatchedResponse> dispatchRendererMouseEvent({
+    required int contextId,
+    required int documentId,
+    required int runtimeContextId,
+    required int viewportWidth,
+    required int viewportHeight,
+    required String eventType,
+    required BrowserMouseEvent event,
+    required RenderHitTestQuery query,
+    required RenderInputTarget? target,
+  }) async => _expect<InputDispatchedResponse>(
+    await dispatch(
+      BrowserCommand.dispatchRendererMouseEvent(
+        contextId: contextId,
+        documentId: documentId,
+        runtimeContextId: runtimeContextId,
+        viewportWidth: viewportWidth,
+        viewportHeight: viewportHeight,
+        eventType: eventType,
+        event: event,
+        query: query,
+        target: target,
       ),
     ),
   );

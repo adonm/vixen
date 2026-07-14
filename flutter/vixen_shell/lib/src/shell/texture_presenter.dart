@@ -9,6 +9,8 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../bridge/browser_models.dart';
+import '../renderer/formatter.dart';
+import '../renderer/formatter_painter.dart';
 
 const String vixenTextureChannelName = 'dev.adonm.vixen/texture';
 
@@ -192,6 +194,8 @@ final class BrowserContentSurface extends StatefulWidget {
   const BrowserContentSurface({
     required this.contextState,
     required this.frame,
+    this.rendererView,
+    this.onRendererPresented,
     this.lifecycle = BrowserHostLifecycle.resumed,
     this.onPhysicalViewportChanged,
     this.onFocusChanged,
@@ -209,6 +213,8 @@ final class BrowserContentSurface extends StatefulWidget {
 
   final BrowsingContextState? contextState;
   final BrowserFrame? frame;
+  final FormatterCommitView? rendererView;
+  final ValueChanged<FormatterCommitView>? onRendererPresented;
   final BrowserHostLifecycle lifecycle;
   final void Function(int width, int height, double scaleFactor)?
   onPhysicalViewportChanged;
@@ -277,6 +283,8 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   (int, int, int)? _presentationFailureKey;
   (int, int, int, BrowserTextInputType, BrowserTextInputAction)?
   _textInputTarget;
+  (int, int, int)? _scheduledRendererPresentation;
+  (int, int, int)? _reportedRendererPresentation;
 
   @override
   void initState() {
@@ -822,6 +830,28 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   }
 
   Widget _buildContent(BuildContext context) {
+    final rendererView = widget.rendererView;
+    final contextState = widget.contextState;
+    if (rendererView != null &&
+        !rendererView.isRetired &&
+        _presentationEnabled &&
+        contextState != null &&
+        rendererView.commit.revision.contextId == contextState.contextId &&
+        rendererView.commit.revision.documentId == contextState.documentId) {
+      _scheduleRendererPresentation(rendererView);
+      return SizedBox.expand(
+        child: FittedBox(
+          key: const Key('flutter-renderer-view'),
+          fit: BoxFit.fill,
+          alignment: Alignment.topLeft,
+          child: SizedBox(
+            width: rendererView.viewport.width,
+            height: rendererView.viewport.height,
+            child: CustomPaint(painter: RenderCommitPainter(rendererView)),
+          ),
+        ),
+      );
+    }
     final frame = _displayedFrame;
     final textureId = _textureId;
     final transform = _viewportTransform;
@@ -882,6 +912,35 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
       );
     }
     return _withAccessibility(visual);
+  }
+
+  void _scheduleRendererPresentation(FormatterCommitView view) {
+    final key = (
+      view.commit.revision.contextId,
+      view.commit.revision.documentId,
+      view.commit.commitId,
+    );
+    if (_reportedRendererPresentation == key ||
+        _scheduledRendererPresentation == key) {
+      return;
+    }
+    _scheduledRendererPresentation = key;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final current = widget.rendererView;
+      if (_disposed ||
+          !_presentationEnabled ||
+          current == null ||
+          current.isRetired ||
+          !identical(current, view)) {
+        if (_scheduledRendererPresentation == key) {
+          _scheduledRendererPresentation = null;
+        }
+        return;
+      }
+      _reportedRendererPresentation = key;
+      _scheduledRendererPresentation = null;
+      widget.onRendererPresented?.call(view);
+    });
   }
 
   bool _shouldRetryPresentation(BrowserFrame frame) {

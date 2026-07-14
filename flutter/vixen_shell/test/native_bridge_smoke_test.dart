@@ -5,6 +5,7 @@ import 'package:vixen_shell/src/bridge/browser_models.dart';
 import 'package:vixen_shell/src/bridge/native/native_browser_controller.dart';
 import 'package:vixen_shell/src/bridge/native/native_renderer_protocol.dart';
 import 'package:vixen_shell/src/bridge/render_models.dart';
+import 'package:vixen_shell/src/renderer/formatter.dart';
 
 void main() {
   final libraryPath = Platform.environment['VIXEN_FFI_LIBRARY'];
@@ -17,6 +18,7 @@ void main() {
         libraryPath: libraryPath,
         profilePath: '${profile.path}/profile.redb',
       );
+      final formatter = VixenFormatter();
       try {
         await controller.start();
         final contextId = await controller.createContext();
@@ -34,16 +36,78 @@ void main() {
         await settled.timeout(const Duration(seconds: 30));
         final snapshot = await controller.browserSnapshot();
         final state = await controller.contextState(contextId);
-        controller.submitRenderer(
-          rendererResyncSubmission(
-            RenderResyncRequest(
-              contextId: contextId,
-              documentId: state.documentId,
-              currentRevision: null,
-              rejectedBaseRevision: null,
-              reason: 'renderer_reset',
-            ),
+        await controller.publishRendererSnapshot(
+          contextId: contextId,
+          documentId: state.documentId,
+          viewportWidth: 240,
+          viewportHeight: 160,
+          viewportGeneration: 1,
+          pageZoom: state.pageZoom,
+        );
+        final rendererUpdate = controller.pollRenderer();
+        expect(rendererUpdate, isA<NativeFullSnapshotUpdate>());
+        final fullSnapshot = rendererUpdate! as NativeFullSnapshotUpdate;
+        expect(
+          fullSnapshot.snapshot.nodes
+              .where((node) => node.kind == RenderNodeKind.text)
+              .map((node) => node.text)
+              .join(' '),
+          contains('Vixen sample'),
+        );
+        final view = (await formatter.acceptFullSnapshot(
+          fullSnapshot.snapshot,
+          beforePublish: (commit) {
+            controller.submitRenderer(rendererCommitSubmission(commit));
+          },
+        ) as RenderApplied).view;
+        await controller.flushRendererSubmissions();
+        final presented = RenderPresented(
+          contextId: contextId,
+          documentId: state.documentId,
+          commitId: view.commit.commitId,
+          revision: view.commit.revision,
+        );
+        controller.submitRenderer(rendererPresentedSubmission(presented));
+        await controller.flushRendererSubmissions();
+        formatter.present(presented);
+        await controller.updateHostViewState(
+          contextId: contextId,
+          generation: 1,
+          viewportWidth: 240,
+          viewportHeight: 160,
+          scaleFactor: 1,
+          focused: true,
+          visible: true,
+          lifecycle: BrowserHostLifecycle.resumed,
+        );
+        final targetRect = view.semanticRegions
+            .singleWhere((region) => region.descriptor.name == 'Vixen sample')
+            .rect;
+        final query = RenderHitTestQuery(
+          queryId: 1,
+          contextId: contextId,
+          documentId: state.documentId,
+          displayedCommitId: view.commit.commitId,
+          revision: view.commit.revision,
+          handle: view.commit.hitTestHandle,
+          point: RenderPoint(targetRect.center.dx, targetRect.center.dy),
+        );
+        await controller.dispatchRendererMouseEvent(
+          contextId: contextId,
+          documentId: state.documentId,
+          runtimeContextId: state.runtimeContextId!,
+          viewportWidth: 240,
+          viewportHeight: 160,
+          eventType: 'mousedown',
+          event: BrowserMouseEvent(
+            x: targetRect.center.dx,
+            y: targetRect.center.dy,
+            button: 0,
+            buttons: 1,
+            detail: 1,
           ),
+          query: query,
+          target: view.answerHitTest(query),
         );
 
         expect(contextId, greaterThan(0));
@@ -246,6 +310,7 @@ void main() {
           if (error.code != 'unsupported.screenshot') rethrow;
         }
       } finally {
+        formatter.dispose();
         await controller.shutdown();
         await profile.delete(recursive: true);
       }

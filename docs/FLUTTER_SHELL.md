@@ -131,15 +131,18 @@ runtime dependencies disappear from Linux packages.
 
 ## ADR-022 renderer migration
 
-The existing WebRender/EGL/RGBA texture remains the implemented comparison path
-only. Do not add renderer breadth there. R1 protocol validation, the R2 C/Dart
-broker, and the R3 test-only formatter are implemented. The remaining delivery
-sequence is:
+The existing WebRender/EGL/RGBA texture remains the implemented comparison and
+fallback path only. Do not add renderer breadth there. R1 protocol validation,
+the R2 C/Dart broker, the R3 formatter, and an initial production R4
+title/semantic-text vertical are implemented. The remaining delivery sequence
+is:
 
 R2 uses plain bounded messages: asynchronous snapshot/mutation/release updates,
 asynchronous commit/presented/resync submissions, and correlated broker traffic
 only for `EnsureLayout`, hit testing, and text queries. The Dart broker service
-never calls BrowserCore and the production shell does not consume it yet.
+never calls BrowserCore. The production shell now consumes it for one bounded
+selected-document projection; that projection is not general CSS-rendering
+evidence.
 
 1. Route Linux input, scrolling, zoom, and accessibility through accepted
    geometry; prove lifecycle recovery without pixel-buffer texture ownership.
@@ -213,8 +216,8 @@ a Flutter external texture:
   dropped frames, and input-to-paint latency.
 
 This remains one transitional WebRender path with a transport copy. It is frozen
-except for correctness/recovery fixes while the test-only Flutter renderer
-vertical is built; production switches only after parity and then deletes it.
+except for correctness/recovery fixes while the Flutter renderer vertical earns
+parity; production switches only after parity and then deletes it.
 
 The bounded presentation and lifecycle-recovery slice is implemented. The coordinator
 retries a failing current-generation BrowserCore frame or Semantics capture
@@ -235,8 +238,11 @@ and process-recreation evidence remain open.
 The first Linux input slice is implemented. Flutter maps logical pointer and
 wheel positions into the exact bounded physical frame viewport and sends strict
 context/document/runtime-generation commands through a serialized 64-event
-queue. BrowserCore performs authoritative hit testing before mouse dispatch;
-the wire never accepts a Dart-selected node id. Keyboard down/up events preserve
+queue. On the transitional texture, BrowserCore performs authoritative legacy
+hit testing before mouse dispatch. On the initial Flutter vertical, Dart returns
+a displayed-commit target and Rust accepts its node id only after validating the
+exact commit, revision, opaque handle, geometry fragment, and coordinates, then
+resolves it to a BrowserCore-authored semantic element. Keyboard down/up events preserve
 modifiers and text where Flutter provides it, shell shortcuts remain chrome-owned,
 and input responses retain runtime effects and navigation actions. Pointer
 cancellation clears only the matching context/document/runtime primary press, so

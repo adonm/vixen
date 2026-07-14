@@ -38,6 +38,7 @@ final class ScriptedBrowserController extends BrowserController
       matches: 0,
       activeMatch: null,
     ),
+    this.rendererUpdatesEnabled = false,
   }) : _activeContextId = snapshot.activeContextId,
        _contexts = {
          for (final context in snapshot.contexts) context.contextId: context,
@@ -51,6 +52,8 @@ final class ScriptedBrowserController extends BrowserController
   final BrowserFrameHandler? onCaptureFrame;
   final BrowserAccessibilityHandler? onAccessibilitySnapshot;
   final FindTextResponse findTextResponse;
+  @override
+  final bool rendererUpdatesEnabled;
   final StreamController<SequencedBrowserEvent> _events =
       StreamController<SequencedBrowserEvent>.broadcast();
   final List<BrowserCommand> commands = [];
@@ -242,6 +245,14 @@ final class ScriptedBrowserController extends BrowserController
             truncated: false,
           ),
         );
+      case 'publish_renderer_snapshot':
+        _knownContext(command.contextId);
+        return const AcceptedResponse();
+      case 'flush_renderer_submissions':
+        return const AcceptedResponse();
+      case 'dispatch_renderer_mouse_event':
+        _knownContext(command.contextId);
+        return InputDispatchedResponse.empty();
       case 'update_host_view_state':
       case 'dispatch_accessibility_action':
       case 'dispatch_mouse_event':

@@ -240,6 +240,34 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
       _validatePositiveId(normalized['document_id'], 'document_id');
       _validateViewport(normalized['viewport']);
       break;
+    case 'publish_renderer_snapshot':
+      _expectKeys(normalized, const <String>{
+        'v',
+        'type',
+        'context_id',
+        'document_id',
+        'viewport',
+        'viewport_generation',
+        'page_zoom',
+      });
+      _validateContextId(normalized['context_id']);
+      _validatePositiveId(normalized['document_id'], 'document_id');
+      _validateViewport(normalized['viewport']);
+      _validatePositiveId(
+        normalized['viewport_generation'],
+        'viewport_generation',
+      );
+      final pageZoom = normalized['page_zoom'];
+      if (pageZoom is! num ||
+          !pageZoom.isFinite ||
+          pageZoom < 0.25 ||
+          pageZoom > 5) {
+        _invalidCommand('page_zoom must be finite and in range');
+      }
+      break;
+    case 'flush_renderer_submissions':
+      _expectKeys(normalized, const <String>{'v', 'type'});
+      break;
     case 'update_host_view_state':
       _expectKeys(normalized, const <String>{
         'v',
@@ -336,6 +364,41 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
         );
       }
       _validateMouseEvent(normalized['event']);
+      break;
+    case 'dispatch_renderer_mouse_event':
+      _expectKeys(normalized, const <String>{
+        'v',
+        'type',
+        'context_id',
+        'document_id',
+        'runtime_context_id',
+        'viewport',
+        'event_type',
+        'event',
+        'query',
+        'target',
+      });
+      _validateContextId(normalized['context_id']);
+      _validatePositiveId(normalized['document_id'], 'document_id');
+      _validatePositiveId(
+        normalized['runtime_context_id'],
+        'runtime_context_id',
+      );
+      _validateViewport(normalized['viewport']);
+      final eventType = normalized['event_type'];
+      if (eventType != 'mousemove' &&
+          eventType != 'mousedown' &&
+          eventType != 'mouseup' &&
+          eventType != 'wheel' &&
+          eventType != 'cancel') {
+        _invalidCommand(
+          'event_type must be mousemove, mousedown, mouseup, wheel, or cancel',
+        );
+      }
+      _validateMouseEvent(normalized['event']);
+      _validateRenderHitTestQuery(normalized['query']);
+      final target = normalized['target'];
+      if (target != null) _validateRenderInputTarget(target);
       break;
     case 'dispatch_key_event':
       _validateInputCommand(normalized);
@@ -510,6 +573,94 @@ void _validateViewport(Object? value) {
     _invalidCommand(
       'viewport must have positive bounded dimensions and RGBA byte length',
     );
+  }
+}
+
+void _validateRenderHitTestQuery(Object? value) {
+  final query = _commandObject(value, 'query');
+  _expectKeys(query, const <String>{
+    'v',
+    'query_id',
+    'context_id',
+    'document_id',
+    'displayed_commit_id',
+    'revision',
+    'handle',
+    'point',
+  });
+  if (query['v'] != vixenAbiVersion) {
+    _invalidCommand('renderer query version must be 1');
+  }
+  for (final field in const <String>[
+    'query_id',
+    'context_id',
+    'document_id',
+    'displayed_commit_id',
+    'handle',
+  ]) {
+    _validatePositiveId(query[field], field);
+  }
+  _validateRenderRevision(query['revision']);
+  _validateRenderPoint(query['point'], 'point');
+}
+
+void _validateRenderInputTarget(Object? value) {
+  final target = _commandObject(value, 'target');
+  _expectKeys(target, const <String>{
+    'v',
+    'query_id',
+    'context_id',
+    'document_id',
+    'displayed_commit_id',
+    'revision',
+    'handle',
+    'node_id',
+    'fragment_id',
+    'viewport_point',
+    'local_point',
+  });
+  if (target['v'] != vixenAbiVersion) {
+    _invalidCommand('renderer target version must be 1');
+  }
+  for (final field in const <String>[
+    'query_id',
+    'context_id',
+    'document_id',
+    'displayed_commit_id',
+    'handle',
+    'node_id',
+    'fragment_id',
+  ]) {
+    _validatePositiveId(target[field], field);
+  }
+  _validateRenderRevision(target['revision']);
+  _validateRenderPoint(target['viewport_point'], 'viewport_point');
+  _validateRenderPoint(target['local_point'], 'local_point');
+}
+
+void _validateRenderRevision(Object? value) {
+  final revision = _commandObject(value, 'revision');
+  _expectKeys(revision, const <String>{
+    'context_id',
+    'document_id',
+    'source_generation',
+    'style_generation',
+    'viewport_generation',
+    'resource_generation',
+  });
+  for (final field in revision.keys) {
+    _validatePositiveId(revision[field], field);
+  }
+}
+
+void _validateRenderPoint(Object? value, String name) {
+  final point = _commandObject(value, name);
+  _expectKeys(point, const <String>{'x', 'y'});
+  for (final field in const <String>['x', 'y']) {
+    final coordinate = point[field];
+    if (coordinate is! num || !coordinate.isFinite) {
+      _invalidCommand('$name.$field must be finite');
+    }
   }
 }
 

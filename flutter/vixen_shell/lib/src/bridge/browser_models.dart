@@ -2,6 +2,8 @@ import 'dart:collection';
 import 'dart:isolate';
 import 'dart:typed_data';
 
+import 'render_models.dart';
+
 const int browserAbiVersion = 1;
 const String vixenStartUrl = 'about:vixen';
 const int browserMaxFrameDimension = 4096;
@@ -851,6 +853,22 @@ final class BrowserCommand {
     'document_id': documentId,
     'viewport': {'width': viewportWidth, 'height': viewportHeight},
   });
+  factory BrowserCommand.publishRendererSnapshot({
+    required int contextId,
+    required int documentId,
+    required int viewportWidth,
+    required int viewportHeight,
+    required int viewportGeneration,
+    required double pageZoom,
+  }) => BrowserCommand._('publish_renderer_snapshot', {
+    'context_id': contextId,
+    'document_id': documentId,
+    'viewport': {'width': viewportWidth, 'height': viewportHeight},
+    'viewport_generation': viewportGeneration,
+    'page_zoom': pageZoom,
+  });
+  factory BrowserCommand.flushRendererSubmissions() =>
+      BrowserCommand._('flush_renderer_submissions', const {});
   factory BrowserCommand.dispatchAccessibilityFocus({
     required int contextId,
     required int documentId,
@@ -926,6 +944,26 @@ final class BrowserCommand {
     'viewport': {'width': viewportWidth, 'height': viewportHeight},
     'event_type': eventType,
     'event': event.toWire(),
+  });
+  factory BrowserCommand.dispatchRendererMouseEvent({
+    required int contextId,
+    required int documentId,
+    required int runtimeContextId,
+    required int viewportWidth,
+    required int viewportHeight,
+    required String eventType,
+    required BrowserMouseEvent event,
+    required RenderHitTestQuery query,
+    required RenderInputTarget? target,
+  }) => BrowserCommand._('dispatch_renderer_mouse_event', {
+    'context_id': contextId,
+    'document_id': documentId,
+    'runtime_context_id': runtimeContextId,
+    'viewport': {'width': viewportWidth, 'height': viewportHeight},
+    'event_type': eventType,
+    'event': event.toWire(),
+    'query': query.toWire(),
+    'target': target?.toWire(),
   });
   factory BrowserCommand.dispatchKeyEvent({
     required int contextId,

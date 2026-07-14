@@ -40,6 +40,9 @@ final class NativeBrowserController extends BrowserController
   Stream<SequencedBrowserEvent> get events => _events.stream;
 
   @override
+  bool get rendererUpdatesEnabled => true;
+
+  @override
   Future<void> start() {
     if (_shutdown) {
       return Future<void>.error(

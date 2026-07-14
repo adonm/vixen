@@ -580,6 +580,17 @@ final class RenderHitTestQuery {
   final RenderRevision revision;
   final int handle;
   final RenderPoint point;
+
+  Map<String, Object?> toWire() => {
+    'v': renderProtocolVersion,
+    'query_id': queryId,
+    'context_id': contextId,
+    'document_id': documentId,
+    'displayed_commit_id': displayedCommitId,
+    'revision': revision.toWire(),
+    'handle': handle,
+    'point': point.toWire(),
+  };
 }
 
 final class RenderInputTarget {

@@ -124,9 +124,11 @@ Rules:
   mutation-generation-tagged semantic projection that Flutter maps without a
   second DOM. ADR-022's bounded R1 mutation/full-resync, atomic-commit, query,
   target, replay, and explicit handle-retirement model is implemented in
-  `vixen-api`; R2's dedicated C/Dart broker and R3's test-only formatter vertical
-  are implemented without changing normal frame presentation. R4–R6 connect
-  production displayed commits before frame transport can be deleted. Single-touch root
+  `vixen-api`; R2's dedicated C/Dart broker and R3's formatter are implemented.
+  The initial R4 production vertical presents a bounded title/semantic-text
+  projection with post-frame acknowledgement and commit-bound pointer targets;
+  the old frame remains its explicit fallback. R4–R6 must complete parity before
+  frame transport can be deleted. Single-touch root
   dragging reuses the bounded cancelable wheel path. Complete renderer cutover,
   semantics/native AT, richer gesture/lifecycle, and non-Linux runners remain
   open.
@@ -497,8 +499,10 @@ slots. One mutex/condition queue atomically owns closure, deadlines, queue order
 and all pending slots, so polling does not free capacity before a response. C
 output remains retained only by release token. The bridge can be shut down from
 the Flutter/UI side to cancel requests and wake polls even if the command worker
-is blocked. The small Dart service consumes records into the test-only R3
-formatter without calling BrowserCore.
+is blocked. The small Dart service consumes records into the R3 formatter without
+calling BrowserCore. Production now uses the service for one bounded R4
+projection; source publication and submission draining remain control operations,
+while renderer DTO payloads stay on the dedicated queues.
 
 ### Synchronous layout broker
 
@@ -530,10 +534,11 @@ presented scene without compositor chrome.
 
 ### Migration rule
 
-Experimental Flutter rendering remains test-only until the R3–R6 gates prove the
-controlled vertical, interactive displayed-commit behavior, chrome-less fixture/
-CDP/Playwright capture, synchronous layout, cancellation, resync, and renderer
-loss. Production then cuts over once. Apply the complete R7 deletion inventory:
+The initial Flutter vertical may run in production with the old frame as an
+explicit fallback, but it is not the renderer cutover. R4–R6 must still prove the
+complete interactive controlled vertical, chrome-less fixture/CDP/Playwright
+capture, synchronous layout, cancellation, resync, and renderer loss. Production
+then cuts over once. Apply the complete R7 deletion inventory:
 WebRender/gleam, `GlContext`, both EGL paths, image upload, RGBA frame ABI/pools,
 the Dart frame worker, pixel-buffer plugin/presenter and recovery tests,
 superseded Rust layout/paint, duplicated geometry/input projections, obsolete

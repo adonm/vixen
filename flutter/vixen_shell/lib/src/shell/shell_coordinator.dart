@@ -5,16 +5,32 @@ import 'package:flutter/foundation.dart';
 
 import '../bridge/browser_controller.dart';
 import '../bridge/browser_models.dart';
+import '../bridge/native/native_renderer_protocol.dart';
+import '../bridge/render_models.dart';
+import '../bridge/renderer_transport.dart';
+import '../renderer/formatter.dart';
+import '../renderer/renderer_broker_service.dart';
 import 'address.dart';
 
 final class ShellCoordinator extends ChangeNotifier {
   static const int maxPendingInputEvents = 64;
   static const int maxCaptureRetries = 2;
+  static const int maxRendererPresentationRetries = 2;
 
-  ShellCoordinator(this.controller, {this.initialUrl = vixenStartUrl});
+  ShellCoordinator(this.controller, {this.initialUrl = vixenStartUrl}) {
+    if (controller case final RendererTransport transport
+        when transport.rendererUpdatesEnabled) {
+      _rendererService = RendererBrokerService(
+        transport: transport,
+        formatter: _formatter,
+      );
+    }
+  }
 
   final BrowserController controller;
   final String initialUrl;
+  final VixenFormatter _formatter = VixenFormatter();
+  RendererBrokerService? _rendererService;
   final List<BrowsingContextState> _contexts = [];
   final Set<int> _closedContextIds = {};
   final Map<int, int> _pendingNavigations = {};
@@ -26,6 +42,7 @@ final class ShellCoordinator extends ChangeNotifier {
   Future<void>? _closeFuture;
   Future<void> _inputTail = Future<void>.value();
   Future<void> _hostViewTail = Future<void>.value();
+  Future<void> _rendererTail = Future<void>.value();
   _FrameCaptureRequest? _replacementCapture;
   _FrameCaptureKey? _lastCaptureKey;
   _AccessibilityCaptureRequest? _replacementAccessibilityCapture;
@@ -39,6 +56,9 @@ final class ShellCoordinator extends ChangeNotifier {
   int _projectionGeneration = 0;
   int _inputGeneration = 0;
   int _hostViewGeneration = 0;
+  int _rendererViewportGeneration = 0;
+  int _nextRendererQueryId = 1;
+  int _rendererPresentationFailures = 0;
   int _pendingInputEvents = 0;
   int _findRequestGeneration = 0;
   int _frameCaptureFailures = 0;
@@ -49,6 +69,7 @@ final class ShellCoordinator extends ChangeNotifier {
   String? _errorMessage;
   BrowserFrame? _frame;
   BrowserAccessibilitySnapshot? _accessibility;
+  FormatterCommitView? _rendererView;
   _PendingAccessibility? _pendingAccessibility;
   _PendingFrame? _pendingFrame;
   InputDispatchedResponse? _lastInputResult;
@@ -63,6 +84,10 @@ final class ShellCoordinator extends ChangeNotifier {
   bool _isStarting = false;
   bool _isReady = false;
   bool _disposed = false;
+  _FrameCaptureKey? _lastRendererKey;
+  int? _pendingRendererPresentationId;
+  _RendererSnapshotRequest? _pendingRendererSnapshot;
+  bool _rendererSnapshotScheduled = false;
 
   UnmodifiableListView<BrowsingContextState> get contexts =>
       UnmodifiableListView(_contexts);
@@ -81,6 +106,7 @@ final class ShellCoordinator extends ChangeNotifier {
   String? get errorMessage => _errorMessage;
   BrowserFrame? get frame => _frame;
   BrowserAccessibilitySnapshot? get accessibility => _accessibility;
+  FormatterCommitView? get rendererView => _rendererView;
   InputDispatchedResponse? get lastInputResult => _lastInputResult;
   int? get lastEventSequence => _lastEventSequence;
   String get findQuery => _findQuery;
@@ -361,6 +387,38 @@ final class ShellCoordinator extends ChangeNotifier {
 
   Future<void> dispatchMouseEvent(String eventType, BrowserMouseEvent event) =>
       _enqueueInput((generation) async {
+        final rendererView = _rendererView;
+        if (rendererView != null) {
+          final displayed = _formatter.displayedView;
+          if (!identical(rendererView, displayed) ||
+              rendererView.isRetired ||
+              rendererView.commit.viewport.width != generation.viewportWidth ||
+              rendererView.commit.viewport.height !=
+                  generation.viewportHeight) {
+            return;
+          }
+          final query = RenderHitTestQuery(
+            queryId: _takeRendererQueryId(),
+            contextId: generation.contextId,
+            documentId: generation.documentId,
+            displayedCommitId: rendererView.commit.commitId,
+            revision: rendererView.commit.revision,
+            handle: rendererView.commit.hitTestHandle,
+            point: RenderPoint(event.x, event.y),
+          );
+          _lastInputResult = await controller.dispatchRendererMouseEvent(
+            contextId: generation.contextId,
+            documentId: generation.documentId,
+            runtimeContextId: generation.runtimeContextId,
+            viewportWidth: generation.viewportWidth,
+            viewportHeight: generation.viewportHeight,
+            eventType: eventType,
+            event: event,
+            query: query,
+            target: rendererView.answerHitTest(query),
+          );
+          return;
+        }
         _lastInputResult = await controller.dispatchMouseEvent(
           contextId: generation.contextId,
           documentId: generation.documentId,
@@ -371,6 +429,16 @@ final class ShellCoordinator extends ChangeNotifier {
           event: event,
         );
       });
+
+  int _takeRendererQueryId() {
+    if (_nextRendererQueryId > 0x7fffffffffffffff) {
+      throw const RenderProtocolException(
+        'render.id-exhausted',
+        'renderer hit-test query id exhausted',
+      );
+    }
+    return _nextRendererQueryId++;
+  }
 
   Future<void> dispatchKeyEvent(String eventType, BrowserKeyEvent event) =>
       _enqueueInput((generation) async {
@@ -800,6 +868,7 @@ final class ShellCoordinator extends ChangeNotifier {
       width: _viewportWidth,
       height: _viewportHeight,
     );
+    _scheduleRendererSnapshot(key, force: force);
     if (!force && key == _lastCaptureKey && key == _lastAccessibilityKey) {
       return;
     }
@@ -821,6 +890,145 @@ final class ShellCoordinator extends ChangeNotifier {
       return;
     }
     unawaited(_captureFrame(request));
+  }
+
+  void _scheduleRendererSnapshot(_FrameCaptureKey key, {required bool force}) {
+    if (_rendererService == null || controller is! RendererTransport) return;
+    if (!force && key == _lastRendererKey) return;
+    if (force || key != _lastRendererKey) {
+      _rendererViewportGeneration++;
+    }
+    _lastRendererKey = key;
+    _pendingRendererSnapshot = _RendererSnapshotRequest(
+      key: key,
+      viewportGeneration: _rendererViewportGeneration,
+      pageZoom: selectedContext?.pageZoom ?? 1,
+    );
+    _scheduleRendererSnapshotDrain();
+  }
+
+  void _scheduleRendererSnapshotDrain() {
+    if (_rendererSnapshotScheduled) return;
+    _rendererSnapshotScheduled = true;
+    final operation = _rendererTail.then((_) async {
+      final request = _pendingRendererSnapshot;
+      _pendingRendererSnapshot = null;
+      if (request != null) await _publishRendererSnapshot(request);
+    });
+    _rendererTail = operation.whenComplete(() {
+      _rendererSnapshotScheduled = false;
+      if (_pendingRendererSnapshot != null) {
+        _scheduleRendererSnapshotDrain();
+      }
+    });
+  }
+
+  Future<void> _publishRendererSnapshot(
+    _RendererSnapshotRequest request,
+  ) async {
+    final service = _rendererService;
+    final key = request.key;
+    if (service == null || _closeFuture != null || !_isCurrentCapture(key)) {
+      return;
+    }
+    try {
+      await controller.publishRendererSnapshot(
+        contextId: key.contextId,
+        documentId: key.documentId,
+        viewportWidth: key.width,
+        viewportHeight: key.height,
+        viewportGeneration: request.viewportGeneration,
+        pageZoom: request.pageZoom,
+      );
+      await _drainRenderer(service);
+      final view = _formatter.acceptedView;
+      if (view == null ||
+          view.commit.revision.contextId != key.contextId ||
+          view.commit.revision.documentId != key.documentId) {
+        return;
+      }
+      await controller.flushRendererSubmissions();
+      await _drainRenderer(service);
+      _rendererView = view;
+      _notify();
+    } catch (error) {
+      try {
+        await _drainRenderer(service);
+      } catch (_) {
+        // Preserve the original commit failure as the user-visible error.
+      }
+      if (_isCurrentCapture(key)) {
+        _showError('Unable to present Flutter renderer commit', error);
+      }
+    }
+  }
+
+  void rendererCommitPresented(FormatterCommitView view) {
+    final service = _rendererService;
+    final transport = controller is RendererTransport
+        ? controller as RendererTransport
+        : null;
+    if (service == null ||
+        transport == null ||
+        !identical(view, _rendererView) ||
+        view.isRetired ||
+        _formatter.displayedView?.commit.commitId == view.commit.commitId ||
+        _pendingRendererPresentationId == view.commit.commitId) {
+      return;
+    }
+    _pendingRendererPresentationId = view.commit.commitId;
+    _rendererTail = _rendererTail.then((_) async {
+      if (_closeFuture != null ||
+          !identical(view, _rendererView) ||
+          view.isRetired) {
+        if (_pendingRendererPresentationId == view.commit.commitId) {
+          _pendingRendererPresentationId = null;
+        }
+        return;
+      }
+      final presented = RenderPresented(
+        contextId: view.commit.revision.contextId,
+        documentId: view.commit.revision.documentId,
+        commitId: view.commit.commitId,
+        revision: view.commit.revision,
+      );
+      try {
+        transport.submitRenderer(rendererPresentedSubmission(presented));
+        await controller.flushRendererSubmissions();
+        await _drainRenderer(service);
+        if (!identical(view, _rendererView) || view.isRetired) return;
+        _formatter.present(presented);
+        _rendererPresentationFailures = 0;
+      } catch (error) {
+        try {
+          await _drainRenderer(service);
+        } catch (_) {
+          // Preserve the original presentation failure as the visible error.
+        }
+        if (identical(view, _rendererView)) {
+          _rendererView = _formatter.displayedView;
+          _rendererPresentationFailures++;
+          _showError('Unable to acknowledge Flutter renderer commit', error);
+          if (_rendererPresentationFailures <= maxRendererPresentationRetries) {
+            _scheduleFrameCapture(force: true);
+          }
+        }
+      } finally {
+        if (_pendingRendererPresentationId == view.commit.commitId) {
+          _pendingRendererPresentationId = null;
+        }
+      }
+    });
+  }
+
+  Future<void> _drainRenderer(RendererBrokerService service) async {
+    for (var count = 0; count < renderBrokerQueueCapacity * 2; count++) {
+      if (!await service.serviceNext()) return;
+    }
+    throw const RenderProtocolException(
+      'render.queue-full',
+      'renderer message drain exceeded its bounded work budget',
+    );
   }
 
   Future<void> _captureFrame(_FrameCaptureRequest request) async {
@@ -1006,6 +1214,16 @@ final class ShellCoordinator extends ChangeNotifier {
   }
 
   void _clearFrame() {
+    _rendererView = null;
+    _lastRendererKey = null;
+    _pendingRendererPresentationId = null;
+    _pendingRendererSnapshot = null;
+    _rendererPresentationFailures = 0;
+    final selected = selectedContext;
+    _formatter.reset(
+      contextId: selected?.contextId ?? 1,
+      documentId: selected?.documentId ?? 1,
+    );
     _frame = null;
     _lastCaptureKey = null;
     _replacementCapture = null;
@@ -1049,10 +1267,12 @@ final class ShellCoordinator extends ChangeNotifier {
       if (_startFuture != null) await _startFuture;
       await _inputTail;
       await _hostViewTail;
+      await _rendererTail;
       await controller.saveCurrentProfileSession();
     } catch (_) {
       // Shutdown still has to release the sole native browser owner.
     } finally {
+      _formatter.dispose();
       await controller.shutdown();
     }
   }
@@ -1153,6 +1373,18 @@ final class _FrameCaptureRequest {
   final int generation;
   final int projectionGeneration;
   final _FrameCaptureKey key;
+}
+
+final class _RendererSnapshotRequest {
+  const _RendererSnapshotRequest({
+    required this.key,
+    required this.viewportGeneration,
+    required this.pageZoom,
+  });
+
+  final _FrameCaptureKey key;
+  final int viewportGeneration;
+  final double pageZoom;
 }
 
 final class _AccessibilityCaptureRequest {

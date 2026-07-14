@@ -4,11 +4,98 @@ import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vixen_shell/src/bridge/browser_models.dart';
 import 'package:vixen_shell/src/bridge/fake/scripted_browser_controller.dart';
+import 'package:vixen_shell/src/bridge/native/native_renderer_protocol.dart';
 import 'package:vixen_shell/src/shell/shell_coordinator.dart';
 
 import 'browser_models_test.dart' show contextState;
+import 'support/r3_fixture.dart';
 
 void main() {
+  test(
+    'production renderer update becomes the displayed Flutter commit',
+    () async {
+      final state = BrowsingContextState(
+        contextId: 1,
+        mainFrameId: 10,
+        documentId: 2,
+        runtimeContextId: 100,
+        activeNavigationId: null,
+        url: 'file:///basic.html',
+        title: 'Basic',
+        historyLength: 1,
+        historyIndex: 0,
+        canGoBack: false,
+        canGoForward: false,
+        isLoading: false,
+        loadProgress: 1,
+      );
+      final controller = ScriptedBrowserController(
+        rendererUpdatesEnabled: true,
+        snapshot: BrowserSnapshot(activeContextId: 1, contexts: [state]),
+      );
+      final coordinator = ShellCoordinator(controller);
+      await coordinator.start();
+      controller.enqueueRendererRequest(NativeFullSnapshotUpdate(r3Snapshot()));
+      coordinator.updatePhysicalViewport(240, 160);
+      for (
+        var attempt = 0;
+        attempt < 50 && coordinator.rendererView == null;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+
+      expect(coordinator.rendererView, isNotNull);
+      expect(coordinator.rendererView?.commit.revision.documentId, 2);
+      final view = coordinator.rendererView!;
+      coordinator.rendererCommitPresented(view);
+      for (
+        var attempt = 0;
+        attempt < 50 &&
+            controller.commands
+                    .where(
+                      (command) => command.type == 'flush_renderer_submissions',
+                    )
+                    .length <
+                2;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      coordinator.updateContentFocus(true);
+      final targetRect = view.commit.geometry
+          .singleWhere((entry) => entry.nodeId == 9)
+          .borderBox;
+      await coordinator.dispatchMouseEvent(
+        'mousedown',
+        BrowserMouseEvent(
+          x: targetRect.x + targetRect.width / 2,
+          y: targetRect.y + targetRect.height / 2,
+          button: 0,
+          buttons: 1,
+          detail: 1,
+        ),
+      );
+      expect(
+        controller.commands.map((command) => command.type),
+        containsAllInOrder([
+          'publish_renderer_snapshot',
+          'flush_renderer_submissions',
+          'flush_renderer_submissions',
+          'dispatch_renderer_mouse_event',
+        ]),
+      );
+      final rendererInput = controller.commands
+          .lastWhere(
+            (command) => command.type == 'dispatch_renderer_mouse_event',
+          )
+          .toWire();
+      expect(rendererInput['query'], isA<Map<String, Object?>>());
+      expect(rendererInput['target'], isA<Map<String, Object?>>());
+      await coordinator.close();
+    },
+  );
+
   test(
     'startup creates exactly one about:vixen context when session is empty',
     () async {
