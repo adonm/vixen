@@ -14,6 +14,7 @@ use std::rc::Rc;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
+use deno_core::futures::future::{Either, select};
 use deno_core::serde_json::{Value, json};
 use deno_core::{Extension, ExtensionFileSource, OpState};
 use url::Url;
@@ -1115,6 +1116,7 @@ fn cors_preflight_blocking(
     }
 
     let (result_tx, result_rx) = mpsc::sync_channel(1);
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     let handle = std::thread::Builder::new()
         .name("vixen-fetch-preflight".to_owned())
         .spawn(move || {
@@ -1138,8 +1140,8 @@ fn cors_preflight_blocking(
                     .map_err(|err| format!("network runtime unavailable: {err}"))?;
                 let mut network = network;
                 let mut jar = CookieJar::default();
-                let response = rt
-                    .block_on(network.get_text_with_cookies_request(
+                let response = rt.block_on(async {
+                    let transport = Box::pin(network.get_text_with_cookies_request(
                         &mut jar,
                         TextRequest {
                             url,
@@ -1149,8 +1151,16 @@ fn cors_preflight_blocking(
                             headers,
                             body: None,
                         },
-                    ))
-                    .map_err(|err| err.to_string())?;
+                    ));
+                    let cancel = Box::pin(cancel_rx);
+                    match select(transport, cancel).await {
+                        Either::Left((result, _)) => result.map_err(|err| err.to_string()),
+                        Either::Right((_, transport)) => {
+                            drop(transport);
+                            Err(HOST_CALL_INTERRUPTED.to_owned())
+                        }
+                    }
+                })?;
                 validate_cors_preflight_response(
                     response,
                     &request_origin,
@@ -1162,8 +1172,13 @@ fn cors_preflight_blocking(
             let _ = result_tx.send(result);
         })
         .map_err(|err| format!("fetch preflight worker spawn failed: {err}"))?;
-    let cors_headers =
-        wait_for_host_worker(result_rx, handle, &runtime_interrupt, "fetch preflight")?;
+    let cors_headers = wait_for_host_worker(
+        result_rx,
+        handle,
+        cancel_tx,
+        &runtime_interrupt,
+        "fetch preflight",
+    )?;
     let max_age = Duration::from_secs(
         cors_headers
             .max_age
@@ -1266,6 +1281,7 @@ fn fetch_http_text_blocking(
     let worker_cookies = Arc::clone(&cookies);
     let worker_store = cookie_store.clone();
     let (result_tx, result_rx) = mpsc::sync_channel(1);
+    let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     let handle = std::thread::Builder::new()
         .name("vixen-fetch".to_owned())
         .spawn(move || {
@@ -1283,9 +1299,18 @@ fn fetch_http_text_blocking(
                     .build()
                     .map_err(|err| format!("network runtime unavailable: {err}"))?;
                 let mut network = network;
-                let response = rt
-                    .block_on(network.get_text_with_cookies_request(&mut jar, request))
-                    .map_err(|err| err.to_string())?;
+                let response = rt.block_on(async {
+                    let transport =
+                        Box::pin(network.get_text_with_cookies_request(&mut jar, request));
+                    let cancel = Box::pin(cancel_rx);
+                    match select(transport, cancel).await {
+                        Either::Left((result, _)) => result.map_err(|err| err.to_string()),
+                        Either::Right((_, transport)) => {
+                            drop(transport);
+                            Err(HOST_CALL_INTERRUPTED.to_owned())
+                        }
+                    }
+                })?;
                 Ok(FetchWorkerResult {
                     response,
                     credentials: send_credentials.then_some(FetchWorkerCredentials {
@@ -1298,7 +1323,7 @@ fn fetch_http_text_blocking(
             let _ = result_tx.send(result);
         })
         .map_err(|err| format!("fetch worker spawn failed: {err}"))?;
-    let result = wait_for_host_worker(result_rx, handle, &runtime_interrupt, "fetch")?;
+    let result = wait_for_host_worker(result_rx, handle, cancel_tx, &runtime_interrupt, "fetch")?;
     if let Some(credentials) = result.credentials {
         commit_host_effect(&runtime_interrupt, || {
             persist_cookie_jar(
@@ -1330,11 +1355,20 @@ const HOST_CALL_INTERRUPTED: &str = "runtime host call interrupted";
 fn wait_for_host_worker<T>(
     result_rx: mpsc::Receiver<Result<T, String>>,
     handle: std::thread::JoinHandle<()>,
+    cancel: tokio::sync::oneshot::Sender<()>,
     runtime_interrupt: &RuntimeInterruptHandle,
     name: &str,
 ) -> Result<T, String> {
+    let mut cancel = Some(cancel);
     loop {
         if runtime_interrupt.is_terminated() {
+            let _ = cancel
+                .take()
+                .expect("host worker cancellation is single-use")
+                .send(());
+            handle
+                .join()
+                .map_err(|_| format!("{name} worker panicked"))?;
             return Err(HOST_CALL_INTERRUPTED.to_owned());
         }
         match result_rx.recv_timeout(HOST_WORKER_POLL_INTERVAL) {

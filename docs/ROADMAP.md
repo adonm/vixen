@@ -88,8 +88,8 @@ script items, and terminal lifecycle stages now yield cooperatively on the core
 owner. Accepted navigate/reload/stop/close commands snapshot the exact active
 runtime generation and interrupt its V8 execution, promise pumping, or runtime
 fetch/CORS worker wait before the bounded deadline; the isolate unwinds and
-remains reusable. A cancelled fetch worker cannot commit cookies or cache state,
-though its already-started bounded transport may finish in the background.
+remains reusable. A cancelled fetch/CORS worker drops its in-flight reqwest
+future, closes the peer transport, joins, and cannot commit cookies or cache state.
 Runtime construction, other local native host ops, and non-script discovered-
 resource fetches are not yet interruptible, and compatibility projections still
 coexist with the live page/runtime. Parser-discovered external classic scripts use generation-
@@ -208,11 +208,11 @@ spurious runtime exception, suppresses the next script, and leaves the isolate
 reusable.
 Runtime `fetch()` and CORS preflight still expose a synchronous op internally,
 but network work now returns through a cancellation-polled worker channel. On
-interruption the owner stops waiting immediately; the detached bounded transport
-has no persistence capability, and only a still-active exact runtime may commit
-its returned cookie, preflight-cache, or HTTP-cache effects. A gated-response
-test proves stop returns while the server is still blocked and that the late
-`Set-Cookie` cannot enter the live document/profile.
+interruption a worker-local signal drops the in-flight reqwest future and the
+owner joins the worker; only a still-active exact runtime may commit returned
+cookie, preflight-cache, or HTTP-cache effects. Gated fetch and preflight tests
+prove stop returns while the server is blocked, the peer observes disconnect
+before responding, one cancellation terminalizes, and the isolate remains reusable.
 Configured and parser-discovered
 scripts now advance one item per generation-checked quantum, followed by separate
 DOMContentLoaded, load, and settle quanta. External classic scripts resolve and
@@ -229,8 +229,8 @@ and during allocation. Stop or supersede preserves completed script mutations wh
 suppressing unstarted items and later success lifecycle events. Author exceptions
 surface as runtime effects, allow later independent scripts to run, and do not
 turn a committed document into a failed navigation. Runtime construction, other
-local native host cancellation, active transport abort, and non-script resource
-loading remain the next A2 boundary.
+local native host cancellation, and non-script resource loading remain the next
+A2 boundary.
 
 The obsolete fail-closed `Page` string-expression path and headless test-only
 classifiers are deleted; all evaluation adapters use `BrowserCore`/`JsRuntime`.
@@ -398,9 +398,9 @@ same-owner stop/supersede responsiveness, pre-request redirect-CSP and active-
 mixed-content checks, profile-wide cookie sharing/persistence, bounded file reads,
 and rejection of late source/cookie/document/runtime completions.
 Exact-generation navigate/reload/stop/close commands now interrupt active V8
-jobs and runtime fetch/CORS worker waits before the watchdog without emitting a
-page exception or accepting late persistence. Runtime construction, other local
-native host calls, active transport abort, and non-script resource loading remain.
+jobs and abort runtime fetch/CORS transport before the watchdog without emitting
+a page exception or accepting late persistence. Runtime construction, other
+local native host calls, and non-script resource loading remain.
 
 ### A3. Live document/runtime integration
 
@@ -614,22 +614,17 @@ it is not permission to implement the whole subsystem in one batch.
 
 **Shared-core lane**
 
-1. **Abort active runtime transport.** Extend the landed cancellation-polled
-   runtime `fetch()`/CORS wait so cancellation also aborts the in-flight transport
-   rather than only detaching its no-write worker. Preserve exact runtime/
-   navigation generations and one terminal outcome. Prove with a gated server,
-   `just test-browser-core`, and `just gate-phase6`.
-2. **Load one real external stylesheet.** Route parser-discovered
+1. **Load one real external stylesheet.** Route parser-discovered
    `<link rel="stylesheet">` through the same request ids, redirect/policy,
    cancellation, cookie/cache, and current-document checks as other core
    resources; apply it to the authoritative cascade and repaint. One fixture must
    prove visible style, and one race must reject a late stylesheet. Do not build a
    generalized scheduler before this vertical works.
-3. **Decode and paint one bounded raster-image vertical.** Reuse the resource
+2. **Decode and paint one bounded raster-image vertical.** Reuse the resource
    request path, enforce response/body/decode limits before display-list exposure,
    and prove the same pixels in GUI/headless capture. Responsive selection and
    broad image formats widen only after this path is real.
-4. **Shape one text/fallback vertical.** Replace deterministic metrics for one
+3. **Shape one text/fallback vertical.** Replace deterministic metrics for one
    common script/fallback case through layout, paint, hit testing, find, and
    Semantics together; add a focused fixture before broad font-platform work.
 

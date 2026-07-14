@@ -4979,6 +4979,7 @@ mod tests {
         cookie: Option<String>,
         respond: mpsc::SyncSender<String>,
         completed: mpsc::Receiver<()>,
+        disconnected: mpsc::Receiver<()>,
     }
 
     struct GatedHttpServer {
@@ -4989,6 +4990,14 @@ mod tests {
 
     impl GatedHttpServer {
         fn start(expected_requests: usize) -> Self {
+            Self::start_with_options(expected_requests, false)
+        }
+
+        fn start_with_disconnect_detection(expected_requests: usize) -> Self {
+            Self::start_with_options(expected_requests, true)
+        }
+
+        fn start_with_options(expected_requests: usize, detect_disconnects: bool) -> Self {
             let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
             let address = listener.local_addr().unwrap();
             let (request_tx, requests) = mpsc::sync_channel(expected_requests);
@@ -5016,17 +5025,51 @@ mod tests {
                         let cookie_value = path.trim_matches('/').to_owned();
                         let (respond, response) = mpsc::sync_channel(1);
                         let (completed, completed_rx) = mpsc::sync_channel(1);
+                        let (disconnected, disconnected_rx) = mpsc::sync_channel(1);
                         request_tx
                             .send(GatedRequest {
                                 path,
                                 cookie,
                                 respond,
                                 completed: completed_rx,
+                                disconnected: disconnected_rx,
                             })
                             .unwrap();
-                        let body = response
-                            .recv_timeout(Duration::from_secs(10))
-                            .expect("gated response watchdog");
+                        let body = if detect_disconnects {
+                            stream.set_nonblocking(true).unwrap();
+                            let deadline = std::time::Instant::now() + Duration::from_secs(10);
+                            let body = loop {
+                                match response.try_recv() {
+                                    Ok(body) => break body,
+                                    Err(mpsc::TryRecvError::Disconnected) => return,
+                                    Err(mpsc::TryRecvError::Empty) => {}
+                                }
+                                match stream.peek(&mut [0_u8; 1]) {
+                                    Ok(0) => {
+                                        let _ = disconnected.send(());
+                                        return;
+                                    }
+                                    Ok(_) => {}
+                                    Err(error)
+                                        if error.kind() == std::io::ErrorKind::WouldBlock => {}
+                                    Err(_) => {
+                                        let _ = disconnected.send(());
+                                        return;
+                                    }
+                                }
+                                assert!(
+                                    std::time::Instant::now() < deadline,
+                                    "gated response watchdog"
+                                );
+                                std::thread::sleep(Duration::from_millis(2));
+                            };
+                            stream.set_nonblocking(false).unwrap();
+                            body
+                        } else {
+                            response
+                                .recv_timeout(Duration::from_secs(10))
+                                .expect("gated response watchdog")
+                        };
                         let response = if body.starts_with("HTTP/") {
                             body
                         } else {
@@ -8904,8 +8947,8 @@ mod tests {
     }
 
     #[test]
-    fn stop_interrupts_an_active_fetch_without_stale_effects_or_a_spurious_exception() {
-        let server = GatedHttpServer::start(2);
+    fn stop_aborts_an_active_fetch_without_stale_effects_or_a_spurious_exception() {
+        let server = GatedHttpServer::start_with_disconnect_detection(2);
         let page_url = server.url("/page");
         let script_url = server.url("/loop.js");
         let marker_url = server.url("/started");
@@ -8947,12 +8990,10 @@ mod tests {
             started.elapsed() < Duration::from_millis(150),
             "stop waited for the active native fetch"
         );
-        marker.respond.send(String::new()).unwrap();
         marker
-            .completed
+            .disconnected
             .recv_timeout(Duration::from_secs(10))
-            .unwrap();
-        std::thread::sleep(Duration::from_millis(25));
+            .expect("runtime transport remained connected after stop");
 
         let events = drain_events(&mut handle);
         assert_navigation_cancelled(
@@ -8972,6 +9013,76 @@ mod tests {
             panic!("document.cookie must be a string");
         };
         assert!(!cookie.contains("source=started"));
+        assert_eq!(eval(&mut handle, &state, "20 + 22"), ScriptValue::Int32(42));
+        drop(handle);
+        server.join();
+    }
+
+    #[test]
+    fn stop_aborts_an_active_fetch_preflight_without_a_spurious_exception() {
+        let server = GatedHttpServer::start_with_disconnect_detection(2);
+        let page_url = "http://source.test/preflight-page".to_owned();
+        let script_url = server.url("/preflight.js");
+        let target_url = server.url("/preflight-target");
+        let mut config = test_config();
+        server.configure(&mut config);
+        config.document_overrides.insert(
+            page_url.clone(),
+            format!(
+                "<!doctype html><title>running</title><script src=\"{script_url}\"></script><script>document.title = 'stale'</script>"
+            ),
+        );
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/preflight.js");
+        request
+            .respond
+            .send(script_response(
+                &format!(
+                    "fetch('{target_url}', {{ method: 'POST', headers: {{ 'X-Vixen-Custom': 'yes' }} }});"
+                ),
+                None,
+            ))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let preflight = server.request();
+        assert_eq!(preflight.path, "/preflight-target");
+
+        let started = std::time::Instant::now();
+        assert_eq!(
+            handle
+                .dispatch(BrowserCommand::Stop { context_id })
+                .unwrap(),
+            BrowserCommandResult::Accepted
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "stop waited for the active CORS preflight"
+        );
+        preflight
+            .disconnected
+            .recv_timeout(Duration::from_secs(10))
+            .expect("preflight transport remained connected after stop");
+
+        let events = drain_events(&mut handle);
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Stopped,
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.exceptions.iter().any(|exception|
+                    matches!(exception.error.code, crate::engine_error::codes::SCRIPT_INTERRUPTED | crate::engine_error::codes::SCRIPT_TIMEOUT))
+        )));
+        let state = state(&mut handle, context_id);
+        assert_eq!(state.title.as_deref(), Some("running"));
         assert_eq!(eval(&mut handle, &state, "20 + 22"), ScriptValue::Int32(42));
         drop(handle);
         server.join();
