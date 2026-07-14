@@ -263,7 +263,7 @@ mod tests {
         assert!(request.allows_url(request.url()));
         assert_eq!(
             request.blocked_reason(&url::Url::parse("http://images.test/pixel.png").unwrap()),
-            Some("csp")
+            Some("mixed-content")
         );
     }
 }
