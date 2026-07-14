@@ -256,9 +256,8 @@ void main() {
         revision: first.commit.revision,
       ),
     );
-    final firstSemantics = RenderCommitPainter(
-      formatter.displayedView!,
-    ).semanticsBuilder(first.viewport);
+    final firstSemantics = RenderCommitPainter(formatter.displayedView!)
+        .semanticsBuilder(first.viewport);
     expect(
       firstSemantics.map((entry) => entry.properties.label),
       containsAll(['Vixen renderer', 'Read more']),
@@ -268,9 +267,8 @@ void main() {
     final second = (await formatter.applyMutationBatch(
       r3Mutation(),
     ) as RenderApplied).view;
-    final stagedSemantics = RenderCommitPainter(
-      formatter.displayedView!,
-    ).semanticsBuilder(first.viewport);
+    final stagedSemantics = RenderCommitPainter(formatter.displayedView!)
+        .semanticsBuilder(first.viewport);
     expect(stagedSemantics.first.properties.label, 'Vixen renderer');
     formatter.present(
       RenderPresented(
@@ -278,9 +276,8 @@ void main() {
         revision: second.commit.revision,
       ),
     );
-    final secondSemantics = RenderCommitPainter(
-      formatter.displayedView!,
-    ).semanticsBuilder(second.viewport);
+    final secondSemantics = RenderCommitPainter(formatter.displayedView!)
+        .semanticsBuilder(second.viewport);
     expect(secondSemantics.first.properties.label, 'Updated Vixen');
   });
 }

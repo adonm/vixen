@@ -89,8 +89,7 @@ FullRenderSnapshot r3Snapshot({int generation = 1, bool updated = false}) {
       depth: 3,
       kind: RenderNodeKind.text,
       name: '#text',
-      text:
-          'Flutter Paragraph owns wrapping and exact UTF-16 range geometry for this controlled document.',
+      text: 'Flutter Paragraph owns wrapping and exact UTF-16 range geometry for this controlled document.',
       styles: const {'font-size': '15', 'color': '#ffd166'},
     ),
     RenderNode(
