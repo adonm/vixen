@@ -9,11 +9,11 @@ Until alpha, continue without asking unless a change would alter architecture.
 Architecture changes include:
 
 - a new JS runtime target or abstraction,
-- a GUI path other than the ADR-018/ADR-021 Flutter shell,
+- a rendered frontend other than ADR-022's Flutter formatter/shell/automation host,
 - a second render/paint path,
-- a Flutter bridge that moves browser ownership, web rendering, or accessibility
-  source data out of BrowserCore,
-- a new layout architecture,
+- a bridge that moves navigation, DOM/runtime, policy, persistence, web-event
+  semantics, or accessibility meaning out of BrowserCore,
+- a layout architecture outside ADR-022's mutation/commit ownership,
 - a core dependency that changes binary-size or subsystem ownership materially,
 - a security-policy change that makes behavior less fail-closed.
 
@@ -38,11 +38,11 @@ For ordinary implementation details, choose the safest path aligned with
 The checked-in Linux Flutter slice uses an exact ignored SDK checkout and
 `just gate-flutter-shell`; bootstrap it with `just setup-flutter`. Do not report
 Rust/GTK checks as Flutter proof, or Dart/widget checks as Linux package proof.
-Platform work follows `FLUTTER_SHELL.md`: basic browser behavior (especially
-scrolling, IME, find/zoom, and recovery), complete Semantics/native AT, host
-services and size evidence, then FlatPark publishing, desktop expansion,
-Android, and the iOS Simulator track,
-with V8 WebAssembly, accessibility, and host services consistent across targets.
+Platform work follows `ROADMAP.md` and `FLUTTER_SHELL.md`: finish ADR-022's
+renderer protocol, Flutter vertical, chrome-less host, synchronous layout, and
+aggressive transitional-renderer deletion before widening shell behavior.
+Reproduce Linux compatibility/interaction/AT/release evidence, then resume host
+services, FlatPark publishing, desktop expansion, Android, and the iOS Simulator.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

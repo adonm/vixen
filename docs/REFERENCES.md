@@ -6,19 +6,19 @@ revision below. The reference trees are large; pinning prevents
 non-reproducible consultations ("latest main" drifts).
 
 These pinned revisions are the canonical reference set for Vixen's
-implementation work, captured once so every citation points at the same
-tree state.
+implementation work. Update a pin deliberately with the corresponding toolchain/
+architecture change so citations continue to name an exact tree state.
 
 ---
 
-## Pin table (captured 2026-07-06 from branch HEADs)
+## Pin table (reviewed 2026-07-14)
 
 | Reference      | Upstream                                                          | Pinned revision    | Branch | Used for |
 |----------------|-------------------------------------------------------------------|--------------------|--------|----------|
-| **Firefox**    | `https://github.com/mozilla-firefox/firefox.git`                  | `46e9f12a8f9b`     | `main` | CSS property definitions, DOM API behavior, JS/realm/rooting discipline, WebRender internals, WPT test selection. Also hosts the `servo/` Stylo subtree (see below). |
+| **Firefox**    | `https://github.com/mozilla-firefox/firefox.git`                  | `46e9f12a8f9b`     | `main` | CSS formatting/property semantics, DOM API behavior, JS/realm discipline, accessibility behavior, and WPT selection. Also hosts the `servo/` Stylo subtree. |
 | **Servo Stylo** (under Firefox tree) | vendored at `firefox/servo/` @ `46e9f12a8f9b` | (same as Firefox) | —      | **Primary CSS reference.** Stylo (`components/style/`), selectors (`components/selectors/`), and supporting Servo crates. Current Firefox HEAD does **not** carry the old Servo script/layout crates. |
-| **Ladybird**   | `https://github.com/LadybirdBrowser/ladybird.git`                 | `0de15a5dd2a9`     | `master` | **Primary layout architecture reference.** LibWeb DOM/style/layout/paint seams, TreeBuilder, formatting contexts, display-list construction. |
-| **Flutter**    | `https://github.com/flutter/flutter.git`                          | `677d472756f8`     | `beta` | **Primary GUI reference.** Widget, Semantics, platform-channel, texture, Linux runner-template, and test patterns for the pinned SDK. |
+| **Ladybird**   | `https://github.com/LadybirdBrowser/ladybird.git`                 | `0de15a5dd2a9`     | `master` | CSS box-tree/formatting/fragmentation architecture reference; Vixen reimplements required semantics in Dart. |
+| **Flutter**    | `https://github.com/flutter/flutter.git`                          | `bd1e75d91860`     | `beta` | **Primary renderer and GUI reference.** `dart:ui` Paragraph/Canvas/scene, Impeller, Semantics, platform channels, runners, capture, lifecycle, and tests. |
 | **GNOME Web (Epiphany)** | `https://gitlab.gnome.org/GNOME/epiphany.git`            | `21e02b9a272d`     | `main` | Linux browser AppStream/desktop metadata, portal behavior, and Flatpak manifest conventions. |
 | **Obscura**    | `https://github.com/h4ckf0r0day/obscura.git`                      | `ca71ce3c2da9`     | `main` | Headless CLI design, CDP server patterns, single-binary distribution. |
 | **Deno / deno_core** | `https://github.com/denoland/deno.git`                     | `83c50b1da61e`     | `main` | **Primary JS runtime packaging reference.** `deno_core` embedding, extension/op boundaries, bootstrap JS packaging, resource tables, permissions, and test layout. |
@@ -36,8 +36,6 @@ show API contracts:
 ```
 firefox/servo/components/style/                    ← Stylo. Read this for CSS cascade/computed values.
 firefox/servo/components/selectors/                ← selector engine used by Stylo.
-firefox/gfx/wr/webrender_api/src/                  ← WebRender display-list API.
-firefox/gfx/webrender_bindings/                    ← Firefox ↔ WebRender transaction/builder bridge.
 firefox/dom/bindings/                              ← WebIDL binding and wrapping discipline.
 firefox/dom/webidl/                                ← DOM API surface contracts.
 firefox/dom/base/                                  ← DOM API behavior and selector delegation.
@@ -46,7 +44,9 @@ firefox/dom/base/                                  ← DOM API behavior and sele
 Current Firefox HEAD (`46e9f12a8f9b`) does **not** include
 `servo/components/layout_2020/`, `servo/components/layout/`, or
 `servo/components/script/`. Do not cite those removed historical paths.
-Vixen-owned layout uses Ladybird as the architecture reference per ADR-013.
+Vixen's Flutter-hosted formatter may use current Firefox formatting behavior and
+Ladybird's readable box-tree architecture as references; neither provides code
+ownership or a second renderer.
 
 When in doubt about a CSS computed value, search
 `firefox/servo/components/style/properties/` for the property name —
@@ -54,10 +54,9 @@ longhands, shorthands, and computed-value logic all live there.
 
 ### Ladybird (`ladybird/`)
 
-Use Ladybird when a question is **architectural** ("how do other engines
-seam X from Y?") rather than **specification-level**. Per ADR-013, Vixen's
-Rust layout engine follows Ladybird's layout architecture, not its C++
-ownership model.
+Use Ladybird when a question is **architectural** ("how do other engines seam X
+from Y?") rather than **specification-level**. Vixen's Dart formatter may follow
+its box/formatting-context decomposition, not its C++ ownership model.
 
 ```
 ladybird/Libraries/LibWeb/                         ← DOM, CSS, layout, paint (cleanly seamed)
@@ -70,13 +69,16 @@ ladybird/Libraries/LibGfx/                         ← rasteriser fallback
 
 ### Flutter (`flutter/`)
 
-Consult for GUI widget, Semantics, texture, platform-channel, native-runner, and
-test behavior. The mise-managed SDK is pinned to this framework revision; Vixen
-still requires its own platform evidence rather than treating Flutter support as
-BrowserCore support.
+Consult for `dart:ui` Paragraph/Canvas/Picture/Scene, Impeller, the rendering
+pipeline, Semantics, platform-channel, native-runner, lifecycle, capture, and test
+behavior. The SDK pin is a substrate reference, not evidence of Vixen CSS or
+platform support.
 
 ```text
 flutter/packages/flutter/lib/                     ← widgets, services, Semantics
+flutter/engine/src/flutter/lib/ui/                 ← dart:ui Canvas/Paragraph/scene implementation
+flutter/engine/src/flutter/flow/                   ← layer/scene composition
+flutter/engine/src/flutter/impeller/               ← required graphics backend
 flutter/packages/flutter_test/                    ← widget/test harness patterns
 flutter/packages/flutter_tools/templates/app/linux.tmpl/ ← Linux runner boundary
 flutter/examples/                                 ← focused framework examples
@@ -95,10 +97,8 @@ gnome-web/flatpak/                                 ← runtime/portal convention
 
 ### Obscura (`obscura/`)
 
-Consult for **headless tooling**: CDP server implementation, CLI flag
-ergonomics, single-binary packaging for automation. Obscura is the
-design source for the headless CLI surface, which Vixen inherits
-verbatim.
+Consult for CDP/session and CLI ergonomics only. Rendered automation uses Vixen's
+chrome-less Flutter host and does not inherit another renderer or CLI verbatim.
 
 ### Deno (`deno/`)
 
@@ -134,8 +134,8 @@ git -C ladybird sparse-checkout set Libraries/LibWeb Libraries/LibGfx
 git -C ladybird checkout 0de15a5dd2a9
 
 git clone --depth 1 --filter=blob:none --sparse --branch beta https://github.com/flutter/flutter.git
-git -C flutter sparse-checkout set packages/flutter packages/flutter_test packages/flutter_tools/templates/app/linux.tmpl examples
-git -C flutter checkout 677d472756f83c14371dd8cc624387065f3d32a7
+git -C flutter sparse-checkout set packages/flutter packages/flutter_test packages/flutter_tools/templates/app/linux.tmpl engine/src/flutter/lib/ui engine/src/flutter/flow engine/src/flutter/impeller examples
+git -C flutter checkout bd1e75d918605c91b411e8789fb911e6c9a84534
 
 git clone --depth 1 --filter=blob:none --sparse --branch main https://gitlab.gnome.org/GNOME/epiphany.git gnome-web
 git -C gnome-web sparse-checkout set data flatpak

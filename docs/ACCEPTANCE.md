@@ -1,300 +1,231 @@
 # Vixen acceptance criteria
 
-Release is "done" when every gate below passes. Per-capability criteria
-are expressed as fixture passes plus specific invariants; this document
-does not re-list the delegated web-platform features or the Vixen-owned
-layout subset (see [`SPEC.md`](SPEC.md) and [`COMPAT.md`](COMPAT.md) for the
-actual contracts).
+Release is done only when every applicable gate below passes. Capability claims
+map to fixtures/profiles/smokes and the exact BrowserCore/Flutter renderer path
+defined in [`SPEC.md`](SPEC.md), [`COMPAT.md`](COMPAT.md), and ADR-022.
 
-Alpha is defined separately in [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md):
-architecture frozen and validated, with API surface still allowed to move.
+Alpha architecture and delivery order are defined in
+[`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md) and [`ROADMAP.md`](ROADMAP.md).
 
----
+## Hard gates
 
-## Hard gates (release-blocking for v1.0)
+- [ ] One concrete BrowserCore and one `deno_core`/V8 runtime; no WebKit fallback
+      or runtime-engine abstraction.
+- [ ] One Flutter Canvas/Paragraph web renderer over an explicitly enabled and
+      evidenced Impeller backend for GUI and rendered automation; Skia fallback
+      is not accepted platform proof.
+- [ ] No production `webrender`, `gleam`, `GlContext`, headless/frame EGL, RGBA
+      frame ABI/pools, pixel-buffer texture presenter, fallback painter, or
+      second screenshot path after renderer cutover.
+- [ ] BrowserCore owns navigation, DOM/runtime, Stylo computed styles,
+      network/security, profile state, resource acceptance, web-event semantics,
+      and accessibility meaning; Dart owns no durable DOM/browser state.
+- [ ] Render revisions, mutation/full-resync payloads, atomic commits, presented
+      ids, geometry/text/scroll/semantic queries, opaque Flutter-side hit-test
+      handles, input targets, and semantic-action targets with advertised action
+      generations are bounded, versioned, and stale-safe.
+- [ ] Same-task DOM/style mutation followed by geometry uses cancellable,
+      deadline-bounded, deadlock-safe `EnsureLayout` and returns the matching
+      Flutter commit.
+- [ ] GUI, chrome-less Flutter host, CDP layout/input/screenshots, visual/layout
+      WPT, and native Semantics use exact commits from the same renderer.
+- [ ] `fixtures/manifest.json` and every declared external profile are green;
+      `COMPAT.md` publishes measured counts and limitations.
+- [ ] `just audit`, `just check`, hk pre-push, relevant fuzz targets, and
+      `git diff --check` pass from a clean checkout.
+- [ ] No non-test module over 1,000 lines without an immediate named split.
+- [ ] Release artifacts, startup, memory, capture latency, and profile growth are
+      measured under the accepted baseline/regression policy.
 
-- [ ] `crates/` Rust LOC ≤ 20 k
-- [ ] `crates/` unique `Cargo.lock` dependencies ≤ 220
-- [ ] `rg -e 'boa_engine|boa_runtime|taffy|tiny-skia|fontdue' Cargo.lock`
-      returns nothing
-- [ ] One display list and one WebRender paint path (per ADR-003 / ADR-006 /
-      ADR-018): headless EGL plus bounded GUI texture transport, with no CPU
-      rasterizer, fallback painter, or `PaintBackend` trait
-- [ ] No `sandbox.rs`, no `process_pool.rs`, no `ipc/` (per ADR-004)
-- [ ] No WebKit dependency, no `engine-webkit` feature (per ADR-002)
-- [ ] GUI renders a real web page to the screen via WebRender (manual
-      smoke on `fixtures/realworld/` shows visible content — no static
-      placeholders)
-- [ ] `vixen-headless` reproduces every flag in `SPEC.md` "Headless CLI
-      surface" with stable error codes preserved
-- [ ] WPT target profile in `docs/COMPAT.md` is green; measured pass counts
-      are published for every supported category
-- [ ] GUI/headless artifact sizes are published by platform and ABI using the
-      accepted baseline/regression policy in section "Binary size gates" below
-- [ ] `docs/COMPAT.md` published with honest capability matrix
-- [ ] `just audit` passes (`cargo audit` + `cargo deny check`)
-- [ ] `just check` passes
-- [ ] hk hooks are installed or `hk run pre-push --check` passes from a clean
-      checkout
-- [ ] No non-test module > 1,000 lines
-- [ ] All fuzz targets stable at 1 M iterations
+## Renderer-transition acceptance
 
----
+### Protocol
 
-## Per-capability acceptance
+Done when R1/R2 from `ROADMAP.md` prove:
 
-Each capability is "done" when its fixture set passes. Where
-`SPEC.md` pins a specific invariant, it's called out explicitly.
+- compound revisions include context/document/source/style/viewport/resource
+  generations;
+- incremental batches require exact base revisions and deterministically request
+  bounded full resync after a gap;
+- malformed ids, unknown resources, non-finite geometry, excess depth/count/
+  bytes, truncation, stale commits, and double release fail closed;
+- forged, unknown, stale-commit, stale-generation, and replayed Semantics actions
+  fail closed;
+- C ABI and Dart models round-trip the same wire values; and
+- the renderer broker remains serviceable while the originating BrowserCore/V8
+  command waits, with cancellation, timeout, and shutdown proof.
 
-### CSS cascade
+### First renderer vertical
 
-**Done when** every fixture in `fixtures/css/` passes.
+Done when one controlled background/text/PNG document proves, from one commit:
 
-### Selectors
+- Vixen Dart CSS box/inline formatting over BrowserCore computed inputs;
+- Flutter Paragraph shaping/wrapping/range/caret geometry;
+- Canvas pixels, paint order, clips, transforms, and image pixels;
+- returned immutable basic geometry and renderer-authoritative hit testing;
+- scroll limits/offsets and semantic bounds;
+- scene capture without browser/compositor chrome;
+- mutation update, stale rejection, renderer loss, and full resync; and
+- no production claim while the old renderer still serves normal browsing.
 
-**Done when** every selector fixture passes plus the dedicated
-selector-corpus fixture set (covering `:has()`, `:is()`, `:where()`,
-the user-action and form pseudo-classes, link history tracking).
+### Interactive renderer vertical
 
-### DOM
+Done when the displayed commit drives pointer target validation, cancelable wheel/
+key/script scrolling and returned scroll state, find/text/caret ranges, viewport/
+zoom revision, native Semantics bounds/actions, lifecycle hide/resume, and stale
+scene suppression through widget/core/ABI tests plus Cage smoke.
 
-**Done when** every fixture in `fixtures/dom/` passes, and the
-composed event dispatch invariants from `SPEC.md` hold (enforced by a
-dedicated `fixtures/events/focus-order.html`).
+### Synchronous geometry
 
-### Layout
+Done when tests cover:
 
-**Done when** the Vixen-owned Rust layout engine (ADR-013) passes the v1 WPT
-target profile in `docs/COMPAT.md`: normal-flow block layout, inline line
-boxes, margin/border/padding/box sizing, positioned descendants,
-overflow/scroll containers, and useful flex/grid coverage. Nested-container
-coordinates must be correct *without* any post-pass fixup. A realworld fixture
-set (`fixtures/realworld/`) renders without obvious breakage.
-
-Documented gaps allowed in `docs/COMPAT.md`: tables, floats, full vertical
-writing, fragmentation/pagination, and advanced intrinsic sizing.
-
-### Paint and presentation
-
-**Done when**:
-
-- Flutter GUI presents WebRender output through the bounded external-texture
-  contract; no second GUI or renderer path is accepted
-- Headless uses EGL surfaceless (per ADR-009), and GUI/headless reference
-  comparisons prove both consume the same WebRender output semantics
-- Headless works on CI with `LIBGL_ALWAYS_SOFTWARE=1` + Mesa
-  `llvmpipe` (verified)
-- Display-list invariants from `SPEC.md` enforced by the display-list
-  builder (z-index stacking, clip stacking, opacity groups, visibility
-  skip-paint, background clip/origin/attachment)
-
-### JavaScript
-
-**Done when**:
-
-- `vixen-headless --url fixtures/dom/basic.html --eval 'document.title'`
-  returns the document title
-- The `deno_core`/V8-backed embedded runtime passes the JS smoke/test262 subset
-  selected for release
-- Every fixture in `fixtures/dom/`, `fixtures/forms/`,
-  `fixtures/network/`, `fixtures/storage/` passes
-- Form-validation edge cases from `SPEC.md` enforced exactly (email
-  format, URL format, step arithmetic)
-
-### Networking
-
-**Done when** every test in `vixen-net` passes, including the
-Vixen-specific configurations from `SPEC.md`:
-
-- URL policy blocklist (including the precise CGNAT check — see
-  mandatory regression test below)
-- Cookie defaults (Lax default SameSite, 512-entry FIFO cap, HttpOnly
-  document-side rejection, safe-method Lax cross-site sending)
-- CSP enforcement at script-exec / fetch / plugin-content boundaries
-- Permissions API and origin isolation
-
-**Mandatory regression test for the CGNAT check:**
-
-```rust
-assert!(is_private_host(&"100.64.0.1".parse::<Ipv4Addr>().unwrap().into()));
-assert!(!is_private_host(&"100.128.0.1".parse::<Ipv4Addr>().unwrap().into()));
+```text
+DOM/style mutation
+  → Stylo flush
+  → RenderMutationBatch
+  → EnsureLayout(required revision)
+  → matching RenderCommit
+  → synchronous DOM/CSSOM/CDP geometry
 ```
 
-### Storage
+No browser mutex is held while waiting; Flutter cannot re-enter BrowserCore;
+navigate/stop/close/shutdown and deadline cancel the request; late replies are
+inert; repeated geometry reads reuse the accepted commit.
 
-**Done when** the redb schema round-trips cookies, fetch-cache,
-history, and sessions per `vixen-store` tests, and per-origin
-partitioning is preserved.
+### Cutover and deletion
 
-### Headless CLI
+Done when source/dependency/gate searches prove the full R7 inventory is gone:
+WebRender/gleam, `GlContext`, both EGL paths, image upload, frame ABI/tokens/pools,
+the Dart frame worker, texture presenter/plugin and recovery tests, superseded
+Rust layout/paint, duplicate scale/hit/scroll/text/semantic projections, obsolete
+fixtures/gates/docs/dependencies, and renderer-internal CLI flags. GUI and
+chrome-less automation share one renderer implementation, and no compatibility
+flag/API preserves deleted details. Any retained pure Rust CSS algorithm has an
+active Dart consumer through a named stable formatter contract, focused
+cross-language tests, and documented evidence that reuse is simpler than
+deletion; no Rust geometry, text measurement, hit testing, or paint authority
+survives.
 
-**Done when** every flag in `SPEC.md` "Headless CLI surface" works,
-the stable error codes are returned exactly, and the CDP server
-responds to every required method. The `--gpu` flag is removed (every
-render path is GPU-backed per ADR-003); scripts depending on it should
-drop the flag.
+## Browser capability acceptance
 
-### WPT harness
+### HTML, cascade, and selectors
 
-**Done when** `vixen-wpt`:
+- HTML parser/serialization profiles are green.
+- Stylo/selectors profiles cover the supported selector/cascade/computed-value
+  surface.
+- A computed-style mutation creates the correct renderer source revision; stale
+  commits cannot answer inspection.
 
-- Runs the full `fixtures/manifest.json`
-- Runs pinned external WPT profiles without vendoring their upstream HTML into
-  the repo
-- Every check type in `SPEC.md` passes its existing assertions
-- The new `ref-equivalent` check works against at least 3 fixtures
-- Reports pass count/rate overall, per category, per source, and per
-  source×category
-- Separates local Vixen fixtures from imported upstream WPT fixtures so release
-  notes can state exactly what was measured
+### DOM/runtime/events/forms
 
-### Shell
+- DOM, events, forms, history, storage, and selected Web API profiles run through
+  the live `deno_core` realm and BrowserCore document.
+- Script mutation drives a visible Flutter commit and CDP observes the same nodes.
+- Focus/event/form-validation ordering pinned by `SPEC.md` remains exact.
 
-**Done when** manual smoke passes:
+### Layout and paint
 
-- New / close / duplicate tab, reopen closed tab
-- Address entry, paste-and-go
-- Reload / stop, back / forward
-- HTTPS / HTTP / local / failure status feedback
-- Find bar
-- Zoom
-- Preferences, shortcuts, about windows
-- Tab status diagnostics for load / TLS / download / permission events
-- Engine actually renders page content to the visible window
-- BrowserCore remains the sole browser owner; Dart owns chrome/presentation and
-  host-service UI only
-- Pointer, wheel, keyboard, text/IME, focus, scale, viewport, and lifecycle
-  changes cross the generation-checked bridge
-- BrowserCore's accessibility projection reaches Flutter Semantics and native
-  assistive-technology smoke; texture pixels alone do not satisfy accessibility
-- `just linux-interaction-smoke` proves one real Wayland keyboard/IBus and
-  virtual-pointer vertical; widget, WPT, CDP, and Playwright evidence remain
-  complementary rather than substitutes
+The Flutter-hosted Vixen formatter passes the published layout/paint profile for
+the claimed subset. Nested geometry, clips, transforms, scroll, hit testing,
+text/range geometry, semantic bounds, and pixels agree by commit without frontend
+coordinate repair. Unsupported tables/floats/fragmentation/writing modes remain
+explicit until promoted by measured tests.
 
-Flutter is the only rendered GUI and must satisfy this interaction list directly.
-Its Linux embedder uses GTK3 internally, but there is no separate
-Relm4/libadwaita/custom GLArea application path.
+### Networking/security/storage/downloads
 
-### Platform gates
+- `vixen-net` policy and transport tests are green, including URL/private-host,
+  cookies, CSP, CORS, mixed content, referrer, integrity, nosniff, and cache rules.
+- Policy runs before resource bytes/handles cross to Flutter.
+- redb profile tables preserve partitioning, bounds, recovery, clear-data, and
+  reopen behavior.
+- Download transfer, filename, destination, cancellation, persistence, and UI
+  handoff are complete for any download claim.
 
-Flutter supports native deployment to all five targets, but Vixen supports a
-platform only after its gate in [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md) passes:
+### Accessibility
 
-Linux is the highest-priority platform gate. Linux Flutter parity, host
-integration, accessibility evidence, packaging, and performance are completed
-before equivalent non-Linux release work; other targets remain committed but do
-not block Linux convergence.
+BrowserCore-authored roles/names/values/states/relationships/focus/actions combine
+with Flutter bounds/text geometry only for the displayed commit. Native AT smoke
+proves content and actions; pixels alone do not satisfy accessibility.
 
-Each gate runs on the latest generally available major OS release at the release
-cutoff. The release record pins exact OS/SDK/image versions. Older releases are
-best-effort unless explicitly listed as an additional tested tier; preview OS
-releases never satisfy these gates.
+## CLI, CDP, WPT, and automation
 
-- **Linux:** native Wayland session (X11/XWayland are unsupported), real
-  BrowserCore bridge, bounded RGBA texture, input/viewport, Semantics/AT, host
-  services, parity, deterministic official release archive,
-  and—only after the basic-browser gate—checksum-pinned FlatPark package
-  verification. FlatPark publishing is not a current priority while visible
-  navigation, scrolling, text/IME, core navigation controls, find/zoom, or
-  bounded recovery remain incomplete.
-- **macOS and Windows:** native BrowserCore/V8/WebRender builds plus texture,
-  input/IME, accessibility, host services, signing/packaging, and per-architecture
-  size/performance evidence.
-- **Android:** pinned V8 source/toolchain, reproducible cross-build, GLES,
-  lifecycle/surface recovery, input/IME/accessibility, and split-ABI proof.
-- **WebAssembly:** the existing `deno_core`/V8 path passes the same MVP API,
-  validation, resource-limit, malformed-module, and conformance suite on every
-  declared target.
-- **iOS Simulator:** `aarch64-apple-ios-sim` BrowserCore/V8/WebRender plus
-  JavaScript/WebAssembly, simulated lifecycle, input/accessibility/host-service
-  smoke, and a repeatable Flutter simulator runner on Apple Silicon. Physical
-  iOS, TestFlight, and App Store packaging are explicitly outside this gate.
+- Every non-transitional flag in `SPEC.md` works with stable errors.
+- Screenshot, visible extraction, coordinate input, layout CDP, and visual WPT
+  use the chrome-less Flutter host; text-only fast paths fabricate no geometry.
+- CDP supports the declared methods, independent contexts/targets, reliable waits,
+  exact-commit input/layout/screenshots, runtime handles, network/lifecycle/
+  console/dialog events, permissions, downloads, and bounded traces.
+- WPT reports overall/category/source/source×category counts and uses production
+  BrowserCore plus the Flutter renderer for every geometry/pixel check.
+- External Playwright smoke passes against the same renderer and BrowserCore.
 
-No iOS JavaScriptCore/WebKit, alternate Wasm runtime, or physical-device fallback
-is accepted without a new ADR.
+## Shell and Linux product
 
----
+Manual and automated Linux smoke covers:
 
-## Binary size gates
+- tab create/close/duplicate/reopen and session restore;
+- address/search, back/forward/reload/active stop;
+- find, zoom, downloads/permissions, settings/privacy, diagnostics, and errors;
+- visible Flutter-rendered page content, input, scrolling, text/IME, viewport/
+  scale, lifecycle, renderer loss, and recovery;
+- native Wayland only; X11/XWayland fail explicitly;
+- BrowserCore state ownership and exact displayed-commit input/Semantics; and
+- native keyboard/IBus, virtual pointer, AT-SPI, Cage launch/capture, and release
+  archive evidence.
 
-`just size-headless` measures the release headless binary. `just
-size-flutter-linux-json` builds and compares like-for-like release/AOT raw Linux
-hello-Flutter and Flutter+Vixen bundles. That report is measurement-only and
-does not satisfy compressed-download, installed-size, signing, or broader
-host-matrix gates. Deterministic archive and FlatPark package/install smokes are
-separate evidence. Equivalent package reports remain required for every
-supported platform and shipped ABI/architecture.
+FlatPark publication remains after basic browser behavior, host services, and
+release evidence. Registry reach never outranks browser correctness.
 
-Reports attribute compressed, unpacked/install, executable, and shared-runtime
-costs to Flutter engine/ICU, Dart AOT/assets, native runner/plugins,
-BrowserCore/Rust, V8/ICU/snapshots, WebRender/GPU dependencies, resources,
-packaging, and symbols. They include exact locks/source revisions, commands,
-hashes, architecture, AOT/strip/LTO settings, and runtime exclusions.
+## Platform gates
 
-GUI bundles contain no debug Flutter engines, unstripped symbols, duplicate
-ABIs, development snapshots, headless/CDP/WPT tools, source archives, build
-tools, or caches without a documented release need. Adopt warning thresholds
-only after representative reports are reproduced and reviewed. Hard budgets
-follow only after warning behavior establishes variance, ownership, comparison
-statistics, platform/ABI scope, and an override policy. No numerical Flutter
-artifact budget is currently accepted.
+A framework-supported platform becomes Vixen-supported only after the latest
+stable major OS gate in [`FLUTTER_SHELL.md`](FLUTTER_SHELL.md):
 
-## Performance baseline gates
+- **Linux first:** final mutation/commit renderer, GUI and chrome-less host,
+  Wayland input/IME/AT, host services, deterministic archive, compatibility,
+  size, memory, startup, frame, and capture evidence.
+- **macOS/Windows:** native BrowserCore/V8 and the same broker/formatter, input/
+  IME/accessibility, host services, signing/packaging, capture, and architecture-
+  specific measurements.
+- **Android:** pinned V8 source/toolchain, renderer broker, lifecycle/process
+  recreation, touch/IME/accessibility, host services, capture, and split-ABI proof.
+- **iOS Simulator:** `aarch64-apple-ios-sim` BrowserCore/V8/Flutter renderer,
+  JavaScript/WebAssembly, simulated lifecycle/input/accessibility/host services,
+  capture, and repeatable Xcode build. Physical iOS requires a new decision.
+- **WebAssembly:** the single V8 path passes the same API, malformed-module,
+  resource-limit, and conformance evidence on every declared target.
 
-`just baseline-headless` measures separate committed startup/version,
-navigation/runtime, layout, paint/display-list, and screenshot controls. It
-reports wall-time and best-effort Linux process-memory samples with artifact,
-git, toolchain, host, and renderer fingerprints. `just baseline-profile-growth`
-measures an opaque temporary profile after deterministic repeated and unique
-visits and verifies localStorage after reopening it. `just baseline-beta` runs
-those hermetic controls plus headless artifact sizing.
+## Size and performance gates
 
-This completes the local Linux latency, memory, profile-growth, headless, and
-historical GUI artifact-size measurement foundation. All values remain
-measurement-only until the
-accepted-report process in [`BASELINES.md`](BASELINES.md) produces reviewed host
-baselines and explicit policies here. Real external-site measurements, the
-GUI/FlatPark host matrix, frame time, JS heap, and transfer throughput remain
-unmeasured; do not turn local controls into complete-site or release-budget
-claims.
+Measure separately:
 
----
+1. like-for-like hello-Flutter;
+2. Flutter+Vixen GUI;
+3. chrome-less rendered automation host; and
+4. any text-only launcher/client.
 
-## Phase gates summary
+Reports attribute Flutter engine/ICU, Dart AOT/formatter/assets, native runner/
+plugins, BrowserCore/Rust, V8/ICU/snapshots, resources, packaging, symbols, and
+any transitional WebRender/EGL code still present. After cutover, removed native
+renderer costs must be absent. Reports include locks/revisions, commands, hashes,
+architecture, AOT/strip/LTO settings, compressed/unpacked/install sizes, startup,
+memory, layout/commit/frame/capture timings, and comparison statistics.
 
-Restated from `PLAN.md` as the per-phase acceptance check.
+Adopt warnings before hard numeric budgets. Rebaseline only for a documented
+product/dependency tradeoff; never hide growth by changing attribution.
 
-| Phase                             | Gate                                                                                  |
-|-----------------------------------|---------------------------------------------------------------------------------------|
-| 0 — Scaffolding                   | `just gate-phase0` passes                                                             |
-| 1 — Net + store crown jewels      | `just gate-phase1` passes                                                             |
-| 2 — JS runtime                    | `just gate-phase2` (`vixen-headless --url <file> --eval '1+2'` returns `3`); runtime is `deno_core` per ADR-014 |
-| 3 — HTML + Stylo                  | `just gate-phase3`; then WPT CSS fixtures pass with cascade output correct            |
-| 4 — Vixen-owned layout            | `just gate-phase4`; then the v1 WPT layout target profile in `docs/COMPAT.md` is green |
-| 5 — Paint                         | `just gate-phase5`; then `just run-flutter` shows a page and headless PNG diff ≤ 1 %  |
-| 6 — Host bindings                 | `just gate-phase6`; then `fixtures/{dom,events,forms,storage,network}/` all pass      |
-| 7 — Security                      | `just audit` clean; all security tests green; fuzz stable                             |
-| 8 — Headless CDP                  | Every CLI flag works; CDP responds to required methods                                |
-| 9 — Release                       | `just gate-smoke` and all gates above green; tag `v1.0.0`                             |
+## Release ladder
 
-A phase is not done until its gate passes *and* the tock discipline
-(dead-code removal, ≤ 1 kLOC modules, references cited) has been observed.
+- **Renderer transition:** every R1–R8 gate passes and transitional renderer code
+  is deleted.
+- **Alpha:** one BrowserCore and Flutter renderer support independent contexts,
+  live mutation, synchronous geometry, input, inspection, Semantics, and
+  cancellation without stale commits.
+- **Beta:** the controlled Linux corridor is usable in GUI and chrome-less
+  automation with published compatibility/performance/recovery evidence.
+- **v1.0:** daily-driver corridor, security/release operations, host integration,
+  automation, accessibility, and every declared platform/capability claim satisfy
+  their gates.
 
----
-
-## Post-v1.0 scope
-
-Deferred per [`DECISIONS.md`](DECISIONS.md) ADR-008 and other explicit non-goals:
-
-- WebKit fallback (rejected, ADR-002)
-- Runtime engine switching (rejected, ADR-002)
-- WebGPU (v1.1, via `wgpu`)
-- Media playback (v1.1, via GStreamer)
-- Full writing modes / vertical text (v1.1)
-- Tables, floats, advanced intrinsic sizing (v1.1/v1.2, WPT-prioritized)
-- Page fragmentation / pagination (v1.2)
-- Service workers (v1.2)
-- WebRTC (not planned)
-
-Byte-for-byte Firefox rendering match is **not** the contract —
-behavioural parity on the WPT subset that matters for real sites is.
+Post-v1 replacement work follows `ROADMAP.md`; no fixed version number overrides
+measured user/site impact.

@@ -312,9 +312,8 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     final states = <BrowserTextInputState>[];
     final keyEvents = <(String, BrowserKeyEvent)>[];
-    final context = BrowsingContextState.initial(
-      10,
-    ).copyWith(documentId: 20, runtimeContextId: 30);
+    final context = BrowsingContextState.initial(10)
+        .copyWith(documentId: 20, runtimeContextId: 30);
     final snapshot = BrowserAccessibilitySnapshot(
       sourceGeneration: 1,
       generation: 1,
@@ -591,9 +590,8 @@ void main() {
             width: 400,
             height: 300,
             child: BrowserContentSurface(
-              contextState: BrowsingContextState.initial(
-                10,
-              ).copyWith(documentId: 20),
+              contextState: BrowsingContextState.initial(10)
+                  .copyWith(documentId: 20),
               frame: sizedTestFrame(frameId: 9, width: 400, height: 300),
               textureController: _TestTextureController(),
               accessibility: BrowserAccessibilitySnapshot(
@@ -767,9 +765,8 @@ void main() {
               width: 400,
               height: 300,
               child: BrowserContentSurface(
-                contextState: BrowsingContextState.initial(
-                  10,
-                ).copyWith(documentId: 20),
+                contextState: BrowsingContextState.initial(10)
+                    .copyWith(documentId: 20),
                 frame: sizedTestFrame(
                   frameId: generation,
                   width: 400,

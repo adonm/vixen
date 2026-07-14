@@ -6,6 +6,12 @@ in [`PLAN.md`](PLAN.md); measured compatibility lives in
 [`COMPAT.md`](COMPAT.md). This file answers only: “which checked-in command proves
 which layer today?”
 
+**ADR-022 transition status:** no checked-in command yet proves the target
+mutation/commit Flutter web renderer. Existing layout, paint, frame, texture, and
+native-headless gates below describe the transitional comparison baseline. R1
+must add focused protocol tests before this index can name target renderer proof;
+R7 deletes or rewrites superseded gates.
+
 ## Gate index
 
 | Command | Current evidence |
@@ -14,7 +20,7 @@ which layer today?”
 | `just gate-architecture` | leaf-crate dependency rules plus frontend rules that forbid headless/FFI direct leaf composition; production frontends may use only `vixen-api` and `vixen-engine` |
 | `just test-flutter-controller` | Safe controller and native boundary crate tests: one non-clone BrowserCore/event owner, immediate navigation acceptance, exact terminal events, active-load stop, contexts/profile session, and C ABI unit/integration coverage; not Dart or Flutter proof |
 | `just gate-native-abi` | Builds `vixen-ffi` library forms and runs focused ABI v1 layout/header, opaque handle, bounded UTF-8/JSON command, stable response/event/error, event-sequence, output-buffer ownership, and panic-containment tests; native C ABI evidence only |
-| `just gate-flutter-shell` | Exact mise-managed Flutter 3.46.0-0.3.pre beta framework/engine revisions, locked Yaru 10.2.0 Adwaita-blue chrome/in-scene titlebar, Dart formatting/analysis, shell/coordinator/worker/texture/input/Semantics tests, including monotonic host focus/visibility/lifecycle state, physical wheel normalization and slop-gated single-touch dragging through BrowserCore-owned cancelable root/nested scrolling, bounded native/contenteditable platform text/selection/composition routing with surrogate offsets and production-ABI composition commits, normalized `inputmode`/input-type/`enterkeyhint` keyboard and action configuration over the Enter key path, bounded BrowserCore-backed find traversal/scroll/highlighting, two-retry current-generation frame/Semantics capture and texture recreation, detach/hidden/paused disposal serialization plus resumed/inactive recreation with stale-publish rejection and injected newer-frame texture-loss recovery, per-context BrowserCore-owned zoom across paint/input/Semantics, bounded descriptions and `aria-controls`/`aria-describedby`/`aria-details`/`aria-owns` relationships, heading/mixed-state mapping, native/authored range adjustment, live-region mapping, native/contenteditable text selection, atomic frame/semantics replacement, and node-level incremental reconciliation, live process-adjacent native bridge smoke, and focused native ABI/frame/input/accessibility tests; Linux source/test evidence, not a real native IME or screen-reader interaction, compositor/GPU-reset or process-recreation recovery, release/package, or non-Linux proof |
+| `just gate-flutter-shell` | Exact mise-managed Flutter 3.47.0-0.1.pre beta framework/engine revisions, locked Yaru 10.2.0 Adwaita-blue chrome/in-scene titlebar, Dart formatting/analysis, shell/coordinator/worker/texture/input/Semantics tests, including monotonic host focus/visibility/lifecycle state, physical wheel normalization and slop-gated single-touch dragging through BrowserCore-owned cancelable root/nested scrolling, bounded native/contenteditable platform text/selection/composition routing with surrogate offsets and production-ABI composition commits, normalized `inputmode`/input-type/`enterkeyhint` keyboard and action configuration over the Enter key path, bounded BrowserCore-backed find traversal/scroll/highlighting, two-retry current-generation frame/Semantics capture and texture recreation, detach/hidden/paused disposal serialization plus resumed/inactive recreation with stale-publish rejection and injected newer-frame texture-loss recovery, per-context BrowserCore-owned zoom across paint/input/Semantics, bounded descriptions and `aria-controls`/`aria-describedby`/`aria-details`/`aria-owns` relationships, heading/mixed-state mapping, native/authored range adjustment, live-region mapping, native/contenteditable text selection, atomic frame/semantics replacement, and node-level incremental reconciliation, live process-adjacent native bridge smoke, and focused native ABI/frame/input/accessibility tests; Linux source/test evidence, not a real native IME or screen-reader interaction, compositor/GPU-reset or process-recreation recovery, release/package, or non-Linux proof |
 | `just gate-smoke` | reviewer baseline: formatting, clippy, host checks, and all host-runnable tests |
 | `just gate-push` | hk pre-push integration point: alpha, phase-6 runtime, smoke, and diff checks |
 | `just gate-webidl` | generated WebIDL constructor/prototype coverage plus headless/CDP runtime-host integration |
@@ -22,8 +28,8 @@ which layer today?”
 | `just gate-phase1` | network/store tests, audit, and security fuzz targets |
 | `just gate-phase2` | `deno_core` runtime and headless eval seam |
 | `just gate-phase3` | HTML/selector/cascade behavior and CSS fixture profile |
-| `just gate-phase4` | Vixen layout-tree/line/fragment behavior and layout fixtures |
-| `just gate-phase5` | display-list/WebRender screenshot and visual fixture path |
+| `just gate-phase4` | Transitional Rust layout-tree/line/fragment behavior; frozen comparison evidence until R7 deletion/port |
+| `just gate-phase5` | Transitional display-list/WebRender screenshot path; frozen comparison evidence until R7 deletion/port |
 | `just gate-phase6` | engine host-family tests, WebIDL, headless runtime, and CDP runtime integration |
 | `just gate-alpha6-cdp` | external Playwright/CDP smoke plus dispatcher/socket tests over BrowserCore targets, including ordered lifecycle, one-pump same-connection cancellation for page/history/runtime navigation, non-blocking target creation, committed author-exception reporting, Unicode text input, nested wheel/cancellation/boundary chaining and scroll-into-view, live DOM repaint screenshots, network, permissions, tracing, and stable errors |
 | `npm test` | bounded-process, timeout, percentile, `/proc` parser, hash, and recursive-size unit tests used by the baseline tools |
@@ -33,7 +39,7 @@ which layer today?”
 | `just compat-report` | current BrowserCore-backed committed fixture/profile counts and per-source/category output |
 | `just fuzz-security` | URL, CSP, cookie, and HTML parser fuzz targets at the configured run count |
 | `just audit` | `cargo audit` plus `cargo deny check` |
-| `just linux-release-smoke` | pinned x86_64 Flutter 3.46.0-0.3.pre beta release/AOT plus Rust bridge/Yaru window-plugin build; stripped runner/plugin ELFs, deterministic archive creation, clean extraction, and Impeller-aware Cage/headless-Wayland launch smoke |
+| `just linux-release-smoke` | pinned x86_64 Flutter 3.47.0-0.1.pre beta release/AOT plus Rust bridge/Yaru window-plugin build; stripped runner/plugin ELFs, deterministic archive creation, clean extraction, and Impeller-aware Cage/headless-Wayland launch smoke |
 | `just linux-at-spi-smoke` | real release/AOT Flutter bundle in Cage's headless Wayland compositor with a fresh BrowserCore profile and local fixture; bounded process-filtered AT-SPI traversal must observe the BrowserCore-derived `DOM Basic` heading; Linux native AT evidence, not a screen-reader matrix |
 | `just linux-interaction-smoke` | real release/AOT Flutter bundle in Cage with AT-SPI observation only; physical address entry visibly navigates to the controlled fixture, native back/forward and reload restore BrowserCore-owned root/nested offsets, a gated FIFO read proves the visible stop control cancels an active navigation and recovers the prior page, wtype drives IBus Anthy/GTK preedit+commit for native/contenteditable hosts, and a wlr virtual pointer proves nested wheel ownership/cancellation/root chaining; one controlled Linux interaction proof, not an IME/device matrix |
 | `just size-headless` | structured logical/allocated size, file count, and SHA-256 for the headless release binary |
@@ -45,6 +51,9 @@ which layer today?”
 ## Evidence rules
 
 - Run the cheapest focused crate test while editing, then the relevant gate above.
+- During R1–R7, add/widen only renderer-transition evidence or independently
+  critical BrowserCore security/lifecycle proof. Do not treat a green
+  transitional layout/paint/texture gate as a reason to preserve that code.
 - A pure unit test proves an algorithm. A browser claim also needs a shared-core
   integration path, fixture/profile, external automation smoke, or GUI smoke.
 - Fixture behavior changes update `COMPAT.md` from `just compat-report`; do not
@@ -52,10 +61,11 @@ which layer today?”
 - ADR-017 frontend ownership migration is enforced by `gate-architecture`;
   subsequent lifecycle work adds cancellation/partition/live-document evidence
   without restoring direct frontend composition.
-- Released Linux shell changes use `just linux-release-smoke`. FlatPark package
+- Released Linux shell changes use `just linux-release-smoke`. Renderer-transition
+  work remains test-only until the roadmap cutover gate. FlatPark package
   submission and verification follow only after the Linux basic-browser gate;
   an immutable GitHub Release alone does not make registry publishing a current
-  priority. Flutter is the only rendered GUI and parity concern.
+  priority. Flutter is the only rendered frontend target and parity concern.
 - `just gate-native-abi` proves the handwritten C ABI/header/wire/frame ownership
   milestone over the same safe controller. `just gate-flutter-shell` adds Dart,
   widget, worker-isolate, texture-presenter, and live native smoke evidence. It

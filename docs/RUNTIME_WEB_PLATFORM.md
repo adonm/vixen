@@ -10,11 +10,12 @@ where Web API code should live so the runtime stays fast, small, and spec-driven
 - Generated WebIDL substrate stays in `crates/vixen-engine/src/script/webidl.rs`.
 - Host-family extensions adopt generated interfaces with
   `webidl.adoptInterface(...)`.
-- DOM, CSS, layout, network policy, and storage state remain Rust source of
-  truth.
+- DOM, CSS cascade/computed styles, network policy, and storage remain
+  BrowserCore source of truth. Flutter owns commit-bound CSS formatting/layout.
 - Security-sensitive behavior validates near the host boundary and fails closed.
-- Flutter/Dart is browser chrome only. It does not implement page JavaScript,
-  DOM/Web APIs, navigation, storage, or a fallback runtime.
+- Flutter/Dart is the web formatter/renderer and browser chrome. It does not
+  implement page JavaScript, DOM/Web APIs, navigation, storage, policy, or a
+  fallback runtime.
 - The same BrowserCore/`deno_core` runtime is the target on all five GUI
   platforms. Platform support is evidence-gated, not inferred from Flutter.
 
@@ -25,8 +26,9 @@ Use this ladder when adding or reviewing an API:
 1. **Shape** — constructor/prototype exists because WebIDL requires it.
 2. **Pure value behavior** — JS-only implementation is acceptable when it has no
    privileged state, I/O, persistence, origin policy, or layout dependency.
-3. **Rust op/resource backing** — required for page DOM, CSSOM, layout,
-   network, storage, history, permissions, timers, and anything security-sensitive.
+3. **BrowserCore op/resource backing** — required for page DOM, CSSOM, network,
+   storage, history, permissions, timers, and anything security-sensitive;
+   layout-dependent APIs use the bounded Flutter renderer broker.
 4. **Spec/WPT correctness** — useful subset covered by local or imported WPT
    fixtures; this is the target for committed behavior.
 
@@ -38,11 +40,12 @@ shape if the MVP needs deeper behavior in an already-exposed family.
 Choose the fastest/smallest correct implementation:
 
 - Keep **pure value objects** in JS bootstrap when doing so avoids Rust/V8 glue
-  and does not duplicate a Rust source of truth. Examples: simple event objects,
+  and does not duplicate an authoritative source of truth. Examples: event objects,
   geometry value wrappers, iterator ergonomics, small serialization helpers.
-- Use **Rust ops/resources** when behavior touches parsed page state, layout,
-  CSS cascade, network, storage, origin/security policy, long-lived handles, or
-  mutable browser state.
+- Use **Rust ops/resources** when behavior touches parsed page state, CSS cascade,
+  network, storage, origin/security policy, long-lived handles, or mutable browser
+  state. Layout-dependent ops query exact accepted Flutter commits rather than
+  implementing layout in Rust.
 - Avoid two authoritative paths. The obsolete Page string-expression evaluator
   is deleted; do not reintroduce expression classifiers or fallback eval paths.
 
@@ -57,10 +60,11 @@ Choose the fastest/smallest correct implementation:
   document metadata, collections, or form reflections should include the op/data
   source, JS bootstrap member, headless routing, and CDP/WPT-visible proof in the
   same change.
-- **Rust remains authoritative for browser state.** JS bootstrap may cache and
-  compose objects inside one realm, but page mutations, layout geometry,
-  navigation actions, storage, cookies, and fetch policy must commit back through
-  Rust-backed ops/resources.
+- **BrowserCore remains authoritative for browser state.** JS bootstrap may cache
+  and compose objects inside one realm, but page mutations, navigation actions,
+  storage, cookies, and fetch policy commit through Rust-backed ops/resources.
+  Layout geometry comes only from an exact accepted Flutter commit surfaced
+  through those ops.
 - **Fail-closed errors are part of compatibility.** Unsupported selectors, bad
   storage keys, private-network fetches, malformed host operations, and missing
   elements should produce deterministic errors instead of silently widening the

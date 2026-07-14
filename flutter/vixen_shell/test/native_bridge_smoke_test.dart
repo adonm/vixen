@@ -24,9 +24,10 @@ void main() {
               envelope.event.type == 'navigation_phase_changed' &&
               envelope.event.phase == 'settled',
         );
-        final fixture = File(
-          '../../crates/vixen-ffi/tests/fixtures/frame.html',
-        ).absolute.uri.toString();
+        final fixture = File('../../crates/vixen-ffi/tests/fixtures/frame.html')
+            .absolute
+            .uri
+            .toString();
         await controller.navigate(contextId, fixture);
         await settled.timeout(const Duration(seconds: 30));
         final snapshot = await controller.browserSnapshot();

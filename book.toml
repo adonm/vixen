@@ -1,9 +1,8 @@
 [book]
 title = "Vixen"
 authors = ["adonm"]
-description = "A focused cross-platform Rust browser with a Flutter GUI target and first-class headless/CDP automation."
+description = "A focused cross-platform browser with one Flutter web renderer, GUI, and rendered automation target."
 language = "en"
-multilingual = false
 src = "docs"
 
 [build]

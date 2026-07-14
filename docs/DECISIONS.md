@@ -3,61 +3,51 @@
 Architecture decisions for Vixen, recorded ADR-style. Each entry carries
 context, the decision, the alternatives considered, and the consequences.
 
-When a future decision reverses one of these, append a new entry that supersedes
-it. Status and implementation annotations may be updated, but decision bodies
-remain historical and may describe components that no longer exist. Current
-direction follows the latest accepted ADR plus `PROJECT_DIRECTION.md` and
-`ARCHITECTURE.md`.
+This file contains the current accepted decisions only. Superseded decision
+bodies are removed rather than retained as competing guidance; Git history is
+the historical record. When direction changes, consolidate the surviving
+constraints into the replacement ADR and update `PROJECT_DIRECTION.md`,
+`ARCHITECTURE.md`, and `ROADMAP.md` in the same batch.
 
 ---
 
-## ADR-001: Build on Firefox-family components, not from scratch
+## ADR-001: Delegate spec-heavy primitives, own browser integration
 
 **Status:** accepted
 
-**Context.** Vixen's goal is Firefox-grade web compatibility at the
-smallest credible binary size. Every modern browser engine that reaches
-that grade — Firefox, Chromium, Servo, WebKit — has person-decades of
-work in its CSS cascade, layout, JS runtime, and paint pipeline. Building
-any of these from a blank slate is a multi-year undertaking that
-guarantees perpetual trailing-edge compatibility.
+**Context.** A modern browser cannot credibly reimplement every parser, cascade,
+JavaScript, text, and graphics primitive. Whole-engine embedding, however, would
+bring another product's navigation, network, persistence, and frontend ownership
+and fight Vixen's focused architecture.
 
-**Decision.** Delegate the spec-heavy subsystems to the same Mozilla
-crates Firefox and Servo use:
+**Decision.** Reuse focused upstream components behind Vixen-owned lifecycle and
+policy boundaries:
 
-| Subsystem        | Crate                              |
-|------------------|------------------------------------|
-| HTML parsing     | `html5ever`                        |
-| CSS cascade      | `style` (Stylo)                    |
-| Selector matching| `selectors`                        |
-| String interning | `string_cache`, `servo_arc`        |
-| JS engine        | `deno_core` / V8 embedding           |
-| Layout           | Servo `layout_2020` crate          |
-| Paint            | `webrender` + `gleam` + `euclid`   |
+| Subsystem | Selected foundation |
+|-----------|---------------------|
+| HTML parsing | `html5ever` |
+| CSS cascade and selector matching | Stylo / `selectors` |
+| JavaScript | `deno_core` / V8 |
+| Native cross-platform scene, text, images, and accessibility | Flutter engine and `dart:ui` |
 
-Vixen writes only: the integration glue, the product shell, the
-networking/security layer, the persistence layer, and the headless
-tooling.
+Vixen owns BrowserCore, navigation, network/security policy, persistence, Web
+APIs, CSS formatting semantics, the renderer mutation/commit protocol, and
+compatibility evidence. Flutter supplies the cross-platform rendering substrate;
+it is not treated as a CSS engine or a source of browser policy.
 
 **Alternatives considered.**
 
-- *Build everything from scratch.* Rejected: see Context. Cannot reach
-  Firefox-grade compatibility on any realistic timeline.
-- *Embed Servo whole via `libservo`.* Rejected: ~80+ MiB binary, hundreds
-  of transitive deps, unstable embedding API, fights Servo's own
-  networking/storage story. The selected crates get the same
-  compatibility at a fraction of the binary size.
+- *Build every primitive from scratch.* Rejected as too slow and permanently
+  trailing compatibility.
+- *Embed Servo, WebKit, or another whole browser engine.* Rejected because it
+  creates a second browser lifecycle and contradicts ADR-002.
+- *Use generic Flutter widgets as CSS layout.* Rejected because widget layout is
+  not web formatting; Vixen still implements and WPT-tests CSS semantics.
 
-**Consequences.**
-
-- Vixen's web compatibility is roughly Servo's, which is roughly
-  Firefox's. The compat ceiling is upstream; Vixen's job is the product
-  around it.
-- Vixen tracks Servo crate releases. Major upstream API changes
-  (e.g. Stylo `TElement` trait evolution) require integration updates,
-  typically every 6–12 months.
-- Binary size grows by the volume of these crates. Runtime packaging and size
-  are remeasured against the active `deno_core`/V8 dependency.
+**Consequences.** Upstream crates/frameworks set important capability and binary
+costs, but Vixen owns their integration and support claims. Component API shape
+never counts as browser behavior without a production BrowserCore-to-renderer
+vertical and executable evidence.
 
 ---
 
@@ -72,9 +62,9 @@ change must be validated against both engines, dependency isolation
 requires constant auditing, and only one engine can be the production
 path anyway.
 
-**Decision.** Vixen has exactly one engine: the Servo-component-backed
-engine described in ADR-001. There is no WebKit fallback, no compile-time
-engine selection, no runtime engine switching.
+**Decision.** Vixen has exactly one engine: the component-backed BrowserCore
+described in ADR-001. There is no WebKit fallback, no compile-time engine
+selection, and no runtime engine switching.
 
 **Alternatives considered.**
 
@@ -87,57 +77,10 @@ engine selection, no runtime engine switching.
 **Consequences.**
 
 - One engine to test, one engine to ship, one engine to document.
-- If the Servo-component path ever proves unworkable, a WebKit adapter
-  against the `Engine` trait is a small, contained addition — but it is
-  not the v1.0 plan.
-- Web compatibility is Servo-grade, not WebKit-grade. The two are
-  different; document which one Vixen targets.
-
----
-
-## ADR-003: GPU-only — no CPU paint path
-
-**Status:** accepted for GPU-only rendering; GUI-surface detail superseded by
-ADR-018 and ADR-021
-
-**Context.** A browser paint pipeline can have one paint path (GPU) or
-two (GPU + a software CPU fallback). A CPU fallback exists traditionally
-for two reasons: headless screenshot generation without a display, and
-CI without GPU access.
-
-**Decision.** Vixen has exactly one paint path: WebRender against a
-GPU context. The GUI uses `gtk4::GLArea` (EGL/GLX). Headless uses EGL
-surfaceless (`EGL_MESA_platform_surfaceless`, with
-`EGL_KHR_surfaceless` + pbuffer as fallback) — same WebRender, no
-display server required. There is no `tiny-skia`, no `fontdue`
-rasterizer, no CPU paint path.
-
-**Alternatives considered.**
-
-- *CPU fallback for headless and CI.* Rejected: GPU is a reasonable
-  requirement for a GNOME Flatpak daily driver (every target device has
-  one), EGL surfaceless covers headless/CI without a second renderer to
-  maintain, and removing the CPU path collapses four duplicated
-  painters into one.
-- *Headless Wayland compositor as the headless path.* Rejected as the
-  *default*: EGL surfaceless is sufficient for screenshot/CDP pipelines
-  and adds no runtime deps. A headless Wayland compositor (`weston` or
-  `cage` on a virtual output) is supported as an opt-in fallback when
-  full compositor semantics (pointer focus, XDG toplevel) are needed
-  for CDP interaction tests.
-
-**Consequences.**
-
-- One renderer to test, one renderer to maintain. Display-list changes
-  ripple to exactly one paint path.
-- Headless requires a GPU device (even if virtual). CI must provide one
-  (Mesa software rasterizer via `llvmpipe` is sufficient; most CI
-  runners already have it).
-- No binary-size cost from `tiny-skia`/`fontdue` and their font raster
-  pipelines. WebRender has its own glyph atlas.
-- If a truly GPU-less environment is ever required (embedded, server),
-  treat it as a separate v1.x target with its own paint path — not the
-  v1.0 plan.
+- Replacing BrowserCore or adopting a whole engine requires a superseding ADR;
+  it is not an adapter or fallback feature.
+- Compatibility claims come from Vixen's measured production path, not from the
+  lineage of individual parser, cascade, runtime, or renderer components.
 
 ---
 
@@ -172,229 +115,29 @@ no `process_pool`, no `ipc` module.
 
 ---
 
-## ADR-005: JS runtime packaging size gate
-
-**Status:** superseded by ADR-014
-
-**Context.** The old runtime-packaging decision optimized around shared/static
-packaging for the previous JS engine. ADR-014 changed the active runtime to
-`deno_core`/V8, so those package-specific details are no longer active guidance.
-
-**Decision.** Re-measure release binaries with the active `deno_core`/V8
-dependency. Do not carry forward pre-ADR-014 runtime size assumptions as release
-promises.
-
-**Alternatives considered.**
-
-- *Keep historical runtime-packaging guidance around for builds.* Rejected: it
-  no longer matches the dependency graph and creates false release expectations.
-
-**Consequences.**
-
-- `just size-headless` and `just size-flutter-linux` are the current structured
-  artifact measurements; budgets require the acceptance policy in
-  `docs/BASELINES.md`.
-- Distribution guidance should discuss `deno_core`/V8 artifacts and cache
-  behavior, not removed runtime dependencies.
-
----
-
-## ADR-006: One display list, one paint path, two GL surfaces
-
-**Status:** accepted for one display list/paint path; GTK surface detail
-superseded by ADR-018 and ADR-021
-
-**Context.** A previous design had four parallel paint implementations
-(CPU compositor, CPU renderer, "GPU renderer" that was actually CPU,
-text/glyph rasterizer), each duplicating the draw-command dispatch
-logic. Even a "two backend" design (WebRender + a software fallback)
-duplicates the dispatch contract.
-
-**Decision.** Vixen has one `DisplayList` type defined in `vixen-engine`
-and exactly one paint path (WebRender). There is no `PaintBackend`
-trait — a single-impl trait would be dead abstraction. WebRender
-consumes a small `GlContext` trait (defined in `vixen-api`, so
-`vixen-engine` stays GTK- and EGL-free) with two implementations:
-
-- `GlAreaSurface` (in `vixen-shell`) — wraps `gtk4::GLArea`, used by GUI.
-  GL work runs inside the `GLArea::render` signal, where GTK has already
-  made the `gdk::GLContext` current.
-- `SurfacelessSurface` (in `vixen-headless`) — wraps an EGL surfaceless
-  context, used by headless screenshots, CDP, and CI.
-
-Both surfaces produce the same `webrender::Renderer`; the only
-difference is the `GlContext` implementation behind it.
-
-**Alternatives considered.**
-
-- *One display list, two backends (WebRender + tiny-skia).* Rejected per
-  ADR-003: GPU is a reasonable requirement, EGL surfaceless covers the
-  headless case, and avoiding a second backend removes a large
-  maintenance surface.
-- *A `PaintBackend` trait with one impl.* Rejected: a single-impl trait
-  is premature abstraction and contradicts the "one paint path" goal.
-  The `GlContext` trait (two impls) is the only seam that earns its keep.
-- *Generate backends from a shared spec.* Rejected: the display list
-  is the spec; sharing it is sufficient.
-
-**Consequences.**
-
-- Adding a new paint command requires one change in the display-list
-  builder and zero renderer changes (WebRender handles it).
-- The display list is a stable internal API; changes ripple
-  predictably.
-- The GL↔WebRender seam is the `GlContext` trait in `vixen-api`, not a
-  vixen-engine type — keeping GL details out of engine internals and GTK
-  out of vixen-engine.
-- CI must provide a GPU device (Mesa `llvmpipe` is sufficient).
-
----
-
-## ADR-007: GNOME-only target at v1.0
-
-**Status:** superseded by ADR-015, ADR-018, ADR-019, and ADR-021
-
-**Context.** Cross-platform browsers either limit themselves to what the
-upstream crates already abstract (Servo works on macOS/Windows) or carry
-large per-platform shims (GTK on macOS via Quartz, etc.). Vixen's product
-goal is a GNOME browser.
-
-**Decision.** v1.0 targets Linux + GNOME 50 SDK only. Distribution via
-Flatpak. Other platforms are best-effort (if Servo crates happen to work,
-fine; no release blocker).
-
-**Alternatives considered.**
-
-- *Cross-platform from day one.* Rejected: dilutes focus. If a macOS or
-  Windows port becomes a goal, design it as a v1.x effort with its own
-  shell crate.
-
-**Consequences.**
-
-- Shell uses GTK4/libadwaita unconditionally.
-- Flatpak manifest is the canonical distribution.
-- macOS/Windows users have no v1.0 path. Documented as a non-goal.
-
----
-
 ## ADR-008: WebGPU and media are post-v1.0
 
 **Status:** accepted
 
-**Context.** WebGPU and media playback are real features but require
-substantial integration work (`wgpu` surface sharing with WebRender;
-GStreamer pipeline + element wiring). Neither is on the critical path
-for a useful daily browser.
+**Context.** WebGPU and media playback are real features but require substantial
+integration work with Flutter's scene/platform-texture lifecycle, device policy,
+codecs, permissions, and security. Neither is on the critical path for the first
+useful browser corridor.
 
-**Decision.**
-
-- **WebGPU**: not in v1.0. Land via `wgpu` (which has its own WGSL
-  compiler and pipeline model) in v1.1.
-- **Media (`<audio>`, `<video>`)**: not in v1.0. Land via GStreamer
-  bindings in v1.1.
+**Decision.** WebGPU and media are outside the v1.0 gate. Promote them after v1
+by measured corridor impact. WebGPU uses one bounded native `wgpu` device/policy
+integration presented through Flutter's scene; media uses platform codec/
+GStreamer services and Flutter-compatible textures under BrowserCore autoplay,
+permission, lifecycle, and resource policy. Neither adds a second page renderer.
 
 **Alternatives considered.**
 
 - *Build WebGPU/media scaffolding now, fill in backends later.* Rejected:
   scaffolding without backends is dead code that rots and misleads users.
 
-**Consequences.**
-
-- v1.0 cannot run WebGPU demos or play videos. Documented in
-  `docs/COMPAT.md`.
-- v1.1 scope includes both.
-
----
-
-## ADR-009: Headless render path is EGL surfaceless, not a CPU rasterizer
-
-**Status:** accepted
-
-**Context.** With ADR-003 committing to GPU-only, the headless path
-needs a GPU context. Two viable approaches: EGL surfaceless (a GPU
-context with no display server) or a headless Wayland compositor
-(`weston`/`cage` on a virtual output). A third option — a CPU
-rasterizer — is rejected by ADR-003.
-
-**Decision.** EGL surfaceless (`EGL_MESA_platform_surfaceless`, with
-`EGL_KHR_surfaceless` + pbuffer as fallback) is the default headless
-render context. WebRender renders into a framebuffer object;
-`glReadPixels` extracts RGBA; `png` encodes the screenshot. No display
-server is needed.
-
-A headless Wayland compositor is supported as an opt-in via
-`VIXEN_HEADLESS_WAYLAND=1` for tests that need full compositor
-semantics (pointer focus, XDG toplevel, real input events).
-
-**Alternatives considered.**
-
-- *Headless Wayland as the only path.* Rejected: requires running a
-  compositor (extra runtime dep, slower startup, more moving parts).
-  EGL surfaceless is simpler and covers 95% of headless use cases
-  (screenshots, CDP screenshots, layout dump).
-- *CPU rasterizer (`tiny-skia`).* Rejected per ADR-003.
-
-**Consequences.**
-
-- Headless requires a GPU device even on CI. Mesa's `llvmpipe`
-  software rasterizer satisfies this; most CI runners already provide
-  it via `LIBGL_ALWAYS_SOFTWARE=1` if no hardware GPU is present.
-- CDP interaction tests that depend on real focus events may need the
-  Wayland fallback. Document this in `vixen-headless/README.md`.
-- One render path to test across GUI and headless; bugs reproducible in
-  either context.
-
----
-
-## ADR-010: Idiomatic Relm4 shell
-
-**Status:** superseded by ADR-018 and ADR-021
-
-**Context.** The shell can be written in three styles against Relm4:
-(1) hand-rolled GTK with Relm4 only as an app entry point, (2) Relm4
-components for top-level windows but hand-rolled widget management
-inside, (3) fully idiomatic Relm4 with factories, workers, components,
-and `relm4-components` reuse.
-
-**Decision.** Vixen's shell is fully idiomatic Relm4 (style 3):
-
-- **Tabs** are a `FactoryVecDeque<TabModel>` — dynamic add/remove via
-  factory, no hand-rolled `Vec<TabState>` + ad-hoc signal handlers.
-- **Each tab** is a `Component` with its own model/update/view, owning
-  an `EngineWorker`.
-- **Engine ownership** is via `relm4::Worker` — one worker per tab, on
-  a background thread. The worker holds the `Box<dyn Engine>` and
-  forwards `EngineDelegate` callbacks as messages to the tab component.
-  The shell thread never blocks on engine work.
-- **Address bar, find bar, status row, preferences rows** are each a
-  `Component`, not hand-rolled widgets.
-- **`relm4-components`** is the first stop for any standard widget
-  (`Alert`, `SimpleAdwComboBox`, `ComboRow`, `Dialog`, `Toast`,
-  `LoadingButtons`, `consts::CSS_CLASSES`). Reinventing any of these is
-  a code-review blocker.
-- **Workers** for any non-trivial background task: history writes,
-  screenshot encoding, CDP I/O.
-
-**Alternatives considered.**
-
-- *Hand-rolled GTK, Relm4 as entry point only.* Rejected: produces
-  larger shell code, harder to reason about, doesn't benefit from
-  upstream component maintenance.
-- *Partial Relm4 (windows only, hand-rolled internals).* Rejected:
-  splits the codebase across two idioms; bugs slip through the seam.
-
-**Consequences.**
-
-- Shell source is smaller and more uniform.
-- Engine ↔ shell message flow is explicit: `EngineWorker` emits
-  `EngineMsg::{UriChanged, TitleChanged, ...}` consumed by the tab
-  component's `update`.
-- Engine callbacks never run on the shell thread directly; no
-  re-entrancy, no GTK mutate-from-background bugs.
-- Stronger dependency on Relm4 upstream. Track `relm4` releases;
-  breaking changes (rare) require shell-side updates.
-- `.tmp/ref/relm4/examples/` and `.tmp/ref/relm4/relm4-components/` are the
-  primary reference for any new shell widget.
+**Consequences.** v1.0 does not claim WebGPU or media playback. API reflection
+stays explicitly inert/unsupported until the corresponding subsystem, policy,
+renderer integration, and compatibility evidence exist.
 
 ---
 
@@ -441,119 +184,18 @@ not patch crates.io, do not vendor the source. Implement
 - The crate ships with its lib name as `style` even though the package
   is `stylo`; source uses `use style::…` while `Cargo.toml` says
   `stylo = …`. Documented in `style_dom.rs` to head off confusion.
-- Dep budget: ~45 additional crates (icu, euclid, rayon, etc.). The
-  Phase 9 dep-count gate (≤ 220) remains the release-blocking contract;
-  this is the right trade for getting real Firefox-grade cascade.
+- The dependency increase is an accepted trade for a real cascade. Dependency
+  and artifact costs remain measured; numerical limits become gates only from
+  reproducible baselines under `BASELINES.md` and `ACCEPTANCE.md`.
 - Future Stylo releases may shift trait shapes (`TElement` etc.). Pin
   `stylo = "0.18"` and bump deliberately; track upstream
   `https://github.com/servo/stylo/releases`.
 
 ---
 
-## ADR-012: Verify and pin the layout source before the full layout adapter
-
-**Status:** accepted
-
-**Context.** ADR-001 selected Servo `layout_2020` for layout. The refreshed
-Firefox/Servo reference pin (`46e9f12a8f9b`) no longer contains the historical
-`servo/components/layout_2020/` or `servo/components/layout/` trees; the
-current Servo subtree under Firefox contains Stylo and selector support only.
-Continuing to cite removed paths would make implementation decisions
-non-reproducible.
-
-**Decision.** Keep the Phase 4 executable line-layout slice behind
-`vixen_engine::page::Page`, but do not add a full layout dependency or cite
-historical Servo layout paths until a current Rust layout source is verified
-and pinned in `docs/REFERENCES.md`. If no maintained Servo-family layout source
-is available, narrow the v1.0 layout scope explicitly in `docs/COMPAT.md`
-rather than silently swapping to an unrelated fallback crate.
-
-**Alternatives considered.**
-
-- *Keep citing the old Firefox/Servo layout paths.* Rejected: those paths are
-  absent from the current reference pin and violate the citation discipline.
-- *Switch immediately to an unrelated layout crate.* Rejected: ADR-001's
-  compatibility rationale still applies; a fallback would need its own ADR and
-  acceptance impact.
-
-**Consequences.**
-
-- Phase 3 Stylo work remains unblocked: `style`/`selectors` are present and
-  pinned via the current Firefox/Servo reference and the crates.io `stylo`
-  dependency.
-- Phase 4 can continue with vertical `Page` fixtures and pure layout helpers,
-  but the full positioned-box-tree adapter has an explicit source-selection
-  gate.
-- Future layout commits must cite either the new layout source pin or the
-  narrowed v1.0 compatibility document, not historical `layout_2020` paths.
-
----
-
-## ADR-013: Vixen-owned Rust layout, Ladybird architecture reference
-
-**Status:** accepted
-
-**Supersedes:** ADR-001's `layout_2020` layout row and ADR-012's open
-source-selection gate.
-
-**Context.** The refreshed Firefox/Servo reference pin no longer contains a
-maintained Rust layout crate. Keeping layout blocked on historical Servo paths
-would stop the vertical browser slices, while switching to a generic UI layout
-crate would not implement web layout semantics. Ladybird's LibWeb layout stack
-at `0de15a5dd2a9` is a current, readable browser-layout architecture:
-`Libraries/LibWeb/Layout/TreeBuilder.cpp` centralizes DOM-to-layout-tree
-construction, `Libraries/LibWeb/Layout/*FormattingContext*` separates block,
-inline, flex, grid, and table algorithms, and `Libraries/LibWeb/Painting/`
-keeps paint/display-list construction behind a later seam.
-
-**Decision.** Vixen owns its layout engine in Rust. Stylo remains the CSS
-cascade/computed-value source, `deno_core` remains the JS runtime, and WebRender
-remains the only paint backend. The layout layer follows Ladybird's
-architecture but uses Rust/data-oriented internals: stable `NodeId` /
-`LayoutNodeId` handles, arenas, compact structs/enums, explicit dirty bits,
-cached intrinsic sizes, and deterministic formatting-context passes.
-
-The v1.0 layout target is not "all of CSS layout." It is the subset needed for
-simple real pages and the release WPT profile: normal-flow block layout, inline
-line boxes, basic replaced elements, margin/border/padding/box sizing,
-positioned descendants, overflow/scroll containers, and useful flex/grid
-coverage. Tables, floats, fragmentation, full vertical writing, advanced
-intrinsic sizing, and complete print/page layout are post-v1 unless promoted by
-WPT/real-site evidence.
-
-**Alternatives considered.**
-
-- *Keep waiting for Servo `layout_2020`.* Rejected: it is absent from the
-  current Firefox/Servo reference pin and would leave Phase 4 without a
-  reproducible source path.
-- *Use a generic UI layout crate.* Rejected: UI-layout crates do not implement
-  web layout semantics, cascade interactions, inline formatting, fragmentation,
-  or WPT-compatible CSS behavior.
-- *Port Ladybird C++ directly.* Rejected: Vixen should reuse the architecture
-  and tests, not import C++ ownership patterns or create a transliteration that
-  fights Rust.
-
-**Consequences.**
-
-- Vixen's compatibility claim narrows: Firefox/Servo-family cascade, selector,
-  JS, and paint components, but Vixen-owned layout with WPT-gated coverage.
-- Layout becomes a core Vixen subsystem and a multi-phase effort. The plan must
-  prefer small vertical slices through `Page`, not large unexercised layout
-  modules.
-- Every layout semantic decision cites either Ladybird layout/painting paths at
-  `0de15a5dd2a9` for architecture or Firefox/Stylo/WebRender paths at
-  `46e9f12a8f9b` for computed values and rendering contracts.
-- `docs/COMPAT.md` is release-blocking and must state the WPT profile, achieved
-  pass rates, and known layout gaps honestly.
-
----
-
 ## ADR-014: Move JS runtime to `deno_core`
 
 **Status:** accepted
-
-**Supersedes:** ADR-001's JS-engine row, ADR-004's SpiderMonkey compartment
-wording, and ADR-005's mozjs packaging decision.
 
 **Context.** The first Phase 2 implementation used `mozjs` because the original
 plan optimized for Firefox-family components end-to-end. The later Phase 6 work
@@ -630,52 +272,6 @@ The target JS architecture is Deno-shaped:
 
 ---
 
-## ADR-015: Modern-Linux Firefox replacement, optimized for capability per byte
-
-**Status:** accepted for product focus; GUI/platform clauses superseded by
-ADR-018, ADR-019, and ADR-021
-
-**Supersedes:** ADR-007's narrow "GNOME-only" product wording. The
-Relm4/libadwaita/Flatpak implementation path remains accepted.
-
-**Context.** The project direction is now explicit: Vixen should become a
-Firefox replacement for modern Linux users, with both a focused desktop browser
-and first-class CLI/CDP automation. The important differentiator is not a large
-feature buffet; it is high web capability with low binary size, low memory use,
-fast builds, and rapid iteration driven by useful text reports.
-
-**Decision.** Optimize Vixen for maximum browser capability per byte. The
-desktop product targets modern Linux broadly while using the Relm4/libadwaita
-GUI path and Flatpak/GNOME SDK build path. The shell should stay minimal and
-focused, closer to Ghostty's product philosophy than a kitchen-sink browser UI.
-Headless CLI, CDP, and Playwright-style workflows are product surfaces, not just
-test harnesses.
-
-Priority order is recorded in `docs/PROJECT_DIRECTION.md`: rendering/layout,
-runtime DOM/Web APIs, network/security, storage/history, minimal shell,
-headless/CDP, WPT/reporting, HTML integration, CLI ergonomics, then embeddable
-Rust API.
-
-**Alternatives considered.**
-
-- *GNOME-only browser identity.* Narrowed: the implementation remains GTK/
-  libadwaita, but the user target is modern Linux rather than GNOME Shell only.
-- *Kitchen-sink browser chrome.* Rejected: UI breadth competes with engine
-  correctness, binary size, and iteration speed before alpha.
-- *Automation as secondary.* Rejected: CLI/CDP users and text reports are part of
-  how Vixen will iterate quickly and be useful early.
-
-**Consequences.**
-
-- Architecture choices should cite size, memory, build-speed, or correctness
-  impact when there is a meaningful tradeoff.
-- Non-Linux platforms remain best-effort.
-- UI additions must justify themselves against the focused-shell goal.
-- `docs/COMPAT.md` and WPT/profile output are product artifacts because they let
-  humans and agents measure progress.
-
----
-
 ## ADR-016: hk owns git lifecycle gates
 
 **Status:** accepted
@@ -724,215 +320,66 @@ git diff --cached --check
 
 **Status:** accepted
 
-**Supersedes:** ADR-010's one-`EngineWorker`-per-tab engine ownership. ADR-010's
-Relm4 component/factory/worker guidance remains accepted for GUI presentation and
-message transport.
-
-**Context.** The first vertical slices made `Page`, `JsRuntime`, network policy,
-profile tables, shell loading, headless commands, and CDP behavior executable.
-They also revealed that sharing component types is not the same as sharing a
-browser. There is no production `impl vixen_api::Engine`: the GTK shell owns a
-separate navigation/history/network/cookie state machine and constructs `Page`
-on the UI thread, while headless/CDP separately owns `Page`, one scripted
-`JsRuntime`, history, target/session shape, network configuration, and automation
-overrides.
-
-Continuing to add APIs to those coordinators would make lifecycle semantics
-frontend-specific. Profile sharing, independent tabs, active navigation
-cancellation, stale-result rejection, downloads, frames, and renderer/runtime
-recovery all need an owner above an individual `Page` or protocol session.
+**Context.** Sharing component types is not the same as sharing a browser.
+Profile sharing, independent tabs, navigation cancellation, stale-result
+rejection, downloads, renderer commits, and runtime recovery need one owner above
+an individual document, renderer, or protocol session.
 
 **Decision.** `vixen-engine` owns one `BrowserCore` per open profile. It runs on
-an engine-owned thread/local executor suitable for the non-`Send` Rc DOM and
+an engine-owned thread/local executor suitable for the non-`Send` DOM and
 `deno_core::JsRuntime`, and owns:
 
-- one profile service for store, cookies/cache, permissions, HSTS, downloads,
-  clear-data policy, and host configuration;
-- one registry of top-level browsing contexts and future child frames;
-- context-scoped session history, sessionStorage, viewport/input state, active
+- profile storage, cookies/cache, permissions, HSTS, downloads, clear-data policy,
+  and host configuration;
+- the top-level browsing-context registry and future child frames;
+- context-scoped history, sessionStorage, viewport/input intent, active
   navigation, runtime realms, and committed document state; and
-- document-scoped DOM, style/layout/paint invalidation, script resources, and
-  inspector state.
+- document-scoped DOM, computed style, render-source revisions, accepted renderer
+  commits, script resources, accessibility meaning, and inspector state.
 
 Commands and events cross a browser-scoped `vixen-api` seam and carry typed
-context/navigation/document/request/runtime/download ids. Asynchronous work also
-carries its creation generation. Cancelling or superseding work invalidates that
-generation; late results are rejected before state mutation, cache/profile side
-effects, or success events.
+context/navigation/document/request/runtime/download/render ids. Asynchronous
+work carries its creation generation. Cancellation or supersession invalidates
+that generation; late network, script, renderer, geometry, or persistence results
+are rejected before mutation, side effects, input targeting, or success events.
 
-The shell, headless CLI, CDP, and WPT harness become adapters over this core. They
-may own widgets, GL/EGL surfaces, sockets, protocol session routing, and
-presentation snapshots, but not alternate navigation, history, page-runtime,
-permission, cookie/cache, or profile state. Composition roots may construct
-`vixen-engine`; adapters do not directly combine its leaf subsystems.
-
-The existing `Engine` trait may evolve or be replaced by browser-scoped command,
-event, query, and factory contracts. Vixen still has one concrete engine; this is
-not an engine-plug-in abstraction.
+The Flutter GUI/chrome-less renderer, text CLI, CDP, and WPT harness are adapters
+over BrowserCore. They may own bounded ephemeral renderer state/resources, scenes,
+widgets, sockets, and protocol routing, but not alternate navigation, history,
+page-runtime, permission, cookie/cache, or profile state. Vixen has one concrete
+engine; this seam is not an engine-plugin abstraction.
 
 **Alternatives considered.**
 
-- *Keep one independent engine worker per tab and share only a `Store`.* Rejected:
-  cookies/cache/permissions/downloads and host configuration require coordinated
-  in-memory state, while CDP target routing and browser-wide clear-data operations
-  still need a higher owner.
-- *Keep shell and headless coordinators but extract more common helpers.*
-  Rejected: helpers can share algorithms but cannot define atomic commit,
-  cancellation, event ordering, or teardown across independently owned state.
-- *Move the Rc DOM and V8 runtime to the GTK thread.* Rejected: it couples the
-  engine to GUI scheduling and gives headless/CDP a different execution model.
-- *Make every subsystem `Send + Sync` and distribute it across a worker pool.*
-  Rejected for alpha: it adds locking and re-entrancy complexity without a proven
-  need. External transport/blocking work can return generational messages to one
-  deterministic engine executor.
+- *One independent engine per tab with a shared store.* Rejected: profile state,
+  downloads, renderer scheduling, target routing, and clear-data operations need
+  coordinated in-memory ownership.
+- *Keep frontend coordinators and share helpers.* Rejected: helpers cannot define
+  atomic commit, cancellation, ordering, or teardown across independent owners.
+- *Move DOM and V8 into Flutter.* Rejected: browser truth would depend on
+  renderer scheduling and protocol adapters would acquire divergent behavior.
+- *Make every subsystem `Send + Sync` and distribute it immediately.* Rejected:
+  it adds locking/reentrancy before measured isolation or throughput requires it.
 
 **Consequences.**
 
-- The next alpha work is lifecycle migration before broad API growth.
-- Shell/headless direct `vixen-net`/`vixen-store` and direct orchestration are
-  documented temporary exceptions. `just gate-architecture` protects stable leaf
-  boundaries now and should ban each exception once migrated.
-- Two tabs/targets can own independent documents/runtimes while sharing intended
-  profile state through one service.
-- `stop`, redirects, history, form navigation, page-driven navigation, session
-  restore, downloads, and error pages gain one event/commit model.
-- The browser-core executor becomes a reliability boundary. Long script/layout
-  work needs budgets and cooperative scheduling; stronger process isolation is a
-  later explicit architecture generation, not an accidental worker pool.
-- Existing Page/network/store/runtime tests remain useful but need browser-core
-  integration tests for ownership, partitioning, event ordering, cancellation,
-  stale completions, and frontend parity.
+- `just gate-architecture` forbids frontend direct composition of network/store
+  leaves and independent browser orchestration.
+- Two contexts can own independent documents/runtimes/render revisions while
+  sharing only intended profile state.
+- Navigation, stop, history, downloads, error pages, and renderer reset use one
+  lifecycle and diagnostic model.
+- The owner thread is a reliability boundary. Long script and synchronous
+  `EnsureLayout` work need cancellation, deadlines, and deadlock-safe scheduling.
 
-**Implementation status (2026-07-14).** The A1 migration is complete: the
-Flutter bridge, headless, CDP, and WPT route contexts through BrowserCore, and the architecture
-gate forbids their former direct leaf composition. The first A2 slice runs source
-loads on a bounded external Tokio runtime and returns generation-tagged results;
-stop/supersede abort active transport and forced late completions are rejected
-before cookie/profile/history/document/runtime mutation. HTML parsing now advances
-in bounded owner-thread quanta with generation checks; stop, reload, and history
-traversal during parse reject stale parser work before commit. Configured and
-parser-discovered scripts advance one item at a time, followed by separate
-lifecycle quanta; stop/supersede suppresses remaining work, and committed author
-exceptions are runtime effects rather than navigation failures. Runtime creation,
-individual V8 evaluations, promise pumping, and external/discovered-resource jobs
-remain synchronous and require the next cooperative-cancellation slice.
+**Implementation status (2026-07-14).** BrowserCore owns production contexts,
+profiles, navigation generations, DOM/V8 state, and ordered events for Flutter,
+headless, CDP, and WPT. Main-document, external-script/stylesheet, and bounded PNG
+loads are generation-cancellable; V8 jobs and runtime fetch waits are deadline-
+bounded and interruptible. ADR-022's render mutation/commit ownership is the next
+architecture migration.
 
 ---
-
-## ADR-018: Flutter is the primary five-platform GUI shell
-
-**Status:** accepted; compatibility-shell retention superseded by ADR-021
-
-**Supersedes:** ADR-007, ADR-010, and ADR-015 where they make Linux/GNOME or
-Relm4/libadwaita the product shell direction. It also supersedes ADR-003 and
-ADR-006 only where they prescribe `gtk4::GLArea` as the permanent GUI surface.
-ADR-002's single engine, ADR-003/006's single WebRender paint path, ADR-014's
-single `deno_core`/V8 runtime, and ADR-017's BrowserCore ownership remain
-accepted.
-
-**Context.** The Relm4/libadwaita shell proved visible WebRender output and the
-BrowserCore adapter on Linux, but keeping it as the product shell confines Vixen
-to one desktop stack and makes each additional platform a separate chrome
-implementation. Flutter officially supports native Linux, macOS, Windows,
-Android, and iOS. Vixen narrows iOS to the Apple Silicon Simulator; a shared
-Flutter chrome can cover those five GUI environments while preserving the Rust
-browser core.
-
-This remains platform-gated rather than implied by framework support. The Linux
-alpha slice now contains Flutter chrome, BrowserCore FFI, a bounded WebRender RGBA
-texture, tests, and a debug bundle. Vixen must still prove input, accessibility,
-host-service, packaging, policy, size, and performance behavior on Linux and the
-full Rust/V8/WebRender integration on every other target.
-
-Current rusty_v8 guidance documents Android source cross-builds and the
-`aarch64-apple-ios-sim` target. The simulator keeps V8's JIT and WebAssembly
-support. Vixen does not currently intend to solve the distinct physical-device,
-TestFlight, or App Store runtime/distribution problem.
-
-**Decision.** Flutter is Vixen's primary GUI shell for Linux, macOS, Windows,
-Android, and the Apple Silicon iOS Simulator. Dart owns chrome, presentation, and host-service UI only.
-BrowserCore remains the sole owner of profile, contexts, navigation, documents,
-runtime, network/security policy, storage, layout, WebRender, and accessibility
-source data. Headless/CDP/WPT remain Rust frontends and are not embedded in GUI
-packages.
-
-The initial content transport is a bounded RGBA frame pool exposed as a Flutter
-external texture. It preserves one WebRender renderer while making ownership,
-copy cost, and failure behavior measurable. Platform-specific shared GPU texture
-transports may replace it only after RGBA correctness and platform measurements
-exist; they remain transports behind the same one-renderer contract.
-
-BrowserCore must project an authoritative, bounded, generation-aware
-accessibility tree into Flutter Semantics. A pixel texture without this
-projection is not an accessible browser.
-
-Linux migrates first through a Rust bridge, Flutter fake shell, real BrowserCore
-shell, RGBA texture, input/viewport, accessibility, host services, and a tested
-release archive. Vixen publishes the official x86_64 archive; FlatPark pins its
-GitHub Release URL, size, and SHA-256 and repackages those unchanged bytes as a
-signed Flatpak. Vixen does not maintain a second signed OSTree repository. The existing
-GTK/Relm4 shell remains an in-tree compatibility baseline, not the packaged
-entrypoint, until Flutter Linux parity permits removal. Flutter's Linux embedder itself uses GTK, so this removes
-Vixen's Relm4/libadwaita/custom GLArea ownership, not necessarily GTK runtime
-dependencies.
-
-Desktop expansion follows Linux; Android follows desktop bridge stabilization;
-the iOS Simulator follows on an Apple Silicon macOS host. Android requires a
-pinned V8 source archive/toolchain, GLES and lifecycle proof, and split-ABI
-artifact proof. The iOS target uses `aarch64-apple-ios-sim` and requires a
-repeatable Flutter/BrowserCore/V8/WebRender simulator build plus JavaScript,
-WebAssembly, lifecycle, input, accessibility, and host-service smoke evidence.
-Physical iOS, TestFlight, and App Store distribution are out of scope unless a
-new ADR accepts their different runtime constraints.
-
-WebAssembly remains part of the one `deno_core`/V8 runtime contract on every
-declared target. Vixen does not add a portable alternate Wasm runtime for iOS.
-
-Artifact size is a first-class per-platform/ABI goal. Release/AOT/strip/LTO
-builds compare hello-Flutter with Flutter+Vixen and attribute Flutter, Dart,
-runner/plugins, BrowserCore, V8, WebRender, resources, and packaging. GUI bundles
-exclude debug engines/symbols, duplicate ABIs, headless tools, and build inputs.
-Warnings precede hard budgets; numeric limits require reproducible evidence and
-the acceptance policy rather than invention.
-
-The detailed and authoritative execution/gate plan is
-[`FLUTTER_SHELL.md`](FLUTTER_SHELL.md).
-
-**Alternatives considered.**
-
-- *Keep Relm4/libadwaita as the Linux product and build independent native
-  shells elsewhere.* Rejected: it multiplies chrome, bridge, accessibility, and
-  lifecycle behavior and preserves the Linux-only product constraint.
-- *Let Flutter render web content.* Rejected: it creates a second renderer and
-  abandons the WebRender/display-list invariants.
-- *Share display lists directly with Dart first.* Rejected: it leaks renderer
-  internals and makes Flutter an alternate painter. Bounded RGBA is the smaller
-  correctness-first seam.
-- *Start with zero-copy platform textures.* Deferred: synchronization, lifetime,
-  color, driver, and surface-loss complexity must be justified by measurements.
-- *Use WebKit/JavaScriptCore on iOS.* Rejected under the one-engine decision. A
-  policy or viability failure requires a new ADR, not a silent fallback.
-- *Target physical iOS immediately.* Rejected for this phase: use the V8-enabled
-  Apple Silicon Simulator and require a new ADR before accepting a divergent
-  physical-device runtime or distribution model.
-- *Set a small-binary number now.* Rejected: Flutter+Vixen raw and package
-  artifacts now exist, but independent reproduction and component attribution
-  must precede warning and failure thresholds.
-
-**Consequences.**
-
-- Five native GUI platforms are committed product targets, but support claims
-  remain platform-gated and evidence-specific.
-- A Dart/FFI/native-runner surface is added, while browser truth remains in
-  BrowserCore and web-platform work continues independently.
-- Linux temporarily carries two shell implementations in-tree, but the official
-  archive and FlatPark package contain only Flutter; parity gates prevent the compatibility baseline from
-  becoming permanent.
-- Accessibility projection and host services are architecture work throughout
-  migration, not release polish.
-- Packaging and artifact reports become per platform and ABI. Existing Linux
-  GTK/Flatpak measurements are historical evidence; new package reports measure
-  the official archive and FlatPark package.
 
 ## ADR-019: Validate Flutter targets on the latest stable major OS
 
@@ -941,7 +388,7 @@ The detailed and authoritative execution/gate plan is
 **Context.** Carrying a broad legacy OS matrix before Vixen has one supported
 release multiplies native runner, graphics, accessibility, signing, and CI work
 without compatibility evidence. Flutter's own support range is not evidence that
-BrowserCore, V8, WebRender, or Vixen packaging works throughout that range.
+BrowserCore, V8, Vixen's Flutter renderer, or packaging works throughout that range.
 
 **Decision.** At each release cutoff, Vixen validates one contemporary baseline:
 the latest generally available major release for each target OS. Linux uses the
@@ -971,15 +418,16 @@ own ongoing gate capacity.
 window, compositor, input/IME, accessibility, lifecycle, GPU, and release-smoke
 matrices while Linux browser usability is still converging. Fedora Workstation
 and the pinned GNOME distribution runtime already provide the contemporary
-Wayland target. The Rust headless/CDP product does not need a display server.
+Wayland target. ADR-022's Linux rendered automation also benefits from one
+controlled native Wayland environment under Cage.
 
 **Decision.** The packaged Linux Flutter GUI requires GTK to select a native
 Wayland display. Startup on X11 or XWayland exits nonzero with an explicit
 diagnostic. Local isolated GUI testing, release archive launch evidence, and
 native AT-SPI evidence use Cage with wlroots' headless Wayland backend. FlatPark
 permissions will expose Wayland and will not request X11 or fallback-X11.
-Headless CLI, CDP, WPT, and screenshot automation retain their existing
-surfaceless EGL path and are unaffected.
+Rendered CLI, CDP, WPT, and screenshot automation use the chrome-less Flutter
+host under Cage after ADR-022 cutover. Text-only native utilities need no display.
 
 **Consequences.** Vixen has one Linux GUI display-server matrix and can focus
 native work on Wayland input, IME, accessibility, portals, scaling, and surface
@@ -988,31 +436,250 @@ a compatibility fallback. Reintroducing X11 requires a new ADR plus dedicated
 window/input/IME/accessibility/GPU/release gates; framework capability alone is
 not sufficient.
 
-## ADR-021: Flutter is the sole rendered GUI
+## ADR-022: Flutter owns web layout, paint, and rendered automation
 
 **Status:** accepted
 
-**Context.** The Rust GTK4/Relm4 shell served as migration evidence for chrome,
-BrowserCore routing, and visible WebRender output. The packaged Linux product is
-now Flutter, with BrowserCore FFI, bounded external-texture presentation,
-generation-checked input, Semantics projection, native Wayland enforcement, and
-release/AT-SPI smokes. Retaining the old shell duplicates tabs, navigation,
-profile/session coordination, rendering surfaces, native dependencies, and
-quality gates while providing no supported fallback.
+**Context.** Vixen targets one focused browser across Linux, macOS, Windows,
+Android, and the Apple Silicon iOS Simulator, with Linux first. The implemented
+WebRender plus offscreen-EGL path gives GUI and native headless one paint backend,
+but Vixen still owns GPU context creation, frame readback/transport, font
+shaping/fallback, renderer recovery, and platform texture integration before it
+improves web compatibility. Flutter then presents those pixels through another
+graphics stack.
 
-**Decision.** Flutter is Vixen's only rendered GUI on every product platform.
-Remove the `vixen-shell` crate, the root Rust GUI binary, GTK4/libadwaita/Relm4
-dependencies, and custom GLArea presentation. BrowserCore remains Rust and is
-reached from Flutter only through `vixen-ffi`; headless, CDP, and WPT remain
-non-GUI Rust frontends. Linux may use direct GTK3/GDK APIs only inside Flutter's
-native embedder runner for window creation, texture registration, startup
-fallback, and fail-closed Wayland validation. Those APIs must not grow into a
-second application UI or browser-state owner.
+Flutter already supplies the supported cross-platform scene, Canvas, Paragraph,
+font, image, accessibility, lifecycle, and capture substrate on all five targets.
+Using it only for chrome leaves that leverage unused. Flutter is not a CSS engine,
+so Vixen must still implement and WPT-test web formatting, fragmentation, scroll,
+and inspection semantics.
 
-**Consequences.** Missing browser behavior, accessibility, host services, and
-recovery are implemented and tested in Flutter rather than compared against or
-hidden by a legacy shell. The Rust workspace no longer requires GNOME
-development packages for all-feature checking or Clippy. Historical Relm4 and
-GLArea evidence remains in version history and the historical plan, not as
-buildable product code. Adding any second rendered GUI requires a new ADR and
-dedicated ownership, accessibility, packaging, and release evidence.
+**Decision.** Flutter is Vixen's sole rendered frontend: it owns web formatting,
+text/image measurement, paint, hit testing, semantic geometry, scene presentation,
+and rendered automation as well as browser chrome. BrowserCore remains the sole
+owner of profile, contexts, navigation, committed DOM, V8, Stylo cascade/computed
+styles, resource/security policy, storage, history, downloads, web-event
+semantics, and durable accessibility meaning.
+
+Vixen targets Flutter's public Canvas/Paragraph/scene APIs with **Impeller** as
+the required engine rendering backend. The runner enables Impeller explicitly;
+a Skia-backed launch does not satisfy renderer, release, or platform evidence.
+The latest pinned Flutter beta is deliberate while required Linux Impeller
+support has not reached the selected stable SDK. Vixen does not call private
+Impeller APIs or add a backend-specific paint path; Flutter remains the boundary.
+
+The product targets are Linux, macOS, Windows, Android, and the Apple Silicon iOS
+Simulator. Linux is the first renderer, GUI, chrome-less automation, packaging,
+and release gate. Physical iOS and App Store distribution require a later
+runtime/distribution decision. Flutter is the only GUI and the only rendered
+headless substrate; no fallback native renderer is retained after cutover.
+
+### Renderer source protocol
+
+BrowserCore publishes bounded mutation batches over an exact compound revision:
+
+```text
+RenderRevision {
+  context_id
+  document_id
+  source_revision
+  style_revision
+  viewport_revision
+  resource_revision
+}
+
+RenderMutationBatch {
+  base_revision
+  target_revision
+  mutations
+}
+```
+
+Mutations describe immutable styled render inputs, stable DOM/resource/semantic
+ids, accepted text/image/font resources, pseudo/generated content, scroll intent,
+and removals. They are not a Dart DOM and cannot be mutated into browser state.
+The renderer builds CSS box and anonymous trees from them. A missed base revision
+fails closed and requests a bounded full snapshot; batches are never guessed,
+reordered, or applied to another document.
+
+Dart may retain only bounded active renderer generations and resources. Node,
+mutation, string, depth, image/font byte, fragment, query, and queue limits apply
+at the bridge. BrowserCore owns web-font fetch, CSP/CORS/integrity/cache policy and
+passes only accepted resources to Flutter's font collection.
+
+### Flutter renderer ownership
+
+Vixen implements CSS block, inline, flex, grid, positioned, overflow, replaced-
+element, table, and fragmentation behavior in Dart against computed BrowserCore
+inputs. Ordinary Flutter widgets, Flutter Flex, and third-party UI layout packages
+are not treated as CSS implementations. A widget-per-DOM model is neither required
+nor allowed to become durable browser state.
+
+Flutter's `dart:ui` Paragraph is authoritative for shaping, fallback, bidi, line
+breaking, intrinsic text measurement, caret/range geometry, and text hit testing.
+Canvas/scene APIs own clipping, transforms, paint order, compositing, images, and
+capture. BrowserCore must not retain competing approximate layout/text metrics
+after cutover.
+
+### Atomic renderer commit
+
+A renderer commit means layout, query data, semantic bounds, and a scene are ready
+for the same source revision:
+
+```text
+RenderCommit {
+  commit_id
+  render_revision
+  viewport
+  geometry_index
+  hit_test_handle
+  text_query_handle
+  scroll_snapshot
+  semantic_bounds
+  truncation_state
+}
+```
+
+Basic immutable border/padding/content/fragment/clip/scroll/paint-order geometry
+is returned to BrowserCore so ordinary synchronous DOM/CSSOM/CDP queries do not
+cross FFI repeatedly. Flutter remains authoritative because it produced that
+index; BrowserCore only validates and queries it. The hit-test handle names an
+immutable Flutter-retained index and is opaque to BrowserCore: Flutter resolves
+it and returns a bounded target for validation. Paragraph-specific offset, caret,
+range-box, affinity, and selection operations may use a bounded batched renderer
+query service.
+
+`RenderCommit` and `Presented(commit_id)` are distinct. Geometry can be accepted
+before presentation, but visible input and native accessibility identify the
+actually displayed commit. BrowserCore rejects commits, queries, input targets,
+scroll results, and semantic bounds whose context, document, viewport, resources,
+or revision no longer match.
+
+### Synchronous layout broker
+
+A script can mutate style and synchronously call `getBoundingClientRect()` in the
+same task. BrowserCore therefore exposes bounded `EnsureLayout(required_revision)`
+and geometry-query operations through a request/response broker:
+
+```text
+V8 geometry read
+  → BrowserCore flushes DOM + Stylo
+  → publishes required RenderMutationBatch
+  → posts EnsureLayout to the Flutter renderer
+  → waits for matching RenderCommit or cancellation/deadline
+  → answers from committed geometry
+```
+
+The BrowserCore owner thread may wait without holding browser mutexes. The Flutter
+UI/renderer isolate processes the request without re-entering BrowserCore and
+returns through a separate response channel. Navigation, stop, close, and shutdown
+cancel the wait; late commits are inert. The current polling event worker cannot
+be the only broker if it is blocked on the originating evaluation. Cutover is
+blocked until this path is deadlock-safe, bounded, and tested with same-task
+mutation plus geometry reads.
+
+### Input, scroll, and accessibility
+
+Flutter performs hit testing against the displayed commit and sends a bounded
+target containing commit/revision, stable node/fragment ids, and coordinates.
+BrowserCore validates that target before DOM dispatch. It owns cancelable event
+semantics and default-action policy. Flutter owns mechanical scroll geometry,
+offsets, clips, and clamps; BrowserCore sends an accepted scroll command only
+after `preventDefault()` and owns DOM scroll events, script intent, history
+restoration, and persistence. Renderer scroll results return in a new exact
+commit.
+
+BrowserCore authors accessibility role, name, value, state, relationships, focus,
+policy, and actions. Flutter contributes accepted semantic bounds/text geometry,
+combines them only for the displayed commit, and publishes native Semantics.
+Actions route back with exact document, commit, semantic node, and advertised
+action generation.
+
+### Rendered automation
+
+A minimal chrome-less Flutter host creates BrowserCore, accepts CLI/CDP/WPT
+requests, and captures the exact Flutter scene/commit. Linux runs it under
+Cage/wlroots headless Wayland. Other platforms use their native Flutter runner
+when their rendered gates begin. Text-only utilities may remain native clients
+when they do not invent geometry or pixels. One logical rendered session owns
+exactly one BrowserCore inside the host; a native launcher never splits fast
+DOM/runtime commands into a second core. GUI bundles need not ship developer
+automation entrypoints.
+
+### Migration and deletion policy
+
+The current Rust layout/display-list/WebRender/EGL/RGBA path is transitional and
+frozen except for security, data-loss, or release-blocking correctness fixes.
+Do not complete adjacent WebRender, EGL, texture, deterministic-font, or Rust
+layout breadth merely because scaffolding exists. Partially implemented code is
+not an asset when deleting it shortens the renderer transition and its behavior
+is not independently needed by BrowserCore.
+
+Experimental Flutter renderer work remains test-only until one controlled
+vertical proves layout, pixels, input, geometry, text ranges, scroll, Semantics,
+and scene capture from one commit. There are never two supported production
+renderers. Cutover removes WebRender/gleam, `GlContext`, headless/frame EGL,
+image upload, RGBA frame ABI/pools, the Dart frame worker, pixel-buffer texture
+plugin/presenter and recovery tests, superseded Rust paint/layout modules or
+DTOs, duplicate scale/hit/scroll/text/semantic projections, obsolete fixtures/
+gates/docs/dependencies, and renderer-internal CLI flags. Pure CSS algorithms may
+be moved/reused only when the Dart formatter consumes them through an explicit
+stable data contract and that is simpler than reimplementation.
+
+**Alternatives considered.**
+
+- *Keep WebRender and Flutter only for chrome.* Rejected: it preserves the
+  cross-platform GPU/font/surface burden and duplicates graphics stacks.
+- *Capture the current Flutter window under Cage.* Rejected as a migration: the
+  current window already contains WebRender/EGL pixels, so capture removes
+  nothing.
+- *Use Flutter only as a painter over Rust final geometry.* Useful only as the
+  first proof; rejected as the destination because layout, text, hit testing,
+  semantics, and pixels could diverge.
+- *Map every DOM node to ordinary Flutter widgets.* Rejected because widget
+  layout is not CSS and a mutable widget tree would become a second DOM.
+- *Keep separate Flutter GUI and Rust headless renderers.* Rejected because visual
+  and geometry fixes would retain two acceptance paths.
+
+**Consequences.**
+
+- Flutter is required for screenshots, visual/layout WPT, rendered CDP, and GUI.
+  Linux rendered automation requires Cage/headless Wayland rather than
+  surfaceless EGL.
+- Flutter SDK promotion must preserve Impeller scene, capture, recovery, and
+  driver evidence; “a Flutter window opens” is not renderer proof.
+- CSS layout remains a major Vixen subsystem, now concentrated on Flutter's
+  cross-platform text/scene substrate.
+- The FFI boundary grows render mutation/commit/query traffic before frame
+  buffers and native renderer dependencies are deleted. It is a primary
+  content-controlled trust and performance boundary.
+- Rendered headless startup may grow while total GUI/native complexity and
+  platform-specific dependencies shrink. Measurements compare the chrome-less
+  host, GUI, and removed WebRender/EGL costs honestly.
+- Every platform still earns support through native BrowserCore/V8, renderer,
+  input, accessibility, lifecycle, host-service, package, size, and performance
+  evidence under ADR-019.
+
+**Migration gates.** Execute in order:
+
+1. Define and test bounded `RenderRevision`, mutation/full-snapshot, commit,
+   presented, geometry, target, scroll, semantic-bound, and query DTOs in
+   `vixen-api`, including semantic-action targets bound to document, displayed
+   commit, semantic node, and advertised action generation.
+2. Carry them through the C ABI and handwritten Dart models with malformed,
+   stale, truncation, release, and resync tests; production still uses the old
+   frame during this protocol-only step.
+3. Render one controlled background/text/image document with a test-only Flutter
+   formatter/Canvas/Paragraph path and atomically return geometry, hit/text
+   queries, scroll state, and semantic bounds.
+4. Prove same-commit pixels, input targeting, find/caret ranges, scrolling,
+   Semantics, and scene capture in the Linux shell.
+5. Add the chrome-less Flutter host under Cage and move visual/layout fixtures
+   plus screenshot/CDP capture to it.
+6. Implement and race-test bounded synchronous `EnsureLayout`, cancellation,
+   resync, renderer loss, and same-task mutation-to-geometry behavior.
+7. Cut production over; aggressively delete WebRender/EGL/RGBA/texture and
+   superseded Rust layout/paint code, dependencies, tests, gates, and docs.
+8. Reproduce Linux compatibility, interaction, accessibility, size, memory,
+   startup, and release gates, then continue the full browser roadmap and expand
+   the same renderer contract to the other four targets.

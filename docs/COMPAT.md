@@ -1,10 +1,11 @@
 # Vixen compatibility target
 
 This is the honest v1.0 target matrix. It is not a claim of full Firefox or full
-WPT compatibility. Vixen delegates CSS cascade/selectors, HTML parsing, JS
-execution, and paint where credible upstream Rust/Firefox-family components
-exist; layout is Vixen-owned Rust code per ADR-013 and therefore WPT-gated by
-feature.
+WPT compatibility. Vixen delegates focused parser, cascade, runtime, and native
+rendering primitives where that improves correctness and size. The measured
+baseline currently uses transitional Vixen-owned Rust layout/WebRender; ADR-022
+moves authoritative formatting/geometry/paint to the Flutter renderer while
+keeping every supported CSS semantic WPT-gated.
 
 ---
 
@@ -223,8 +224,8 @@ HTTP download manager or Playwright context-tracing archive implementation.
 
 ## Current Flutter shell smoke baseline
 
-Flutter is the sole rendered GUI. `just gate-flutter-shell` covers its
-BrowserCore controller, tabs, input, texture, and Semantics seams;
+Flutter is the sole rendered frontend target. `just gate-flutter-shell` covers
+its BrowserCore controller, tabs, input, texture, and Semantics seams;
 `just linux-release-smoke` covers the exact release archive under native
 Wayland. `just linux-interaction-smoke` separately drives that release bundle
 through Cage's virtual-keyboard and wlr virtual-pointer protocols, with GTK/IBus
@@ -410,6 +411,12 @@ Zoom survives document navigation in the context but is not yet persisted in
 the profile session. Text shaping quality, advanced scroll behavior,
 and native surface-loss evidence remain separate gaps.
 
+All rendering/geometry paragraphs above describe the measured transitional
+WebRender/RGBA baseline. ADR-022 freezes that path. Support transfers to the
+Flutter formatter only when equivalent checks name one atomic renderer commit;
+R7 then removes display-list, deterministic-metric, EGL, frame, and texture
+implementation checks rather than counting both paths.
+
 ---
 
 ## WPT target profile
@@ -428,13 +435,13 @@ feed the same `vixen-wpt` check types and reporting.
 | HTML parsing/tree construction | Broad smoke subset green | High | `html5ever` carries parser behavior; Vixen must preserve node ids/tree shape. |
 | Selectors | Modern selector subset green | High | Backed by Stylo/`selectors`; include combinators, attributes, `:is`, `:where`, `:has`, form/link pseudos. |
 | CSS cascade/computed values | Inline plus one external stylesheet vertical green | High after full Stylo slice | Compact cascade is temporary; external-sheet media/import/CSSOM breadth and full Stylo remain. |
-| CSS layout: block/inline | v1 visual/ref subset green | Medium | Vixen-owned layout; start with normal flow, margin/border/padding, inline line boxes. |
-| CSS layout: flex/grid | Useful common-case subset green | Medium | Pure helpers exist; full WPT edge coverage is post-v1. |
+| CSS layout: block/inline | v1 visual/ref subset green | Medium | Flutter-hosted Vixen formatter; start with normal flow, margin/border/padding, Paragraph-backed inline lines. |
+| CSS layout: flex/grid | Useful common-case subset green | Medium | Vixen Dart formatting contexts over Flutter primitives; full WPT edge coverage is post-v1. |
 | CSS layout: tables/floats/fragmentation | Not v1 release-blocking | Low for v1 | Document as unsupported/partial until implemented. |
 | DOM Core | Traversal, attributes, token lists, ranges, mutation observer subset green | Medium | Vixen-owned Web APIs over `deno_core` host extensions after the ADR-014 migration. |
 | Events/forms/history/storage | Selected behavioral subset green | Medium | Gate by fixtures from SPEC invariants and imported WPT cases. |
 | JS language | Use V8/`deno_core` language coverage, not WPT percentage | High for language | Web API exposure remains Vixen-owned and separately gated. |
-| Paint/ref tests | Display-list + WebRender visual subset green | Medium | One paint path; correctness depends on layout fragments and WebRender mapping. |
+| Paint/ref tests | Flutter scene/commit visual subset green | Medium | One formatter/Canvas path; pixels, geometry, hit/text/scroll, and semantic bounds share a commit. |
 | Media/WebGPU/WebRTC/service workers | Out of scope for v1 | Not targeted | Deferred by ADRs / acceptance post-v1 scope. |
 
 ---

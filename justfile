@@ -20,9 +20,9 @@ alias docs := book-build
 # Container runtime + GNOME 50 image used for local release builds.
 CONTAINER             := env_var_or_default("CONTAINER", "podman")
 FLUTTER_BUILDER_IMAGE := "ghcr.io/flathub-infra/flatpak-github-actions:gnome-50"
-FLUTTER_VERSION       := "3.46.0-0.3.pre"
-FLUTTER_REVISION      := "677d472756f83c14371dd8cc624387065f3d32a7"
-FLUTTER_ENGINE        := "a24b1ea55dedf3ce992cae0fbc1012b22b373290"
+FLUTTER_VERSION       := "3.47.0-0.1.pre"
+FLUTTER_REVISION      := "bd1e75d918605c91b411e8789fb911e6c9a84534"
+FLUTTER_ENGINE        := "bbd15867c003dc66e678cb3c218649fa8bf914f2"
 FLUTTER_HELLO         := "fixtures/artifact-size/flutter_hello"
 RUSTY_V8_ARCHIVE      := ".tmp/linux-release/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
 RUSTY_V8_SHA256       := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"

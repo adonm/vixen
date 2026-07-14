@@ -167,9 +167,9 @@ jobs:
           flutter --version --machine | python3 -c '
           import json, sys
           value = json.load(sys.stdin)
-          assert value["frameworkVersion"] == "3.46.0-0.3.pre"
-          assert value["frameworkRevision"] == "677d472756f83c14371dd8cc624387065f3d32a7"
-          assert value["engineRevision"] == "a24b1ea55dedf3ce992cae0fbc1012b22b373290"
+          assert value["frameworkVersion"] == "3.47.0-0.1.pre"
+          assert value["frameworkRevision"] == "bd1e75d918605c91b411e8789fb911e6c9a84534"
+          assert value["engineRevision"] == "bbd15867c003dc66e678cb3c218649fa8bf914f2"
           '
 
       - name: Stage pinned rusty_v8 archive

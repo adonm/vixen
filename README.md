@@ -5,11 +5,12 @@
 [![Docs](https://img.shields.io/badge/docs-vixen.adonm.dev-blue)](https://vixen.adonm.dev/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](Cargo.toml)
-[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.46%20beta-02569B.svg)](docs/FLUTTER_SHELL.md)
+[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.47%20beta-02569B.svg)](docs/FLUTTER_SHELL.md)
 
-A focused cross-platform Firefox replacement: a Flutter GUI targeting Linux,
-macOS, Windows, Android, and the Apple Silicon iOS Simulator, first-class headless/CDP automation, and the
-most web capability per byte.
+A focused cross-platform Firefox replacement: one Flutter web renderer and GUI
+targeting Linux, macOS, Windows, Android, and the Apple Silicon iOS Simulator,
+plus first-class chrome-less Flutter/CDP automation and the most web capability
+per byte.
 
 **Linux is Vixen's highest-priority GUI and release target.** Browser usability,
 host integration, packaging, accessibility evidence, and performance gates land
@@ -20,15 +21,27 @@ basic usable browser: visible navigation, scrolling, text input/IME,
 back/forward/reload/stop, find/zoom, and bounded failure recovery take priority
 over package-registry work.
 
-The hard, spec-heavy, easy-to-get-wrong subsystems are delegated where that
-keeps Vixen smaller and more correct: **Stylo/selectors** for CSS matching and
-cascade, **deno_core/V8** for JS execution and host packaging, **WebRender** for
-paint, and **html5ever** for HTML. BrowserCore owns browser state, networking/
-security, persistence, layout, WebRender, and accessibility source data. Flutter/
-Dart owns only chrome, presentation, and host-service UI. See
+The hard, spec-heavy primitives are delegated where that keeps Vixen smaller and
+more correct: **Stylo/selectors** for CSS matching and cascade,
+**deno_core/V8** for JavaScript, **html5ever** for HTML, and Flutter's
+**Paragraph/Canvas/scene/Semantics** substrate for cross-platform rendering.
+BrowserCore owns DOM/runtime/navigation/network/security/persistence, computed
+styles, accepted resources, web events, and accessibility meaning. The Vixen
+renderer hosted in Flutter owns CSS formatting, text/image measurement, paint,
+hit testing, scroll geometry, semantic bounds, and scene capture through bounded
+revision/mutation/commit/query protocols. Flutter's public scene APIs run over
+explicitly enabled Impeller; a Skia-backed launch is not accepted renderer or
+release evidence. See
 [`docs/PROJECT_DIRECTION.md`](docs/PROJECT_DIRECTION.md) for the current focus.
 
-The checked-in Linux Flutter alpha shell uses handwritten Dart FFI over the
+**Renderer migration is the immediate priority.** The currently implemented
+WebRender/EGL/RGBA texture and native-headless path is a frozen transitional
+baseline. After the Flutter vertical, chrome-less fixture/CDP/Playwright host,
+synchronous layout, cancellation, resync, and renderer-loss gates pass, Vixen
+will cut over once and delete WebRender/EGL/frame transport and superseded Rust
+layout/paint rather than carry two renderers.
+
+The checked-in transitional Linux Flutter alpha shell uses handwritten Dart FFI over the
 one-owner `vixen-ffi` controller and presents real BrowserCore/WebRender output
 through a bounded RGBA pixel-buffer texture. Its chrome uses the locked Yaru
 widget suite with the Adwaita-blue variant, Yaru icons/controls, and a
@@ -89,10 +102,10 @@ performed actions reuse the exact-generation Enter key path.
 `aria-owns` reparenting, heading levels, and mixed checkbox state also map into
 the platform tree. Same-document refreshes replace frame/semantics atomically
 and reconcile only changed semantic nodes. A release-bundle AT-SPI smoke observes
-BrowserCore's `DOM Basic` heading through the native Linux tree. Real Linux IME
-evidence, complete accessibility/screen-reader coverage, basic-browser parity,
-and host services remain open. Flutter is the only rendered GUI; there is no
-secondary Rust/GTK compatibility shell or fallback UI.
+BrowserCore's `DOM Basic` heading through the native Linux tree. Broader Linux
+IME/device evidence, complete accessibility/screen-reader coverage, basic-browser
+parity, and host services remain open. Flutter is the only rendered frontend
+target; there is no secondary Rust/GTK shell or fallback renderer.
 
 ---
 
@@ -148,14 +161,14 @@ and reference material, plus:
   implements CSS Scroll Snap 1 § 5 — the snap-position computation
   (`start`/`end`/`center` per axis, clamped to the scrollable range) + the
   `scroll-snap-type` axis/strictness + `scroll-snap-align`/`scroll-snap-stop`
-  model the scroll layer's snap targeting reduces to. All six ready for
-  `layout_2020` to feed off. The vertical layout surface is live:
+  model the scroll layer's snap targeting reduces to. These six pure helpers and
+  the vertical layout surface are part of the transitional Rust renderer:
   `vixen-engine::line_layout` + `Page::dump_lines` power
   `vixen-headless --dump-lines`, and `Page::layout_fragments(viewport)` now
   projects block backgrounds plus wrapped text lines into paint-consumable
-  fragments until the full formatter replaces the deterministic text metric.
-- **Phase 5 prep** — `vixen-engine::display_list` (all eight `SPEC.md`
-  display-list invariants) now has its first vertical surface:
+  fragments with deterministic text metrics. R7 deletes them unless the Dart
+  formatter consumes a pure algorithm through an explicit stable contract.
+- **Phase 5 transitional path** — `vixen-engine::display_list` has a live surface:
   `Page::display_list` turns layout fragments into invariant-enforced paint
   commands and `vixen-headless --dump-display-list` dumps them; `--paint-stats`
   reports command counts and painted area from the same stream. Parser-discovered
@@ -164,8 +177,8 @@ and reference material, plus:
   image, status, and `image/png` limits, and enter that same display list as
   WebRender image resources. The checked-in four-colour fixture has exact-pixel
   headless and Flutter-frame capture proof. Dynamic/responsive images, animated
-  PNG, other formats, and complete replaced-element sizing remain open. The paint-geometry
-  family it will consume:
+  PNG, other formats, and complete replaced-element sizing remain open. The
+  frozen Rust path also contains this paint-geometry family:
   `vixen-engine::transform` (CSS Transforms 1 § 13 2D affine algebra +
   list parser), `vixen-engine::border_radius` (CSS Backgrounds 3 § 5.5
   corner shaping), `vixen-engine::gradient` (CSS Images 4 § 4.5
@@ -322,7 +335,8 @@ and reference material, plus:
   includes logical viewport units plus the small/large/dynamic viewport
   families (`sv*`/`lv*`/`dv*`), pure sRGB colour arithmetic + interpolation,
   premultiplied alpha, hue/unit normalisation, and dots-per-pixel conversion
-  are all Rust-unit-tested and ready for the cascade + WebRender to consume.
+  are all Rust-unit-tested. They are transitional renderer inputs, not future
+  WebRender work; R7 deletes any without an explicit Dart formatter consumer.
   The responsive-image
   selection family (`media_query`, `source_size`, `responsive_select`)
   completes the WHATWG § 4.8.4.6–§ 4.8.4.8 pipeline end-to-end: CSS Media
@@ -433,11 +447,12 @@ and reference material, plus:
   permission overrides, bounded Chromium JSON tracing through `IO` streams,
   same-connection stop races for pending navigate/reload requests, and stable
   machine-readable protocol errors.
-- **Flutter shell target** — ADR-018 commits one Flutter chrome to Linux, macOS,
-  Windows, Android, and the Apple Silicon iOS Simulator over the same BrowserCore.
-  The exported C/Dart ABI, fake/real Linux shell, bounded RGBA external texture,
-  input, and initial Semantics projection are implemented; full parity, host
-  services, broader platform runners, and package-matrix evidence remain open.
+- **Flutter renderer/shell target** — ADR-022 commits one Flutter web renderer,
+  chrome, and chrome-less automation host to Linux, macOS, Windows, Android, and
+  the Apple Silicon iOS Simulator over BrowserCore. The exported C/Dart ABI and
+  Linux shell/input/Semantics baseline exist; revision/mutation/commit/query
+  protocols, Flutter formatting/Canvas paint, automation-host cutover, aggressive
+  native-renderer deletion, and broader platform evidence remain open.
 
 Future delivery order lives in [`docs/ROADMAP.md`](docs/ROADMAP.md); `PLAN.md`
 retains the historical phase runbook.
@@ -589,15 +604,16 @@ Update both when resolving.
 
 ## Working assumptions
 
-- Primary GUI targets: **Linux, macOS, Windows, Android, and Apple Silicon iOS Simulator** through
-  the pinned Flutter 3.46.0-0.3.pre beta. Each remains evidence-gated; only the initial Linux debug shell
-  and bounded RGBA texture build exist today. Validation tracks each target's
-  latest stable major OS release at the release cutoff; older releases are
-  best-effort unless explicitly added as a tested tier.
+- Primary GUI targets: **Linux, macOS, Windows, Android, and Apple Silicon iOS
+  Simulator** through the pinned Flutter 3.47.0-0.1.pre beta. Each remains
+  evidence-gated; the Linux RGBA renderer/shell and deterministic release path
+  are implemented, while ADR-022's Flutter web renderer and non-Linux runners
+  remain open. Validation tracks each target's latest stable major OS release at
+  the release cutoff; older releases are best-effort unless explicitly tested.
 - Linux publishes an official x86_64 release archive that FlatPark repackages
   unchanged as a signed convenience Flatpak after the basic-browser gate.
-  Registry publishing is deferred meanwhile. Flutter is the sole GUI; its Linux
-  embedder may still depend on GTK at runtime.
+  Registry publishing is deferred meanwhile. Flutter is the sole rendered
+  frontend target; its Linux embedder may still depend on GTK at runtime.
 - The current Rust release profile starts with `strip = true`, `lto = "thin"`,
   `codegen-units = 1`, and `panic = "abort"`; Flutter release/AOT and native
   packaging are measured per platform before any stronger optimization claim.

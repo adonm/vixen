@@ -58,12 +58,12 @@ node = "24.18.0"
 # Latest Flutter beta with Linux Impeller support. This deliberately uses the
 # official Linux x64 archive rather than mise's stable-only Flutter registry.
 [tools."http:flutter-beta"]
-version = "3.46.0-0.3.pre"
+version = "3.47.0-0.1.pre"
 strip_components = 0
 bin_path = "flutter/bin"
 
 [tools."http:flutter-beta".platforms]
-linux-x64 = { url = "https://storage.googleapis.com/flutter_infra_release/releases/beta/linux/flutter_linux_3.46.0-0.3.pre-beta.tar.xz", checksum = "sha256:931c30fde3cc9b4eae2bbae750914c1ec60bfea4d46531e37f25caaa1a47d2da", size = "1548840020" }
+linux-x64 = { url = "https://storage.googleapis.com/flutter_infra_release/releases/beta/linux/flutter_linux_3.47.0-0.1.pre-beta.tar.xz", checksum = "sha256:2cf72c1bc8571f406dfb7a0b3d8128abd4f43d2c335d2ed76249fe492c0d7c34", size = "1569091352" }
 
 # --- Linux release builder --------------------------------------------------
 # The host does not need GNOME development packages. Local release builds use

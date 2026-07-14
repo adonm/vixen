@@ -1,8 +1,12 @@
 # Vixen Flutter shell
 
-Vixen's primary browser chrome for Linux. Flutter owns presentation while the
-Rust `BrowserCore` remains the sole owner of profiles, contexts, navigation,
-documents, network policy, and ordered browser events.
+Vixen's first web renderer and browser chrome target on Linux. BrowserCore owns
+profiles, contexts, navigation, committed DOM/V8, Stylo computed styles,
+resource/security policy, events, persistence, and accessibility meaning.
+Flutter owns bounded CSS formatting, Paragraph/Canvas scenes, geometry, hit
+testing, text/scroll/semantic-bound commits, capture, chrome, and presentation.
+The runner explicitly enables Impeller. Vixen uses public Flutter scene APIs and
+does not treat a Skia-backed launch as renderer/release evidence.
 
 The production entry point uses a persistent Dart worker isolate and the
 handwritten `vixen-ffi` C ABI. It fails closed if the bundled native library or
@@ -30,7 +34,12 @@ X11 or XWayland. Use `just run-flutter` in a native Wayland session or `just
 run-flutter-cage` for a local isolated compositor; release and AT-SPI smokes use
 the same Cage headless-wlroots shape.
 
-## Linux frame texture contract
+## Transitional Linux frame texture contract
+
+This implemented contract is frozen except for critical correctness. ADR-022
+replaces it with exact revision/mutation/full-resync, atomic-commit/presented,
+and renderer-query channels, then deletes frame ABI/pools and the Linux
+pixel-buffer texture plugin/presenter.
 
 The native worker captures only the selected, settled BrowserCore
 context/document generation. Each successful ABI frame is exact packed RGBA8,
@@ -59,7 +68,30 @@ two failed create/publish attempts; exhaustion shows `Surface recovery failed`
 and a newer frame gets a fresh bounded attempt. Tests use deterministic failures;
 native compositor/surface-loss evidence and full app-lifecycle recovery remain.
 
-## Input contract
+## Target renderer contract
+
+BrowserCore emits bounded mutation batches with exact context/document/source/
+style/viewport/resource revisions. The Flutter renderer applies only the named
+base revision, requests a full snapshot on a gap, builds Vixen CSS box/anonymous
+trees, lays out text with `dart:ui` Paragraph, paints a Canvas scene, and returns
+one atomic commit containing basic geometry, an opaque Flutter-side hit-test
+handle, text-query state, scroll state, semantic bounds, and truncation. A
+separate `Presented(commitId)` controls visible input and Semantics identity.
+
+Common geometry is copied back for synchronous BrowserCore DOM/CSSOM/CDP reads;
+Paragraph-specific caret/range queries use a bounded renderer service. Same-task
+mutation plus geometry uses a dedicated `EnsureLayout` request/response broker
+that the Flutter renderer can service while V8 waits, without direct callback or
+BrowserCore re-entry. The chrome-less Flutter entrypoint uses this same formatter
+and captures exact commits under Cage.
+
+Flutter hit-tests the displayed commit; BrowserCore validates the target and owns
+DOM dispatch, cancellation, and default actions. Flutter owns mechanical scroll
+geometry, while BrowserCore owns script intent, event effects, history, and
+persistence. BrowserCore semantic descriptors combine with commit bounds only for
+the displayed commit.
+
+## Transitional input contract
 
 The content surface maps Flutter logical pointer/wheel coordinates into the exact
 physical frame viewport. Commands carry current context, document, and runtime
@@ -139,7 +171,7 @@ open. `just linux-at-spi-smoke` already proves that the real release bundle
 exports BrowserCore's `DOM Basic` heading through the process-filtered native
 Linux AT-SPI tree.
 
-From the repository root, install the pinned Flutter 3.46.0-0.3.pre beta through
+From the repository root, install the pinned Flutter 3.47.0-0.1.pre beta through
 mise and run:
 
 ```sh

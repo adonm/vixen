@@ -45,7 +45,7 @@ stub `lib.rs` so the workspace compiles.
    per `docs/ARCHITECTURE.md`.
 3. `vixen-shell` skeleton: `App` component with empty
    `FactoryVecDeque<TabModel>` and a placeholder window. Establish the
-   Relm4 worker/factory patterns early per ADR-010 — the shell's
+   Relm4 worker/factory patterns early under the historical shell decision — the shell's
    idioms should be set in Phase 0, not retrofitted later.
 4. `vixen-net`, `vixen-store`, `vixen-wpt`, `vixen-headless`, `vixen-engine`
    all empty with `pub mod placeholder;` stubs.
@@ -226,7 +226,7 @@ Turn cascade output into a positioned box tree.
 
 **Steps:**
 
-1. Build Vixen's Rust layout engine per ADR-013. The architecture reference is
+1. Build the historical Vixen Rust layout engine. The architecture reference is
    Ladybird LibWeb at `0de15a5dd2a9`, especially
    `.tmp/ref/ladybird/Libraries/LibWeb/Layout/TreeBuilder.cpp` and
    `.tmp/ref/ladybird/Libraries/LibWeb/Layout/*FormattingContext*`.
@@ -415,7 +415,7 @@ to two `GlContext` implementations.
 
 1. `vixen-engine/src/paint.rs`: single `DisplayList` type + a WebRender
    `Renderer` that consumes a `&dyn GlContext` (trait defined in
-   `vixen-api`, see ADR-006). One paint path; the two `GlContext`
+   `vixen-api`, under the historical paint decision). One paint path; the two `GlContext`
    implementations are the only thing that varies between GUI and
    headless.
 2. `GlAreaSurface` (in `vixen-shell`): implements `GlContext` around
@@ -1764,7 +1764,7 @@ Implement the full headless tool surface.
 2. Implement every CLI flag from `docs/SPEC.md` "Headless CLI surface".
    Stable error codes preserved exactly.
 3. Implement `--memory-stats`, `--paint-stats`, `--incremental`,
-   `--list-fonts`, `--cdp`. (Note: `--gpu` is omitted per ADR-003 —
+   `--list-fonts`, `--cdp`. (Note: `--gpu` was omitted under the historical GPU decision —
    every render path is GPU-backed.)
 4. `--cdp` responds to: `Browser.getVersion`, `Target.createTarget`,
    `Target.attachToTarget`, `Page.navigate`, `Page.loadEventFired`,
@@ -1818,7 +1818,7 @@ Concrete levers, in priority order:
 4. **System Cairo/Pango/HarfBuzz/fontconfig** from the GNOME SDK.
    WebRender uses the system GL stack; glyph rasterisation goes through
    fontconfig + freetype (system) into WebRender's own atlas.
-5. **One paint path, not N.** ADR-003/ADR-006 enforce this: no
+5. **One paint path, not N.** The historical renderer plan enforced this: no
    `tiny-skia`, no `fontdue`, no parallel CPU rasterizer, no
    `PaintBackend` trait.
 6. **Per-release measurement** in `docs/ACCEPTANCE.md`.
@@ -1865,7 +1865,7 @@ report policy in `docs/BASELINES.md` and `docs/ACCEPTANCE.md`.
 | `deno_core` / V8 packaging size and cache churn   | Medium     | High   | Keep `JsRuntime` seam stable, measure release binaries with V8, and document cache/pinning in guidance. |
 | EGL surfaceless unavailable on some CI runners    | Low        | Medium | `LIBGL_ALWAYS_SOFTWARE=1` + Mesa `llvmpipe` covers every Linux runner.              |
 | `gtk4::GLArea` context sharing with WebRender     | Medium     | High   | Validate in Phase 5 first week. Fallback: render to FBO, blit to GLArea with a tex. |
-| Vixen-owned layout takes longer than planned      | High       | High   | Keep Phase 4 vertical through `Page`; ship only the WPT-profiled v1 subset and document gaps in `docs/COMPAT.md` (ADR-013). |
+| Vixen-owned layout takes longer than planned      | High       | High   | Keep Phase 4 vertical through `Page`; ship only the WPT-profiled v1 subset and document gaps in `docs/COMPAT.md`. |
 | JS host-extension churn                           | Medium     | Medium | Keep the public `JsRuntime`/`JsValue` seam stable while converting bootstrap surfaces to `deno_core` ops/resources; cite `.tmp/ref/deno/core/`, `.tmp/ref/deno/runtime/`, and `.tmp/ref/deno/ext/`. |
 | Real-world pages regress vs Servo/Firefox         | Low        | Medium | Upstream issues; report and work around. Document in `docs/COMPAT.md`.              |
 | WPT migration backlog grows during build          | Medium     | Medium | Per-phase gate: each phase deletes Rust tests at the rate it adds WPT fixtures.     |

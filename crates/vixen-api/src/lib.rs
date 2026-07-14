@@ -81,11 +81,9 @@ impl EngineDiagnostic {
 // Graphics context seam (docs/ARCHITECTURE.md "Style, layout, paint, and inspection")
 // ---------------------------------------------------------------------------
 
-/// Minimal graphics-context abstraction so `vixen-engine` can drive WebRender
-/// without taking a platform-window or EGL dependency. GUI frames render
-/// through the BrowserCore capture path used by `vixen-ffi`; headless uses
-/// `SurfacelessSurface` around an EGL surfaceless context. Per ADR-006 there is
-/// one paint path and no `PaintBackend` trait — this is the only seam that varies.
+/// Transitional graphics-context abstraction used by the implemented
+/// WebRender/EGL comparison path. ADR-022 removes this trait when Flutter's
+/// mutation/commit renderer cuts over; do not add new consumers or capabilities.
 pub trait GlContext {
     /// Ensure this context is current on the calling thread.
     fn make_current(&self);

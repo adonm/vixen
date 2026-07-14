@@ -25,7 +25,8 @@ just baseline-headless
 just baseline-headless-json 9 2  # 9 measured runs, 2 warmups per scenario
 ```
 
-The suite in `fixtures/performance/headless-local.json` separately measures
+The suite in `fixtures/performance/headless-local.json` currently measures the
+transitional native renderer's
 process startup/version, local navigation plus runtime evaluation, layout-tree
 output, display-list plus paint-stat output, and a temporary PNG screenshot. Each
 scenario has its own output validation. Warmups are discarded; temporary outputs
@@ -72,7 +73,7 @@ just size-flutter-linux-existing # analyze existing release bundles only
 
 The recorded report below used Flutter 3.44 and remains historical evidence.
 `fixtures/artifact-size/flutter_hello` now tracks the exact pinned Flutter
-3.46.0-0.3.pre beta and uses Material plus the standard Linux runner without
+3.47.0-0.1.pre beta and uses Material plus the standard Linux runner without
 Vixen code. The current local build uses the GNOME 50 builder image, its
 CMake/Ninja/GTK toolchain, the mise Rust/Flutter toolchains, locked Cargo/Pub
 dependencies, and the SHA-256-pinned rusty_v8 archive. The mutable builder-image
@@ -85,7 +86,8 @@ and ICU), requires exactly one `libvixen_ffi.so` only in Vixen, rejects debug an
 build artifacts, verifies byte-identical shared Flutter engine/ICU files, and
 reports every file plus component and Vixen-minus-hello logical/allocated deltas.
 The native Vixen library remains an honest aggregate because stripped static
-BrowserCore/V8/WebRender attribution needs separate linker-map evidence.
+BrowserCore/V8/transitional-WebRender attribution needs separate linker-map
+evidence.
 
 ## Recorded Flutter raw-bundle reference
 
@@ -107,21 +109,23 @@ have not yet been independently reproduced. Compressed download, installation,
 Flatpak payload/runtime, symbols, and static native subcomponents remain null or
 unattributed as recorded in the report.
 
-## Flutter GUI baseline protocol
+## Flutter renderer baseline protocol
 
-For every target platform and shipped ABI/architecture, produce two controlled
+For every target platform and shipped ABI/architecture, produce three controlled
 artifacts with the same Flutter version, build mode, runner configuration,
 plugins, architecture, signing mode where practical, and package format:
 
 1. **hello-Flutter:** the smallest representative native Flutter application;
-2. **Flutter+Vixen:** the release Vixen shell plus BrowserCore.
+2. **Flutter+Vixen GUI:** release renderer/chrome plus BrowserCore; and
+3. **chrome-less rendered host:** the same formatter/commit path without chrome.
 
 Both use Flutter release/AOT mode, Rust release mode with strip/LTO, and native
 dead-code stripping where reproducible. Record compressed download, unpacked or
 installed size, native executables/libraries, assets, and separately supplied
-runtime/shared-system costs. Attribute at least Flutter engine/ICU, Dart AOT and
-assets, runner/plugins, BrowserCore/Rust dependencies, V8/ICU/snapshots,
-WebRender/GPU dependencies, Vixen resources, packaging metadata, and symbols.
+runtime/shared-system costs. Attribute at least Flutter engine/ICU, Dart AOT
+formatter/assets, runner/plugins, BrowserCore/Rust, V8/ICU/snapshots, Vixen
+resources, packaging metadata, symbols, and any transitional WebRender/EGL/frame
+cost still present. R7 reports must show those transitional costs removed.
 Report both the hello-Flutter delta and the delta from the prior accepted Vixen
 artifact.
 
@@ -219,7 +223,7 @@ bundle comparison foundations. It does not yet measure:
 - representative external sites or complete external-site compatibility;
 - an accepted/reproduced Flutter GUI size baseline or FlatPark package artifact;
 - the GUI/FlatPark path across a supported Linux, GPU, driver, and renderer matrix;
-- native macOS, Windows, Android, or iOS Simulator BrowserCore/V8/WebRender behavior;
+- native macOS, Windows, Android, or iOS Simulator BrowserCore/V8/Flutter-renderer behavior;
 - frame time, frame stability, animation smoothness, or input-to-paint latency;
 - V8/JavaScript heap usage separately from process memory;
 - HTTP transfer or download throughput; or

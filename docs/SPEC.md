@@ -15,9 +15,10 @@ What this document deliberately does **not** capture:
 - Restatement of web-platform specs. Vixen delegates spec-heavy behavior where
   that improves correctness and size: Stylo/`selectors` for CSS,
   `html5ever` for HTML, `deno_core`/V8 for JS execution and host packaging, and
-  WebRender for paint (see [`DECISIONS.md`](DECISIONS.md) ADR-001 / ADR-011 /
-  ADR-014). Layout is Vixen-owned Rust code per ADR-013, with Ladybird used as
-  the architecture reference. Behavioural parity is measured by the WPT profile
+  Flutter Paragraph/Canvas/scene/Semantics for cross-platform render primitives
+  (see [`DECISIONS.md`](DECISIONS.md) ADR-001 / ADR-011 / ADR-014 / ADR-022).
+  Vixen implements CSS formatting semantics in the Flutter-hosted renderer.
+  Behavioural parity is measured by the WPT profile
   documented in `docs/COMPAT.md`; if a behaviour isn't called out below, follow
   the latest stable spec and document deviations in `docs/COMPAT.md`.
 
@@ -39,19 +40,22 @@ vixen-headless --url <URL> [options]
   --extract-selector <css>    Print JSON snapshots for matching elements.
   --eval <js>                 Execute JS, print result.
   --dump-dom                  Dump the DOM tree.
-  --dump-layout-tree          Dump the Vixen layout tree.
-  --dump-display-list         Dump paint commands.
-  --dump-lines                Dump inline layout lines.
   --click-at <X,Y>            Dispatch a MouseEvent at coordinates.
   --focus <id>                Focus an element by id.
   --submit-form <id>          Submit a form by id.
-  --paint-stats               Print paint statistics.
   --incremental               Capture before/after frames (requires --screenshot + --eval).
   --cdp                       Start CDP WebSocket server on 127.0.0.1.
   --cdp-port <N>              CDP port (default 9222, with --cdp).
-  --list-fonts                List system fonts and exit.
   --memory-stats              Print memory statistics.
 ```
+
+The currently implemented `--dump-layout-tree`, `--dump-display-list`,
+`--dump-lines`, `--paint-stats`, and `--list-fonts` flags expose transitional
+Rust renderer internals and are removed at ADR-022 cutover rather than recreated
+as compatibility APIs. Screenshot, viewport, visible extraction, coordinate
+input, layout CDP, and visual fixture operations launch the chrome-less Flutter
+host. DOM/runtime/network-only operations may remain native fast paths when they
+do not invent geometry or pixels.
 
 Without `--profile-dir`, each invocation owns and removes an isolated temporary
 profile. With it, BrowserCore stores profile data in `<DIR>/profile.redb`; this
@@ -69,16 +73,24 @@ not printed. Other output, interaction, CDP, font-list, and memory-stat actions
 are incompatible with `--incremental` and produce a command-line usage error
 rather than being silently ignored.
 
-`--gpu` is removed: every render path uses WebRender against a GPU context.
-Headless uses EGL surfaceless. Flutter is the sole rendered GUI and presents
-WebRender output through a bounded external-texture transport. Headless without
-a GPU device fails closed with `unsupported.screenshot`.
+Any invocation that requests renderer-derived geometry, coordinate input,
+Semantics, or pixels runs its entire logical session—including evaluation and
+other DOM/runtime operations—against the single BrowserCore owned by the
+chrome-less Flutter host. `vixen-headless` is a launcher/client in that mode and
+does not create a second native core. A wholly text-only invocation may use a
+native BrowserCore fast path.
+
+`--gpu` remains removed: Flutter is the sole renderer and Vixen explicitly
+enables Impeller; callers cannot select another graphics backend. A Skia-backed
+launch does not satisfy Vixen renderer support. On Linux, rendered automation
+runs in Cage/headless Wayland. If the Flutter host cannot create/present/capture
+an exact commit, screenshots fail closed with `unsupported.screenshot`.
 
 **Stable error codes** (returned exactly as written):
 
 | Code                       | When                                                       |
 |----------------------------|------------------------------------------------------------|
-| `unsupported.screenshot`   | Screenshot requested without offscreen renderer available   |
+| `unsupported.screenshot`   | Screenshot requested without an exact rendered host available |
 | `invalid-selector`         | Malformed `--extract-selector` input                       |
 
 **CDP methods required** at v1.0:
@@ -109,12 +121,12 @@ a GPU device fails closed with `unsupported.screenshot`.
 
 ## Flutter GUI shell contract
 
-Flutter is the primary native GUI shell target on Linux, macOS, Windows, Android,
-and the Apple Silicon iOS Simulator. The Linux alpha slice implements chrome,
-BrowserCore FFI, and bounded RGBA texture presentation; the remaining contract
-and every other platform stay evidence-gated rather than implied by Flutter.
+Flutter is the sole web renderer and native GUI shell target on Linux, macOS,
+Windows, Android, and the Apple Silicon iOS Simulator. The Linux alpha baseline
+implements chrome and BrowserCore FFI over transitional RGBA presentation; the
+mutation/commit renderer and every other platform stay evidence-gated.
 The Linux GUI requires a native Wayland display and rejects X11/XWayland;
-headless/CDP remains surfaceless and does not inherit that requirement.
+rendered headless/CDP uses the chrome-less Flutter host under Cage after cutover.
 
 Platform validation follows a rolling contemporary baseline: the latest stable
 major release of Linux's reference distribution, macOS, Windows client, Android,
@@ -122,20 +134,21 @@ and iOS Simulator at each release cutoff. Exact versions and toolchains are
 recorded in release evidence. Older majors are best-effort unless explicitly
 promoted to an additional tested tier.
 
-- BrowserCore is the sole owner of browser/profile/context/document/runtime/
-  rendering/accessibility state. Dart owns chrome, presentation, and host-service
-  UI only.
+- BrowserCore owns browser/profile/context/document/runtime/computed-style/
+  resource-policy/accessibility meaning. Dart owns bounded CSS formatting,
+  Paragraph/Canvas scenes, renderer commits/queries, chrome, and host-service UI.
 - The Dart FFI bridge carries bounded typed commands/events and opaque handles
   with explicit lifetime, allocation, version, sequence, and generation rules.
-- WebRender is the sole web-content renderer. The initial GUI transport is a
-  bounded RGBA frame pool presented as a Flutter external texture. Shared GPU
-  textures are measured platform-specific transport optimizations, not renderers.
-- Flutter sends pointer, wheel, keyboard, text/IME, gesture, focus, viewport,
-  scale, visibility, and lifecycle changes to BrowserCore. BrowserCore owns hit
-  testing, scrolling, selection, DOM dispatch, and navigation effects.
-- BrowserCore projects a bounded incremental accessibility tree into Flutter
-  Semantics. A texture without that projection is incomplete.
-- Headless/CDP/WPT remain Rust products and are excluded from GUI bundles.
+- BrowserCore sends exact bounded mutation/full-resync revisions; Flutter returns
+  one atomic scene/basic-geometry/text/scroll/semantic-bound commit with an opaque
+  Flutter-side hit-test handle and a separate presented acknowledgement.
+- Flutter hit-tests the displayed commit and owns mechanical scroll geometry.
+  BrowserCore validates targets and owns event cancellation/defaults, script
+  scroll intent, history/persistence, selection meaning, and navigation effects.
+- BrowserCore semantic meaning plus Flutter commit bounds publish one native
+  Semantics generation; actions name the exact displayed commit.
+- Rendered CLI/CDP/WPT use a chrome-less Flutter host. Text-only utilities may
+  remain native and GUI bundles need not ship developer automation entrypoints.
 
 Platform acceptance, Android V8/GLES/split-ABI gates, the iOS Simulator track,
 Linux release/FlatPark packaging, and artifact policy are specified in
@@ -151,7 +164,8 @@ The WPT harness asserts document state against fixture manifests. The committed
 Larger upstream slices may instead be described by small JSON WPT profiles and
 run against an ignored checkout such as `.tmp/wpt/` via `just wpt-profile
 fixtures/wpt-profiles/<profile>.json .tmp/wpt`. The check types below are the
-public contract for fixture/profile authors.
+public contract for fixture/profile authors except where explicitly marked
+transitional.
 
 | Check type              | Asserts                                                  |
 |-------------------------|----------------------------------------------------------|
@@ -167,14 +181,17 @@ public contract for fixture/profile authors.
 | `computed-style`        | Per-element computed style value matches expected        |
 | `element-attribute`     | Element attribute value matches expected                 |
 | `layout-box`            | Element border-box `(x, y, w, h)` matches expected       |
-| `display-list-contains` | Stable display-list dump contains a substring            |
+| `display-list-contains` | **Transitional:** old Rust display-list substring; removed during R5 manifest migration |
 | `dom-nodes-range`       | DOM node count is within [min, max]                      |
 | `ref-equivalent`        | Rendered page matches a reference HTML fixture           |
 
 WPT target profile lives in [`COMPAT.md`](COMPAT.md). End-to-end CSS/DOM/layout
-behavior should move into fixtures when practical; Rust tests cover pure logic
-(URL parsing, cookie validation, CSP parsing, layout arithmetic, redb
-round-trip) and low-level invariants.
+behavior should move into fixtures when practical. Target Rust tests cover pure
+logic such as URL/cookie/CSP parsing and redb round trips; a CSS algorithm remains
+in Rust only through ADR-022's explicit stable formatter contract and
+cross-language tests. R5 migrates the three current `display-list-contains`
+assertions in two fixtures to commit-bound layout/pixel checks before proving the
+full manifest.
 
 ---
 
@@ -371,28 +388,30 @@ event.
 
 ---
 
-## Display-list invariants
+## Renderer commit and paint invariants
 
-These are Vixen's paint rules, enforced by the display-list builder
-before WebRender sees the commands. The same rules apply to every
-surface (GUI and headless) because there is exactly one paint path.
+These rules apply to the Flutter-hosted formatter and every GUI/automation
+surface:
 
-1. **z-index stacking** — display list sorted negative → zero →
-   positive z-index; viewport background always first; stable sort
-   preserves document order for equal z-index.
-2. **Clip stacking** — `overflow: hidden` clips content but not borders
-   (CSS 2.1 § 11.1.1). `PushClip`/`PopClip` bracket content, not
-   decorations.
-3. **Opacity groups** — stack-based multiplication. Parent 0.5 × child
-   0.5 = 0.25 effective. `opacity == 0` early-exit (no draw).
-4. **Visibility** — `visibility: hidden` and `visibility: collapse`
-   skip paint but keep layout space.
-5. **Background clip** — `border-box` (no extra clip); `padding-box`
-   and `content-box` emit `PushClip`/`PopClip` around background paint;
-   `text` is post-v1.0.
-6. **Background attachment** — `fixed` uses viewport-relative
-   positioning; `scroll` and `local` use element-relative.
-7. **Background origin** — positions the background image rect relative
-   to border-box / padding-box / content-box per the property value.
-8. **Empty clip skip** — any draw command with an empty
-   pre-intersected clip is dropped before reaching WebRender.
+1. **Exact revisions** — a mutation batch applies only to its named base and
+   target `RenderRevision`; gaps request full resync.
+2. **Atomic commit** — scene-ready layout, basic geometry, an opaque Flutter-side
+   hit-test handle, text query state, scroll snapshot, semantic bounds, and
+   truncation share one `commit_id` and revision.
+3. **Presented identity** — input and native accessibility identify the displayed
+   commit, not merely the newest completed layout.
+4. **Stable paint order** — stacking contexts, z-index, positioned content, and
+   document-order ties follow CSS; viewport background remains first.
+5. **Clip and transform identity** — paint, hit testing, text/caret queries, and
+   semantic bounds consume the same clip/transform chain.
+6. **Opacity and visibility** — group opacity composes through ancestors;
+   `opacity: 0` and hidden/collapsed paint are omitted while required layout state
+   remains queryable.
+7. **Scroll identity** — renderer offsets/extents/clips and the scene share one
+   commit; BrowserCore scroll events/history accept only that result.
+8. **Finite bounded geometry** — non-finite, oversized, unknown-node/resource,
+   over-depth, or required-but-truncated geometry fails closed.
+9. **No stale fallback** — stale commits cannot target input, answer required
+   geometry, publish Semantics, or become visible after replacement.
+10. **One renderer** — after cutover no WebRender/EGL/RGBA or second screenshot
+    path remains. Text-only tools cannot fabricate geometry.

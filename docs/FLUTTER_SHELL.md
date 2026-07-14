@@ -5,7 +5,7 @@ Windows, Android, and the Apple Silicon iOS Simulator. It defines delivery order
 FFI, accessibility, packaging, artifact measurement, and platform gates. Product
 scope remains in [`PROJECT_DIRECTION.md`](PROJECT_DIRECTION.md), browser-engine
 ownership in [`ARCHITECTURE.md`](ARCHITECTURE.md), and accepted tradeoffs in
-[`DECISIONS.md`](DECISIONS.md) ADR-018 and ADR-021.
+[`DECISIONS.md`](DECISIONS.md) ADR-022.
 
 **Linux is the highest-priority shell, integration, packaging, and release
 target.** Complete Linux parity and native evidence before equivalent platform
@@ -14,9 +14,9 @@ reuse the BrowserCore/Flutter boundary proven on Linux and must not delay Linux
 convergence.
 
 The Linux GUI target is **native Wayland only**. The runner exits nonzero when
-GTK selects X11, including XWayland. Local and release automation use Cage's
-headless wlroots backend; this does not change the EGL-surfaced Rust headless/CDP
-product.
+GTK selects X11, including XWayland. Local/release automation and ADR-022's
+chrome-less rendered host use Cage's headless wlroots backend. The current
+EGL-native headless path is transitional; text-only utilities may remain native.
 
 Within Linux work, browser behavior outranks distribution reach. FlatPark
 submission, review, and publishing are deferred until the Flutter shell can
@@ -27,7 +27,7 @@ release archive remains a build gate while that product gate is open.
 
 ## Status and evidence boundary
 
-**Implemented Linux alpha slice:** the repository contains a Flutter 3.46 beta Linux
+**Implemented Linux alpha slice:** the repository contains a Flutter 3.47 beta Linux
 application, deterministic fake-controller tests, handwritten Dart FFI, a
 persistent worker isolate that exclusively owns one BrowserCore handle and its
 ordered event stream, and a generated GTK-backed Linux runner. Production fails
@@ -56,16 +56,16 @@ produced a relocatable debug bundle containing the executable, Flutter embedder,
 and `libvixen_ffi.so`.
 
 This does not establish Linux parity: advanced gesture/restoration-event input
-fidelity, a broader native IME/device matrix, compositor/GPU-reset and process-recreation recovery, complete scale handling, complete
-semantic relationships/actions and native AT smoke,
-downloads/permissions,
+fidelity, a broader native IME/device matrix, compositor/GPU-reset and process-
+recreation recovery, complete scale handling, complete semantic relationships/
+actions and broader native AT/screen-reader evidence, downloads/permissions,
 host services, broader FlatPark host/portal coverage, release size/performance,
-and non-Linux runners remain open. Flutter is the only rendered GUI, so all
-remaining Linux behavior converges there rather than in a fallback shell.
+and non-Linux runners remain open. Flutter is the sole rendered frontend target,
+so all remaining Linux behavior converges there rather than in a fallback shell.
 
 Flutter officially supports native deployment to Android, iOS, Windows,
 macOS, and Linux. That establishes a supported shell substrate, not proof that
-Vixen's Rust/V8/WebRender stack builds, packages, performs, or satisfies store
+Vixen's Rust/V8/Flutter-renderer stack builds, packages, performs, or satisfies store
 policy on each target. Every Vixen platform remains gated below.
 
 ## Contemporary OS policy
@@ -93,34 +93,69 @@ cannot satisfy a release gate.
 ## Fixed boundaries
 
 - **BrowserCore is the sole browser owner.** It owns profiles, contexts,
-  navigation, documents, runtime, network policy, storage, layout, display
-  lists, WebRender, accessibility source data, and lifecycle ordering.
-- **Dart owns chrome and presentation only.** Tabs, toolbars, menus, dialogs,
-  window layout, platform-adaptive controls, and host-service UI live in
-  Flutter. Dart must not acquire an alternate navigation, history, cookie,
-  permission, profile, DOM, layout, or renderer model.
-- **One engine, one JS runtime, one renderer.** The engine remains BrowserCore,
-  the JS runtime remains `deno_core`/V8, and WebRender remains the only web-
-  content renderer. Flutter renders browser chrome, not web content.
-- **Headless remains Rust-owned.** CLI, CDP, WPT, and EGL surfaceless paths do
-  not embed Flutter and are not shipped inside GUI bundles.
+  navigation, committed DOM/style generations, runtime, network policy,
+  storage, resource acceptance, semantic meaning, and lifecycle ordering.
+- **Dart owns bounded rendering state, not browser state.** Flutter consumes
+  exact mutation batches, performs web formatting/Paragraph/Canvas paint,
+  returns atomic commits and renderer queries, maps BrowserCore semantic
+  descriptors, and owns
+  chrome/host-service UI. It must not acquire navigation, history, cookies,
+  permissions, profiles, script state, or a durable DOM.
+- **One engine, one JS runtime, one renderer.** BrowserCore and `deno_core`/V8
+  remain the engine/runtime; Flutter Canvas/Paragraph is the target sole web
+  renderer over explicitly enabled Impeller. A Skia-backed launch is not Vixen
+  renderer evidence. WebRender/EGL/RGBA is transitional and receives no breadth.
+- **Rendered headless uses Flutter.** CLI, CDP screenshots/layout, and visual WPT
+  run through a minimal chrome-less Flutter host. Linux uses Cage/headless
+  Wayland. One logical rendered session keeps its sole BrowserCore inside that
+  host; launcher-side fast paths cannot create a second core. Wholly text-only
+  invocations may remain native when they invent no geometry.
 - **The bridge is browser-scoped.** It carries bounded typed commands, events,
-  snapshots, frames, semantics updates, and host-service requests. It does not
+  render mutation/commit/query payloads, semantic descriptors, and host-service
+  requests. Transitional frames are removed at cutover. It does not
   expose mutable Rust objects or let callbacks bypass BrowserCore ordering.
 
 ## Five-platform matrix
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime; native Wayland only | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Locked Yaru/Adwaita-blue chrome with an integrated native-window titlebar, explicit X11/XWayland rejection, BrowserCore bridge, RGBA texture, viewport/input, controlled release-process address navigation plus back/forward/reload/active-stop recovery with root/nested scroll restoration, root/nested wheel and key/script/single-touch scrolling, native/contenteditable text-input state, controlled IBus Anthy preedit/commit evidence, normalized `inputmode`/input-type/`enterkeyhint` keyboard and action intent, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery plus lifecycle disposal/recreation and stale-publish rejection, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Cage/Wayland smoke implemented; broader IME/device, gesture, and restoration-event matrices, compositor/GPU-reset and process-recreation recovery, full semantics/native AT, host services, and parity remain open; FlatPark publishing is deferred |
-| macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
-| Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
-| Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
-| iOS Simulator | Latest stable iOS Simulator major in latest stable Xcode/macOS | Same bridge and RGBA external texture using Rust/V8 `aarch64-apple-ios-sim` | Simulator BrowserCore/V8/WebRender build, V8 JavaScript/WebAssembly, lifecycle/input/accessibility, and advisory size/performance proof | Committed simulator-only development target; unproven |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime; native Wayland only | Mutation/commit/query bridge and Flutter formatter/scene in the GTK-backed runner; bounded RGBA is transitional | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Locked Yaru/Adwaita-blue chrome with an integrated native-window titlebar, explicit X11/XWayland rejection, BrowserCore bridge, RGBA texture, viewport/input, controlled release-process address navigation plus back/forward/reload/active-stop recovery with root/nested scroll restoration, root/nested wheel and key/script/single-touch scrolling, native/contenteditable text-input state, controlled IBus Anthy preedit/commit evidence, normalized `inputmode`/input-type/`enterkeyhint` keyboard and action intent, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery plus lifecycle disposal/recreation and stale-publish rejection, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Cage/Wayland smoke implemented; broader IME/device, gesture, and restoration-event matrices, compositor/GPU-reset and process-recreation recovery, full semantics/native AT, host services, and parity remain open; FlatPark publishing is deferred |
+| macOS | Latest stable macOS major | Same mutation/commit/query broker in a native Flutter runner | Native BrowserCore/V8/Flutter-renderer build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
+| Windows | Latest stable Windows client release/feature update | Same mutation/commit/query broker in a native Flutter runner | Native BrowserCore/V8/Flutter-renderer build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
+| Android | Latest stable Android major/API | Same mutation/commit/query broker, Flutter Canvas/Paragraph renderer, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, Flutter scene/capture, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
+| iOS Simulator | Latest stable iOS Simulator major in latest stable Xcode/macOS | Same mutation/commit/query broker and Flutter renderer using Rust/V8 `aarch64-apple-ios-sim` | Simulator BrowserCore/V8/Flutter-renderer build, V8 JavaScript/WebAssembly, lifecycle/input/accessibility, and advisory size/performance proof | Committed simulator-only development target; unproven |
 
 The Linux Flutter embedder uses GTK3 internally. Vixen owns no separate GTK
 widget tree or custom `gtk4::GLArea`, but this does **not** promise that GTK
 runtime dependencies disappear from Linux packages.
+
+## ADR-022 renderer migration
+
+The existing WebRender/EGL/RGBA texture remains the implemented comparison path
+only. Do not add renderer breadth there. The next delivery sequence is:
+
+1. Add versioned, bounded revision/mutation/full-resync, atomic-commit/presented,
+   geometry/hit-handle/text/scroll/semantic/input/action DTOs through `vixen-api`,
+   C ABI, and Dart while production still presents the old frame.
+2. Add one test-only Flutter `CustomPainter`/Paragraph vertical for a controlled
+   background, text, and image document. Return one atomic commit and prove pixels,
+   hit testing, find/range geometry, Semantics bounds, and scene capture.
+3. Route Linux input, scrolling, zoom, and accessibility through accepted
+   geometry; prove lifecycle recovery without pixel-buffer texture ownership.
+4. Add a chrome-less Flutter host under Cage for visual fixtures and CDP capture.
+5. Solve bounded synchronous layout flush for same-task DOM mutation plus
+   geometry reads.
+6. Cut over once and apply the full R7 deletion inventory: native renderer/image
+   upload, EGL/frame transport, Dart frame worker, texture plugin/presenter/tests,
+   superseded Rust layout/paint, duplicate projections, obsolete fixtures/gates/
+   docs/dependencies, and renderer-internal CLI flags. Two production renderers
+   are forbidden.
+
+Flutter's ordinary Flex/widgets are not CSS layout. Formatting contexts remain
+Vixen compatibility code implemented in Dart over Canvas/Paragraph and driven by
+computed BrowserCore inputs. Mutation batches are immutable and exact-revision;
+commit/query state is bounded and Dart never retains a mutable DOM or browser
+lifecycle state.
 
 ## Delivery sequence
 
@@ -146,6 +181,9 @@ Bridge rules:
   must not add a second browser model or event consumer;
 - no synchronous callback from BrowserCore into Dart while Rust locks or a V8
   scope are active;
+- ADR-022 `EnsureLayout` uses a dedicated posted request/response broker that the
+  Flutter renderer can service while the originating worker waits; it is not a
+  direct callback and cannot re-enter BrowserCore;
 - cancellation, stale-event rejection, and shutdown remain BrowserCore
   semantics; and
 - structured stable errors cross FFI, never Rust panics or Dart exceptions as a
@@ -155,9 +193,10 @@ Use handwritten FFI initially if that keeps ownership inspectable. A bridge
 generator may be adopted only after its generated native/Dart surface, build
 behavior, artifact cost, and platform support are measured.
 
-### 2. Linux real shell and bounded RGBA texture
+### 2. Transitional Linux real shell and bounded RGBA texture
 
-This slice is implemented for Linux. The same Flutter chrome connects to
+This superseded renderer slice remains implemented for Linux until ADR-022
+cutover. The same Flutter chrome connects to
 BrowserCore, which renders web content through WebRender to an engine-owned
 offscreen target. The interoperability contract exports a bounded RGBA frame for
 a Flutter external texture:
@@ -172,8 +211,9 @@ a Flutter external texture:
 - measure copies, conversion, frame latency, memory bandwidth, resize churn,
   dropped frames, and input-to-paint latency.
 
-This is one WebRender path with a transport copy, not a second renderer. Flutter
-must not repaint or reinterpret Vixen's display list.
+This remains one transitional WebRender path with a transport copy. It is frozen
+except for correctness/recovery fixes while the test-only Flutter renderer
+vertical is built; production switches only after parity and then deletes it.
 
 The bounded presentation and lifecycle-recovery slice is implemented. The coordinator
 retries a failing current-generation BrowserCore frame or Semantics capture
@@ -219,11 +259,11 @@ for physical-to-logical placement, including bounded-target letterboxing. A 2.0
 device-scale test covers the core and widget paths without a frontend-selected
 node or coordinate repair.
 
-The remaining target adds broader native IME/device evidence, richer gesture/DOM
-event and restoration-event fidelity, and compositor/GPU-reset plus process-recreation recovery.
-BrowserCore continues to own hit testing, selection, DOM event dispatch, and
-navigation effects. Platform-specific raw data may be retained in bounded DTOs
-where web semantics require it.
+The transitional path still lacks broader native IME/device evidence, richer
+gesture/DOM-event and restoration-event fidelity, and compositor/process recovery.
+Under ADR-022 Flutter becomes authoritative for commit-bound hit testing and
+mechanical scroll geometry; BrowserCore validates targets and retains selection
+meaning, DOM event/default-action semantics, history, and navigation effects.
 
 The first platform text-input vertical is implemented for focused writable
 native text inputs/textareas and direct contenteditable editing hosts.
@@ -382,8 +422,9 @@ host-service interface; policy and durable decisions remain in BrowserCore.
 Linux Flutter parity requires the product smoke surface: context/tab
 create/close/duplicate/reopen, address/search, reload/stop, history traversal,
 find, zoom, diagnostics, downloads/permissions, settings/privacy controls,
-session restore, shortcuts, visible WebRender content, input, viewport changes,
-error recovery, and accessibility projection.
+session restore, shortcuts, visible Flutter-rendered web content, exact returned
+geometry, input, viewport changes, error recovery, scene capture, and
+accessibility projection.
 
 FlatPark is sequenced after the smaller basic-browser gate, not alongside its
 implementation. Until broader scrolling and IME/device coverage,
@@ -392,7 +433,7 @@ reproducibility and launch smoke only; do not prioritize registry descriptor,
 review, publication, or update-channel work.
 
 The Linux release archive is now the Flutter composition root. It uses the
-official x86_64 Flutter 3.46.0-0.3.pre beta archive and verifies its framework
+official x86_64 Flutter 3.47.0-0.1.pre beta archive and verifies its framework
 and engine revisions. Cargo, Pub, and rusty_v8 remain locked/pinned inputs.
 `just linux-release-smoke` builds release/AOT Flutter and `libvixen_ffi.so`,
 creates a deterministic archive, extracts that exact file, and requires a
@@ -407,23 +448,32 @@ window/texture integration rather than a second application UI.
 
 ### 5. Desktop expansion
 
-Bring up macOS and Windows from the same Dart chrome and bridge contract. Adapt
-only native runner, texture registration, GPU surface interop experiments,
-accessibility plumbing, host services, packaging, signing, and platform UI
-where necessary. A platform cannot be marked supported merely because Flutter
-creates an empty window; it must run BrowserCore, V8, WebRender, real input,
-semantics, profile persistence, and recovery through platform-native builds.
+Bring up macOS and Windows from the same Dart renderer/chrome and bridge
+contract. Adapt only native runner, accessibility plumbing, host services,
+packaging, signing, and platform UI where necessary. A platform cannot be marked
+supported merely because Flutter creates an empty window; it must run
+BrowserCore, V8, mutation/commit/query exchange, Canvas/Paragraph paint and
+capture, real input, semantics, profile persistence, and recovery.
 
 ### 6. Android
 
-Android begins only after desktop bridge ownership and RGBA behavior are stable.
+Android begins only after desktop renderer/geometry ownership is stable.
 Pin the exact rusty_v8/V8 source revision or archive, Android NDK/toolchain, Rust
 target, Flutter version, and all generated source metadata. Prove reproducible
 source cross-builds for each shipped ABI. No host prebuilt V8 archive may be
 silently reused.
 
-Release gates include GLES context/surface behavior, pause/resume/background and
-surface-loss recovery, process recreation, touch/gesture/IME, rotation and
+A prewarmed third-party Flutter/Android container may reduce SDK downloads, but
+it is an input cache rather than the version authority. Adopt only a reviewed,
+digest-pinned image whose Flutter framework/engine, JDK, API/build tools, NDK,
+CMake, Gradle/AGP cache, architecture, and licenses match Vixen's pins exactly.
+The Vixen derivative must still supply the pinned Rust targets and rusty_v8
+source-build prerequisites. A stable-only image cannot stand in for Vixen's
+current Flutter beta; if no exact published image exists, build the reviewed
+Dockerfile at Vixen's pin or keep the toolchains separately staged.
+
+Release gates include Flutter/Impeller scene behavior, pause/resume/background
+and surface-loss recovery, process recreation, touch/gesture/IME, rotation and
 device-pixel-ratio changes, Android accessibility, safe storage/network policy,
 and split-ABI output. Measure each ABI independently and prove the store artifact
 does not duplicate unrelated ABIs.
@@ -447,18 +497,15 @@ There is no JavaScriptCore, WKWebView, WebKit, portable alternate Wasm runtime, 
 physical-device fallback in this target. Supporting physical iOS later requires a
 new ADR and a separate runtime/distribution feasibility decision.
 
-## Shared GPU texture experiments
+## Renderer transport retirement
 
-RGBA is deliberately simple and portable, but likely too expensive forever.
-After RGBA correctness and measurements exist, evaluate platform-specific
-shared GPU textures: DMA-BUF/EGL on Linux, IOSurface/Metal on Apple platforms,
-D3D shared resources on Windows, and Android hardware buffers/EGL images on
-Android. Each experiment must prove synchronization, lifetime, color/alpha
-behavior, resize/surface-loss recovery, driver coverage, and measurable wins.
-
-These are transport implementations behind one frame contract. They must not
-fork WebRender behavior, make Dart own WebRender resources, or remove the RGBA
-diagnostic/reference path before the optimized path is proven.
+ADR-022 removes the RGBA frame copy rather than optimizing it with five native
+shared-texture implementations. Flutter paints web content directly into its
+scene. The migration retains frame transport only as a production comparison
+baseline, then deletes the frame ABI, native pool, texture presenter, EGL capture,
+WebRender/image-upload dependencies, Dart frame worker, superseded Rust renderer,
+duplicate projections, and obsolete tests/gates/docs/flags after parity gates.
+No platform-specific shared GPU transport experiment should start meanwhile.
 
 ## Artifact size is a product goal
 
@@ -468,12 +515,14 @@ invented byte limits. For every platform and shipped ABI/architecture:
 1. Build a release/AOT/stripped **hello-Flutter** application with the same
    Flutter version, runner mode, architecture, and packaging method.
 2. Build **Flutter + Vixen** with the same controls.
-3. Attribute compressed download, unpacked/install, executable, and runtime-
+3. Build the **chrome-less rendered host** with the same formatter/commit path.
+4. Attribute compressed download, unpacked/install, executable, and runtime-
    shared costs to Flutter engine/ICU, Dart AOT and assets, native runner/plugins,
-   BrowserCore/Rust dependencies, V8/ICU/snapshots, WebRender/GPU dependencies,
-   resources, packaging metadata, and symbols.
-4. Report deltas from hello-Flutter and from the prior accepted Vixen build.
-5. Record exact toolchain/lock/source revisions, commands, architecture, hashes,
+   BrowserCore/Rust dependencies, V8/ICU/snapshots, Dart renderer code/resources,
+   transitional WebRender/EGL dependencies when present, packaging metadata,
+   and symbols.
+5. Report deltas from hello-Flutter and from the prior accepted Vixen build.
+6. Record exact toolchain/lock/source revisions, commands, architecture, hashes,
    strip/LTO/AOT settings, and whether system/shared runtimes are excluded.
 
 Release GUI bundles use Flutter release/AOT mode, Rust release settings with
@@ -505,10 +554,11 @@ required.
 
 Every platform must eventually prove:
 
-- one BrowserCore lifecycle and matching GUI/headless behavior where applicable;
-- visible WebRender output through the current transport, without a second web
-  renderer;
-- bounded FFI buffers, queues, frames, snapshots, and semantics updates;
+- one BrowserCore lifecycle and matching GUI/chrome-less-renderer behavior;
+- one Flutter Canvas/Paragraph web renderer with exact revision/mutation and
+  atomic commit/presented/query exchange;
+- bounded FFI buffers, queues, mutation/full-snapshot payloads, commits,
+  resources, queries, and semantic bounds;
 - input/viewport/IME/focus and lifecycle recovery;
 - BrowserCore accessibility projection through Flutter Semantics and native AT;
 - host-service policy, persistence, and safe failure behavior;
@@ -517,10 +567,10 @@ Every platform must eventually prove:
 - compatibility, performance, memory, frame, and known-gap reports named by
   platform and ABI.
 
-Platform work proceeds alongside core browser correctness. It must not freeze
-the live document/runtime, loader, fonts/images/layout, security, WPT, CDP, or
-real-site reduction programs. Prefer bridge slices that expose those shared-core
-improvements to every shell rather than shell-only feature breadth.
+Until renderer cutover, platform breadth is frozen except critical Linux
+correctness. After Linux proves the final contract, platform work proceeds beside
+core browser correctness and must expose shared BrowserCore improvements through
+the same renderer rather than add shell-only browser behavior.
 
 ## External evidence
 
@@ -528,7 +578,7 @@ improvements to every shell rather than shell-only feature breadth.
   lists Android, iOS, Windows, macOS, and Linux as supported native deployment
   platforms.
 - [Flutter desktop support](https://docs.flutter.dev/platform-integration/desktop)
-  and the [pinned Flutter beta Linux runner template](https://github.com/flutter/flutter/tree/677d472756f83c14371dd8cc624387065f3d32a7/packages/flutter_tools/templates/app/linux.tmpl)
+  and the [pinned Flutter beta Linux runner template](https://github.com/flutter/flutter/tree/bd1e75d918605c91b411e8789fb911e6c9a84534/packages/flutter_tools/templates/app/linux.tmpl)
   describe the native desktop/GTK runner substrate.
 - [Dart native interoperability](https://dart.dev/interop/c-interop) documents
   Dart FFI; [Flutter `Texture`](https://api.flutter.dev/flutter/widgets/Texture-class.html)
@@ -542,3 +592,6 @@ improvements to every shell rather than shell-only feature breadth.
   documents Android source cross-compilation and the
   `aarch64-apple-ios-sim` simulator target, which retains JIT support. Vixen uses
   that simulator target rather than the physical-device configuration.
+- [`gmeligio/flutter-docker-image`](https://github.com/gmeligio/flutter-docker-image)
+  is a candidate prewarmed Android recipe/image, not an accepted Vixen pin; its
+  published tag and digest must satisfy the Android input rules above.

@@ -1,4 +1,5 @@
-//! Vixen-owned layout tree spine (ADR-013).
+//! Transitional Vixen-owned Rust layout tree; ADR-022 replaces this ownership
+//! with the Flutter-hosted formatter and deletes unused modules at cutover.
 //!
 //! This is the first Rust layout stage behind [`crate::page::Page`]. It mirrors
 //! Ladybird's `TreeBuilder` seam at `0de15a5dd2a9` in shape, not in C++

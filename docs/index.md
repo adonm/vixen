@@ -5,20 +5,21 @@
 [![Docs](https://img.shields.io/badge/docs-vixen.adonm.dev-blue)](https://vixen.adonm.dev/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/adonm/vixen/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://github.com/adonm/vixen/blob/main/Cargo.toml)
-[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.46%20beta-02569B.svg)](FLUTTER_SHELL.md)
+[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.47%20beta-02569B.svg)](FLUTTER_SHELL.md)
 
-Vixen is a focused cross-platform Firefox replacement: a Flutter GUI targeting
-Linux, macOS, Windows, Android, and the Apple Silicon iOS Simulator, first-class headless/CDP automation, and
-the most web capability per byte.
+Vixen is a focused cross-platform Firefox replacement: one Flutter web renderer
+and GUI targeting Linux, macOS, Windows, Android, and the Apple Silicon iOS
+Simulator, first-class chrome-less Flutter/CDP automation, and the most web
+capability per byte.
 
 The hard, spec-heavy subsystems are delegated where that keeps Vixen smaller
 and more correct: **Stylo/selectors** for CSS matching and cascade,
-**deno_core/V8** for JS execution and host packaging, **WebRender** for paint,
-and **html5ever** for HTML. BrowserCore owns browser truth and Flutter/Dart owns
-only chrome, presentation, and host-service UI. The Linux Flutter shell has a
-real BrowserCore bridge, bounded RGBA texture, and a tested release archive;
-Flutter is the sole rendered GUI; host services, complete accessibility, and
-basic-browser parity remain open.
+**deno_core/V8** for JS execution, **html5ever** for HTML, and Flutter's
+**Paragraph/Canvas/scene/Semantics** substrate. BrowserCore owns browser truth;
+Flutter owns bounded CSS formatting, paint, geometry, hit testing, semantic
+bounds, capture, chrome, and host presentation through exact mutation/commit
+protocols. The implemented WebRender/RGBA path is transitional and scheduled for
+aggressive deletion after the Flutter vertical passes.
 
 ## Linux release
 

@@ -1,6 +1,6 @@
 # Artifact-size controls
 
-`flutter_hello/` is the checked-in Flutter 3.46 beta Linux project used as Vixen's
+`flutter_hello/` is the checked-in Flutter 3.47 beta Linux project used as Vixen's
 like-for-like release-bundle size peer. It uses Material, the generated Linux
 runner, the same pinned Flutter framework revision, and no Vixen code or native
 library. It is a build input and is never shipped.

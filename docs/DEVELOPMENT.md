@@ -46,10 +46,12 @@ Every alpha slice should satisfy these rules:
 6. **Tests travel with behavior.** Unit tests prove pure logic; one integration
    check proves the user-visible seam. If a fixture manifest assertion is the
    seam, keep it committed.
-7. **Flutter stays an adapter.** Dart owns chrome and host-service presentation;
-   BrowserCore owns browser state, WebRender, and accessibility source data.
-   Bridge buffers, queues, frames, semantics updates, and native handles are
-   bounded with explicit lifetime and generation tests.
+7. **Flutter is the renderer, not the browser owner.** Dart owns bounded
+   formatting/Paragraph/Canvas state, atomic renderer commits, chrome, Semantics
+   presentation, and host-service UI. BrowserCore owns DOM/runtime/navigation,
+   computed styles, policy/persistence, web-event semantics, accepted resources,
+   and accessibility meaning. Bridge payloads, queues, commits, queries, and
+   handles are bounded with explicit revision/lifetime tests.
 
 ## Gate tiers
 
@@ -83,7 +85,10 @@ calling that single recipe.
 ### GUI shell environment blockers
 
 The Linux Flutter project and focused gate are checked in. Install the exact
-Flutter 3.46.0-0.3.pre beta archive declared in `.mise.toml`, then run its gate:
+Flutter 3.47.0-0.1.pre beta archive declared in `.mise.toml`, then run its gate.
+The beta pin is deliberate for required Linux Impeller support; do not replace it
+with a stable SDK or accept a Skia-backed smoke without updating the renderer
+decision and evidence:
 
 ```sh
 just setup-flutter
@@ -100,8 +105,8 @@ X11 and XWayland are intentionally unsupported.
 
 The released Linux shell is Flutter. Local release builds use **Podman + the
 pinned GNOME builder image**; CI builds the same release shape on Ubuntu 24.04.
-Flutter is the sole rendered GUI; the Rust workspace has no GTK4/libadwaita/
-Relm4 feature or fallback GUI. `just check` and `just clippy` therefore cover
+Flutter is the sole rendered frontend target; the Rust workspace has no GTK4/
+libadwaita/Relm4 feature or fallback GUI. `just check` and `just clippy` cover
 every Rust target and feature without GNOME development packages. Verify Linux
 Flutter release changes with:
 
@@ -117,7 +122,7 @@ Native GTK3 development packages are needed only for direct host Flutter Linux
 builds; the pinned release container supplies them for official archive work.
 
 GitHub Releases publish the deterministic x86_64 archive built with the
-SHA-256-pinned official Flutter 3.46.0-0.3.pre beta, locked application/Cargo
+SHA-256-pinned official Flutter 3.47.0-0.1.pre beta, locked application/Cargo
 dependencies, and pinned rusty_v8 input. FlatPark repackages those bytes as a
 signed convenience Flatpak. Flutter's Linux embedder uses GTK, so migration
 does not imply a GTK-free runtime; direct GTK code remains limited to Flutter's
@@ -132,14 +137,10 @@ just gate-native-abi
 just gate-architecture
 ```
 
-`just gate-native-abi` proves C ABI/header/layout, bounded JSON/frame wire
-behavior, opaque registry ownership, stable errors/events, and release over the
-one-owner controller. `just gate-flutter-shell` adds the Dart binding, injected
-fake tests, production worker, Linux texture/input presenter, and live native
-smoke. It proves physical viewport, pointer/wheel/key routing, and single-touch
-root dragging through the cancelable wheel path, but not complete semantics/
-native AT, native IME/richer gesture/lifecycle, a platform package, or a release
-build. The bounded BrowserCore-to-Flutter Semantics hierarchy is covered.
+These gates currently prove the transitional JSON/frame wire, registry, worker,
+texture/input presenter, and native smoke. ADR-022 adds revision/mutation/commit/
+query ABI and Canvas/Paragraph evidence, then deletes frame/texture-specific
+proof at cutover. Existing checks remain comparison coverage, not target APIs.
 
 ## Larger alpha batches
 
@@ -163,8 +164,9 @@ Alpha speed is acceptable only while these budgets stay visible:
 - Prefer boring data flow over framework gravity: DTOs in `vixen-api`, lifecycle
   and pipeline state in the engine-owned browser/context/document graph, and
   browser-facing adapters in headless/CDP/shell.
-- Keep Dart DTOs and native bridge code mechanical. Do not mirror profile,
-  navigation, DOM, layout, permission, or accessibility truth in Flutter state.
+- Keep Dart DTOs and native bridge code mechanical. Renderer box/fragment/scene
+  state is ephemeral and commit-bound; do not mirror profile, navigation, DOM,
+  permissions, policy, script state, or accessibility meaning in Flutter.
 - Avoid duplicate parsers/matchers. Runtime host objects and BrowserCore/Page
   operations must extract or call the same Rust implementation.
 - Do not reintroduce string-expression shims. Retire transitional runtime/

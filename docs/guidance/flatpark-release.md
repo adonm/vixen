@@ -24,10 +24,10 @@ dependencies are supplied through Flathub.
 
 The release archive uses:
 
-- Flutter `3.46.0-0.3.pre` beta from the official Linux x64 archive declared in
+- Flutter `3.47.0-0.1.pre` beta from the official Linux x64 archive declared in
   `.mise.toml`;
-- Flutter revision `677d472756f83c14371dd8cc624387065f3d32a7`;
-- engine revision `a24b1ea55dedf3ce992cae0fbc1012b22b373290`;
+- Flutter revision `bd1e75d918605c91b411e8789fb911e6c9a84534`;
+- engine revision `bbd15867c003dc66e678cb3c218649fa8bf914f2`;
 - Rust `1.96.1`;
 - `Cargo.lock` and `flutter/vixen_shell/pubspec.lock`; and
 - rusty_v8 `v149.4.0` archive SHA-256
