@@ -125,8 +125,9 @@ Rules:
   second DOM. ADR-022's bounded R1 mutation/full-resync, atomic-commit, query,
   target, replay, and explicit handle-retirement model is implemented in
   `vixen-api`; R2's dedicated C/Dart broker and R3's formatter are implemented.
-  The initial R4 production vertical presents a bounded title/semantic-text
-  projection with post-frame acknowledgement and commit-bound pointer targets;
+  The production R4 vertical presents a bounded title/semantic-text projection
+  with post-frame acknowledgement, commit-bound pointer/semantic targets,
+  Paragraph find geometry, zoom/viewport revisions, and lifecycle generations;
   the old frame remains its explicit fallback. R4–R6 must complete parity before
   frame transport can be deleted. Single-touch root
   dragging reuses the bounded cancelable wheel path. Complete renderer cutover,
@@ -534,7 +535,7 @@ presented scene without compositor chrome.
 
 ### Migration rule
 
-The initial Flutter vertical may run in production with the old frame as an
+The bounded Flutter vertical may run in production with the old frame as an
 explicit fallback, but it is not the renderer cutover. R4–R6 must still prove the
 complete interactive controlled vertical, chrome-less fixture/CDP/Playwright
 capture, synchronous layout, cancellation, resync, and renderer loss. Production

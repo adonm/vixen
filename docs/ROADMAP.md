@@ -251,7 +251,7 @@ Route one controlled Linux document through the new renderer for:
 names one commit id. The old texture path remains production-only comparison and
 is not widened.
 
-**Initial production vertical implemented:** the native Linux shell now requests
+**Majority production vertical implemented:** the native Linux shell now requests
 one bounded BrowserCore projection for the selected document, carries it over the
 dedicated renderer update queue, formats it with the R3 service, validates the
 returned commit in Rust, and paints the accepted `RenderCommitPainter` view.
@@ -269,10 +269,25 @@ queues stay bounded; consuming a submission and publishing all resulting handle
 releases is atomic. The WebRender/RGBA texture remains the explicit fallback
 when no current Flutter commit is available.
 
-R4 remains open for computed styled nodes/resources, DOM/script mutation batches,
-scroll/default-action round trips, Paragraph-backed find/caret/range behavior,
-semantic actions, lifecycle/Cage interaction evidence, and deletion of the
-fallback at R7.
+Five of the six R4 behavior slices now cross the production seam:
+
+- renderer-targeted down/up input synthesizes a real DOM `click` on the exact
+  displayed commit in the native ABI smoke;
+- find results, highlight boxes, and endpoint carets come from commit-bound
+  Paragraph UTF-16 geometry rather than the transitional layout;
+- page zoom and physical viewport changes produce, accept, and present newer
+  revisions/commit ids while retiring old handles;
+- BrowserCore semantic descriptors use Flutter-computed bounds, and advertised
+  tap/focus/value/range actions are suppressed unless the same commit and
+  accessibility generation are still displayed; and
+- lifecycle generations clear hidden presentation, reject late hidden work, and
+  require a newer commit before resume while bounding acknowledgement retries.
+
+R4's remaining behavior slice is the complete wheel/key/script scroll-intent,
+`preventDefault()`, renderer-clamp, returned-scroll-commit, and DOM `scroll`
+effect round trip. The final R4 proof also still needs its Cage interaction smoke.
+Computed styled nodes/resources and DOM/script mutation batches remain broader
+renderer-transition work; deletion of the fallback remains R7.
 
 ### R5. Chrome-less Flutter automation host
 

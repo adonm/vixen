@@ -57,6 +57,7 @@ final class ShellCoordinator extends ChangeNotifier {
   int _inputGeneration = 0;
   int _hostViewGeneration = 0;
   int _rendererViewportGeneration = 0;
+  int _rendererLifecycleGeneration = 0;
   int _nextRendererQueryId = 1;
   int _rendererPresentationFailures = 0;
   int _pendingInputEvents = 0;
@@ -64,8 +65,10 @@ final class ShellCoordinator extends ChangeNotifier {
   int _frameCaptureFailures = 0;
   int _accessibilityCaptureFailures = 0;
   String _findQuery = '';
+  bool _findCaseSensitive = false;
   int? _findMatches;
   int? _findActiveMatch;
+  FormatterFindResult? _rendererFindResult;
   String? _errorMessage;
   BrowserFrame? _frame;
   BrowserAccessibilitySnapshot? _accessibility;
@@ -112,6 +115,7 @@ final class ShellCoordinator extends ChangeNotifier {
   String get findQuery => _findQuery;
   int? get findMatches => _findMatches;
   int? get findActiveMatch => _findActiveMatch;
+  FormatterFindResult? get rendererFindResult => _rendererFindResult;
   String get selectedStatus {
     final selected = selectedContext;
     if (selected == null) return _isStarting ? 'Starting Vixen...' : 'No tab';
@@ -261,14 +265,17 @@ final class ShellCoordinator extends ChangeNotifier {
     final selected = selectedContext;
     final generation = ++_findRequestGeneration;
     _findQuery = query;
+    _findCaseSensitive = caseSensitive;
     if (selected == null || query.isEmpty) {
       _findMatches = query.isEmpty ? 0 : null;
       _findActiveMatch = null;
+      _rendererFindResult = null;
       _notify();
       return;
     }
     _findMatches = null;
     _findActiveMatch = null;
+    _rendererFindResult = null;
     _notify();
     try {
       final result = await controller.findText(
@@ -285,6 +292,11 @@ final class ShellCoordinator extends ChangeNotifier {
           _findQuery == query) {
         _findMatches = result.matches;
         _findActiveMatch = result.activeMatch;
+        _refreshRendererFindGeometry();
+        if (_rendererFindResult case final rendererResult?) {
+          _findMatches = rendererResult.matches.length;
+          if (rendererResult.matches.isEmpty) _findActiveMatch = null;
+        }
         if (result.activeMatch != null) {
           _scheduleFrameCapture(force: true);
         }
@@ -332,6 +344,14 @@ final class ShellCoordinator extends ChangeNotifier {
   void updateApplicationLifecycle(BrowserHostLifecycle lifecycle) {
     if (_hostLifecycle == lifecycle) return;
     _hostLifecycle = lifecycle;
+    _rendererLifecycleGeneration++;
+    if (!_hostViewVisible) {
+      _rendererView = null;
+      _rendererFindResult = null;
+      _pendingRendererSnapshot = null;
+      _pendingRendererPresentationId = null;
+      _notify();
+    }
     _scheduleHostViewUpdate();
     if (_hostViewVisible) _scheduleFrameCapture(force: true);
   }
@@ -486,6 +506,140 @@ final class ShellCoordinator extends ChangeNotifier {
       BrowserMouseEvent(x: x, y: y, button: 0, buttons: 0, detail: 1),
     );
   }
+
+  Future<void> dispatchRendererSemanticAction(
+    FormatterCommitView view,
+    RenderSemanticDescriptor descriptor,
+    RenderSemanticActionKind action,
+    String? value,
+  ) async {
+    final snapshot = _accessibility;
+    if (snapshot == null ||
+        !identical(view, _rendererView) ||
+        !identical(view, _formatter.displayedView) ||
+        view.isRetired ||
+        view.commit.revision.contextId != snapshot.contextId ||
+        view.commit.revision.documentId != snapshot.documentId ||
+        view.commit.revision.sourceGeneration != snapshot.sourceGeneration ||
+        descriptor.actionGeneration != snapshot.generation ||
+        !descriptor.actions.contains(action)) {
+      return;
+    }
+    BrowserAccessibilityNode? node;
+    for (final candidate in snapshot.nodes) {
+      if (candidate.id == descriptor.id) {
+        node = candidate;
+        break;
+      }
+    }
+    if (node == null || node.disabled) return;
+    final semanticNode = node;
+    final actionName = switch (action) {
+      RenderSemanticActionKind.activate => 'tap',
+      RenderSemanticActionKind.focus => 'focus',
+      RenderSemanticActionKind.setValue => 'set_value',
+      RenderSemanticActionKind.increase => 'increase',
+      RenderSemanticActionKind.decrease => 'decrease',
+      _ => null,
+    };
+    if (actionName == null ||
+        action == RenderSemanticActionKind.setValue && value == null ||
+        !_isCurrentSemanticAction(snapshot, semanticNode, actionName)) {
+      return;
+    }
+    if (action == RenderSemanticActionKind.activate) {
+      FormatterSemanticRegion? region;
+      for (final candidate in view.semanticRegions) {
+        if (candidate.descriptor.id == descriptor.id) {
+          region = candidate;
+          break;
+        }
+      }
+      if (region == null) return;
+      final point = region.rect.center;
+      await dispatchMouseEvent(
+        'mousedown',
+        BrowserMouseEvent(
+          x: point.dx,
+          y: point.dy,
+          button: 0,
+          buttons: 1,
+          detail: 1,
+        ),
+      );
+      await dispatchMouseEvent(
+        'mouseup',
+        BrowserMouseEvent(
+          x: point.dx,
+          y: point.dy,
+          button: 0,
+          buttons: 0,
+          detail: 1,
+        ),
+      );
+      return;
+    }
+    await _enqueueInput((inputGeneration) async {
+      if (!_isCurrentRendererSemanticAction(
+        view,
+        snapshot,
+        semanticNode,
+        actionName,
+      )) {
+        return;
+      }
+      _lastInputResult = switch (action) {
+        RenderSemanticActionKind.focus =>
+          await controller.dispatchAccessibilityFocus(
+            contextId: inputGeneration.contextId,
+            documentId: inputGeneration.documentId,
+            runtimeContextId: inputGeneration.runtimeContextId,
+            viewportWidth: inputGeneration.viewportWidth,
+            viewportHeight: inputGeneration.viewportHeight,
+            sourceGeneration: snapshot.sourceGeneration,
+            generation: snapshot.generation,
+            nodeId: semanticNode.id,
+          ),
+        RenderSemanticActionKind.setValue when value != null =>
+          await controller.dispatchAccessibilitySetValue(
+            contextId: inputGeneration.contextId,
+            documentId: inputGeneration.documentId,
+            runtimeContextId: inputGeneration.runtimeContextId,
+            viewportWidth: inputGeneration.viewportWidth,
+            viewportHeight: inputGeneration.viewportHeight,
+            sourceGeneration: snapshot.sourceGeneration,
+            generation: snapshot.generation,
+            nodeId: semanticNode.id,
+            value: value,
+          ),
+        RenderSemanticActionKind.increase ||
+        RenderSemanticActionKind.decrease =>
+          await controller.dispatchAccessibilityAdjustment(
+            contextId: inputGeneration.contextId,
+            documentId: inputGeneration.documentId,
+            runtimeContextId: inputGeneration.runtimeContextId,
+            viewportWidth: inputGeneration.viewportWidth,
+            viewportHeight: inputGeneration.viewportHeight,
+            sourceGeneration: snapshot.sourceGeneration,
+            generation: snapshot.generation,
+            nodeId: semanticNode.id,
+            increase: action == RenderSemanticActionKind.increase,
+          ),
+        _ => _lastInputResult,
+      };
+    });
+  }
+
+  bool _isCurrentRendererSemanticAction(
+    FormatterCommitView view,
+    BrowserAccessibilitySnapshot snapshot,
+    BrowserAccessibilityNode node,
+    String action,
+  ) =>
+      identical(view, _rendererView) &&
+      identical(view, _formatter.displayedView) &&
+      !view.isRetired &&
+      _isCurrentSemanticAction(snapshot, node, action);
 
   Future<void> dispatchSemanticFocus(
     BrowserAccessibilitySnapshot snapshot,
@@ -903,6 +1057,7 @@ final class ShellCoordinator extends ChangeNotifier {
       key: key,
       viewportGeneration: _rendererViewportGeneration,
       pageZoom: selectedContext?.pageZoom ?? 1,
+      lifecycleGeneration: _rendererLifecycleGeneration,
     );
     _scheduleRendererSnapshotDrain();
   }
@@ -928,7 +1083,7 @@ final class ShellCoordinator extends ChangeNotifier {
   ) async {
     final service = _rendererService;
     final key = request.key;
-    if (service == null || _closeFuture != null || !_isCurrentCapture(key)) {
+    if (service == null || !_isCurrentRendererRequest(request)) {
       return;
     }
     try {
@@ -940,15 +1095,23 @@ final class ShellCoordinator extends ChangeNotifier {
         viewportGeneration: request.viewportGeneration,
         pageZoom: request.pageZoom,
       );
+      if (!_isCurrentRendererRequest(request)) return;
       await _drainRenderer(service);
+      if (!_isCurrentRendererRequest(request)) return;
       final view = _formatter.acceptedView;
       if (view == null ||
           view.commit.revision.contextId != key.contextId ||
-          view.commit.revision.documentId != key.documentId) {
+          view.commit.revision.documentId != key.documentId ||
+          view.commit.revision.viewportGeneration !=
+              request.viewportGeneration ||
+          view.commit.viewport.width != key.width ||
+          view.commit.viewport.height != key.height ||
+          view.commit.viewport.pageZoom != request.pageZoom) {
         return;
       }
       await controller.flushRendererSubmissions();
       await _drainRenderer(service);
+      if (!_isCurrentRendererRequest(request)) return;
       _rendererView = view;
       _notify();
     } catch (error) {
@@ -957,11 +1120,17 @@ final class ShellCoordinator extends ChangeNotifier {
       } catch (_) {
         // Preserve the original commit failure as the user-visible error.
       }
-      if (_isCurrentCapture(key)) {
+      if (_isCurrentRendererRequest(request)) {
         _showError('Unable to present Flutter renderer commit', error);
       }
     }
   }
+
+  bool _isCurrentRendererRequest(_RendererSnapshotRequest request) =>
+      _closeFuture == null &&
+      _hostViewVisible &&
+      request.lifecycleGeneration == _rendererLifecycleGeneration &&
+      _isCurrentCapture(request.key);
 
   void rendererCommitPresented(FormatterCommitView view) {
     final service = _rendererService;
@@ -970,6 +1139,7 @@ final class ShellCoordinator extends ChangeNotifier {
         : null;
     if (service == null ||
         transport == null ||
+        !_hostViewVisible ||
         !identical(view, _rendererView) ||
         view.isRetired ||
         _formatter.displayedView?.commit.commitId == view.commit.commitId ||
@@ -998,6 +1168,7 @@ final class ShellCoordinator extends ChangeNotifier {
         await _drainRenderer(service);
         if (!identical(view, _rendererView) || view.isRetired) return;
         _formatter.present(presented);
+        _refreshRendererFindGeometry();
         _rendererPresentationFailures = 0;
       } catch (error) {
         try {
@@ -1028,6 +1199,21 @@ final class ShellCoordinator extends ChangeNotifier {
     throw const RenderProtocolException(
       'render.queue-full',
       'renderer message drain exceeded its bounded work budget',
+    );
+  }
+
+  void _refreshRendererFindGeometry() {
+    final view = _formatter.displayedView;
+    if (_findQuery.isEmpty ||
+        view == null ||
+        !identical(view, _rendererView) ||
+        view.isRetired) {
+      _rendererFindResult = null;
+      return;
+    }
+    _rendererFindResult = view.findText(
+      _findQuery,
+      caseSensitive: _findCaseSensitive,
     );
   }
 
@@ -1219,6 +1405,7 @@ final class ShellCoordinator extends ChangeNotifier {
     _pendingRendererPresentationId = null;
     _pendingRendererSnapshot = null;
     _rendererPresentationFailures = 0;
+    _rendererFindResult = null;
     final selected = selectedContext;
     _formatter.reset(
       contextId: selected?.contextId ?? 1,
@@ -1380,11 +1567,13 @@ final class _RendererSnapshotRequest {
     required this.key,
     required this.viewportGeneration,
     required this.pageZoom,
+    required this.lifecycleGeneration,
   });
 
   final _FrameCaptureKey key;
   final int viewportGeneration;
   final double pageZoom;
+  final int lifecycleGeneration;
 }
 
 final class _AccessibilityCaptureRequest {

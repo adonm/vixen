@@ -133,9 +133,9 @@ runtime dependencies disappear from Linux packages.
 
 The existing WebRender/EGL/RGBA texture remains the implemented comparison and
 fallback path only. Do not add renderer breadth there. R1 protocol validation,
-the R2 C/Dart broker, the R3 formatter, and an initial production R4
-title/semantic-text vertical are implemented. The remaining delivery sequence
-is:
+the R2 C/Dart broker, the R3 formatter, and five of six production R4 behavior
+slices over the bounded title/semantic-text vertical are implemented. The
+remaining delivery sequence is:
 
 R2 uses plain bounded messages: asynchronous snapshot/mutation/release updates,
 asynchronous commit/presented/resync submissions, and correlated broker traffic
@@ -239,7 +239,7 @@ The first Linux input slice is implemented. Flutter maps logical pointer and
 wheel positions into the exact bounded physical frame viewport and sends strict
 context/document/runtime-generation commands through a serialized 64-event
 queue. On the transitional texture, BrowserCore performs authoritative legacy
-hit testing before mouse dispatch. On the initial Flutter vertical, Dart returns
+hit testing before mouse dispatch. On the production Flutter vertical, Dart returns
 a displayed-commit target and Rust accepts its node id only after validating the
 exact commit, revision, opaque handle, geometry fragment, and coordinates, then
 resolves it to a BrowserCore-authored semantic element. Keyboard down/up events preserve
@@ -271,6 +271,11 @@ gesture/DOM-event and restoration-event fidelity, and compositor/process recover
 Under ADR-022 Flutter becomes authoritative for commit-bound hit testing and
 mechanical scroll geometry; BrowserCore validates targets and retains selection
 meaning, DOM event/default-action semantics, history, and navigation effects.
+The production Flutter vertical now proves exact-commit DOM click, Paragraph
+find/range/caret geometry, newer zoom/viewport commits, BrowserCore semantic actions
+over Flutter bounds, and lifecycle-generation stale suppression. The complete
+renderer-owned scroll/default-action round trip and Cage interaction smoke remain
+open before R4 can be marked landed.
 
 The first platform text-input vertical is implemented for focused writable
 native text inputs/textareas and direct contenteditable editing hosts.

@@ -11,7 +11,7 @@ void main() {
   final libraryPath = Platform.environment['VIXEN_FFI_LIBRARY'];
 
   test(
-    'opens, navigates, captures, and shuts down through the production C ABI',
+    'navigates, presents, clicks, revises, and shuts down through the production C ABI',
     () async {
       final profile = await Directory.systemTemp.createTemp('vixen-ffi-test-');
       final controller = NativeBrowserController(
@@ -109,6 +109,117 @@ void main() {
           query: query,
           target: view.answerHitTest(query),
         );
+        final mouseUpQuery = RenderHitTestQuery(
+          queryId: 2,
+          contextId: contextId,
+          documentId: state.documentId,
+          displayedCommitId: view.commit.commitId,
+          revision: view.commit.revision,
+          handle: view.commit.hitTestHandle,
+          point: RenderPoint(targetRect.center.dx, targetRect.center.dy),
+        );
+        await controller.dispatchRendererMouseEvent(
+          contextId: contextId,
+          documentId: state.documentId,
+          runtimeContextId: state.runtimeContextId!,
+          viewportWidth: 240,
+          viewportHeight: 160,
+          eventType: 'mouseup',
+          event: BrowserMouseEvent(
+            x: targetRect.center.dx,
+            y: targetRect.center.dy,
+            button: 0,
+            buttons: 0,
+            detail: 1,
+          ),
+          query: mouseUpQuery,
+          target: view.answerHitTest(mouseUpQuery),
+        );
+        expect(
+          (await controller.contextState(contextId)).title,
+          'Renderer click',
+        );
+        final zoomedState = await controller.setPageZoom(contextId, 1.25);
+        await controller.publishRendererSnapshot(
+          contextId: contextId,
+          documentId: state.documentId,
+          viewportWidth: 240,
+          viewportHeight: 160,
+          viewportGeneration: 2,
+          pageZoom: zoomedState.pageZoom,
+        );
+        final zoomedUpdate =
+            controller.pollRenderer()! as NativeFullSnapshotUpdate;
+        expect(zoomedUpdate.snapshot.revision.viewportGeneration, 2);
+        expect(zoomedUpdate.snapshot.viewport.pageZoom, 1.25);
+        expect(
+          zoomedUpdate.snapshot.nodes
+              .firstWhere((node) => node.kind == RenderNodeKind.text)
+              .styles['font-size'],
+          '30',
+        );
+        final zoomedView = (await formatter.acceptFullSnapshot(
+          zoomedUpdate.snapshot,
+          beforePublish: (commit) {
+            controller.submitRenderer(rendererCommitSubmission(commit));
+          },
+        ) as RenderApplied).view;
+        await controller.flushRendererSubmissions();
+        final zoomedPresented = RenderPresented(
+          contextId: contextId,
+          documentId: state.documentId,
+          commitId: zoomedView.commit.commitId,
+          revision: zoomedView.commit.revision,
+        );
+        controller.submitRenderer(rendererPresentedSubmission(zoomedPresented));
+        await controller.flushRendererSubmissions();
+        formatter.present(zoomedPresented);
+        final firstRelease =
+            controller.pollRenderer()! as NativeHandleReleaseUpdate;
+        formatter.releaseHandles(firstRelease.release);
+        expect(zoomedView.commit.commitId, greaterThan(view.commit.commitId));
+        expect(view.isRetired, isTrue);
+        await controller.publishRendererSnapshot(
+          contextId: contextId,
+          documentId: state.documentId,
+          viewportWidth: 300,
+          viewportHeight: 180,
+          viewportGeneration: 3,
+          pageZoom: zoomedState.pageZoom,
+        );
+        final resizedUpdate =
+            controller.pollRenderer()! as NativeFullSnapshotUpdate;
+        expect(resizedUpdate.snapshot.revision.viewportGeneration, 3);
+        expect(resizedUpdate.snapshot.viewport.width, 300);
+        expect(resizedUpdate.snapshot.viewport.height, 180);
+        final resizedView = (await formatter.acceptFullSnapshot(
+          resizedUpdate.snapshot,
+          beforePublish: (commit) {
+            controller.submitRenderer(rendererCommitSubmission(commit));
+          },
+        ) as RenderApplied).view;
+        await controller.flushRendererSubmissions();
+        final resizedPresented = RenderPresented(
+          contextId: contextId,
+          documentId: state.documentId,
+          commitId: resizedView.commit.commitId,
+          revision: resizedView.commit.revision,
+        );
+        controller.submitRenderer(
+          rendererPresentedSubmission(resizedPresented),
+        );
+        await controller.flushRendererSubmissions();
+        formatter.present(resizedPresented);
+        final zoomRelease =
+            controller.pollRenderer()! as NativeHandleReleaseUpdate;
+        formatter.releaseHandles(zoomRelease.release);
+        expect(
+          resizedView.commit.commitId,
+          greaterThan(zoomedView.commit.commitId),
+        );
+        expect(resizedView.commit.viewport.width, 300);
+        expect(resizedView.commit.viewport.height, 180);
+        expect(zoomedView.isRetired, isTrue);
 
         expect(contextId, greaterThan(0));
         expect(

@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vixen_shell/src/bridge/browser_models.dart';
 import 'package:vixen_shell/src/bridge/fake/scripted_browser_controller.dart';
 import 'package:vixen_shell/src/bridge/native/native_renderer_protocol.dart';
+import 'package:vixen_shell/src/bridge/render_models.dart';
 import 'package:vixen_shell/src/shell/shell_coordinator.dart';
 
 import 'browser_models_test.dart' show contextState;
@@ -32,6 +33,42 @@ void main() {
       final controller = ScriptedBrowserController(
         rendererUpdatesEnabled: true,
         snapshot: BrowserSnapshot(activeContextId: 1, contexts: [state]),
+        onCaptureFrame: (contextId, documentId, width, height) => browserFrame(
+          width: width,
+          height: height,
+          frameId: 1,
+          contextId: contextId,
+          documentId: documentId,
+        ),
+        onAccessibilitySnapshot: (contextId, documentId, width, height) =>
+            BrowserAccessibilitySnapshot(
+              contextId: contextId,
+              documentId: documentId,
+              sourceGeneration: 1,
+              generation: 1,
+              viewportWidth: width,
+              viewportHeight: height,
+              nodes: [
+                BrowserAccessibilityNode(
+                  id: 3,
+                  role: 'link',
+                  label: 'Read more',
+                  bounds: const BrowserAccessibilityRect(
+                    x: 10,
+                    y: 10,
+                    width: 80,
+                    height: 20,
+                  ),
+                  focused: false,
+                  disabled: false,
+                  selected: false,
+                  hidden: false,
+                  focusable: true,
+                  actions: const ['tap', 'focus'],
+                ),
+              ],
+              truncated: false,
+            ),
       );
       final coordinator = ShellCoordinator(controller);
       await coordinator.start();
@@ -62,7 +99,27 @@ void main() {
       ) {
         await Future<void>.delayed(const Duration(milliseconds: 10));
       }
+      await coordinator.findText('Paragraph');
+      expect(coordinator.rendererFindResult?.commitId, view.commit.commitId);
+      expect(coordinator.rendererFindResult?.matches, hasLength(1));
+      expect(coordinator.rendererFindResult?.boxes, isNotEmpty);
       coordinator.updateContentFocus(true);
+      for (
+        var attempt = 0;
+        attempt < 50 && coordinator.accessibility == null;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      final semantic = view.semanticRegions.singleWhere(
+        (region) => region.descriptor.id == 3,
+      );
+      await coordinator.dispatchRendererSemanticAction(
+        view,
+        semantic.descriptor,
+        RenderSemanticActionKind.focus,
+        null,
+      );
       final targetRect = view.commit.geometry
           .singleWhere((entry) => entry.nodeId == 9)
           .borderBox;
@@ -82,6 +139,7 @@ void main() {
           'publish_renderer_snapshot',
           'flush_renderer_submissions',
           'flush_renderer_submissions',
+          'dispatch_accessibility_action',
           'dispatch_renderer_mouse_event',
         ]),
       );
@@ -95,6 +153,82 @@ void main() {
       await coordinator.close();
     },
   );
+
+  test('hidden renderer commits cannot reappear after resume', () async {
+    final state = BrowsingContextState(
+      contextId: 1,
+      mainFrameId: 10,
+      documentId: 2,
+      runtimeContextId: 100,
+      activeNavigationId: null,
+      url: 'file:///lifecycle.html',
+      title: 'Lifecycle',
+      historyLength: 1,
+      historyIndex: 0,
+      canGoBack: false,
+      canGoForward: false,
+      isLoading: false,
+      loadProgress: 1,
+    );
+    final controller = ScriptedBrowserController(
+      rendererUpdatesEnabled: true,
+      snapshot: BrowserSnapshot(activeContextId: 1, contexts: [state]),
+    );
+    final coordinator = ShellCoordinator(controller);
+    await coordinator.start();
+    controller.enqueueRendererRequest(NativeFullSnapshotUpdate(r3Snapshot()));
+    coordinator.updatePhysicalViewport(240, 160);
+    for (
+      var attempt = 0;
+      attempt < 50 && coordinator.rendererView == null;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    final first = coordinator.rendererView!;
+    coordinator.rendererCommitPresented(first);
+    for (
+      var attempt = 0;
+      attempt < 50 &&
+          controller.commands
+                  .where(
+                    (command) => command.type == 'flush_renderer_submissions',
+                  )
+                  .length <
+              2;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+
+    coordinator.updateApplicationLifecycle(BrowserHostLifecycle.hidden);
+    expect(coordinator.rendererView, isNull);
+    controller.enqueueRendererRequest(
+      NativeFullSnapshotUpdate(
+        r3Snapshot(generation: 2, viewportGeneration: 2, updated: true),
+      ),
+    );
+    coordinator.updateApplicationLifecycle(BrowserHostLifecycle.resumed);
+    for (
+      var attempt = 0;
+      attempt < 50 &&
+          coordinator.rendererView?.commit.revision.sourceGeneration != 2;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+
+    final resumed = coordinator.rendererView!;
+    expect(resumed.commit.commitId, greaterThan(first.commit.commitId));
+    expect(resumed.commit.revision.sourceGeneration, 2);
+    expect(resumed.commit.revision, isNot(first.commit.revision));
+    coordinator.rendererCommitPresented(resumed);
+    for (var attempt = 0; attempt < 50 && !first.isRetired; attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(first.isRetired, isTrue);
+    await coordinator.close();
+  });
 
   test(
     'startup creates exactly one about:vixen context when session is empty',

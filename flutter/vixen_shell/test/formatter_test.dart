@@ -114,6 +114,47 @@ void main() {
   });
 
   test(
+    'find results retain exact commit-bound Paragraph range geometry',
+    () async {
+      final formatter = VixenFormatter();
+      addTearDown(formatter.dispose);
+      final view = (await formatter.acceptFullSnapshot(
+        r3Snapshot(),
+      ) as RenderApplied).view;
+
+      final result = view.findText('paragraph');
+      expect(result.commitId, view.commit.commitId);
+      expect(result.revision, view.commit.revision);
+      expect(result.matches, hasLength(1));
+      expect(result.matches.single.nodeId, 6);
+      expect(result.matches.single.utf16Start, 8);
+      expect(result.matches.single.utf16End, 17);
+      expect(result.matches.single.startCaret.width, 1);
+      expect(result.matches.single.endCaret.width, 1);
+      expect(result.matches.single.boxes, isNotEmpty);
+      expect(
+        result.matches.single.boxes.map((box) => box.toWire()),
+        view
+            .rangeBoxes(
+              handle: view.commit.textQueryHandle,
+              nodeId: 6,
+              start: 8,
+              end: 17,
+            )
+            .map((box) => box.toWire()),
+      );
+      expect(view.findText('PARAGRAPH', caseSensitive: true).matches, isEmpty);
+      expect(
+        RenderCommitPainter(
+          view,
+          findResult: result,
+        ).shouldRepaint(RenderCommitPainter(view)),
+        isTrue,
+      );
+    },
+  );
+
+  test(
     'scene capture contains Canvas backgrounds and decoded PNG pixels',
     () async {
       const requireImpeller = bool.fromEnvironment('VIXEN_REQUIRE_IMPELLER');
@@ -399,13 +440,29 @@ void main() {
         revision: first.commit.revision,
       ),
     );
-    final firstSemantics = RenderCommitPainter(formatter.displayedView!)
-        .semanticsBuilder(first.viewport);
+    final actions = <RenderSemanticActionKind>[];
+    final firstSemantics = RenderCommitPainter(
+      formatter.displayedView!,
+      onSemanticAction: (descriptor, action, value) {
+        expect(descriptor.id, 3);
+        expect(value, isNull);
+        actions.add(action);
+      },
+    ).semanticsBuilder(first.viewport);
     expect(
       firstSemantics.map((entry) => entry.properties.label),
       containsAll(['Vixen renderer', 'Read more']),
     );
     expect(firstSemantics.first.properties.header, isTrue);
+    final link = firstSemantics.singleWhere(
+      (entry) => entry.properties.label == 'Read more',
+    );
+    link.properties.onTap!();
+    link.properties.onFocus!();
+    expect(actions, [
+      RenderSemanticActionKind.activate,
+      RenderSemanticActionKind.focus,
+    ]);
 
     final second = (await formatter.applyMutationBatch(
       r3Mutation(),

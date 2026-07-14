@@ -39,6 +39,40 @@ final class FormatterSemanticRegion {
   final ui.Rect rect;
 }
 
+final class FormatterTextMatch {
+  FormatterTextMatch({
+    required this.nodeId,
+    required this.utf16Start,
+    required this.utf16End,
+    required this.startCaret,
+    required this.endCaret,
+    required List<RenderRect> boxes,
+  }) : boxes = List.unmodifiable(boxes);
+
+  final int nodeId;
+  final int utf16Start;
+  final int utf16End;
+  final RenderRect startCaret;
+  final RenderRect endCaret;
+  final List<RenderRect> boxes;
+}
+
+final class FormatterFindResult {
+  FormatterFindResult({
+    required this.commitId,
+    required this.revision,
+    required this.query,
+    required List<FormatterTextMatch> matches,
+  }) : matches = List.unmodifiable(matches),
+       boxes = List.unmodifiable(matches.expand((match) => match.boxes));
+
+  final int commitId;
+  final RenderRevision revision;
+  final String query;
+  final List<FormatterTextMatch> matches;
+  final List<RenderRect> boxes;
+}
+
 final class FormatterCommitView {
   FormatterCommitView._({
     required this.commit,
@@ -257,6 +291,75 @@ final class FormatterCommitView {
       commitId: batch.commitId,
       revision: batch.revision,
       results: results,
+    );
+  }
+
+  FormatterFindResult findText(String query, {bool caseSensitive = false}) {
+    _requireLive();
+    if (utf8.encode(query).length > renderMaxStringBytes) {
+      throw const RenderProtocolException(
+        'render.limit',
+        'find query exceeds the renderer string limit',
+      );
+    }
+    if (query.isEmpty) {
+      return FormatterFindResult(
+        commitId: commit.commitId,
+        revision: commit.revision,
+        query: query,
+        matches: const [],
+      );
+    }
+    final needle = caseSensitive ? query : _foldFindText(query);
+    final matches = <FormatterTextMatch>[];
+    var textBoxCount = 0;
+    for (final paragraph in _paragraphs) {
+      for (final entry in paragraph.textByNode.entries) {
+        final haystack = caseSensitive
+            ? entry.value
+            : _foldFindText(entry.value);
+        var start = 0;
+        while (start <= haystack.length - needle.length) {
+          final found = haystack.indexOf(needle, start);
+          if (found < 0) break;
+          final end = found + needle.length;
+          final boxes = rangeBoxes(
+            handle: commit.textQueryHandle,
+            nodeId: entry.key,
+            start: found,
+            end: end,
+          );
+          textBoxCount += boxes.length;
+          if (matches.length >= renderMaxTextQueries ||
+              textBoxCount > renderMaxTextBoxes) {
+            throw const RenderProtocolException(
+              'render.limit',
+              'find geometry exceeds renderer query limits',
+            );
+          }
+          matches.add(
+            FormatterTextMatch(
+              nodeId: entry.key,
+              utf16Start: found,
+              utf16End: end,
+              startCaret: _caretRect(
+                entry.key,
+                found,
+                RenderTextAffinity.downstream,
+              ),
+              endCaret: _caretRect(entry.key, end, RenderTextAffinity.upstream),
+              boxes: boxes,
+            ),
+          );
+          start = end;
+        }
+      }
+    }
+    return FormatterFindResult(
+      commitId: commit.commitId,
+      revision: commit.revision,
+      query: query,
+      matches: matches,
     );
   }
 
@@ -1045,10 +1148,12 @@ final class _ParagraphState {
     required this.paragraph,
     required this.origin,
     required this.ranges,
+    required this.textByNode,
   });
   final ui.Paragraph paragraph;
   final ui.Offset origin;
   final Map<int, _TextRange> ranges;
+  final Map<int, String> textByNode;
 }
 
 final class _TextRange {
@@ -1226,7 +1331,10 @@ final class _FixtureLayout {
     var semanticRects = <ui.Rect>[];
     var cursor = top + padding;
     if (textChildren.isNotEmpty) {
-      final (paragraph, ranges) = _paragraph(textChildren, innerWidth);
+      final (paragraph, ranges, textByNode) = _paragraph(
+        textChildren,
+        innerWidth,
+      );
       final origin = ui.Offset(left + padding, cursor);
       _items.add(_ParagraphPaint(paragraph, origin));
       final rect = ui.Rect.fromLTWH(
@@ -1240,6 +1348,7 @@ final class _FixtureLayout {
           paragraph: paragraph,
           origin: origin,
           ranges: Map.unmodifiable(ranges),
+          textByNode: Map.unmodifiable(textByNode),
         ),
       );
       final textLength = ranges.values.fold(
@@ -1319,7 +1428,7 @@ final class _FixtureLayout {
     return rect.bottom + margin;
   }
 
-  (ui.Paragraph, Map<int, _TextRange>) _paragraph(
+  (ui.Paragraph, Map<int, _TextRange>, Map<int, String>) _paragraph(
     List<RenderNode> nodes,
     double width,
   ) {
@@ -1330,6 +1439,7 @@ final class _FixtureLayout {
       ),
     );
     final ranges = <int, _TextRange>{};
+    final textByNode = <int, String>{};
     var offset = 0;
     for (final node in nodes) {
       builder.pushStyle(
@@ -1345,6 +1455,7 @@ final class _FixtureLayout {
       builder.pop();
       final length = node.text.codeUnits.length;
       ranges[node.id] = _TextRange(offset, length);
+      textByNode[node.id] = node.text;
       offset += length;
     }
     final paragraph = builder.build();
@@ -1354,7 +1465,7 @@ final class _FixtureLayout {
       paragraph.dispose();
       rethrow;
     }
-    return (paragraph, ranges);
+    return (paragraph, ranges, textByNode);
   }
 
   void _addGeometry(
@@ -1429,6 +1540,12 @@ double _number(String? value, double fallback) {
   }
   return parsed;
 }
+
+String _foldFindText(String value) => String.fromCharCodes(
+  value.codeUnits.map(
+    (unit) => unit >= 0x41 && unit <= 0x5a ? unit + 0x20 : unit,
+  ),
+);
 
 bool _mapEquals(Map<String, String> a, Map<String, String> b) {
   if (a.length != b.length) return false;

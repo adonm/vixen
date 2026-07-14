@@ -9,6 +9,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../bridge/browser_models.dart';
+import '../bridge/render_models.dart';
 import '../renderer/formatter.dart';
 import '../renderer/formatter_painter.dart';
 
@@ -195,7 +196,9 @@ final class BrowserContentSurface extends StatefulWidget {
     required this.contextState,
     required this.frame,
     this.rendererView,
+    this.rendererFindResult,
     this.onRendererPresented,
+    this.onRendererSemanticAction,
     this.lifecycle = BrowserHostLifecycle.resumed,
     this.onPhysicalViewportChanged,
     this.onFocusChanged,
@@ -214,7 +217,15 @@ final class BrowserContentSurface extends StatefulWidget {
   final BrowsingContextState? contextState;
   final BrowserFrame? frame;
   final FormatterCommitView? rendererView;
+  final FormatterFindResult? rendererFindResult;
   final ValueChanged<FormatterCommitView>? onRendererPresented;
+  final void Function(
+    FormatterCommitView view,
+    RenderSemanticDescriptor descriptor,
+    RenderSemanticActionKind action,
+    String? value,
+  )?
+  onRendererSemanticAction;
   final BrowserHostLifecycle lifecycle;
   final void Function(int width, int height, double scaleFactor)?
   onPhysicalViewportChanged;
@@ -847,7 +858,20 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
           child: SizedBox(
             width: rendererView.viewport.width,
             height: rendererView.viewport.height,
-            child: CustomPaint(painter: RenderCommitPainter(rendererView)),
+            child: CustomPaint(
+              painter: RenderCommitPainter(
+                rendererView,
+                findResult: widget.rendererFindResult,
+                onSemanticAction: (descriptor, action, value) {
+                  widget.onRendererSemanticAction?.call(
+                    rendererView,
+                    descriptor,
+                    action,
+                    value,
+                  );
+                },
+              ),
+            ),
           ),
         ),
       );

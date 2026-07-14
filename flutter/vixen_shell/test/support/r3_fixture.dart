@@ -6,16 +6,21 @@ const _png =
     'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAF0lEQVR4nGP4z8Dw'
     'HwwZGP7///+f4T8AR8oI+P1do8oAAAAASUVORK5CYII=';
 
-RenderRevision r3Revision(int generation) => RenderRevision(
-  contextId: 1,
-  documentId: 2,
-  sourceGeneration: generation,
-  styleGeneration: generation,
-  viewportGeneration: 1,
-  resourceGeneration: 1,
-);
+RenderRevision r3Revision(int generation, {int viewportGeneration = 1}) =>
+    RenderRevision(
+      contextId: 1,
+      documentId: 2,
+      sourceGeneration: generation,
+      styleGeneration: generation,
+      viewportGeneration: viewportGeneration,
+      resourceGeneration: 1,
+    );
 
-FullRenderSnapshot r3Snapshot({int generation = 1, bool updated = false}) {
+FullRenderSnapshot r3Snapshot({
+  int generation = 1,
+  int viewportGeneration = 1,
+  bool updated = false,
+}) {
   final nodes = <RenderNode>[
     RenderNode(
       id: 1,
@@ -105,6 +110,10 @@ FullRenderSnapshot r3Snapshot({int generation = 1, bool updated = false}) {
         role: 'link',
         name: 'Read more',
         actionGeneration: generation,
+        actions: const [
+          RenderSemanticActionKind.activate,
+          RenderSemanticActionKind.focus,
+        ],
       ),
     ),
     RenderNode(
@@ -153,7 +162,7 @@ FullRenderSnapshot r3Snapshot({int generation = 1, bool updated = false}) {
     ),
   ];
   return FullRenderSnapshot(
-    revision: r3Revision(generation),
+    revision: r3Revision(generation, viewportGeneration: viewportGeneration),
     viewport: const RenderViewport(width: 240, height: 160),
     nodes: nodes,
     resources: [

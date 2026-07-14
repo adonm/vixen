@@ -167,7 +167,19 @@ final class _BrowserShellState extends State<BrowserShell>
                     contextState: coordinator.selectedContext,
                     frame: coordinator.frame,
                     rendererView: coordinator.rendererView,
+                    rendererFindResult: coordinator.rendererFindResult,
                     onRendererPresented: coordinator.rendererCommitPresented,
+                    onRendererSemanticAction:
+                        (view, descriptor, action, value) {
+                          unawaited(
+                            coordinator.dispatchRendererSemanticAction(
+                              view,
+                              descriptor,
+                              action,
+                              value,
+                            ),
+                          );
+                        },
                     lifecycle: _hostLifecycle,
                     accessibility: coordinator.accessibility,
                     onPhysicalViewportChanged:
