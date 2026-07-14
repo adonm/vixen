@@ -11,7 +11,7 @@ use crate::ABI_VERSION;
 use crate::c_abi::{
     AbiError, VIXEN_MAX_MESSAGE_BYTES, VIXEN_MAX_WAIT_MILLISECONDS, VIXEN_STATUS_INVALID_ARGUMENT,
     VIXEN_STATUS_NO_EVENT, VIXEN_STATUS_OK, VIXEN_STATUS_PANIC, VixenBuffer, controller_entry,
-    copy_utf8_input, finish, initialize_output, write_json,
+    copy_utf8_input, finish, initialize_output, reserve_buffer, write_reserved_json,
 };
 use crate::render_wire::{message_json, parse_response, parse_submission};
 
@@ -38,18 +38,22 @@ pub unsafe extern "C" fn vixen_renderer_poll(
             );
         }
         let result = (|| {
+            let reservation = reserve_buffer()?;
             let entry = controller_entry(handle)?;
-            entry
+            let message = entry
                 .renderer
                 .poll_message(Duration::from_millis(timeout_milliseconds))
-                .map_err(broker_error)
+                .map_err(broker_error)?;
+            Ok((message, reservation))
         })();
         match result {
-            Ok(Some(message)) => match write_json(out_json, &message_json(&message)) {
-                Ok(()) => VIXEN_STATUS_OK,
-                Err(error) => finish(Err(error), out_json),
-            },
-            Ok(None) => VIXEN_STATUS_NO_EVENT,
+            Ok((Some(message), reservation)) => {
+                match write_reserved_json(out_json, reservation, &message_json(&message)) {
+                    Ok(()) => VIXEN_STATUS_OK,
+                    Err(error) => finish(Err(error), out_json),
+                }
+            }
+            Ok((None, _reservation)) => VIXEN_STATUS_NO_EVENT,
             Err(error) => finish(Err(error), out_json),
         }
     }))
@@ -80,10 +84,12 @@ pub unsafe extern "C" fn vixen_renderer_respond(
                 "renderer response",
             )?;
             let response = parse_response(&message)?;
+            let reservation = reserve_buffer()?;
             let entry = controller_entry(handle)?;
             entry.renderer.respond(response).map_err(broker_error)?;
-            write_json(
+            write_reserved_json(
                 out_json,
+                reservation,
                 &json!({"v": ABI_VERSION, "type": "renderer_accepted"}),
             )
         })();
@@ -116,10 +122,12 @@ pub unsafe extern "C" fn vixen_renderer_submit(
                 "renderer submission",
             )?;
             let submission = parse_submission(&message)?;
+            let reservation = reserve_buffer()?;
             let entry = controller_entry(handle)?;
             entry.renderer.submit(submission).map_err(broker_error)?;
-            write_json(
+            write_reserved_json(
                 out_json,
+                reservation,
                 &json!({"v": ABI_VERSION, "type": "renderer_submitted"}),
             )
         })();
@@ -140,10 +148,12 @@ pub unsafe extern "C" fn vixen_renderer_shutdown(handle: u64, out_json: *mut Vix
             return VIXEN_STATUS_INVALID_ARGUMENT;
         }
         let result = (|| {
+            let reservation = reserve_buffer()?;
             let entry = controller_entry(handle)?;
             entry.renderer.shutdown().map_err(broker_error)?;
-            write_json(
+            write_reserved_json(
                 out_json,
+                reservation,
                 &json!({"v": ABI_VERSION, "type": "renderer_shutdown"}),
             )
         })();

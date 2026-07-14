@@ -113,6 +113,46 @@ void main() {
       throwsA(isA<RenderProtocolException>()),
     );
   });
+
+  test(
+    'failed commit submission leaves formatter source unpublished',
+    () async {
+      final transport = ScriptedBrowserController();
+      final formatter = VixenFormatter();
+      addTearDown(formatter.dispose);
+      final service = RendererBrokerService(
+        transport: transport,
+        formatter: formatter,
+      );
+      for (var index = 0; index < renderBrokerQueueCapacity; index++) {
+        transport.respondRenderer(rendererCancelledResponse(index + 1, 'stop'));
+      }
+      transport.enqueueRendererRequest(NativeFullSnapshotUpdate(r3Snapshot()));
+      await expectLater(
+        service.serviceNext(),
+        throwsA(isA<RenderProtocolException>()),
+      );
+      expect(formatter.sourceRevision, isNull);
+      expect(formatter.acceptedView, isNull);
+    },
+  );
+
+  test('renderer service rejects overlapping work', () async {
+    final transport = ScriptedBrowserController();
+    final formatter = VixenFormatter();
+    addTearDown(formatter.dispose);
+    final service = RendererBrokerService(
+      transport: transport,
+      formatter: formatter,
+    );
+    transport.enqueueRendererRequest(NativeFullSnapshotUpdate(r3Snapshot()));
+    final first = service.serviceNext();
+    await expectLater(
+      service.serviceNext(),
+      throwsA(isA<RenderProtocolException>()),
+    );
+    expect(await first, isTrue);
+  });
 }
 
 String? _responseType(Map<String, Object?> envelope) =>

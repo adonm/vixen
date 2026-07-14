@@ -151,13 +151,28 @@ class NativeWorkerClient {
     final rendererApi = _rendererApi;
     final rendererHandle = _rendererHandle;
     _closing = true;
+    Object? failure;
+    StackTrace? failureTrace;
     try {
       if (rendererApi != null && rendererHandle != null) {
-        rendererApi.shutdownRenderer(rendererHandle);
+        try {
+          rendererApi.shutdownRenderer(rendererHandle);
+        } catch (error, stackTrace) {
+          failure = error;
+          failureTrace = stackTrace;
+        }
       }
-      await _request('shutdown').timeout(_shutdownTimeout);
+      try {
+        await _request('shutdown').timeout(_shutdownTimeout);
+      } catch (error, stackTrace) {
+        failure ??= error;
+        failureTrace ??= stackTrace;
+      }
     } finally {
       await _finish();
+    }
+    if (failure != null) {
+      Error.throwWithStackTrace(failure, failureTrace!);
     }
   }
 

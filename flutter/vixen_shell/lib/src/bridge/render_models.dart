@@ -476,9 +476,11 @@ final class RenderCommit {
     required this.textQueryHandle,
     required List<RenderScrollState> scroll,
     required List<RenderSemanticBounds> semantics,
+    List<RenderTruncationDiagnostic> truncations = const [],
   }) : geometry = List.unmodifiable(geometry),
        scroll = List.unmodifiable(scroll),
-       semantics = List.unmodifiable(semantics);
+       semantics = List.unmodifiable(semantics),
+       truncations = List.unmodifiable(truncations);
 
   final int commitId;
   final RenderRevision revision;
@@ -488,6 +490,7 @@ final class RenderCommit {
   final int textQueryHandle;
   final List<RenderScrollState> scroll;
   final List<RenderSemanticBounds> semantics;
+  final List<RenderTruncationDiagnostic> truncations;
 
   Map<String, Object?> toWire() => {
     'type': 'commit',
@@ -505,7 +508,9 @@ final class RenderCommit {
     'semantic_bounds': semantics
         .map((entry) => entry.toWire())
         .toList(growable: false),
-    'truncations': const <Object?>[],
+    'truncations': truncations
+        .map((truncation) => truncation.toWire())
+        .toList(growable: false),
   };
 }
 

@@ -114,7 +114,12 @@ impl RenderBroker {
             .validate()
             .map_err(|error| RenderBrokerError::new(error.code, error.message))?;
         let registered_at = Instant::now();
-        let deadline = registered_at.checked_add(timeout).unwrap_or(registered_at);
+        let deadline = registered_at.checked_add(timeout).ok_or_else(|| {
+            RenderBrokerError::new(
+                "render.timeout",
+                "renderer request timeout exceeds the clock range",
+            )
+        })?;
         let (response, receive_response) = mpsc::sync_channel(1);
         {
             let mut state = self.lock_state()?;
@@ -139,7 +144,7 @@ impl RenderBroker {
             self.inner.request_ready.notify_one();
         }
 
-        match receive_response.recv_timeout(timeout) {
+        match receive_response.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
             Ok(response) => Ok(response),
             Err(mpsc::RecvTimeoutError::Timeout) => {
                 self.remove_pending(request_id)?;
@@ -155,12 +160,18 @@ impl RenderBroker {
         }
     }
 
-    pub fn poll_request(
+    #[cfg(test)]
+    fn poll_request(
         &self,
         timeout: Duration,
     ) -> Result<Option<RenderBrokerRequest>, RenderBrokerError> {
         let started_at = Instant::now();
-        let deadline = started_at.checked_add(timeout).unwrap_or(started_at);
+        let deadline = started_at.checked_add(timeout).ok_or_else(|| {
+            RenderBrokerError::new(
+                "render.timeout",
+                "renderer poll timeout exceeds the clock range",
+            )
+        })?;
         let mut state = self.lock_state()?;
         loop {
             while let Some(index) = state
@@ -259,7 +270,12 @@ impl RenderBroker {
         timeout: Duration,
     ) -> Result<Option<RenderBrokerMessage>, RenderBrokerError> {
         let started_at = Instant::now();
-        let deadline = started_at.checked_add(timeout).unwrap_or(started_at);
+        let deadline = started_at.checked_add(timeout).ok_or_else(|| {
+            RenderBrokerError::new(
+                "render.timeout",
+                "renderer poll timeout exceeds the clock range",
+            )
+        })?;
         let mut state = self.lock_state()?;
         loop {
             while let Some(message) = state.outbound.pop_front() {

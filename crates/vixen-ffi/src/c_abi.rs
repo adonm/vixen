@@ -417,6 +417,50 @@ pub(crate) fn finish(result: Result<(), AbiError>, out_json: *mut VixenBuffer) -
 }
 
 pub(crate) fn write_json(out_json: *mut VixenBuffer, value: &Value) -> Result<(), AbiError> {
+    let reservation = reserve_buffer()?;
+    write_reserved_json(out_json, reservation, value)
+}
+
+pub(crate) struct BufferReservation {
+    token: u64,
+    committed: bool,
+}
+
+impl Drop for BufferReservation {
+    fn drop(&mut self) {
+        if self.committed {
+            return;
+        }
+        if let Ok(mut registry) = buffers().lock() {
+            registry.remove(&self.token);
+        }
+    }
+}
+
+pub(crate) fn reserve_buffer() -> Result<BufferReservation, AbiError> {
+    let mut registry = buffers()
+        .lock()
+        .map_err(|_| AbiError::internal("buffer registry is unavailable"))?;
+    if registry.len() >= VIXEN_MAX_OUTSTANDING_BUFFERS {
+        return Err(AbiError::new(
+            VIXEN_STATUS_BUFFER_LIMIT,
+            FFI_BUFFER_LIMIT,
+            format!("outstanding output buffer limit of {VIXEN_MAX_OUTSTANDING_BUFFERS} reached"),
+        ));
+    }
+    let token = next_token(&NEXT_BUFFER, "buffer token")?;
+    registry.insert(token, Vec::new().into_boxed_slice());
+    Ok(BufferReservation {
+        token,
+        committed: false,
+    })
+}
+
+pub(crate) fn write_reserved_json(
+    out_json: *mut VixenBuffer,
+    mut reservation: BufferReservation,
+    value: &Value,
+) -> Result<(), AbiError> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| AbiError::internal(format!("could not encode JSON output: {error}")))?;
     if bytes.len() > VIXEN_MAX_OUTPUT_BYTES {
@@ -430,21 +474,18 @@ pub(crate) fn write_json(out_json: *mut VixenBuffer, value: &Value) -> Result<()
     let mut registry = buffers()
         .lock()
         .map_err(|_| AbiError::internal("buffer registry is unavailable"))?;
-    if registry.len() >= VIXEN_MAX_OUTSTANDING_BUFFERS {
-        return Err(AbiError::new(
-            VIXEN_STATUS_BUFFER_LIMIT,
-            FFI_BUFFER_LIMIT,
-            format!("outstanding output buffer limit of {VIXEN_MAX_OUTSTANDING_BUFFERS} reached"),
-        ));
-    }
-    let token = next_token(&NEXT_BUFFER, "buffer token")?;
+    let token = reservation.token;
+    let Some(retained) = registry.get_mut(&token) else {
+        return Err(AbiError::internal("reserved output buffer is unavailable"));
+    };
     let descriptor = VixenBuffer {
         token,
         ptr: allocation.as_ptr(),
         len: allocation.len(),
     };
-    registry.insert(token, allocation);
+    *retained = allocation;
     unsafe { out_json.write(descriptor) };
+    reservation.committed = true;
     Ok(())
 }
 

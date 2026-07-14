@@ -233,7 +233,7 @@ final class FormatterCommitView {
             }(),
             RenderCaretForOffset(:final utf16Offset, :final affinity) =>
               RenderTextCaretValue(
-                _caretRect(query.nodeId, utf16Offset),
+                _caretRect(query.nodeId, utf16Offset, affinity),
                 affinity,
               ),
             RenderRangeBoxes(:final utf16Start, :final utf16End) => () {
@@ -300,7 +300,7 @@ final class FormatterCommitView {
         .toList(growable: false);
   }
 
-  RenderRect _caretRect(int nodeId, int offset) {
+  RenderRect _caretRect(int nodeId, int offset, RenderTextAffinity affinity) {
     final state = _paragraphState(nodeId);
     final range = state.ranges[nodeId]!;
     if (offset < 0 || offset > range.length) {
@@ -317,8 +317,10 @@ final class FormatterCommitView {
         state.paragraph.height,
       );
     }
-    final atEnd = offset == range.length;
-    final glyphOffset = range.start + (atEnd ? offset - 1 : offset);
+    final usePrevious =
+        offset == range.length ||
+        (affinity == RenderTextAffinity.upstream && offset > 0);
+    final glyphOffset = range.start + (usePrevious ? offset - 1 : offset);
     final boxes = state.paragraph.getBoxesForRange(
       glyphOffset,
       glyphOffset + 1,
@@ -332,7 +334,7 @@ final class FormatterCommitView {
       );
     }
     final box = boxes.first;
-    final x = state.origin.dx + (atEnd ? box.right : box.left);
+    final x = state.origin.dx + (usePrevious ? box.right : box.left);
     return RenderRect(x, state.origin.dy + box.top, 1, box.bottom - box.top);
   }
 
@@ -408,8 +410,9 @@ final class VixenFormatter {
   FormatterCommitView? get displayedView => _presented;
 
   Future<RenderApplyResult> acceptFullSnapshot(
-    FullRenderSnapshot snapshot,
-  ) async {
+    FullRenderSnapshot snapshot, {
+    void Function(RenderCommit commit)? beforePublish,
+  }) async {
     _requireOpen();
     _validateSnapshot(snapshot);
     final candidate = _FormatterSource(
@@ -459,12 +462,15 @@ final class VixenFormatter {
         );
       }
     }
-    return RenderApplied(await _stageAndPublish(candidate));
+    return RenderApplied(
+      await _stageAndPublish(candidate, beforePublish: beforePublish),
+    );
   }
 
   Future<RenderApplyResult> applyMutationBatch(
-    RenderMutationBatch batch,
-  ) async {
+    RenderMutationBatch batch, {
+    void Function(RenderCommit commit)? beforePublish,
+  }) async {
     _requireOpen();
     if (batch.mutations.length > renderMaxMutations) {
       throw const RenderProtocolException(
@@ -554,7 +560,9 @@ final class VixenFormatter {
       scrollIntents: scrollIntents,
     );
     _validateSource(candidate);
-    return RenderApplied(await _stageAndPublish(candidate));
+    return RenderApplied(
+      await _stageAndPublish(candidate, beforePublish: beforePublish),
+    );
   }
 
   FormatterCommitView present(RenderPresented presented) {
@@ -620,8 +628,9 @@ final class VixenFormatter {
   }
 
   Future<FormatterCommitView> _stageAndPublish(
-    _FormatterSource candidate,
-  ) async {
+    _FormatterSource candidate, {
+    void Function(RenderCommit commit)? beforePublish,
+  }) async {
     final epoch = ++_stageEpoch;
     final view = await _stage(candidate);
     if (_disposed || epoch != _stageEpoch) {
@@ -630,6 +639,12 @@ final class VixenFormatter {
         'render.stale',
         'formatter build was superseded before publication',
       );
+    }
+    try {
+      beforePublish?.call(view.commit);
+    } catch (_) {
+      view.retire();
+      rethrow;
     }
     if (_staged != null && !identical(_staged, _presented)) {
       _staged!.retire();
@@ -683,6 +698,17 @@ final class VixenFormatter {
           'formatter output exceeds a commit geometry limit',
         );
       }
+      for (final geometry in layout.geometry) {
+        _validateCommitRect(geometry.borderBox);
+        _validateCommitRect(geometry.paddingBox);
+        _validateCommitRect(geometry.contentBox);
+        if (geometry.clip case final clip?) _validateCommitRect(clip);
+      }
+      for (final bounds in layout.semanticBounds) {
+        for (final rect in bounds.rects) {
+          _validateCommitRect(rect);
+        }
+      }
       final recorder = ui.PictureRecorder();
       final canvas = ui.Canvas(
         recorder,
@@ -709,13 +735,6 @@ final class VixenFormatter {
       final maxScrollY = (layout.contentHeight - viewport.height)
           .clamp(0, double.infinity)
           .toDouble();
-      final rootIntent = source.scrollIntents.values
-          .where((intent) => intent.nodeId == layout!.rootNodeId)
-          .firstOrNull;
-      final scrollX = (rootIntent?.point.x ?? 0).clamp(0, 0).toDouble();
-      final scrollY = (rootIntent?.point.y ?? 0)
-          .clamp(0, maxScrollY)
-          .toDouble();
       final view = FormatterCommitView._(
         commit: RenderCommit(
           commitId: commitId,
@@ -728,8 +747,8 @@ final class VixenFormatter {
             RenderScrollState(
               scrollNodeId: 1,
               nodeId: layout.rootNodeId,
-              offsetX: scrollX,
-              offsetY: scrollY,
+              offsetX: 0,
+              offsetY: 0,
               maxOffsetX: 0,
               maxOffsetY: maxScrollY,
               viewport: RenderRect(
@@ -782,6 +801,12 @@ final class VixenFormatter {
 
   void _validateSource(_FormatterSource source) {
     source.revision.validate();
+    if (source.scrollIntents.isNotEmpty) {
+      throw const RenderProtocolException(
+        'render.unsupported',
+        'R3 formatter defers scroll intents to the R4 interaction vertical',
+      );
+    }
     final viewport = source.viewport;
     if (viewport.width <= 0 ||
         viewport.height <= 0 ||
@@ -1445,6 +1470,24 @@ bool _scrollIntentsEqual(
         entry.value.point.x == other.point.x &&
         entry.value.point.y == other.point.y;
   });
+}
+
+void _validateCommitRect(RenderRect rect) {
+  if (!rect.x.isFinite ||
+      !rect.y.isFinite ||
+      !rect.width.isFinite ||
+      !rect.height.isFinite ||
+      rect.width < 0 ||
+      rect.height < 0 ||
+      rect.x.abs() > renderMaxCoordinate ||
+      rect.y.abs() > renderMaxCoordinate ||
+      rect.width > renderMaxCoordinate ||
+      rect.height > renderMaxCoordinate) {
+    throw const RenderProtocolException(
+      'render.invalid-geometry',
+      'formatter produced geometry outside the protocol limits',
+    );
+  }
 }
 
 extension on RenderRect {

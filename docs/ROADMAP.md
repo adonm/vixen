@@ -226,8 +226,9 @@ Canvas/Picture, encoded PNG decode, Scene capture, geometry, reverse-paint-order
 hit testing, UTF-16 range/point queries, scroll limits, semantic bounds, mutation,
 presentation, explicit idempotent handle release, stale/equal-snapshot rejection,
 deterministic resync, and reset. Candidate source/scene state publishes only
-after successful formatting; failed or superseded asynchronous builds retain the
-previous revision and dispose their Paragraph/image/Picture resources. Mixed
+after successful formatting and bounded commit submission; failed submissions or
+superseded asynchronous builds retain the previous revision and dispose their
+Paragraph/image/Picture resources. Mixed
 text runs have run/line fragments, padded boxes retain distinct content bounds,
 and wrapped semantic text retains all Paragraph rectangles.
 Software and Impeller-requested captures have separate exact raw-RGBA hashes.
