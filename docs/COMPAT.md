@@ -273,11 +273,16 @@ by paint, clipped hit testing, accessibility geometry, script-visible
 `scrollTop`/`scrollLeft`, and `scroll()`/`scrollTo()`/`scrollBy()`. Element scroll
 events are non-bubbling, non-cancelable, and coalesced; uncanceled wheel input
 prefers the nearest scrollport, chains unconsumed deltas through ancestors/root,
-and `scrollIntoView()` drives the same nested offsets for CDP/Playwright. Smooth
-scrolling, axis-specific overflow behavior, DOM touch/pointer events,
-inertia/multi-touch gestures, and history restoration are not claimed. Flutter
-single-touch drags cross platform touch slop, cancel the pending synthetic press,
-and reuse the cancelable physical-delta wheel path.
+and `scrollIntoView()` drives the same nested offsets for CDP/Playwright.
+BrowserCore captures the root and up to 1,024 document-identified nested offsets
+in each current history entry. Reload and cross-document back/forward restore
+that state after layout clamping when `history.scrollRestoration` is `auto`;
+`manual` leaves a newly loaded document at zero, and the live history/window/
+element state is resynchronized. Smooth scrolling, axis-specific overflow
+behavior, DOM touch/pointer events, inertia/multi-touch gestures, restoration
+scroll-event ordering, and BFCache-style document preservation are not claimed.
+Flutter single-touch drags cross platform touch slop, cancel the pending
+synthetic press, and reuse the cancelable physical-delta wheel path.
 
 Bounded `aria-owns` references now reparent only retained later semantic nodes;
 the first valid owner wins, parent-before-child ordering remains enforced, and
@@ -338,9 +343,11 @@ paint, hit testing, selector/accessibility bounds, while fixed-position subtrees
 remain viewport anchored. A single Flutter touch drag crosses platform touch
 slop, cancels the pending synthetic press, and feeds physical deltas into that
 same cancelable root path; taps remain clicks and secondary touches are ignored.
-Nested scroll containers, DOM touch/pointer-event fidelity, inertia/multi-touch,
-nested-element scroll events, and restoration remain open. Top-level scroll
-events and script `scrollTo`/`scrollBy` use the shared offset as described above.
+Nested scroll containers, element scroll events, and bounded history restoration
+use the shared Page-owned offsets described above. DOM touch/pointer-event
+fidelity, inertia/multi-touch, smooth scrolling, and restoration-event ordering
+remain open. Top-level scroll events and script `scrollTo`/`scrollBy` use the
+shared offset as described above.
 
 Flutter Ctrl+F sends a UTF-8-byte-bounded query with the exact active context and
 document generation through ABI v1. BrowserCore derives up to 10,000

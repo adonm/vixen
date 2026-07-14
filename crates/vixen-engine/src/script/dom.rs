@@ -6144,6 +6144,18 @@ const DOM_API_BOOTSTRAP: &str = r#"
   webidl.adoptInterface('Document', VixenDocument);
 
   const vixenDocument = new VixenDocument();
+  Object.defineProperty(globalThis, '__vixenApplyHistoryState', {
+    value(url, length, index, stateJson, scrollRestoration) {
+      currentUrl = String(url || currentUrl);
+      historyLength = Math.max(1, Number(length) || 1);
+      historyIndex = Math.min(historyLength - 1, Math.max(0, Number(index) || 0));
+      historyState = parseHistoryState(stateJson);
+      historyScrollRestoration = scrollRestoration === 'manual' ? 'manual' : 'auto';
+      return true;
+    },
+    writable: false,
+    configurable: false,
+  });
   Object.defineProperty(globalThis, '__vixenApplyHostViewState', {
     value(focused, visible, viewportWidth, viewportHeight, maxScrollX, maxScrollY, scrollX, scrollY, emitScroll) {
       globalThis.innerWidth = Math.max(1, Number(viewportWidth) || 1);
@@ -6218,7 +6230,10 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get scrollRestoration() { return historyScrollRestoration; },
     set scrollRestoration(value) {
       const keyword = String(value);
-      if (keyword === 'auto' || keyword === 'manual') historyScrollRestoration = keyword;
+      if ((keyword === 'auto' || keyword === 'manual') && keyword !== historyScrollRestoration) {
+        historyScrollRestoration = keyword;
+        queueNavigationAction({ type: 'history-scroll-restoration', value: keyword });
+      }
     },
     pushState(state, unused = '', url = undefined) {
       const nextUrl = url === undefined || url === null ? currentUrl : resolveNavigationUrl(url, data.baseURI || currentUrl);

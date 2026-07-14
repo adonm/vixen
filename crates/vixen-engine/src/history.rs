@@ -83,7 +83,7 @@ impl ScrollRestoration {
 /// One session-history entry (HTML § 7.1). The `state` is the opaque
 /// structured-clone blob the host hook serialises the `pushState` value
 /// into (so it round-trips byte-for-byte across navigations).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct HistoryEntry {
     /// The entry's URL string (the § 7.1 `url`; same-origin with the
     /// document — the host hook enforces).
@@ -94,6 +94,8 @@ pub struct HistoryEntry {
     pub state: Option<Vec<u8>>,
     /// The `scrollRestoration` mode for this entry.
     pub scroll_restoration: ScrollRestoration,
+    /// Browser-owned scroll state captured when this entry stops being current.
+    pub scroll_state: Option<HistoryScrollState>,
     /// The optional document title (the § 7.1 title the host hook sets on
     /// `pushState`/`replaceState` for the history UI).
     pub title: Option<String>,
@@ -107,6 +109,7 @@ impl HistoryEntry {
             url: url.into(),
             state,
             scroll_restoration: ScrollRestoration::Auto,
+            scroll_state: None,
             title: None,
         }
     }
@@ -117,6 +120,7 @@ impl HistoryEntry {
             url: url.into(),
             state: Some(state),
             scroll_restoration: ScrollRestoration::Auto,
+            scroll_state: None,
             title: None,
         }
     }
@@ -127,9 +131,26 @@ impl HistoryEntry {
             url: url.into(),
             state: None,
             scroll_restoration: ScrollRestoration::Auto,
+            scroll_state: None,
             title: None,
         }
     }
+}
+
+/// Bounded browser-owned scroll state associated with one history entry.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryScrollState {
+    pub root_offset: (f32, f32),
+    pub element_offsets: Vec<HistoryElementScroll>,
+}
+
+/// Stable identity and offset for one retained element scrollport.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryElementScroll {
+    pub node_id: usize,
+    pub element_id: Option<String>,
+    pub tag: String,
+    pub offset: (f32, f32),
 }
 
 // ---------------------------------------------------------------------------
@@ -139,7 +160,7 @@ impl HistoryEntry {
 /// The HTML § 7.1 session history: a stack of [`HistoryEntry`]s + a cursor
 /// to the current entry. The § 7.1 `pushState` / `replaceState` /
 /// `back` / `forward` / `go` surface the `History` host hook reflects.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct SessionHistory {
     entries: Vec<HistoryEntry>,
     cursor: usize,
@@ -201,6 +222,27 @@ impl SessionHistory {
         self.current()
             .map(|e| e.scroll_restoration)
             .unwrap_or_default()
+    }
+
+    /// Update the current entry's restoration policy.
+    pub fn set_scroll_restoration(&mut self, value: ScrollRestoration) {
+        if let Some(entry) = self.entries.get_mut(self.cursor) {
+            entry.scroll_restoration = value;
+        }
+    }
+
+    /// Capture current browser-owned scroll state without changing the cursor.
+    pub fn set_current_scroll_state(&mut self, state: HistoryScrollState) {
+        if let Some(entry) = self.entries.get_mut(self.cursor) {
+            entry.scroll_state = Some(state);
+        }
+    }
+
+    /// Scroll state the user agent may restore for the current entry.
+    pub fn restoration_scroll_state(&self) -> Option<&HistoryScrollState> {
+        self.current()
+            .filter(|entry| entry.scroll_restoration == ScrollRestoration::Auto)
+            .and_then(|entry| entry.scroll_state.as_ref())
     }
 
     /// `history.pushState(state, unused, url)` — truncate every entry after
@@ -429,6 +471,26 @@ mod tests {
         e.scroll_restoration = ScrollRestoration::Manual;
         h.replace(e);
         assert_eq!(h.scroll_restoration(), ScrollRestoration::Manual);
+    }
+
+    #[test]
+    fn current_scroll_state_restores_only_in_auto_mode() {
+        let mut history = SessionHistory::new(nav("a"));
+        let state = HistoryScrollState {
+            root_offset: (12.5, 80.0),
+            element_offsets: vec![HistoryElementScroll {
+                node_id: 7,
+                element_id: Some("inner".to_owned()),
+                tag: "div".to_owned(),
+                offset: (0.0, 35.5),
+            }],
+        };
+
+        history.set_current_scroll_state(state.clone());
+        assert_eq!(history.restoration_scroll_state(), Some(&state));
+        history.set_scroll_restoration(ScrollRestoration::Manual);
+        assert_eq!(history.restoration_scroll_state(), None);
+        assert_eq!(history.current().unwrap().scroll_state, Some(state));
     }
 
     // --- with_entries ------------------------------------------------

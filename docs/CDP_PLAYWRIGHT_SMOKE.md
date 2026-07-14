@@ -78,7 +78,9 @@ scopes, detached-session rejection, stable protocol error data, and the bounded
 
 Current limits are intentional: one main frame per independently scripted target,
 PNG screenshots only, Chromium JSON tracing only (not Playwright context trace
-archives), and no smooth/inertial scroll behavior or history scroll restoration.
+archives), and no smooth/inertial scroll behavior. BrowserCore has focused
+root/nested `auto`/`manual` history-restoration proof; this external Playwright
+smoke does not yet assert restoration or its event ordering.
 The WebSocket path has one
 BrowserCore event pump and keeps reading while navigation-producing requests are
 pending. Gated real-socket tests prove same-connection `Page.stopLoading`

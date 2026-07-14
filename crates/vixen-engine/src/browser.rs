@@ -35,7 +35,7 @@ use vixen_store::{ClearDataSelection, SessionRecord, Store};
 
 use crate::data_url::parse_data_url;
 use crate::display_list::PaintCommand;
-use crate::history::{HistoryEntry, SessionHistory};
+use crate::history::{HistoryEntry, ScrollRestoration, SessionHistory};
 use crate::page::{Page, PageParser};
 use crate::script::{
     ExternalPageScript, JsConsoleValue, JsNavigationAction, JsNetworkEvent, JsRuntime, JsValue,
@@ -599,6 +599,9 @@ enum PreparedNavigationAction {
         history: SessionHistory,
         url: String,
     },
+    HistoryState {
+        history: SessionHistory,
+    },
 }
 
 enum NavigationWork {
@@ -881,7 +884,7 @@ impl BrowserCore {
                     let context = self.context(context_id)?;
                     (
                         context.page.url().to_owned(),
-                        context.page.session_history().clone(),
+                        context.page.history_with_current_scroll(),
                     )
                 };
                 self.navigate(context_id, url, HistoryUpdate::Preserve(history))
@@ -889,7 +892,7 @@ impl BrowserCore {
             BrowserCommand::Stop { context_id } => self.stop(context_id),
             BrowserCommand::TraverseHistory { context_id, delta } => {
                 let context = self.context(context_id)?;
-                let mut history = context.page.session_history().clone();
+                let mut history = context.page.history_with_current_scroll();
                 let Some(entry) = history.go(delta).cloned() else {
                     return Ok(BrowserCommandResult::Accepted);
                 };
@@ -1762,8 +1765,7 @@ impl BrowserCore {
                     .context(context_id)
                     .expect("active navigation context exists")
                     .page
-                    .session_history()
-                    .clone();
+                    .history_with_current_scroll();
                 let disposition = if history.length() == 1 && history.url() == Some("about:blank") {
                     HistoryDisposition::Replace
                 } else {
@@ -1775,8 +1777,7 @@ impl BrowserCore {
                 self.context(context_id)
                     .expect("active navigation context exists")
                     .page
-                    .session_history()
-                    .clone(),
+                    .history_with_current_scroll(),
                 HistoryDisposition::Replace,
             ),
             HistoryUpdate::Preserve(history) => {
@@ -3113,21 +3114,50 @@ impl BrowserCore {
                     predecessor_navigation_id = Some(navigation_id);
                 }
                 PreparedNavigationAction::SameDocument { history, url } => {
-                    let runtime_slot = self.context(context_id)?.runtime_slot;
-                    self.context_mut(context_id)?
-                        .page
-                        .set_session_history(history);
-                    let (contexts, slots) = (&self.contexts, &mut self.runtime_slots);
-                    let page = &contexts.get(&context_id).expect("context checked").page;
-                    slots[runtime_slot].runtime.sync_page_realm_key(page);
-                    self.emit(BrowserEvent::BrowsingContextStateChanged {
-                        state: self.context_state(context_id)?,
-                    });
+                    self.apply_same_document_history(context_id, history)?;
                     outcomes.push(NavigationActionOutcome::SameDocument { url });
+                }
+                PreparedNavigationAction::HistoryState { history } => {
+                    self.apply_same_document_history(context_id, history)?;
                 }
             }
         }
         Ok(outcomes)
+    }
+
+    fn apply_same_document_history(
+        &mut self,
+        context_id: BrowsingContextId,
+        history: SessionHistory,
+    ) -> Result<(), BrowserError> {
+        let (runtime_slot, document_id, runtime_context_id, frame_id, url, source) = {
+            let context = self.context_mut(context_id)?;
+            context.page.set_session_history(history);
+            (
+                context.runtime_slot,
+                context.document_id,
+                context.runtime_context_id,
+                context.frame_id,
+                context.page.url().to_owned(),
+                host_view_runtime_source(&context.page, context.host_view, true),
+            )
+        };
+        {
+            let (contexts, slots) = (&self.contexts, &mut self.runtime_slots);
+            let page = &contexts.get(&context_id).expect("context checked").page;
+            slots[runtime_slot].runtime.sync_page_realm_key(page);
+        }
+        let evaluation =
+            self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
+        self.emit_runtime_effects_event(
+            context_id,
+            frame_id,
+            document_id,
+            runtime_context_id,
+            url,
+            evaluation.effects,
+        );
+        Ok(())
     }
 
     fn prepare_navigation_actions(
@@ -3136,7 +3166,7 @@ impl BrowserCore {
         actions: Vec<JsNavigationAction>,
     ) -> Result<Vec<PreparedNavigationAction>, BrowserError> {
         let context = self.context(context_id)?;
-        let mut simulated_history = context.page.session_history().clone();
+        let mut simulated_history = context.page.history_with_current_scroll();
         let mut prepared = Vec::with_capacity(actions.len());
         for action in actions {
             match action {
@@ -3289,6 +3319,18 @@ impl BrowserCore {
                             kind: CrossDocumentNavigationKind::Regular,
                         });
                     }
+                }
+                JsNavigationAction::HistoryScrollRestoration { value } => {
+                    let mode = ScrollRestoration::parse(&value).ok_or_else(|| {
+                        BrowserError::new(
+                            browser_error_codes::INVALID_ARGUMENT,
+                            "history scroll restoration must be auto or manual",
+                        )
+                    })?;
+                    simulated_history.set_scroll_restoration(mode);
+                    prepared.push(PreparedNavigationAction::HistoryState {
+                        history: simulated_history.clone(),
+                    });
                 }
                 JsNavigationAction::Overflow => unreachable!("overflow is rejected before prepare"),
             }
@@ -4419,9 +4461,20 @@ fn host_view_runtime_source(page: &Page, state: HostViewState, emit_scroll: bool
     let (max_scroll_x, max_scroll_y) = page.root_scroll_max();
     let (scroll_x, scroll_y) = page.root_scroll();
     let element_scroll_source = crate::script::element_scroll_state_source(page, emit_scroll);
+    let history_url = deno_core::serde_json::to_string(page.url())
+        .expect("serializing a bounded history URL cannot fail");
+    let history_state = deno_core::serde_json::to_string(&page.history_state_json())
+        .expect("serializing bounded history state cannot fail");
+    let history = page.session_history();
+    let scroll_restoration =
+        deno_core::serde_json::to_string(history.scroll_restoration().to_keyword())
+            .expect("serializing a history keyword cannot fail");
     format!(
-        "(() => {{ const applied = globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}, {viewport_width}, {viewport_height}, {max_scroll_x}, {max_scroll_y}, {scroll_x}, {scroll_y}, {emit_scroll}) : false; {element_scroll_source}; return applied; }})()",
-        state.focused, state.visible,
+        "(() => {{ const historyApplied = globalThis.__vixenApplyHistoryState ? globalThis.__vixenApplyHistoryState({history_url}, {}, {}, {history_state}, {scroll_restoration}) : false; const applied = globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}, {viewport_width}, {viewport_height}, {max_scroll_x}, {max_scroll_y}, {scroll_x}, {scroll_y}, {emit_scroll}) : false; {element_scroll_source}; return historyApplied && applied; }})()",
+        history.length(),
+        history.index(),
+        state.focused,
+        state.visible,
     )
 }
 
@@ -4465,6 +4518,10 @@ fn prepare_history_state(
     validate_navigation_url(&url)?;
     ensure_same_origin_history_url(history.url().unwrap_or("about:blank"), &url)?;
     let mut entry = HistoryEntry::push_state(url, state_json.into_bytes());
+    if let Some(current) = history.current() {
+        entry.scroll_restoration = current.scroll_restoration;
+        entry.scroll_state = current.scroll_state.clone();
+    }
     if !title.is_empty() {
         entry.title = Some(title);
     }
@@ -6005,6 +6062,67 @@ mod tests {
         assert_eq!(
             eval(&mut handle, &current, "nestedScrollEvents.length"),
             ScriptValue::Int32(0)
+        );
+    }
+
+    #[test]
+    fn history_restores_root_and_nested_scrolls_and_honors_manual_mode() {
+        let mut handle = spawn_browser(test_config()).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, "https://same.test/nested-scroll");
+        let first = state(&mut handle, context_id);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &first,
+                "document.getElementById('inner').scrollTop = 120; scrollTo(0, 150); `${scrollY}:${document.getElementById('inner').scrollTop}:${history.scrollRestoration}`",
+            ),
+            ScriptValue::String("150:120:auto".to_owned())
+        );
+        let reload_id = reload(&mut handle, context_id);
+        wait_for_navigation(&mut handle, context_id, reload_id).unwrap();
+        let reloaded = state(&mut handle, context_id);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &reloaded,
+                "`${scrollY}:${document.getElementById('inner').scrollTop}:${history.scrollRestoration}`",
+            ),
+            ScriptValue::String("150:120:auto".to_owned())
+        );
+
+        navigate(&mut handle, context_id, "https://same.test/b");
+        let back = traverse_history(&mut handle, context_id, -1).unwrap();
+        wait_for_navigation(&mut handle, context_id, back).unwrap();
+        let restored = state(&mut handle, context_id);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &restored,
+                "`${scrollY}:${document.getElementById('inner').scrollTop}:${history.scrollRestoration}:${history.length}`",
+            ),
+            ScriptValue::String("150:120:auto:2".to_owned())
+        );
+
+        assert_eq!(
+            eval(
+                &mut handle,
+                &restored,
+                "history.scrollRestoration = 'manual'; document.getElementById('inner').scrollTop = 160; scrollTo(0, 200); history.scrollRestoration",
+            ),
+            ScriptValue::String("manual".to_owned())
+        );
+        navigate(&mut handle, context_id, "https://same.test/b");
+        let manual_back = traverse_history(&mut handle, context_id, -1).unwrap();
+        wait_for_navigation(&mut handle, context_id, manual_back).unwrap();
+        let manual = state(&mut handle, context_id);
+        assert_eq!(
+            eval(
+                &mut handle,
+                &manual,
+                "`${scrollY}:${document.getElementById('inner').scrollTop}:${history.scrollRestoration}:${history.length}`",
+            ),
+            ScriptValue::String("0:0:manual:2".to_owned())
         );
     }
 

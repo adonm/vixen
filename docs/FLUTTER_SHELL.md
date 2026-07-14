@@ -55,8 +55,8 @@ native smoke tests, and the native ABI gate. A Fedora 43 container build also
 produced a relocatable debug bundle containing the executable, Flutter embedder,
 and `libvixen_ffi.so`.
 
-This does not establish Linux parity: advanced gesture input and scroll
-restoration, a broader native IME/device matrix, complete lifecycle recovery and scale handling, complete
+This does not establish Linux parity: advanced gesture/restoration-event input
+fidelity, a broader native IME/device matrix, complete lifecycle recovery and scale handling, complete
 semantic relationships/actions and native AT smoke,
 downloads/permissions,
 host services, broader FlatPark host/portal coverage, release size/performance,
@@ -112,7 +112,7 @@ cannot satisfy a release gate.
 
 | Platform | Validation OS | Initial Vixen integration | Required release evidence | Current Vixen status |
 |----------|---------------|---------------------------|---------------------------|----------------------|
-| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime; native Wayland only | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Locked Yaru/Adwaita-blue chrome with an integrated native-window titlebar, explicit X11/XWayland rejection, BrowserCore bridge, RGBA texture, viewport/input, root/nested wheel and key/script/single-touch scrolling, native/contenteditable text-input state, controlled IBus Anthy preedit/commit evidence, normalized `inputmode`/input-type/`enterkeyhint` keyboard and action intent, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Cage/Wayland smoke implemented; broader IME/device and gesture matrices, scroll restoration, native lifecycle/surface recovery, full semantics/native AT, host services, and parity remain open; FlatPark publishing is deferred |
+| Linux — highest priority | Latest stable Fedora major plus pinned current FlatPark/GNOME runtime; native Wayland only | Dart FFI bridge, bounded RGBA external texture, Flutter input/viewport, GTK-backed Flutter Linux embedder | Basic-browser gate and Flutter parity first; deterministic official archive throughout; checksum-pinned FlatPark publication only afterward; GPU/driver, portal, accessibility, size, and performance reports | Locked Yaru/Adwaita-blue chrome with an integrated native-window titlebar, explicit X11/XWayland rejection, BrowserCore bridge, RGBA texture, viewport/input, root/nested wheel and key/script/single-touch scrolling, native/contenteditable text-input state, controlled IBus Anthy preedit/commit evidence, normalized `inputmode`/input-type/`enterkeyhint` keyboard and action intent, bounded find traversal/scroll/highlighting, two-retry capture/texture recovery, core-owned zoom, bounded semantics shape, tests, release/AOT archive build, clean extraction, and Impeller Cage/Wayland smoke implemented; broader IME/device, gesture, and restoration-event matrices, native lifecycle/surface recovery, full semantics/native AT, host services, and parity remain open; FlatPark publishing is deferred |
 | macOS | Latest stable macOS major | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, signing/notarization, input/IME, accessibility, host services, architecture attribution, size/performance reports | Target; unproven |
 | Windows | Latest stable Windows client release/feature update | Same bridge and RGBA contract in a native Flutter runner | Native BrowserCore/V8/WebRender build, packaging/signing, input/IME, accessibility, host services, per-architecture size/performance reports | Target; unproven |
 | Android | Latest stable Android major/API | Same bridge, RGBA external texture first, GLES-backed WebRender, lifecycle-aware runner | Pinned V8 source archive/toolchain, reproducible source cross-build, GLES, lifecycle/background recovery, input/IME, accessibility, split-ABI packaging, size/performance proof | Committed target behind gates; unproven |
@@ -208,8 +208,8 @@ transition, suppresses hidden captures, and cancels pending primary presses at
 the controller boundary. The stored scale does not yet separate CSS layout pixels
 from the bounded physical render target.
 
-The remaining target adds broader native IME/device evidence, nested scroll
-restoration and richer gesture/DOM event fidelity, CSS/device-scale correctness, and platform
+The remaining target adds broader native IME/device evidence, richer gesture/DOM
+event and restoration-event fidelity, CSS/device-scale correctness, and platform
 lifecycle/surface recovery.
 BrowserCore continues to own hit testing, selection, DOM event dispatch, and
 navigation effects. Platform-specific raw data may be retained in bounded DTOs
@@ -244,8 +244,10 @@ Semantics bounds share the translated layout; fixed-position subtrees stay
 anchored. A single Flutter touch drag crosses platform touch slop, cancels the
 pending synthetic press, and sends physical deltas through that same cancelable
 root path; taps remain taps and secondary touches are ignored. Nested scrollers,
-DOM touch/pointer events, inertia/multi-touch, restoration, smooth scrolling, and
-nested-element scroll events remain open. Page scripts now drive the same clamped
+element scroll events, and bounded `auto`/`manual` history restoration now share
+those Page-owned offsets, with focused BrowserCore rather than native-process
+proof. DOM touch/pointer events, inertia/multi-touch, restoration-event ordering,
+and smooth scrolling remain open. Page scripts now drive the same clamped
 root offset through numeric/options `scroll()`/`scrollTo()`/`scrollBy()`,
 synchronized window offset properties, and root/body `scrollTop`/`scrollLeft`.
 Actual top-level changes from script, input defaults, find traversal, viewport

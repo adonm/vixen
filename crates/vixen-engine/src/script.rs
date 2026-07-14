@@ -225,6 +225,9 @@ pub enum JsNavigationAction {
     HistoryTraverse {
         delta: i32,
     },
+    HistoryScrollRestoration {
+        value: String,
+    },
     Overflow,
 }
 
@@ -1212,6 +1215,9 @@ fn parse_navigation_action(
                 .and_then(deno_core::serde_json::Value::as_i64)
                 .unwrap_or_default()
                 .clamp(i32::MIN as i64, i32::MAX as i64) as i32,
+        }),
+        "history-scroll-restoration" => Ok(JsNavigationAction::HistoryScrollRestoration {
+            value: required_action_string(value, "value")?,
         }),
         "overflow" => Ok(JsNavigationAction::Overflow),
         other => Err(EngineError::script(

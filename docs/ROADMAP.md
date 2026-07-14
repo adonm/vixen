@@ -260,10 +260,14 @@ Unmodified Arrow, Page Up/Down, Home/End, and Space defaults now use the same
 zoom-derived CSS viewport and Page offset; page `preventDefault()` cancels the
 action and focused native/editing controls retain their key handling. Flutter
 single-touch drags now cross platform touch slop, cancel the pending synthetic
-press, and reuse that cancelable physical-delta root path. Nested scrolling,
-DOM touch/pointer events, inertia/multi-touch, smooth scrolling, nested-element
-scroll events, and restoration remain. Live page scripts now use the same
-clamped offset through numeric/options `scroll()`/`scrollTo()`/`scrollBy()`,
+press, and reuse that cancelable physical-delta root path. Page-owned nested
+scrollports now share input/script offsets, clipped geometry, and element scroll
+events. Session-history entries capture the root plus at most 1,024 stable-
+identity element offsets; `auto` restores them on reload/back/forward while
+`manual` suppresses restoration, and the live runtime is resynchronized. DOM
+touch/pointer events, inertia/multi-touch, and smooth scrolling remain. Live page
+scripts now use the same clamped offset through numeric/options
+`scroll()`/`scrollTo()`/`scrollBy()`,
 synchronized window offsets, and root/body `scrollTop`/`scrollLeft`; host-view
 and page-zoom changes refresh the live CSS viewport and overflow clamp. Actual
 top-level changes from script, uncanceled input defaults, find traversal,
@@ -604,7 +608,7 @@ correctness. Neither may starve the other.
    wheel/key/script scrolling, native text-control IME, and monotonic
    focus/visibility/lifecycle
    path with a broader native IME/device matrix, the landed nested scrollport
-   path extended with richer gesture/DOM event fidelity and scroll restoration, CSS/physical
+   path extended with richer gesture/DOM event and restoration-event fidelity, CSS/physical
    scale correctness, and lifecycle recovery. In parallel, finish
    runtime-construction/local-native-host cancellation and active fetch transport
    abort beyond the landed exact-generation V8/fetch-wait interruption, and

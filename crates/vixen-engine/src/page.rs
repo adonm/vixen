@@ -27,7 +27,7 @@ use crate::display_list::{
     PaintStats, Rect, TextRun, dump_paint_commands, dump_paint_stats,
 };
 use crate::doc::{Document, DocumentParser, ParseError};
-use crate::history::{HistoryEntry, SessionHistory};
+use crate::history::{HistoryElementScroll, HistoryEntry, HistoryScrollState, SessionHistory};
 use crate::layout_tree::{
     LayoutFragment, LayoutFragmentKind, LayoutNodeId, LayoutNodeKind, LayoutPosition, LayoutTree,
     apply_element_scrolls, apply_root_scroll, build_layout_tree, dump_layout_tree,
@@ -40,6 +40,8 @@ use crate::whatwg_url::{parse as parse_url, parse_with_base as parse_url_with_ba
 
 mod interaction;
 pub use interaction::{FormSubmissionSnapshot, PageSelection};
+
+const MAX_HISTORY_SCROLLPORTS: usize = 1024;
 
 /// A loaded page at the current vertical integration boundary.
 pub struct Page {
@@ -176,13 +178,65 @@ impl Page {
         &self.history
     }
 
+    /// Clone session history after capturing this page's current bounded scroll
+    /// state into the active entry.
+    pub(crate) fn history_with_current_scroll(&self) -> SessionHistory {
+        let mut history = self.history.clone();
+        let mut element_offsets = self
+            .element_scrolls
+            .iter()
+            .filter_map(|(node_id, offset)| {
+                let element = self.document.element_by_node_id(*node_id)?;
+                Some(HistoryElementScroll {
+                    node_id: *node_id,
+                    element_id: element.id,
+                    tag: element.tag,
+                    offset: *offset,
+                })
+            })
+            .collect::<Vec<_>>();
+        element_offsets.sort_by_key(|scroll| scroll.node_id);
+        element_offsets.truncate(MAX_HISTORY_SCROLLPORTS);
+        if self.root_scroll != (0.0, 0.0)
+            || !element_offsets.is_empty()
+            || history
+                .current()
+                .is_some_and(|entry| entry.scroll_state.is_some())
+        {
+            history.set_current_scroll_state(HistoryScrollState {
+                root_offset: self.root_scroll,
+                element_offsets,
+            });
+        }
+        history
+    }
+
     /// Replace the session-history model after a navigation/history host hook.
     /// The loaded URL is kept in sync with the current history entry.
     pub fn set_session_history(&mut self, history: SessionHistory) {
+        let restoration = history.restoration_scroll_state().cloned();
         if let Some(url) = history.url() {
             self.url = url.to_owned();
         }
         self.history = history;
+        if let Some(restoration) = restoration {
+            self.scroll_root_to((
+                f64::from(restoration.root_offset.0),
+                f64::from(restoration.root_offset.1),
+            ));
+            if !self.element_scrolls.is_empty() {
+                self.element_scrolls.clear();
+                self.bump_accessibility_mutation_epoch();
+            }
+            self.scroll_elements_to(restoration.element_offsets.into_iter().map(|scroll| {
+                ElementScrollRequest {
+                    node_id: scroll.node_id,
+                    element_id: scroll.element_id,
+                    tag: scroll.tag,
+                    position: (f64::from(scroll.offset.0), f64::from(scroll.offset.1)),
+                }
+            }));
+        }
     }
 
     /// Resolve `input` against the document base URL as an absolute URL string.

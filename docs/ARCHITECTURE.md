@@ -146,7 +146,7 @@ BrowserCore (one per open profile)
 │   └── platform host services (paths, fonts, portals/native pickers, GPU diagnostics)
 ├── BrowsingContextRegistry
 │   └── BrowsingContext (one per top-level tab; frames form a child tree)
-│       ├── SessionHistory
+│       ├── SessionHistory + bounded root/nested scroll restoration state
 │       ├── NavigationController + active NavigationId/cancellation
 │       ├── active DocumentState
 │       │   ├── DOM + style data + invalidation
