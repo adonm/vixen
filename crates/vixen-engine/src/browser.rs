@@ -916,7 +916,11 @@ impl BrowserCore {
                 let (document_id, runtime_context_id, frame_id, url, source) = {
                     let context = self.context_mut(context_id)?;
                     context.page_zoom = zoom;
-                    let layout_viewport = page_layout_viewport(context.host_view.viewport, zoom);
+                    let layout_viewport = page_layout_viewport(
+                        context.host_view.viewport,
+                        context.host_view.scale_factor,
+                        zoom,
+                    );
                     context.page.set_layout_viewport(layout_viewport);
                     (
                         context.document_id,
@@ -1034,8 +1038,11 @@ impl BrowserCore {
                 }
                 let (result, scroll_sync) = {
                     let context = self.context_for_document_mut(context_id, document_id)?;
-                    let viewport =
-                        page_layout_viewport(context.host_view.viewport, context.page_zoom);
+                    let viewport = page_layout_viewport(
+                        context.host_view.viewport,
+                        context.host_view.scale_factor,
+                        context.page_zoom,
+                    );
                     let previous_scroll = context.page.root_scroll();
                     let result = context
                         .page
@@ -1192,11 +1199,16 @@ impl BrowserCore {
                     ));
                 }
                 let context = self.context_for_document(context_id, document_id)?;
-                let layout_viewport = page_layout_viewport(viewport, context.page_zoom);
+                let scale = page_output_scale(context);
+                let layout_viewport = page_layout_viewport(
+                    viewport,
+                    context.host_view.scale_factor,
+                    context.page_zoom,
+                );
                 Ok(BrowserCommandResult::HitTest(context.page.element_at(
                     layout_viewport,
-                    x / context.page_zoom,
-                    y / context.page_zoom,
+                    x / scale,
+                    y / scale,
                 )))
             }
             BrowserCommand::FocusProjection {
@@ -1326,9 +1338,11 @@ impl BrowserCore {
     ) -> Result<PaintSnapshot, BrowserError> {
         validate_viewport(viewport)?;
         let context = self.context_for_document(context_id, document_id)?;
-        let layout_viewport = page_layout_viewport(viewport, context.page_zoom);
+        let scale = page_output_scale(context);
+        let layout_viewport =
+            page_layout_viewport(viewport, context.host_view.scale_factor, context.page_zoom);
         let mut commands = context.page.display_list(layout_viewport);
-        scale_paint_commands(&mut commands, context.page_zoom as f32);
+        scale_paint_commands(&mut commands, scale as f32);
         Ok(PaintSnapshot {
             context_id,
             document_id,
@@ -1344,7 +1358,9 @@ impl BrowserCore {
         viewport: (u32, u32),
     ) -> Result<vixen_api::AccessibilitySnapshot, BrowserError> {
         let context = self.context_for_document(context_id, document_id)?;
-        let layout_viewport = page_layout_viewport(viewport, context.page_zoom);
+        let scale = page_output_scale(context);
+        let layout_viewport =
+            page_layout_viewport(viewport, context.host_view.scale_factor, context.page_zoom);
         let mut snapshot =
             context
                 .page
@@ -1352,10 +1368,10 @@ impl BrowserCore {
         snapshot.viewport = viewport;
         for node in &mut snapshot.nodes {
             if let Some(bounds) = &mut node.bbox {
-                bounds.x *= context.page_zoom;
-                bounds.y *= context.page_zoom;
-                bounds.width *= context.page_zoom;
-                bounds.height *= context.page_zoom;
+                bounds.x *= scale;
+                bounds.y *= scale;
+                bounds.width *= scale;
+                bounds.height *= scale;
             }
         }
         snapshot.refresh_generation();
@@ -1834,7 +1850,11 @@ impl BrowserCore {
                 context.page_zoom,
             )
         };
-        page.set_layout_viewport(page_layout_viewport(host_view.viewport, page_zoom));
+        page.set_layout_viewport(page_layout_viewport(
+            host_view.viewport,
+            host_view.scale_factor,
+            page_zoom,
+        ));
         if self.runtime_slots.len() >= MAX_RUNTIME_SLOTS {
             self.fail_navigation(
                 context_id,
@@ -2653,9 +2673,11 @@ impl BrowserCore {
         let source = {
             let context = self.context_mut(context_id)?;
             context.host_view = state;
-            context
-                .page
-                .set_layout_viewport(page_layout_viewport(state.viewport, context.page_zoom));
+            context.page.set_layout_viewport(page_layout_viewport(
+                state.viewport,
+                state.scale_factor,
+                context.page_zoom,
+            ));
             host_view_runtime_source(&context.page, state, true)
         };
         let evaluation =
@@ -2833,14 +2855,14 @@ impl BrowserCore {
                 "mouse event coordinates and deltas must be finite",
             ));
         }
-        let page_zoom = self
-            .context_for_document(context_id, document_id)?
-            .page_zoom;
+        let context = self.context_for_document(context_id, document_id)?;
+        let page_zoom = context.page_zoom;
+        let output_scale = page_output_scale(context);
         let event = MouseEventData {
-            x: event.x / page_zoom,
-            y: event.y / page_zoom,
-            delta_x: event.delta_x / page_zoom,
-            delta_y: event.delta_y / page_zoom,
+            x: event.x / output_scale,
+            y: event.y / output_scale,
+            delta_x: event.delta_x / output_scale,
+            delta_y: event.delta_y / output_scale,
             ..event
         };
         let is_wheel = event_type == "wheel";
@@ -2897,7 +2919,11 @@ impl BrowserCore {
         );
         let root_scroll_default = if is_wheel && !event.ctrl_key && !event.meta_key {
             Some((
-                page_layout_viewport(self.context(context_id)?.host_view.viewport, page_zoom),
+                page_layout_viewport(
+                    self.context(context_id)?.host_view.viewport,
+                    self.context(context_id)?.host_view.scale_factor,
+                    page_zoom,
+                ),
                 (event.delta_x, event.delta_y),
             ))
         } else {
@@ -2951,7 +2977,11 @@ impl BrowserCore {
         let root_scroll_default = if let Some(delta) = default_scroll {
             let context = self.context(context_id)?;
             Some((
-                page_layout_viewport(context.host_view.viewport, context.page_zoom),
+                page_layout_viewport(
+                    context.host_view.viewport,
+                    context.host_view.scale_factor,
+                    context.page_zoom,
+                ),
                 delta,
             ))
         } else {
@@ -4134,11 +4164,16 @@ fn validate_text_input_state(state: &TextInputState) -> Result<(), BrowserError>
     Ok(())
 }
 
-fn page_layout_viewport(viewport: (u32, u32), zoom: f64) -> (u32, u32) {
+fn page_layout_viewport(viewport: (u32, u32), physical_scale: f64, page_zoom: f64) -> (u32, u32) {
+    let scale = physical_scale * page_zoom;
     (
-        ((f64::from(viewport.0) / zoom).ceil() as u32).max(1),
-        ((f64::from(viewport.1) / zoom).ceil() as u32).max(1),
+        ((f64::from(viewport.0) / scale).ceil() as u32).max(1),
+        ((f64::from(viewport.1) / scale).ceil() as u32).max(1),
     )
+}
+
+fn page_output_scale(context: &BrowsingContext) -> f64 {
+    context.host_view.scale_factor * context.page_zoom
 }
 
 fn keyboard_scroll_delta(
@@ -4154,7 +4189,11 @@ fn keyboard_scroll_delta(
     {
         return None;
     }
-    let viewport = page_layout_viewport(context.host_view.viewport, context.page_zoom);
+    let viewport = page_layout_viewport(
+        context.host_view.viewport,
+        context.host_view.scale_factor,
+        context.page_zoom,
+    );
     let page = f64::from(viewport.1) * KEYBOARD_SCROLL_PAGE_FRACTION;
     match event.key.as_str() {
         "ArrowLeft" => Some((-KEYBOARD_SCROLL_LINE_PX, 0.0)),
@@ -4470,11 +4509,12 @@ fn host_view_runtime_source(page: &Page, state: HostViewState, emit_scroll: bool
         deno_core::serde_json::to_string(history.scroll_restoration().to_keyword())
             .expect("serializing a history keyword cannot fail");
     format!(
-        "(() => {{ const historyApplied = globalThis.__vixenApplyHistoryState ? globalThis.__vixenApplyHistoryState({history_url}, {}, {}, {history_state}, {scroll_restoration}) : false; const applied = globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}, {viewport_width}, {viewport_height}, {max_scroll_x}, {max_scroll_y}, {scroll_x}, {scroll_y}, {emit_scroll}) : false; {element_scroll_source}; return historyApplied && applied; }})()",
+        "(() => {{ const historyApplied = globalThis.__vixenApplyHistoryState ? globalThis.__vixenApplyHistoryState({history_url}, {}, {}, {history_state}, {scroll_restoration}) : false; const applied = globalThis.__vixenApplyHostViewState ? globalThis.__vixenApplyHostViewState({}, {}, {viewport_width}, {viewport_height}, {}, {max_scroll_x}, {max_scroll_y}, {scroll_x}, {scroll_y}, {emit_scroll}) : false; {element_scroll_source}; return historyApplied && applied; }})()",
         history.length(),
         history.index(),
         state.focused,
         state.visible,
+        state.scale_factor,
     )
 }
 
@@ -5721,6 +5761,91 @@ mod tests {
             ),
             ScriptValue::String("visible:true:2".to_owned())
         );
+    }
+
+    #[test]
+    fn physical_scale_drives_css_viewport_paint_hit_testing_and_accessibility() {
+        let mut config = test_config();
+        let url = "https://same.test/physical-scale";
+        config.document_overrides.insert(
+            url.to_owned(),
+            "<!doctype html><style>html,body{margin:0}button{display:block;width:100px;height:50px;background-color:red}</style><button id='target'>Scaled target</button>"
+                .to_owned(),
+        );
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        navigate(&mut handle, context_id, url);
+        let current = state(&mut handle, context_id);
+        let viewport = (400, 200);
+        handle
+            .dispatch(BrowserCommand::UpdateHostViewState {
+                context_id,
+                state: HostViewState {
+                    generation: 1,
+                    viewport,
+                    scale_factor: 2.0,
+                    ..HostViewState::default()
+                },
+            })
+            .unwrap();
+
+        assert_eq!(
+            eval(
+                &mut handle,
+                &current,
+                "[innerWidth, innerHeight, devicePixelRatio, screen.width, screen.height].join(':')"
+            ),
+            ScriptValue::String("200:100:2:200:100".to_owned())
+        );
+
+        let paint = handle
+            .capture_paint_snapshot(context_id, current.document_id, viewport)
+            .unwrap();
+        let red_width = paint
+            .commands
+            .iter()
+            .find_map(|command| match command {
+                PaintCommand::Background { fill, color, .. }
+                    if color.r == 255 && color.g == 0 && color.b == 0 =>
+                {
+                    Some(fill.w)
+                }
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(red_width, 200.0);
+
+        let semantic = match handle
+            .dispatch(BrowserCommand::AccessibilitySnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport,
+            })
+            .unwrap()
+        {
+            BrowserCommandResult::AccessibilitySnapshot(snapshot) => snapshot
+                .nodes
+                .into_iter()
+                .find(|node| node.label == "Scaled target")
+                .unwrap(),
+            other => panic!("unexpected accessibility result: {other:?}"),
+        };
+        assert_eq!(semantic.bbox.unwrap().width, 200.0);
+
+        let target = match handle
+            .dispatch(BrowserCommand::HitTest {
+                context_id,
+                document_id: current.document_id,
+                viewport,
+                x: 150.0,
+                y: 25.0,
+            })
+            .unwrap()
+        {
+            BrowserCommandResult::HitTest(Some(target)) => target,
+            other => panic!("unexpected hit-test result: {other:?}"),
+        };
+        assert_eq!(target.id.as_deref(), Some("target"));
     }
 
     #[test]

@@ -205,12 +205,17 @@ document replacement, updates `document.hasFocus()`, `document.hidden`, and
 `document.visibilityState`, emits live focus/blur and `visibilitychange`, and
 rejects content input while inactive. Flutter invalidates queued input on every
 transition, suppresses hidden captures, and cancels pending primary presses at
-the controller boundary. The stored scale does not yet separate CSS layout pixels
-from the bounded physical render target.
+the controller boundary. Flutter now derives one bounded viewport transform from
+logical size and device scale. BrowserCore divides the physical render target by
+that effective scale for CSS layout, `innerWidth`/`innerHeight`, and scrolling,
+then applies device scale × page zoom to paint, hit testing, pointer/wheel input,
+and Semantics bounds. The texture and semantics presenters use the same transform
+for physical-to-logical placement, including bounded-target letterboxing. A 2.0
+device-scale test covers the core and widget paths without a frontend-selected
+node or coordinate repair.
 
 The remaining target adds broader native IME/device evidence, richer gesture/DOM
-event and restoration-event fidelity, CSS/device-scale correctness, and platform
-lifecycle/surface recovery.
+event and restoration-event fidelity, and platform lifecycle/surface recovery.
 BrowserCore continues to own hit testing, selection, DOM event dispatch, and
 navigation effects. Platform-specific raw data may be retained in bounded DTOs
 where web semantics require it.
@@ -274,7 +279,7 @@ CSS viewport from the physical target, scales the single display list back to
 the frame, converts hit testing and wheel events into CSS coordinates, and
 projects Semantics bounds into physical display coordinates. Zoom resets only
 on explicit Ctrl+0 and survives navigation in the context; profile persistence,
-text-shaping fidelity, and device-scale/surface recovery remain open.
+text-shaping fidelity, and native surface recovery remain open.
 
 The initial accessibility hierarchy is implemented. BrowserCore/Page derives native
 and explicit ARIA roles, bounded names (including `aria-labelledby` and HTML

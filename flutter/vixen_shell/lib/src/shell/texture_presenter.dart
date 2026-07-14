@@ -67,34 +67,125 @@ final class LinuxTextureController implements BrowserTextureController {
   }
 }
 
+final class BrowserViewportTransform {
+  BrowserViewportTransform._({
+    required this.logicalSize,
+    required this.width,
+    required this.height,
+    required this.scaleFactor,
+  });
+
+  factory BrowserViewportTransform.fromLogical(Size logicalSize, double dpr) {
+    if (!logicalSize.width.isFinite ||
+        !logicalSize.height.isFinite ||
+        !dpr.isFinite ||
+        logicalSize.width <= 0 ||
+        logicalSize.height <= 0 ||
+        dpr <= 0) {
+      return BrowserViewportTransform._(
+        logicalSize: logicalSize,
+        width: 0,
+        height: 0,
+        scaleFactor: 0,
+      );
+    }
+    final rawWidth = logicalSize.width * dpr;
+    final rawHeight = logicalSize.height * dpr;
+    if (!rawWidth.isFinite || !rawHeight.isFinite) {
+      return BrowserViewportTransform._(
+        logicalSize: logicalSize,
+        width: 0,
+        height: 0,
+        scaleFactor: 0,
+      );
+    }
+    final byteScale = math.sqrt(
+      browserMaxFrameBytes / (rawWidth * rawHeight * 4),
+    );
+    final boundedScale = math.min(
+      1.0,
+      math.min(
+        browserMaxFrameDimension / rawWidth,
+        math.min(browserMaxFrameDimension / rawHeight, byteScale),
+      ),
+    );
+    return BrowserViewportTransform._(
+      logicalSize: logicalSize,
+      width: (rawWidth * boundedScale).floor().clamp(
+        1,
+        browserMaxFrameDimension,
+      ),
+      height: (rawHeight * boundedScale).floor().clamp(
+        1,
+        browserMaxFrameDimension,
+      ),
+      scaleFactor: dpr * boundedScale,
+    );
+  }
+
+  final Size logicalSize;
+  final int width;
+  final int height;
+  final double scaleFactor;
+
+  bool get isValid =>
+      width > 0 &&
+      height > 0 &&
+      logicalSize.width > 0 &&
+      logicalSize.height > 0;
+
+  double get logicalPixelsPerPhysicalPixel => isValid
+      ? math.min(logicalSize.width / width, logicalSize.height / height)
+      : 0;
+
+  double get offsetX =>
+      (logicalSize.width - width * logicalPixelsPerPhysicalPixel) / 2;
+
+  double get offsetY =>
+      (logicalSize.height - height * logicalPixelsPerPhysicalPixel) / 2;
+
+  double get displayWidth => width * logicalPixelsPerPhysicalPixel;
+  double get displayHeight => height * logicalPixelsPerPhysicalPixel;
+
+  Offset localToPhysical(Offset position) {
+    final displayScale = logicalPixelsPerPhysicalPixel;
+    if (displayScale <= 0) return Offset.zero;
+    return Offset(
+      ((position.dx - offsetX) / displayScale).clamp(0, width.toDouble()),
+      ((position.dy - offsetY) / displayScale).clamp(0, height.toDouble()),
+    );
+  }
+
+  Offset logicalDeltaToPhysical(Offset delta) {
+    final displayScale = logicalPixelsPerPhysicalPixel;
+    return displayScale > 0 ? delta / displayScale : Offset.zero;
+  }
+
+  Rect physicalRectToLocal(Rect rect) {
+    final displayScale = logicalPixelsPerPhysicalPixel;
+    return Rect.fromLTWH(
+      offsetX + rect.left * displayScale,
+      offsetY + rect.top * displayScale,
+      rect.width * displayScale,
+      rect.height * displayScale,
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is BrowserViewportTransform &&
+      other.logicalSize == logicalSize &&
+      other.width == width &&
+      other.height == height &&
+      other.scaleFactor == scaleFactor;
+
+  @override
+  int get hashCode => Object.hash(logicalSize, width, height, scaleFactor);
+}
+
 ({int width, int height}) physicalFrameViewport(Size logicalSize, double dpr) {
-  if (!logicalSize.width.isFinite ||
-      !logicalSize.height.isFinite ||
-      !dpr.isFinite ||
-      logicalSize.width <= 0 ||
-      logicalSize.height <= 0 ||
-      dpr <= 0) {
-    return (width: 0, height: 0);
-  }
-  final rawWidth = logicalSize.width * dpr;
-  final rawHeight = logicalSize.height * dpr;
-  if (!rawWidth.isFinite || !rawHeight.isFinite) {
-    return (width: 0, height: 0);
-  }
-  final byteScale = math.sqrt(
-    browserMaxFrameBytes / (rawWidth * rawHeight * 4),
-  );
-  final scale = math.min(
-    1.0,
-    math.min(
-      browserMaxFrameDimension / rawWidth,
-      math.min(browserMaxFrameDimension / rawHeight, byteScale),
-    ),
-  );
-  return (
-    width: (rawWidth * scale).floor().clamp(1, browserMaxFrameDimension),
-    height: (rawHeight * scale).floor().clamp(1, browserMaxFrameDimension),
-  );
+  final transform = BrowserViewportTransform.fromLogical(logicalSize, dpr);
+  return (width: transform.width, height: transform.height);
 }
 
 final class BrowserContentSurface extends StatefulWidget {
@@ -160,7 +251,7 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   BrowserFrame? _pendingFrame;
   BrowserFrame? _publishedFrame;
   BrowserFrame? _displayedFrame;
-  ({int width, int height})? _reportedViewport;
+  BrowserViewportTransform? _viewportTransform;
   final FocusNode _contentFocus = FocusNode(debugLabel: 'browser-content');
   final Map<int, int> _pressedButtons = {};
   final Set<PhysicalKeyboardKey> _suppressedShortcutKeys = {};
@@ -302,21 +393,18 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
     return LayoutBuilder(
       builder: (context, constraints) {
         _logicalViewport = Size(constraints.maxWidth, constraints.maxHeight);
-        final viewport = physicalFrameViewport(
+        final transform = BrowserViewportTransform.fromLogical(
           _logicalViewport,
           MediaQuery.devicePixelRatioOf(context),
         );
-        if (_reportedViewport != viewport) {
-          _reportedViewport = viewport;
+        if (_viewportTransform != transform) {
+          _viewportTransform = transform;
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            if (!_disposed && _reportedViewport == viewport) {
+            if (!_disposed && _viewportTransform == transform) {
               widget.onPhysicalViewportChanged?.call(
-                viewport.width,
-                viewport.height,
-                math.min(
-                  viewport.width / _logicalViewport.width,
-                  viewport.height / _logicalViewport.height,
-                ),
+                transform.width,
+                transform.height,
+                transform.scaleFactor,
               );
             }
           });
@@ -581,23 +669,20 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
     double deltaY = 0,
   }) {
     final callback = widget.onMouseEvent;
-    final viewport = _reportedViewport;
-    if (callback == null ||
-        viewport == null ||
-        viewport.width <= 0 ||
-        viewport.height <= 0 ||
-        _logicalViewport.width <= 0 ||
-        _logicalViewport.height <= 0) {
+    final transform = _viewportTransform;
+    if (callback == null || transform == null || !transform.isValid) {
       return;
     }
+    final physicalPosition = transform.localToPhysical(event.localPosition);
+    final physicalDelta = transform.logicalDeltaToPhysical(
+      Offset(deltaX, deltaY),
+    );
     final keyboard = HardwareKeyboard.instance;
     callback(
       eventType,
       BrowserMouseEvent(
-        x: (event.localPosition.dx / _logicalViewport.width * viewport.width)
-            .clamp(0, viewport.width.toDouble()),
-        y: (event.localPosition.dy / _logicalViewport.height * viewport.height)
-            .clamp(0, viewport.height.toDouble()),
+        x: physicalPosition.dx,
+        y: physicalPosition.dy,
         button: button,
         buttons: buttons ?? event.buttons,
         detail: detail,
@@ -605,8 +690,8 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         shiftKey: keyboard.isShiftPressed,
         altKey: keyboard.isAltPressed,
         metaKey: keyboard.isMetaPressed,
-        deltaX: deltaX * viewport.width / _logicalViewport.width,
-        deltaY: deltaY * viewport.height / _logicalViewport.height,
+        deltaX: physicalDelta.dx,
+        deltaY: physicalDelta.dy,
       ),
     );
   }
@@ -680,19 +765,27 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   Widget _buildContent(BuildContext context) {
     final frame = _displayedFrame;
     final textureId = _textureId;
+    final transform = _viewportTransform;
     Widget visual;
-    if (frame != null && textureId != null && _sameFrame(widget.frame, frame)) {
+    if (frame != null &&
+        textureId != null &&
+        transform != null &&
+        transform.isValid &&
+        _sameFrame(widget.frame, frame)) {
       visual = SizedBox.expand(
-        child: FittedBox(
-          fit: BoxFit.contain,
-          child: SizedBox(
-            width: frame.width.toDouble(),
-            height: frame.height.toDouble(),
-            child: Texture(
-              key: const Key('browser-texture'),
-              textureId: textureId,
+        child: Stack(
+          children: [
+            Positioned(
+              left: transform.offsetX,
+              top: transform.offsetY,
+              width: transform.displayWidth,
+              height: transform.displayHeight,
+              child: Texture(
+                key: const Key('browser-texture'),
+                textureId: textureId,
+              ),
             ),
-          ),
+          ],
         ),
       );
     } else {
@@ -751,26 +844,19 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   Widget _withAccessibility(Widget visual) {
     final snapshot = widget.accessibility;
     final contextState = widget.contextState;
+    final transform = _viewportTransform;
     if (snapshot == null ||
         contextState == null ||
+        transform == null ||
+        !transform.isValid ||
         snapshot.contextId != contextState.contextId ||
         snapshot.documentId != contextState.documentId ||
-        snapshot.viewportWidth != _reportedViewport?.width ||
-        snapshot.viewportHeight != _reportedViewport?.height ||
+        snapshot.viewportWidth != transform.width ||
+        snapshot.viewportHeight != transform.height ||
         widget.frame?.width != snapshot.viewportWidth ||
-        widget.frame?.height != snapshot.viewportHeight ||
-        _logicalViewport.width <= 0 ||
-        _logicalViewport.height <= 0) {
+        widget.frame?.height != snapshot.viewportHeight) {
       return visual;
     }
-    final scale = math.min(
-      _logicalViewport.width / snapshot.viewportWidth,
-      _logicalViewport.height / snapshot.viewportHeight,
-    );
-    final offsetX =
-        (_logicalViewport.width - snapshot.viewportWidth * scale) / 2;
-    final offsetY =
-        (_logicalViewport.height - snapshot.viewportHeight * scale) / 2;
     final childrenByParent = <int?, List<BrowserAccessibilityNode>>{};
     for (final node in snapshot.nodes) {
       childrenByParent.putIfAbsent(node.parentId, () => []).add(node);
@@ -785,8 +871,11 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
           widgets.addAll(buildNodes(node.id, originX, originY));
           continue;
         }
-        final absoluteX = offsetX + bounds.x * scale;
-        final absoluteY = offsetY + bounds.y * scale;
+        final localBounds = transform.physicalRectToLocal(
+          Rect.fromLTWH(bounds.x, bounds.y, bounds.width, bounds.height),
+        );
+        final absoluteX = localBounds.left;
+        final absoluteY = localBounds.top;
         final children = buildNodes(node.id, absoluteX, absoluteY);
         final range = node.range;
         final semanticIdentifier = _semanticIdentifier(snapshot, node.id);
@@ -794,8 +883,8 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
           Positioned(
             left: absoluteX - originX,
             top: absoluteY - originY,
-            width: bounds.width * scale,
-            height: bounds.height * scale,
+            width: localBounds.width,
+            height: localBounds.height,
             child: Semantics(
               key: ValueKey((
                 snapshot.contextId,

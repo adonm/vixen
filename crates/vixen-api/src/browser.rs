@@ -336,7 +336,9 @@ impl HostLifecycle {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct HostViewState {
     pub generation: u64,
+    /// Drawable viewport in physical pixels.
     pub viewport: (u32, u32),
+    /// Physical pixels per CSS pixel before page zoom.
     pub scale_factor: f64,
     pub focused: bool,
     pub visible: bool,

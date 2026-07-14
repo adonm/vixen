@@ -18,6 +18,28 @@ void main() {
     );
   });
 
+  test('viewport transform shares DPR across frame, input, and semantics', () {
+    final transform = BrowserViewportTransform.fromLogical(
+      const Size(400, 500),
+      2,
+    );
+
+    expect((transform.width, transform.height), (800, 1000));
+    expect(transform.scaleFactor, 2);
+    expect(
+      transform.localToPhysical(const Offset(200, 250)),
+      const Offset(400, 500),
+    );
+    expect(
+      transform.logicalDeltaToPhysical(const Offset(4, 6)),
+      const Offset(8, 12),
+    );
+    expect(
+      transform.physicalRectToLocal(const Rect.fromLTWH(100, 120, 200, 80)),
+      const Rect.fromLTWH(50, 60, 100, 40),
+    );
+  });
+
   testWidgets('texture lifecycle creates, publishes, displays, and disposes', (
     tester,
   ) async {
@@ -149,6 +171,7 @@ void main() {
     final mouseEvents = <(String, BrowserMouseEvent)>[];
     final keyEvents = <(String, BrowserKeyEvent)>[];
     var viewport = (width: 0, height: 0);
+    var scaleFactor = 0.0;
     await tester.pumpWidget(
       MaterialApp(
         home: Center(
@@ -159,8 +182,9 @@ void main() {
               contextState: null,
               frame: testFrame(frameId: 8),
               textureController: _TestTextureController(),
-              onPhysicalViewportChanged: (width, height, _) {
+              onPhysicalViewportChanged: (width, height, scale) {
                 viewport = (width: width, height: height);
+                scaleFactor = scale;
               },
               onMouseEvent: (type, event) => mouseEvents.add((type, event)),
               onKeyEvent: (type, event) => keyEvents.add((type, event)),
@@ -213,6 +237,7 @@ void main() {
     ]);
     expect(mouseEvents.first.$2.x, closeTo(viewport.width / 2, 0.01));
     expect(mouseEvents.first.$2.y, closeTo(viewport.height / 2, 0.01));
+    expect(scaleFactor, 2);
     final wheels = mouseEvents
         .where((entry) => entry.$1 == 'wheel')
         .map((entry) => entry.$2)

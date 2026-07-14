@@ -6157,9 +6157,16 @@ const DOM_API_BOOTSTRAP: &str = r#"
     configurable: false,
   });
   Object.defineProperty(globalThis, '__vixenApplyHostViewState', {
-    value(focused, visible, viewportWidth, viewportHeight, maxScrollX, maxScrollY, scrollX, scrollY, emitScroll) {
+    value(focused, visible, viewportWidth, viewportHeight, deviceScale, maxScrollX, maxScrollY, scrollX, scrollY, emitScroll) {
       globalThis.innerWidth = Math.max(1, Number(viewportWidth) || 1);
       globalThis.innerHeight = Math.max(1, Number(viewportHeight) || 1);
+      globalThis.devicePixelRatio = Math.max(0.1, Number(deviceScale) || 1);
+      if (globalThis.screen) {
+        globalThis.screen.width = globalThis.innerWidth;
+        globalThis.screen.height = globalThis.innerHeight;
+        globalThis.screen.availWidth = globalThis.innerWidth;
+        globalThis.screen.availHeight = globalThis.innerHeight;
+      }
       topLevelScrollMaxX = Math.max(0, Number(maxScrollX) || 0);
       topLevelScrollMaxY = Math.max(0, Number(maxScrollY) || 0);
       const nextScrollX = Math.min(topLevelScrollMaxX, Math.max(0, Number(scrollX) || 0));

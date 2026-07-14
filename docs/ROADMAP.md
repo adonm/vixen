@@ -250,8 +250,13 @@ dispatch through BrowserCore hit testing, including matching-generation primary-
 press cancellation. A monotonic BrowserCore host-view state now carries bounded
 viewport/effective scale, content focus, visibility, and Flutter lifecycle;
 stale updates fail, inactive views reject input, and live documents observe
-focus/visibility state and events across navigation. CSS/physical scale
-separation and full lifecycle/native surface recovery remain. Current-generation
+focus/visibility state and events across navigation. One explicit bounded viewport
+transform now carries Flutter's effective device scale into BrowserCore: CSS
+layout and runtime viewport state divide the physical target by that scale,
+while paint, hit testing, wheel deltas, texture presentation, and Semantics use
+the matching physical projection. A 2.0-scale core/widget test covers visible
+paint, input, runtime DPR, and accessibility geometry without Dart-side node
+repair. Full lifecycle/native surface recovery remains. Current-generation
 frame and Semantics capture failures now retry twice with exact keys, and texture
 create/publish failures dispose and recreate the controller twice before a
 recovery-failed placeholder; newer frames get a fresh bounded attempt.
@@ -325,8 +330,7 @@ logical match with a highlight fragment on each intersected text run.
 Per-context 25–500% page zoom now remains BrowserCore-owned: it derives a CSS
 viewport, scales the single display list into the physical frame, converts
 physical input back to CSS coordinates, and projects Semantics bounds through
-the same transform. Profile persistence, device-scale correctness, and native
-surface-loss evidence remain.
+the same transform. Profile persistence and native surface-loss evidence remain.
 External WPT profiles now reject mutable or
 mismatched revisions, dirty/non-root checkouts, and fixtures outside declared
 sparse paths. Headless `--incremental` now captures real before/after frames from
@@ -635,13 +639,10 @@ it is not permission to implement the whole subsystem in one batch.
 
 **Linux Flutter lane**
 
-1. **Separate CSS and physical scale.** Make Flutter device scale, BrowserCore CSS
-   viewport, input conversion, texture dimensions, and Semantics bounds use one
-   explicit transform; prove non-1.0 scale without frontend coordinate repair.
-2. **Recover a real native surface/lifecycle fault.** Add deterministic runner or
+1. **Recover a real native surface/lifecycle fault.** Add deterministic runner or
    presenter fault injection for detach/resume and texture loss, retain bounded
    retries, reject stale frames, and prove a newer frame becomes visible.
-3. **Widen native interaction evidence.** Add the next highest-value IME/device
+2. **Widen native interaction evidence.** Add the next highest-value IME/device
    case and restoration-event/gesture fidelity, then broaden AT/screen-reader
    actions. Keep each language, device, or relationship mapping independently
    reviewable.

@@ -328,8 +328,12 @@ Flutter also sends one monotonic BrowserCore-owned host-view state for content
 focus, visibility, effective scale, and application lifecycle. Current documents
 expose the accepted state through `document.hasFocus()`, `hidden`, and
 `visibilityState`, dispatch focus/blur and `visibilitychange`, and reject input
-while inactive. CSS-versus-physical scale correction and platform lifecycle/
-native surface recovery are not established by this slice.
+while inactive. Flutter now derives one bounded logical/physical viewport
+transform; BrowserCore uses its effective scale for the CSS viewport and runtime
+`devicePixelRatio`, then applies the same physical projection to paint, hit
+testing, pointer/wheel input, and accessibility bounds. Widget and BrowserCore
+tests prove the 2.0-scale path. Platform lifecycle/native surface recovery is not
+established by this slice.
 
 The Flutter coordinator now retries a failing current-generation BrowserCore
 frame or Semantics capture twice while preserving the exact context/document/
@@ -379,7 +383,7 @@ list into that frame, maps physical hit-test/wheel coordinates back to CSS
 pixels, and scales accessibility bounds into the displayed coordinate space.
 Zoom survives document navigation in the context but is not yet persisted in
 the profile session. Text shaping quality, advanced scroll behavior,
-device-scale correctness, and native surface-loss evidence remain separate gaps.
+and native surface-loss evidence remain separate gaps.
 
 ---
 
