@@ -54,6 +54,11 @@ static uint32_t (*const poll_event_fn)(VixenHandle, VixenBuffer *) =
     &vixen_poll_event;
 static uint32_t (*const wait_event_fn)(VixenHandle, uint64_t, VixenBuffer *) =
     &vixen_wait_event;
+static uint32_t (*const renderer_poll_fn)(VixenHandle, uint64_t, VixenBuffer *) =
+    &vixen_renderer_poll;
+static uint32_t (*const renderer_respond_fn)(VixenHandle, const uint8_t *,
+                                             size_t, VixenBuffer *) =
+    &vixen_renderer_respond;
 static uint32_t (*const buffer_release_fn)(uint64_t) = &vixen_buffer_release;
 static uint32_t (*const capture_frame_fn)(VixenHandle, uint64_t, uint64_t,
                                           uint32_t, uint32_t, VixenFrame *,
@@ -63,6 +68,7 @@ static uint32_t (*const frame_release_fn)(uint64_t) = &vixen_frame_release;
 int main(void) {
     return abi_version_fn == NULL || open_fn == NULL || destroy_fn == NULL ||
            command_fn == NULL || poll_event_fn == NULL ||
-           wait_event_fn == NULL || buffer_release_fn == NULL ||
+           wait_event_fn == NULL || renderer_poll_fn == NULL ||
+           renderer_respond_fn == NULL || buffer_release_fn == NULL ||
            capture_frame_fn == NULL || frame_release_fn == NULL;
 }

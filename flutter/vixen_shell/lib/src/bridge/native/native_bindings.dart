@@ -5,6 +5,7 @@ import 'dart:typed_data';
 import 'package:ffi/ffi.dart';
 
 import 'native_protocol.dart';
+import 'native_renderer_protocol.dart';
 
 final class VixenBuffer extends Struct {
   @Uint64()
@@ -98,6 +99,24 @@ typedef _WaitEventNative = Uint32 Function(
   Pointer<VixenBuffer>,
 );
 typedef _WaitEventDart = int Function(int, int, Pointer<VixenBuffer>);
+typedef _RendererPollNative = Uint32 Function(
+  Uint64,
+  Uint64,
+  Pointer<VixenBuffer>,
+);
+typedef _RendererPollDart = int Function(int, int, Pointer<VixenBuffer>);
+typedef _RendererRespondNative = Uint32 Function(
+  Uint64,
+  Pointer<Uint8>,
+  Size,
+  Pointer<VixenBuffer>,
+);
+typedef _RendererRespondDart = int Function(
+  int,
+  Pointer<Uint8>,
+  int,
+  Pointer<VixenBuffer>,
+);
 typedef _BufferReleaseNative = Uint32 Function(Uint64);
 typedef _BufferReleaseDart = int Function(int);
 typedef _CaptureFrameNative = Uint32 Function(
@@ -139,6 +158,14 @@ class _VixenNativeBindings {
       waitEvent = library.lookupFunction<_WaitEventNative, _WaitEventDart>(
         'vixen_wait_event',
       ),
+      rendererPoll = library
+          .lookupFunction<_RendererPollNative, _RendererPollDart>(
+            'vixen_renderer_poll',
+          ),
+      rendererRespond = library
+          .lookupFunction<_RendererRespondNative, _RendererRespondDart>(
+            'vixen_renderer_respond',
+          ),
       bufferRelease = library
           .lookupFunction<_BufferReleaseNative, _BufferReleaseDart>(
             'vixen_buffer_release',
@@ -158,6 +185,8 @@ class _VixenNativeBindings {
   final _CommandDart command;
   final _PollEventDart pollEvent;
   final _WaitEventDart waitEvent;
+  final _RendererPollDart rendererPoll;
+  final _RendererRespondDart rendererRespond;
   final _BufferReleaseDart bufferRelease;
   final _CaptureFrameDart captureFrame;
   final _FrameReleaseDart frameRelease;
@@ -265,6 +294,51 @@ class VixenNativeApi {
       );
     } finally {
       calloc.free(output);
+    }
+  }
+
+  NativeRendererRequest? pollRenderer(
+    int handle, {
+    int timeoutMilliseconds = 0,
+  }) {
+    if (timeoutMilliseconds < 0 ||
+        timeoutMilliseconds > vixenMaxWaitMilliseconds) {
+      throw const NativeProtocolException('renderer poll timeout is invalid');
+    }
+    final output = calloc<VixenBuffer>();
+    try {
+      final status = _bindings.rendererPoll(
+        handle,
+        timeoutMilliseconds,
+        output,
+      );
+      final envelope = _consumeOutput(
+        status,
+        output,
+        expectedType: 'renderer_request',
+        allowNoEvent: true,
+      );
+      return envelope == null ? null : decodeRendererRequest(envelope);
+    } finally {
+      calloc.free(output);
+    }
+  }
+
+  void respondRenderer(int handle, Map<String, Object?> response) {
+    final bytes = encodeRendererResponse(response);
+    final input = _copyInput(bytes);
+    final output = calloc<VixenBuffer>();
+    try {
+      final status = _bindings.rendererRespond(
+        handle,
+        input,
+        bytes.length,
+        output,
+      );
+      _consumeOutput(status, output, expectedType: 'renderer_accepted');
+    } finally {
+      calloc.free(output);
+      malloc.free(input);
     }
   }
 

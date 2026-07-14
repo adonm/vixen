@@ -92,6 +92,9 @@ typedef struct VixenFrame {
  * - Do not concurrently destroy a handle with another call on that handle.
  *   Destroy is explicit; zero, unknown, and repeated destruction fail safely.
  * - There are no callbacks. Commands and events are copied across this ABI.
+ * - Renderer poll/respond use a dedicated bounded broker and do not take the
+ *   serialized BrowserCore controller lock. They remain serviceable while a
+ *   browser command or V8 evaluation waits for renderer work.
  * - Input pointers must address their declared readable byte ranges for the
  *   duration of the call. Output pointers must be writable for the call.
  *   Null input/output pointers fail when detectable; arbitrary invalid non-null
@@ -198,6 +201,23 @@ uint32_t vixen_poll_event(VixenHandle handle, VixenBuffer *out_json);
 uint32_t vixen_wait_event(VixenHandle handle,
                           uint64_t timeout_milliseconds,
                           VixenBuffer *out_json);
+
+/*
+ * Polls the dedicated renderer request queue. Successful output is a strict
+ * renderer_request JSON envelope. NO_EVENT writes an empty descriptor.
+ */
+uint32_t vixen_renderer_poll(VixenHandle handle,
+                             uint64_t timeout_milliseconds,
+                             VixenBuffer *out_json);
+
+/*
+ * Submits one strict, correlated renderer_response JSON envelope. This path is
+ * independent of vixen_command serialization and never re-enters BrowserCore.
+ */
+uint32_t vixen_renderer_respond(VixenHandle handle,
+                                const uint8_t *message,
+                                size_t message_len,
+                                VixenBuffer *out_json);
 
 /* Releases an output allocation by token. Safe failure is UNKNOWN_BUFFER. */
 uint32_t vixen_buffer_release(uint64_t token);

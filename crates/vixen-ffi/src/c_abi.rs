@@ -95,14 +95,19 @@ pub(crate) struct ControllerState {
     pub(crate) next_frame_id: u64,
 }
 
-pub(crate) type ControllerEntry = Arc<Mutex<ControllerState>>;
+pub(crate) struct ControllerEntry {
+    pub(crate) state: Mutex<ControllerState>,
+    pub(crate) renderer: crate::RenderBroker,
+}
+
+pub(crate) type SharedControllerEntry = Arc<ControllerEntry>;
 
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
 static NEXT_BUFFER: AtomicU64 = AtomicU64::new(1);
-static CONTROLLERS: OnceLock<Mutex<HashMap<u64, ControllerEntry>>> = OnceLock::new();
+static CONTROLLERS: OnceLock<Mutex<HashMap<u64, SharedControllerEntry>>> = OnceLock::new();
 static BUFFERS: OnceLock<Mutex<HashMap<u64, Box<[u8]>>>> = OnceLock::new();
 
-fn controllers() -> &'static Mutex<HashMap<u64, ControllerEntry>> {
+fn controllers() -> &'static Mutex<HashMap<u64, SharedControllerEntry>> {
     CONTROLLERS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -130,7 +135,7 @@ impl AbiError {
         Self::new(VIXEN_STATUS_INVALID_ARGUMENT, FFI_INVALID_ARGUMENT, message)
     }
 
-    fn invalid_command(message: impl Into<String>) -> Self {
+    pub(crate) fn invalid_command(message: impl Into<String>) -> Self {
         Self::new(VIXEN_STATUS_INVALID_COMMAND, FFI_INVALID_COMMAND, message)
     }
 
@@ -184,11 +189,14 @@ pub unsafe extern "C" fn vixen_open(
             }
             let controller = FlutterBrowserController::open(profile_path).map_err(browser_error)?;
             let handle = next_token(&NEXT_HANDLE, "browser handle")?;
-            let entry = Arc::new(Mutex::new(ControllerState {
-                controller,
-                next_event_sequence: 1,
-                next_frame_id: 1,
-            }));
+            let entry = Arc::new(ControllerEntry {
+                state: Mutex::new(ControllerState {
+                    controller,
+                    next_event_sequence: 1,
+                    next_frame_id: 1,
+                }),
+                renderer: crate::RenderBroker::new(),
+            });
             controllers()
                 .lock()
                 .map_err(|_| AbiError::internal("browser registry is unavailable"))?
@@ -218,7 +226,8 @@ pub extern "C" fn vixen_destroy(handle: u64) -> u32 {
             Ok(mut registry) => registry.remove(&handle),
             Err(_) => return VIXEN_STATUS_INTERNAL_ERROR,
         };
-        if removed.is_some() {
+        if let Some(entry) = removed {
+            let _ = entry.renderer.shutdown();
             VIXEN_STATUS_OK
         } else {
             VIXEN_STATUS_UNKNOWN_HANDLE
@@ -253,6 +262,7 @@ pub unsafe extern "C" fn vixen_command(
             let command = parse_command(&message)?;
             let entry = controller_entry(handle)?;
             let response = entry
+                .state
                 .lock()
                 .map_err(|_| AbiError::internal("browser handle is unavailable"))?
                 .controller
@@ -344,6 +354,7 @@ fn event_impl(handle: u64, timeout: Option<Duration>, out_json: *mut VixenBuffer
     let result = (|| {
         let entry = controller_entry(handle)?;
         let mut state = entry
+            .state
             .lock()
             .map_err(|_| AbiError::internal("browser handle is unavailable"))?;
         let event = match timeout {
@@ -405,7 +416,7 @@ pub(crate) fn finish(result: Result<(), AbiError>, out_json: *mut VixenBuffer) -
     }
 }
 
-fn write_json(out_json: *mut VixenBuffer, value: &Value) -> Result<(), AbiError> {
+pub(crate) fn write_json(out_json: *mut VixenBuffer, value: &Value) -> Result<(), AbiError> {
     let bytes = serde_json::to_vec(value)
         .map_err(|error| AbiError::internal(format!("could not encode JSON output: {error}")))?;
     if bytes.len() > VIXEN_MAX_OUTPUT_BYTES {
@@ -445,7 +456,7 @@ pub(crate) fn next_token(counter: &AtomicU64, kind: &str) -> Result<u64, AbiErro
         .map_err(|_| AbiError::internal(format!("{kind} exhausted")))
 }
 
-pub(crate) fn controller_entry(handle: u64) -> Result<ControllerEntry, AbiError> {
+pub(crate) fn controller_entry(handle: u64) -> Result<SharedControllerEntry, AbiError> {
     if handle == 0 {
         return Err(AbiError::new(
             VIXEN_STATUS_UNKNOWN_HANDLE,
@@ -471,7 +482,7 @@ pub(crate) fn browser_error(error: BrowserError) -> AbiError {
     AbiError::new(VIXEN_STATUS_BROWSER_ERROR, error.code, error.message)
 }
 
-fn copy_utf8_input(
+pub(crate) fn copy_utf8_input(
     input: *const u8,
     len: usize,
     maximum: usize,

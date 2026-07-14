@@ -156,6 +156,7 @@ fn capture_impl(
 
     let entry = controller_entry(handle)?;
     let mut state = entry
+        .state
         .lock()
         .map_err(|_| AbiError::internal("browser handle is unavailable"))?;
     let frame_id = state.next_frame_id;

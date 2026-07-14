@@ -397,6 +397,24 @@ void _validateEnvelope(Map<String, Object?> envelope) {
       }
       _requireTaggedObject(envelope['event'], 'event');
       return;
+    case 'renderer_request':
+      _expectEnvelopeKeys(envelope, const <String>{
+        'v',
+        'type',
+        'request_id',
+        'request',
+      });
+      if (envelope['request_id'] is! int ||
+          (envelope['request_id']! as int) <= 0) {
+        throw const NativeProtocolException(
+          'renderer request id must be positive',
+        );
+      }
+      _requireTaggedObject(envelope['request'], 'renderer request');
+      return;
+    case 'renderer_accepted':
+      _expectEnvelopeKeys(envelope, const <String>{'v', 'type'});
+      return;
     case 'error':
       _expectEnvelopeKeys(envelope, const <String>{'v', 'type', 'error'});
       final error = envelope['error'];

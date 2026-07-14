@@ -4,7 +4,9 @@
 
 pub mod c_abi;
 pub mod c_frame;
+pub mod c_renderer;
 mod frame;
+mod render_wire;
 mod renderer_broker;
 
 pub use renderer_broker::{RenderBroker, RenderBrokerError};

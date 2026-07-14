@@ -144,6 +144,7 @@ fn frame_id_exhaustion_fails_before_snapshot_or_render() {
     let handle = open(&profile);
     controller_entry(handle.0)
         .unwrap()
+        .state
         .lock()
         .unwrap()
         .next_frame_id = u64::MAX;
@@ -317,11 +318,14 @@ fn open_controller(controller: FlutterBrowserController) -> Handle {
     let handle = next_token(&NEXT_HANDLE, "browser handle").unwrap();
     controllers().lock().unwrap().insert(
         handle,
-        Arc::new(Mutex::new(ControllerState {
-            controller,
-            next_event_sequence: 1,
-            next_frame_id: 1,
-        })),
+        Arc::new(ControllerEntry {
+            state: Mutex::new(ControllerState {
+                controller,
+                next_event_sequence: 1,
+                next_frame_id: 1,
+            }),
+            renderer: crate::RenderBroker::new(),
+        }),
     );
     Handle(handle)
 }
