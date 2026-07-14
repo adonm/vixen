@@ -12,7 +12,7 @@ use super::{
     RENDER_MAX_RESOURCES_PER_NODE, RENDER_MAX_SCROLL_ENTRIES, RENDER_MAX_SEMANTIC_ACTIONS_PER_NODE,
     RENDER_MAX_STRING_BYTES, RENDER_MAX_STYLES_PER_NODE, RENDER_MAX_TOTAL_RESOURCE_BYTES,
     RENDER_MAX_TOTAL_STRING_BYTES, RENDER_MAX_TREE_DEPTH, RENDER_PROTOCOL_VERSION, RenderPoint,
-    RenderProtocolError, render_error_codes, validate_version,
+    RenderProtocolError, RenderViewport, render_error_codes, validate_version,
 };
 
 /// Exact BrowserCore source generations consumed by one renderer document.
@@ -163,16 +163,18 @@ pub struct RenderScrollIntent {
 pub struct FullRenderSnapshot {
     pub version: u16,
     pub revision: RenderRevision,
+    pub viewport: RenderViewport,
     pub nodes: Vec<RenderNode>,
     pub resources: Vec<RenderResource>,
     pub scroll_intents: Vec<RenderScrollIntent>,
 }
 
 impl FullRenderSnapshot {
-    pub fn new(revision: RenderRevision) -> Self {
+    pub fn new(revision: RenderRevision, viewport: RenderViewport) -> Self {
         Self {
             version: RENDER_PROTOCOL_VERSION,
             revision,
+            viewport,
             nodes: Vec::new(),
             resources: Vec::new(),
             scroll_intents: Vec::new(),
@@ -182,12 +184,14 @@ impl FullRenderSnapshot {
     pub fn validate(&self) -> Result<(), RenderProtocolError> {
         validate_version(self.version)?;
         self.revision.validate()?;
+        self.viewport.validate()?;
         validate_state(&self.nodes, &self.resources, &self.scroll_intents)
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderMutation {
+    SetViewport(RenderViewport),
     UpsertNode(RenderNode),
     RemoveNode { node_id: RenderNodeId },
     UpsertResource(RenderResource),
@@ -265,6 +269,7 @@ pub enum ApplyRenderBatchOutcome {
 #[derive(Debug, Clone, Default)]
 pub struct RenderReplica {
     revision: Option<RenderRevision>,
+    viewport: Option<RenderViewport>,
     nodes: BTreeMap<RenderNodeId, RenderNode>,
     resources: BTreeMap<RenderResourceId, RenderResource>,
     scroll_intents: BTreeMap<RenderScrollNodeId, RenderScrollIntent>,
@@ -279,12 +284,25 @@ impl RenderReplica {
         self.nodes.len()
     }
 
+    pub fn viewport(&self) -> Option<RenderViewport> {
+        self.viewport
+    }
+
     pub fn resource_count(&self) -> usize {
         self.resources.len()
     }
 
     pub fn contains_node(&self, node_id: RenderNodeId) -> bool {
         self.nodes.contains_key(&node_id)
+    }
+
+    pub fn node_text_utf16_len(&self, node_id: RenderNodeId) -> Option<usize> {
+        match &self.nodes.get(&node_id)?.kind {
+            RenderNodeKind::Text { text }
+            | RenderNodeKind::PseudoBefore { text }
+            | RenderNodeKind::PseudoAfter { text } => Some(text.encode_utf16().count()),
+            RenderNodeKind::Element { .. } => None,
+        }
     }
 
     pub fn contains_semantic_node(&self, semantic_node_id: SemanticNodeId) -> bool {
@@ -303,11 +321,49 @@ impl RenderReplica {
         })
     }
 
+    pub fn semantic_value_utf16_len(&self, semantic_node_id: SemanticNodeId) -> Option<usize> {
+        self.semantic_node(semantic_node_id).map(|semantic| {
+            semantic
+                .value
+                .as_deref()
+                .unwrap_or_default()
+                .encode_utf16()
+                .count()
+        })
+    }
+
+    pub fn node_has_semantic_node(
+        &self,
+        node_id: RenderNodeId,
+        semantic_node_id: SemanticNodeId,
+    ) -> bool {
+        self.nodes.get(&node_id).is_some_and(|node| {
+            node.semantic
+                .as_ref()
+                .is_some_and(|semantic| semantic.id == semantic_node_id)
+        })
+    }
+
     pub fn accept_full_snapshot(
         &mut self,
         snapshot: FullRenderSnapshot,
     ) -> Result<(), RenderProtocolError> {
         snapshot.validate()?;
+        let next_nodes = snapshot
+            .nodes
+            .into_iter()
+            .map(|node| (node.id, node))
+            .collect::<BTreeMap<_, _>>();
+        let next_resources = snapshot
+            .resources
+            .into_iter()
+            .map(|resource| (resource.id, resource))
+            .collect::<BTreeMap<_, _>>();
+        let next_scroll_intents = snapshot
+            .scroll_intents
+            .into_iter()
+            .map(|intent| (intent.scroll_node_id, intent))
+            .collect::<BTreeMap<_, _>>();
         if let Some(current) = self.revision
             && current.context_id == snapshot.revision.context_id
             && current.document_id == snapshot.revision.document_id
@@ -334,24 +390,34 @@ impl RenderReplica {
                     "full render snapshot regressed the current revision",
                 ));
             }
+            if current == snapshot.revision {
+                if self.viewport == Some(snapshot.viewport)
+                    && self.nodes == next_nodes
+                    && self.resources == next_resources
+                    && self.scroll_intents == next_scroll_intents
+                {
+                    return Ok(());
+                }
+                return Err(RenderProtocolError::new(
+                    render_error_codes::REVISION,
+                    "equal render revision carried different snapshot state",
+                ));
+            }
+            if current.viewport_generation == snapshot.revision.viewport_generation
+                && self.viewport != Some(snapshot.viewport)
+            {
+                return Err(RenderProtocolError::new(
+                    render_error_codes::REVISION,
+                    "full render snapshot changed viewport without advancing its generation",
+                ));
+            }
         }
 
         self.revision = Some(snapshot.revision);
-        self.nodes = snapshot
-            .nodes
-            .into_iter()
-            .map(|node| (node.id, node))
-            .collect();
-        self.resources = snapshot
-            .resources
-            .into_iter()
-            .map(|resource| (resource.id, resource))
-            .collect();
-        self.scroll_intents = snapshot
-            .scroll_intents
-            .into_iter()
-            .map(|intent| (intent.scroll_node_id, intent))
-            .collect();
+        self.viewport = Some(snapshot.viewport);
+        self.nodes = next_nodes;
+        self.resources = next_resources;
+        self.scroll_intents = next_scroll_intents;
         Ok(())
     }
 
@@ -381,8 +447,21 @@ impl RenderReplica {
         let mut nodes = self.nodes.clone();
         let mut resources = self.resources.clone();
         let mut scroll_intents = self.scroll_intents.clone();
+        let mut viewport = self.viewport;
+        let mut viewport_mutations = 0usize;
         for mutation in batch.mutations {
             match mutation {
+                RenderMutation::SetViewport(next_viewport) => {
+                    next_viewport.validate()?;
+                    viewport = Some(next_viewport);
+                    viewport_mutations += 1;
+                    if viewport_mutations > 1 {
+                        return Err(RenderProtocolError::new(
+                            render_error_codes::INVALID_GRAPH,
+                            "render mutation batch repeats the viewport",
+                        ));
+                    }
+                }
                 RenderMutation::UpsertNode(node) => {
                     nodes.insert(node.id, node);
                 }
@@ -410,12 +489,22 @@ impl RenderReplica {
             }
         }
 
+        let viewport_advanced =
+            batch.target_revision.viewport_generation != batch.base_revision.viewport_generation;
+        if viewport_advanced != (viewport_mutations == 1) {
+            return Err(RenderProtocolError::new(
+                render_error_codes::REVISION,
+                "viewport generation and viewport mutation must advance together",
+            ));
+        }
+
         let node_values = nodes.values().cloned().collect::<Vec<_>>();
         let resource_values = resources.values().cloned().collect::<Vec<_>>();
         let scroll_values = scroll_intents.values().copied().collect::<Vec<_>>();
         validate_state(&node_values, &resource_values, &scroll_values)?;
 
         self.revision = Some(batch.target_revision);
+        self.viewport = viewport;
         self.nodes = nodes;
         self.resources = resources;
         self.scroll_intents = scroll_intents;
@@ -685,8 +774,17 @@ mod tests {
             document_id: id(2),
             source_generation: generation,
             style_generation: generation,
-            viewport_generation: generation,
+            viewport_generation: 1,
             resource_generation: generation,
+        }
+    }
+
+    fn viewport() -> RenderViewport {
+        RenderViewport {
+            width: 800,
+            height: 600,
+            device_scale: 1.0,
+            page_zoom: 1.0,
         }
     }
 
@@ -716,7 +814,7 @@ mod tests {
     }
 
     fn snapshot(generation: u64) -> FullRenderSnapshot {
-        let mut snapshot = FullRenderSnapshot::new(revision(generation));
+        let mut snapshot = FullRenderSnapshot::new(revision(generation), viewport());
         snapshot.nodes.push(root_node(1));
         snapshot
     }
@@ -789,6 +887,24 @@ mod tests {
     }
 
     #[test]
+    fn equal_revision_snapshot_must_be_idempotent() {
+        let mut replica = RenderReplica::default();
+        let original = snapshot(1);
+        replica.accept_full_snapshot(original.clone()).unwrap();
+        replica.accept_full_snapshot(original).unwrap();
+
+        let mut changed = snapshot(1);
+        changed.nodes[0].kind = RenderNodeKind::Element {
+            local_name: "article".to_owned(),
+        };
+        assert_eq!(
+            replica.accept_full_snapshot(changed).unwrap_err().code,
+            render_error_codes::REVISION
+        );
+        assert_eq!(replica.node_count(), 1);
+    }
+
+    #[test]
     fn missed_batch_base_requests_deterministic_full_resync() {
         let mut replica = RenderReplica::default();
         replica.accept_full_snapshot(snapshot(1)).unwrap();
@@ -849,6 +965,41 @@ mod tests {
             }
         );
         assert_eq!(replica.node_count(), 2);
+    }
+
+    #[test]
+    fn viewport_value_and_generation_advance_atomically() {
+        let mut replica = RenderReplica::default();
+        replica.accept_full_snapshot(snapshot(1)).unwrap();
+        let mut target = revision(2);
+        target.viewport_generation = 2;
+
+        let missing_value = replica
+            .apply_batch(RenderMutationBatch {
+                version: RENDER_PROTOCOL_VERSION,
+                base_revision: revision(1),
+                target_revision: target,
+                mutations: Vec::new(),
+            })
+            .unwrap_err();
+        assert_eq!(missing_value.code, render_error_codes::REVISION);
+        assert_eq!(replica.revision(), Some(revision(1)));
+
+        let next_viewport = RenderViewport {
+            width: 1024,
+            height: 768,
+            device_scale: 2.0,
+            page_zoom: 1.25,
+        };
+        replica
+            .apply_batch(RenderMutationBatch {
+                version: RENDER_PROTOCOL_VERSION,
+                base_revision: revision(1),
+                target_revision: target,
+                mutations: vec![RenderMutation::SetViewport(next_viewport)],
+            })
+            .unwrap();
+        assert_eq!(replica.viewport(), Some(next_viewport));
     }
 
     #[test]
