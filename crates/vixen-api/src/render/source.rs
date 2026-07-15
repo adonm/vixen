@@ -210,6 +210,102 @@ pub struct RenderMutationBatch {
 }
 
 impl RenderMutationBatch {
+    /// Build the deterministic incremental update from one validated full
+    /// snapshot to its exact same-document successor.
+    pub fn between(
+        base: &FullRenderSnapshot,
+        target: &FullRenderSnapshot,
+    ) -> Result<Self, RenderProtocolError> {
+        base.validate()?;
+        target.validate()?;
+        target.revision.validate_successor_of(base.revision)?;
+
+        let base_nodes = base
+            .nodes
+            .iter()
+            .map(|node| (node.id, node))
+            .collect::<BTreeMap<_, _>>();
+        let target_nodes = target
+            .nodes
+            .iter()
+            .map(|node| (node.id, node))
+            .collect::<BTreeMap<_, _>>();
+        let base_resources = base
+            .resources
+            .iter()
+            .map(|resource| (resource.id, resource))
+            .collect::<BTreeMap<_, _>>();
+        let target_resources = target
+            .resources
+            .iter()
+            .map(|resource| (resource.id, resource))
+            .collect::<BTreeMap<_, _>>();
+        let base_scroll = base
+            .scroll_intents
+            .iter()
+            .map(|intent| (intent.scroll_node_id, intent))
+            .collect::<BTreeMap<_, _>>();
+        let target_scroll = target
+            .scroll_intents
+            .iter()
+            .map(|intent| (intent.scroll_node_id, intent))
+            .collect::<BTreeMap<_, _>>();
+
+        let mut mutations = Vec::new();
+        if base.viewport != target.viewport {
+            mutations.push(RenderMutation::SetViewport(target.viewport));
+        }
+        mutations.extend(
+            base_nodes
+                .keys()
+                .filter(|node_id| !target_nodes.contains_key(node_id))
+                .map(|node_id| RenderMutation::RemoveNode { node_id: *node_id }),
+        );
+        mutations.extend(
+            target_nodes
+                .iter()
+                .filter(|(node_id, node)| base_nodes.get(node_id) != Some(node))
+                .map(|(_, node)| RenderMutation::UpsertNode((*node).clone())),
+        );
+        mutations.extend(
+            base_resources
+                .keys()
+                .filter(|resource_id| !target_resources.contains_key(resource_id))
+                .map(|resource_id| RenderMutation::RemoveResource {
+                    resource_id: *resource_id,
+                }),
+        );
+        mutations.extend(
+            target_resources
+                .iter()
+                .filter(|(resource_id, resource)| base_resources.get(resource_id) != Some(resource))
+                .map(|(_, resource)| RenderMutation::UpsertResource((*resource).clone())),
+        );
+        mutations.extend(
+            base_scroll
+                .keys()
+                .filter(|scroll_node_id| !target_scroll.contains_key(scroll_node_id))
+                .map(|scroll_node_id| RenderMutation::RemoveScrollIntent {
+                    scroll_node_id: *scroll_node_id,
+                }),
+        );
+        mutations.extend(
+            target_scroll
+                .iter()
+                .filter(|(scroll_node_id, intent)| base_scroll.get(scroll_node_id) != Some(intent))
+                .map(|(_, intent)| RenderMutation::SetScrollIntent(**intent)),
+        );
+
+        let batch = Self {
+            version: RENDER_PROTOCOL_VERSION,
+            base_revision: base.revision,
+            target_revision: target.revision,
+            mutations,
+        };
+        batch.validate()?;
+        Ok(batch)
+    }
+
     pub fn validate(&self) -> Result<(), RenderProtocolError> {
         validate_version(self.version)?;
         self.target_revision
@@ -957,6 +1053,88 @@ mod tests {
             render_error_codes::REVISION
         );
         assert_eq!(replica.node_count(), 1);
+    }
+
+    #[test]
+    fn snapshot_diff_is_deterministic_and_reconstructs_the_target() {
+        let base = snapshot(1);
+        let mut target = snapshot(2);
+        target.nodes[0].styles[0].value = "grid".to_owned();
+        target.nodes.push(RenderNode {
+            id: id(2),
+            parent_id: Some(id(1)),
+            sibling_index: 0,
+            depth: 1,
+            kind: RenderNodeKind::Text {
+                text: "updated".to_owned(),
+            },
+            styles: Vec::new(),
+            resource_ids: Vec::new(),
+            semantic: None,
+        });
+        target.scroll_intents.push(RenderScrollIntent {
+            scroll_node_id: id(1),
+            node_id: id(1),
+            kind: RenderScrollIntentKind::To(RenderPoint { x: 0.0, y: 12.0 }),
+        });
+
+        let batch = RenderMutationBatch::between(&base, &target).unwrap();
+        assert_eq!(batch, RenderMutationBatch::between(&base, &target).unwrap());
+        assert_eq!(batch.base_revision, base.revision);
+        assert_eq!(batch.target_revision, target.revision);
+        assert!(matches!(
+            batch.mutations.as_slice(),
+            [
+                RenderMutation::UpsertNode(_),
+                RenderMutation::UpsertNode(_),
+                RenderMutation::SetScrollIntent(_)
+            ]
+        ));
+
+        let mut replica = RenderReplica::default();
+        replica.accept_full_snapshot(base).unwrap();
+        assert_eq!(
+            replica.apply_batch(batch).unwrap(),
+            ApplyRenderBatchOutcome::Applied {
+                revision: target.revision
+            }
+        );
+        assert_eq!(replica.node_count(), target.nodes.len());
+        assert_eq!(replica.revision(), Some(target.revision));
+    }
+
+    #[test]
+    fn snapshot_diff_rejects_cross_document_and_over_limit_updates() {
+        let base = snapshot(1);
+        let mut cross_document = snapshot(2);
+        cross_document.revision.document_id = id(9);
+        assert_eq!(
+            RenderMutationBatch::between(&base, &cross_document)
+                .unwrap_err()
+                .code,
+            render_error_codes::REVISION
+        );
+
+        let mut target = snapshot(2);
+        for raw_id in 2..=(RENDER_MAX_MUTATIONS as u64 + 2) {
+            target.nodes.push(RenderNode {
+                id: id(raw_id),
+                parent_id: Some(id(1)),
+                sibling_index: u32::try_from(raw_id - 2).unwrap(),
+                depth: 1,
+                kind: RenderNodeKind::Text {
+                    text: String::new(),
+                },
+                styles: Vec::new(),
+                resource_ids: Vec::new(),
+                semantic: None,
+            });
+        }
+        let error = RenderMutationBatch::between(&base, &target).unwrap_err();
+        assert!(matches!(
+            error.code,
+            render_error_codes::LIMIT | render_error_codes::INVALID_GRAPH
+        ));
     }
 
     #[test]
