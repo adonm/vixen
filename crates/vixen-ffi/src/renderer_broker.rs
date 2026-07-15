@@ -347,7 +347,11 @@ impl RenderBroker {
         if state.closed {
             return Err(closed_error());
         }
-        if state.submissions.front() != Some(expected) {
+        if !state
+            .submissions
+            .front()
+            .is_some_and(|front| same_submission_identity(front, expected))
+        {
             return Err(RenderBrokerError::new(
                 "render.stale",
                 "renderer submission queue changed before acceptance",
@@ -466,6 +470,21 @@ impl RenderBroker {
             .state
             .lock()
             .map_err(|_| internal_error("renderer broker state is unavailable"))
+    }
+}
+
+fn same_submission_identity(left: &RenderBridgeSubmission, right: &RenderBridgeSubmission) -> bool {
+    match (left, right) {
+        (RenderBridgeSubmission::Commit(left), RenderBridgeSubmission::Commit(right)) => {
+            left.commit_id == right.commit_id && left.revision == right.revision
+        }
+        (RenderBridgeSubmission::Presented(left), RenderBridgeSubmission::Presented(right)) => {
+            left == right
+        }
+        (RenderBridgeSubmission::Resync(left), RenderBridgeSubmission::Resync(right)) => {
+            left == right
+        }
+        _ => false,
     }
 }
 

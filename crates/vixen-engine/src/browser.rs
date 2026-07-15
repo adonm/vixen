@@ -86,6 +86,12 @@ pub trait SynchronousRenderer: Send + Sync {
         snapshot: vixen_api::FullRenderSnapshot,
         cancellation: &crate::script::RenderLayoutCancellation,
     ) -> Result<RenderCommit, SynchronousRendererError>;
+
+    fn query_text(
+        &self,
+        query: vixen_api::RenderTextQueryBatch,
+        cancellation: &crate::script::RenderLayoutCancellation,
+    ) -> Result<vixen_api::RenderTextQueryBatchResult, SynchronousRendererError>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

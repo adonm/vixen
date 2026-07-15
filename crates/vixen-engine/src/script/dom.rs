@@ -15,7 +15,10 @@ use std::sync::{Arc, Mutex};
 use deno_core::serde_json::json;
 use deno_core::{Extension, ExtensionFileSource, OpState};
 
-use vixen_api::ElementInfo;
+use vixen_api::{
+    ElementInfo, RENDER_PROTOCOL_VERSION, RenderQueryId, RenderTextAffinity, RenderTextQuery,
+    RenderTextQueryBatch, RenderTextQueryKind, RenderTextQueryValue,
+};
 
 use crate::class_list::DomTokenList;
 use crate::dataset::collect_dataset;
@@ -194,6 +197,7 @@ deno_core::extension!(
         op_vixen_dom_element_tokens,
         op_vixen_dom_element_dataset,
         op_vixen_dom_element_rect,
+        op_vixen_dom_range_rect,
         op_vixen_dom_image_current_src,
         op_vixen_dom_form_entries,
         op_vixen_dom_set_document_title,
@@ -720,55 +724,197 @@ fn synchronous_layout_rect(
     layout: &SynchronousLayoutHost,
     node_id: usize,
 ) -> deno_core::serde_json::Value {
+    let (_, commit) = match synchronous_layout(layout) {
+        Ok(result) => result,
+        Err(message) => return json!({ "ok": false, "message": message }),
+    };
+    let Ok(raw_node_id) = u64::try_from(node_id) else {
+        return json!({ "ok": false, "message": "DOM node id exceeds renderer range" });
+    };
+    let rect = commit
+        .geometry_index
+        .iter()
+        .filter(|geometry| geometry.node_id.get() == raw_node_id)
+        .map(|geometry| geometry.border_box)
+        .reduce(union_render_rect);
+    renderer_rect_result(rect)
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_dom_range_rect(
+    state: &mut OpState,
+    parent_node_id: u32,
+    start_offset: u32,
+    end_offset: u32,
+    collapsed: bool,
+    whole_text: bool,
+) -> deno_core::serde_json::Value {
+    let host = state.borrow::<DomHost>().0.clone();
+    let Some(layout) = &host.synchronous_layout else {
+        return json!({ "ok": true, "rendererGeometry": false, "rect": null });
+    };
+    let (snapshot, commit) = match synchronous_layout(layout) {
+        Ok(result) => result,
+        Err(message) => return json!({ "ok": false, "message": message }),
+    };
+    let Some(parent_id) = vixen_api::RenderNodeId::new(u64::from(parent_node_id)) else {
+        return json!({ "ok": false, "message": "range parent node id is invalid" });
+    };
+    let text_nodes = snapshot
+        .nodes
+        .iter()
+        .filter(|node| matches!(node.kind, vixen_api::RenderNodeKind::Text { .. }))
+        .filter(|node| render_node_is_descendant(&snapshot, node.id, parent_id))
+        .collect::<Vec<_>>();
+    if text_nodes.is_empty() {
+        return renderer_rect_result(None);
+    }
+
+    let selected = if whole_text {
+        text_nodes.as_slice()
+    } else {
+        &text_nodes[..1]
+    };
+    let queries = selected
+        .iter()
+        .enumerate()
+        .map(|(index, node)| {
+            let text_len = match &node.kind {
+                vixen_api::RenderNodeKind::Text { text } => {
+                    u32::try_from(text.encode_utf16().count()).unwrap_or(u32::MAX)
+                }
+                _ => unreachable!("text nodes were filtered"),
+            };
+            let kind = if collapsed && index == 0 {
+                RenderTextQueryKind::CaretForOffset {
+                    utf16_offset: start_offset.min(text_len),
+                    affinity: RenderTextAffinity::Downstream,
+                }
+            } else {
+                RenderTextQueryKind::RangeBoxes {
+                    utf16_start: if whole_text {
+                        0
+                    } else {
+                        start_offset.min(text_len)
+                    },
+                    utf16_end: if whole_text {
+                        text_len
+                    } else {
+                        end_offset.min(text_len)
+                    },
+                }
+            };
+            RenderTextQuery {
+                query_id: RenderQueryId::new(index as u64 + 1).expect("bounded query id"),
+                node_id: node.id,
+                kind,
+            }
+        })
+        .collect::<Vec<_>>();
+    let batch = RenderTextQueryBatch {
+        version: RENDER_PROTOCOL_VERSION,
+        context_id: snapshot.revision.context_id,
+        document_id: snapshot.revision.document_id,
+        commit_id: commit.commit_id,
+        revision: commit.revision,
+        handle: commit.text_query_handle,
+        allow_truncation: false,
+        queries,
+    };
+    let result = match layout
+        .config
+        .renderer
+        .query_text(batch, &layout.cancellation)
+    {
+        Ok(result) => result,
+        Err(error) => return json!({ "ok": false, "message": error.to_string() }),
+    };
+    let rect = result
+        .results
+        .iter()
+        .flat_map(|result| match &result.value {
+            RenderTextQueryValue::Caret { rect, .. } => vec![*rect],
+            RenderTextQueryValue::RangeBoxes(boxes) => {
+                boxes.iter().map(|text_box| text_box.rect).collect()
+            }
+            RenderTextQueryValue::Offset { .. } => Vec::new(),
+        })
+        .reduce(union_render_rect);
+    renderer_rect_result(rect)
+}
+
+fn synchronous_layout(
+    layout: &SynchronousLayoutHost,
+) -> Result<(vixen_api::FullRenderSnapshot, vixen_api::RenderCommit), String> {
     let mutations = layout.mutations.take();
     if !mutations.is_empty()
         && let Err(error) =
             super::apply_dom_mutation_list(&mut layout.config.page.borrow_mut(), mutations)
     {
-        return json!({ "ok": false, "message": error.to_string() });
+        return Err(error.to_string());
     }
     let view = layout.config.view.get();
-    let snapshot = match layout.config.page.borrow().render_snapshot(
-        layout.config.context_id,
-        layout.config.document_id,
-        view.viewport,
-        view.viewport_generation.max(1),
-        view.page_zoom,
-    ) {
-        Ok(snapshot) => snapshot,
-        Err(message) => return json!({ "ok": false, "message": message }),
-    };
-    let commit = match layout
+    let snapshot = layout
+        .config
+        .page
+        .borrow()
+        .render_snapshot(
+            layout.config.context_id,
+            layout.config.document_id,
+            view.viewport,
+            view.viewport_generation.max(1),
+            view.page_zoom,
+        )
+        .map_err(|message| message.to_string())?;
+    let commit = layout
         .config
         .renderer
-        .ensure_layout(snapshot, &layout.cancellation)
-    {
-        Ok(commit) => commit,
-        Err(error) => return json!({ "ok": false, "message": error.to_string() }),
-    };
-    let Ok(raw_node_id) = u64::try_from(node_id) else {
-        return json!({ "ok": false, "message": "DOM node id exceeds renderer range" });
-    };
-    let mut rect: Option<vixen_api::RenderRect> = None;
-    for geometry in commit
-        .geometry_index
+        .ensure_layout(snapshot.clone(), &layout.cancellation)
+        .map_err(|error| error.to_string())?;
+    Ok((snapshot, commit))
+}
+
+fn render_node_is_descendant(
+    snapshot: &vixen_api::FullRenderSnapshot,
+    node_id: vixen_api::RenderNodeId,
+    ancestor_id: vixen_api::RenderNodeId,
+) -> bool {
+    let mut current = snapshot
+        .nodes
         .iter()
-        .filter(|geometry| geometry.node_id.get() == raw_node_id)
-    {
-        rect = Some(match rect {
-            None => geometry.border_box,
-            Some(current) => vixen_api::RenderRect {
-                x: current.x.min(geometry.border_box.x),
-                y: current.y.min(geometry.border_box.y),
-                width: (current.x + current.width)
-                    .max(geometry.border_box.x + geometry.border_box.width)
-                    - current.x.min(geometry.border_box.x),
-                height: (current.y + current.height)
-                    .max(geometry.border_box.y + geometry.border_box.height)
-                    - current.y.min(geometry.border_box.y),
-            },
-        });
+        .find(|node| node.id == node_id)
+        .and_then(|node| node.parent_id);
+    while let Some(node_id) = current {
+        if node_id == ancestor_id {
+            return true;
+        }
+        current = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .and_then(|node| node.parent_id);
     }
+    false
+}
+
+fn union_render_rect(
+    left: vixen_api::RenderRect,
+    right: vixen_api::RenderRect,
+) -> vixen_api::RenderRect {
+    let x = left.x.min(right.x);
+    let y = left.y.min(right.y);
+    let right_edge = (left.x + left.width).max(right.x + right.width);
+    let bottom = (left.y + left.height).max(right.y + right.height);
+    vixen_api::RenderRect {
+        x,
+        y,
+        width: right_edge - x,
+        height: bottom - y,
+    }
+}
+
+fn renderer_rect_result(rect: Option<vixen_api::RenderRect>) -> deno_core::serde_json::Value {
     json!({ "ok": true, "rendererGeometry": true, "rect": rect.map(|rect| json!({
         "x": rect.x,
         "y": rect.y,
@@ -1326,6 +1472,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     op_vixen_dom_element_tokens,
     op_vixen_dom_element_dataset,
     op_vixen_dom_element_rect,
+    op_vixen_dom_range_rect,
     op_vixen_dom_image_current_src,
     op_vixen_dom_form_entries,
     op_vixen_dom_set_document_title,
@@ -2891,11 +3038,24 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   function rangeGeometryRect(range) {
-    if (!range || range.collapsed) return null;
+    if (!range) return null;
     const target = range.__vixenGeometryNode
       || nodeGeometryElement(range.startContainer)
       || nodeGeometryElement(range.endContainer);
     if (!target || typeof target.__vixenNodeId !== 'number') return null;
+    const sameText = range.startContainer === range.endContainer && range.startContainer.nodeType === 3;
+    const parent = sameText ? range.startContainer.parentElement : target;
+    if (parent && typeof parent.__vixenNodeId === 'number' && parent.__vixenNodeId > 0) {
+      const result = unwrapDomOp(op_vixen_dom_range_rect(
+        parent.__vixenNodeId,
+        sameText ? range.startOffset : 0,
+        sameText ? range.endOffset : 0,
+        range.collapsed,
+        !sameText,
+      ));
+      if (result.rendererGeometry === true && (result.rect || range.collapsed)) return result.rect;
+    }
+    if (range.collapsed) return null;
     return elementRect(target.__vixenNodeId);
   }
 

@@ -3,7 +3,8 @@ use std::time::Duration;
 
 use vixen_api::{
     ApplyRenderBatchOutcome, FullRenderSnapshot, RenderBridgeUpdate, RenderBrokerRequestKind,
-    RenderBrokerResponseKind, RenderCommit, RenderMutationBatch,
+    RenderBrokerResponseKind, RenderCommit, RenderMutationBatch, RenderTextQueryBatch,
+    RenderTextQueryBatchResult,
 };
 use vixen_engine::browser::{SynchronousRenderer, SynchronousRendererError};
 use vixen_engine::script::RenderLayoutCancellation;
@@ -68,18 +69,17 @@ impl SynchronousRenderer for FlutterSynchronousRenderer {
             match response.kind {
                 RenderBrokerResponseKind::Commit(response_commit) => {
                     let mut state = self.lock_state()?;
-                    drain_renderer_submissions(&self.renderer, &mut state).map_err(abi_error)?;
-                    let commit = state.commits.accepted_commit().ok_or_else(|| {
-                        SynchronousRendererError::new(
-                            "render.stale",
-                            "EnsureLayout response had no accepted renderer submission",
-                        )
-                    })?;
+                    if drain_renderer_submissions(&self.renderer, &mut state).is_err() {
+                        force_snapshot = true;
+                        continue;
+                    }
+                    let Some(commit) = state.commits.accepted_commit() else {
+                        force_snapshot = true;
+                        continue;
+                    };
                     if commit != &response_commit {
-                        return Err(SynchronousRendererError::new(
-                            "render.stale",
-                            "EnsureLayout response did not match the accepted renderer commit",
-                        ));
+                        force_snapshot = true;
+                        continue;
                     }
                     return Ok(commit.clone());
                 }
@@ -107,6 +107,50 @@ impl SynchronousRenderer for FlutterSynchronousRenderer {
             "render.recovery-failed",
             "EnsureLayout did not recover after a bounded full resync",
         ))
+    }
+
+    fn query_text(
+        &self,
+        query: RenderTextQueryBatch,
+        cancellation: &RenderLayoutCancellation,
+    ) -> Result<RenderTextQueryBatchResult, SynchronousRendererError> {
+        {
+            let mut state = self.lock_state()?;
+            drain_renderer_submissions(&self.renderer, &mut state).map_err(abi_error)?;
+            state
+                .commits
+                .validate_text_query(&state.replica, &query)
+                .map_err(|error| SynchronousRendererError::new(error.code, error.message))?;
+        }
+        let response = self
+            .renderer
+            .request_cancellable(
+                RenderBrokerRequestKind::TextQuery(query.clone()),
+                ENSURE_LAYOUT_TIMEOUT,
+                || cancellation.reason(),
+            )
+            .map_err(broker_error)?;
+        match response.kind {
+            RenderBrokerResponseKind::TextQuery(result) => {
+                let state = self.lock_state()?;
+                state
+                    .commits
+                    .validate_text_query_result(&state.replica, &query, &result)
+                    .map_err(|error| SynchronousRendererError::new(error.code, error.message))?;
+                Ok(result)
+            }
+            RenderBrokerResponseKind::Cancelled(reason) => Err(SynchronousRendererError::new(
+                "render.cancelled",
+                format!("text query was cancelled: {reason:?}"),
+            )),
+            RenderBrokerResponseKind::Failed { code, message } => {
+                Err(SynchronousRendererError::new(code, message))
+            }
+            kind => Err(SynchronousRendererError::new(
+                "render.invalid-response",
+                format!("text query returned an unexpected response: {kind:?}"),
+            )),
+        }
     }
 }
 
@@ -199,8 +243,9 @@ mod tests {
     use vixen_api::{
         BrowserCommand, BrowserCommandResult, BrowserEvent, RENDER_PROTOCOL_VERSION,
         RenderBridgeSubmission, RenderBrokerResponse, RenderBrokerResponseKind, RenderCommitId,
-        RenderFragmentId, RenderGeometryEntry, RenderHitTestHandle, RenderRect,
-        RenderTextQueryHandle,
+        RenderFragmentId, RenderGeometryEntry, RenderHitTestHandle, RenderRect, RenderTextAffinity,
+        RenderTextBox, RenderTextDirection, RenderTextQueryBatchResult, RenderTextQueryHandle,
+        RenderTextQueryKind, RenderTextQueryResult, RenderTextQueryValue,
     };
 
     use super::*;
@@ -237,7 +282,7 @@ mod tests {
                 context_id,
                 document_id: context.document_id,
                 runtime_context_id: context.runtime_context_id.unwrap(),
-                source: "const e = document.getElementById('target'); e.setAttribute('style', 'width:64px;height:20px'); const a = e.getBoundingClientRect().width; const b = e.getBoundingClientRect().width; a * 100 + b".to_owned(),
+                source: "const e = document.getElementById('target'); e.setAttribute('style', 'width:64px;height:20px'); const a = e.getBoundingClientRect().width; const b = e.getBoundingClientRect().width; const text = e.firstChild; const range = document.createRange(); range.setStart(text, 0); range.setEnd(text, 1); const rangeWidth = range.getBoundingClientRect().width; range.collapse(false); const caretHeight = range.getBoundingClientRect().height; a * 1000000 + b * 10000 + rangeWidth * 100 + caretHeight".to_owned(),
             })
             .unwrap();
         renderer_thread.join().unwrap();
@@ -246,7 +291,7 @@ mod tests {
             matches!(
                 &result,
                 BrowserCommandResult::Evaluation(vixen_api::EvaluationResult {
-                    value: vixen_api::ScriptValue::Int32(6464),
+                    value: vixen_api::ScriptValue::Int32(64_643_112),
                     ..
                 })
             ),
@@ -354,6 +399,117 @@ mod tests {
         );
     }
 
+    #[test]
+    fn source_publication_uses_exact_batches_and_resyncs_with_a_full_snapshot() {
+        let broker = RenderBroker::new();
+        let mut state = RendererState::default();
+        let base = source_snapshot(1, "10px");
+        publish_renderer_source(&broker, &mut state, base.clone(), false).unwrap();
+        assert!(matches!(
+            broker.poll_message(Duration::ZERO).unwrap(),
+            Some(crate::RenderBrokerMessage::Update(
+                RenderBridgeUpdate::FullSnapshot(snapshot)
+            )) if snapshot == base
+        ));
+
+        let target = source_snapshot(2, "64px");
+        publish_renderer_source(&broker, &mut state, target.clone(), false).unwrap();
+        assert!(matches!(
+            broker.poll_message(Duration::ZERO).unwrap(),
+            Some(crate::RenderBrokerMessage::Update(
+                RenderBridgeUpdate::MutationBatch(batch)
+            )) if batch.base_revision == base.revision
+                && batch.target_revision == target.revision
+                && matches!(batch.mutations.as_slice(), [vixen_api::RenderMutation::UpsertNode(_)])
+        ));
+
+        broker
+            .submit(RenderBridgeSubmission::Resync(
+                vixen_api::RenderResyncRequest::renderer_reset(
+                    target.revision.context_id,
+                    target.revision.document_id,
+                ),
+            ))
+            .unwrap();
+        drain_renderer_submissions(&broker, &mut state).unwrap();
+        assert!(state.needs_resync);
+        let force_snapshot = state.needs_resync;
+        publish_renderer_source(&broker, &mut state, target.clone(), force_snapshot).unwrap();
+        assert!(matches!(
+            broker.poll_message(Duration::ZERO).unwrap(),
+            Some(crate::RenderBrokerMessage::Update(
+                RenderBridgeUpdate::FullSnapshot(snapshot)
+            )) if snapshot == target
+        ));
+    }
+
+    #[test]
+    fn malformed_commit_recovers_once_and_does_not_poison_reuse() {
+        let broker = RenderBroker::new();
+        let state = Arc::new(Mutex::new(RendererState::default()));
+        let renderer = Arc::new(FlutterSynchronousRenderer::new(
+            broker.clone(),
+            Arc::clone(&state),
+        ));
+        let snapshot = source_snapshot(1, "64px");
+        let requested = snapshot.clone();
+        let requesting_renderer = Arc::clone(&renderer);
+        let request = thread::spawn(move || {
+            requesting_renderer.ensure_layout(
+                requested,
+                &vixen_engine::script::RenderLayoutCancellation::default(),
+            )
+        });
+
+        assert!(matches!(
+            next_source_update(&broker),
+            RenderBridgeUpdate::FullSnapshot(current) if current == snapshot
+        ));
+        let first_request = next_broker_request(&broker);
+        let mut malformed = commit_for_snapshot(&snapshot, 1);
+        malformed.geometry_index[0].border_box.x = f64::NAN;
+        broker
+            .submit(RenderBridgeSubmission::Commit(malformed.clone()))
+            .unwrap();
+        broker
+            .respond(RenderBrokerResponse {
+                version: RENDER_PROTOCOL_VERSION,
+                request_id: first_request.request_id,
+                kind: RenderBrokerResponseKind::Commit(malformed),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            next_source_update(&broker),
+            RenderBridgeUpdate::FullSnapshot(current) if current == snapshot
+        ));
+        let second_request = next_broker_request(&broker);
+        let recovered = commit_for_snapshot(&snapshot, 2);
+        broker
+            .submit(RenderBridgeSubmission::Commit(recovered.clone()))
+            .unwrap();
+        broker
+            .respond(RenderBrokerResponse {
+                version: RENDER_PROTOCOL_VERSION,
+                request_id: second_request.request_id,
+                kind: RenderBrokerResponseKind::Commit(recovered.clone()),
+            })
+            .unwrap();
+
+        assert_eq!(request.join().unwrap().unwrap(), recovered);
+        assert_eq!(
+            renderer
+                .ensure_layout(
+                    snapshot,
+                    &vixen_engine::script::RenderLayoutCancellation::default(),
+                )
+                .unwrap()
+                .commit_id,
+            RenderCommitId::new(2).unwrap()
+        );
+        assert!(broker.poll_message(Duration::ZERO).unwrap().is_none());
+    }
+
     fn service_one_layout(broker: RenderBroker) {
         let update = broker
             .poll_message(Duration::from_secs(1))
@@ -433,6 +589,96 @@ mod tests {
                 kind: RenderBrokerResponseKind::Commit(commit),
             })
             .unwrap();
+        for _ in 0..2 {
+            let request = match broker
+                .poll_message(Duration::from_secs(1))
+                .unwrap()
+                .expect("text query request")
+            {
+                crate::RenderBrokerMessage::Request(request) => request,
+                other => panic!("expected text query request, got {other:?}"),
+            };
+            let RenderBrokerRequestKind::TextQuery(batch) = &request.kind else {
+                panic!("expected text query request")
+            };
+            let results = batch
+                .queries
+                .iter()
+                .map(|query| RenderTextQueryResult {
+                    query_id: query.query_id,
+                    value: match query.kind {
+                        RenderTextQueryKind::CaretForOffset { affinity, .. } => {
+                            RenderTextQueryValue::Caret {
+                                rect: RenderRect {
+                                    x: 31.0,
+                                    y: 0.0,
+                                    width: 1.0,
+                                    height: 12.0,
+                                },
+                                affinity,
+                            }
+                        }
+                        RenderTextQueryKind::RangeBoxes { .. } => {
+                            RenderTextQueryValue::RangeBoxes(vec![RenderTextBox {
+                                rect: RenderRect {
+                                    x: 0.0,
+                                    y: 0.0,
+                                    width: 31.0,
+                                    height: 12.0,
+                                },
+                                direction: RenderTextDirection::LeftToRight,
+                            }])
+                        }
+                        RenderTextQueryKind::OffsetForPoint { .. } => {
+                            RenderTextQueryValue::Offset {
+                                utf16_offset: 0,
+                                affinity: RenderTextAffinity::Downstream,
+                            }
+                        }
+                    },
+                })
+                .collect();
+            broker
+                .respond(RenderBrokerResponse {
+                    version: RENDER_PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    kind: RenderBrokerResponseKind::TextQuery(RenderTextQueryBatchResult {
+                        version: RENDER_PROTOCOL_VERSION,
+                        context_id: batch.context_id,
+                        document_id: batch.document_id,
+                        commit_id: batch.commit_id,
+                        revision: batch.revision,
+                        results,
+                        truncations: Vec::new(),
+                    }),
+                })
+                .unwrap();
+        }
+    }
+
+    fn next_source_update(broker: &RenderBroker) -> RenderBridgeUpdate {
+        loop {
+            match broker
+                .poll_message(Duration::from_secs(1))
+                .unwrap()
+                .expect("renderer source update")
+            {
+                crate::RenderBrokerMessage::Update(RenderBridgeUpdate::ReleaseHandles(_)) => {}
+                crate::RenderBrokerMessage::Update(update) => return update,
+                other => panic!("expected renderer source update, got {other:?}"),
+            }
+        }
+    }
+
+    fn next_broker_request(broker: &RenderBroker) -> vixen_api::RenderBrokerRequest {
+        match broker
+            .poll_message(Duration::from_secs(1))
+            .unwrap()
+            .expect("renderer request")
+        {
+            crate::RenderBrokerMessage::Request(request) => request,
+            other => panic!("expected renderer request, got {other:?}"),
+        }
     }
 
     fn wait_for_navigation(controller: &mut FlutterBrowserController, navigation_id: u64) {
@@ -453,6 +699,77 @@ mod tests {
             }
         }
         panic!("navigation did not settle");
+    }
+
+    fn source_snapshot(generation: u64, width: &str) -> FullRenderSnapshot {
+        let revision = vixen_api::RenderRevision {
+            context_id: vixen_api::BrowsingContextId::new(1).unwrap(),
+            document_id: vixen_api::DocumentId::new(2).unwrap(),
+            source_generation: generation,
+            style_generation: generation,
+            viewport_generation: 1,
+            resource_generation: generation,
+        };
+        let mut snapshot = FullRenderSnapshot::new(
+            revision,
+            vixen_api::RenderViewport {
+                width: 800,
+                height: 600,
+                device_scale: 1.0,
+                page_zoom: 1.0,
+            },
+        );
+        snapshot.nodes.push(vixen_api::RenderNode {
+            id: vixen_api::RenderNodeId::new(1).unwrap(),
+            parent_id: None,
+            sibling_index: 0,
+            depth: 0,
+            kind: vixen_api::RenderNodeKind::Element {
+                local_name: "div".to_owned(),
+            },
+            styles: vec![vixen_api::RenderStyleProperty {
+                name: "width".to_owned(),
+                value: width.to_owned(),
+            }],
+            resource_ids: Vec::new(),
+            semantic: None,
+        });
+        snapshot
+    }
+
+    fn commit_for_snapshot(snapshot: &FullRenderSnapshot, commit_id: u64) -> RenderCommit {
+        let rect = RenderRect {
+            x: 0.0,
+            y: 0.0,
+            width: 64.0,
+            height: 20.0,
+        };
+        RenderCommit {
+            version: RENDER_PROTOCOL_VERSION,
+            commit_id: RenderCommitId::new(commit_id).unwrap(),
+            revision: snapshot.revision,
+            viewport: snapshot.viewport,
+            geometry_index: snapshot
+                .nodes
+                .iter()
+                .enumerate()
+                .map(|(index, node)| RenderGeometryEntry {
+                    node_id: node.id,
+                    fragment_id: RenderFragmentId::new(index as u64 + 1).unwrap(),
+                    border_box: rect,
+                    padding_box: rect,
+                    content_box: rect,
+                    clip: None,
+                    scroll_node_id: None,
+                    paint_order: index as u32,
+                })
+                .collect(),
+            hit_test_handle: RenderHitTestHandle::new(commit_id).unwrap(),
+            text_query_handle: RenderTextQueryHandle::new(commit_id).unwrap(),
+            scroll_snapshot: Vec::new(),
+            semantic_bounds: Vec::new(),
+            truncations: Vec::new(),
+        }
     }
 
     fn profile_path() -> std::path::PathBuf {
