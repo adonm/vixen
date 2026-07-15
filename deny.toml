@@ -4,6 +4,12 @@
 
 [advisories]
 unmaintained = "all"
+ignore = [
+    # Transitive through deno_core; bincode 1.3.3 has no safe upgrade.
+    "RUSTSEC-2025-0141",
+    # Transitive through v8; paste has no safe upgrade in the current release.
+    "RUSTSEC-2024-0436",
+]
 
 [graph]
 all-features = true
@@ -16,7 +22,11 @@ wildcards = "allow"
 confidence-threshold = 0.8
 allow = [
     "Apache-2.0",
+    "BSD-3-Clause",
+    "CDLA-Permissive-2.0",
+    "ISC",
     "MIT",
+    "MPL-2.0",
     "Unicode-3.0",
 ]
 
