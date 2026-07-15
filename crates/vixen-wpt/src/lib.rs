@@ -5,11 +5,10 @@
 //! vixen-wpt-local trait composing `vixen_api` DTOs — never engine internals
 //! (docs/ARCHITECTURE.md "Dependency direction": `vixen-wpt → vixen-api` only).
 //!
-//! The 15 check types (14 inherited from upstream WPT + `ref-equivalent`,
-//! Vixen's addition) are all defined. `ref-equivalent` compares the stable
-//! display-list render projection through [`HarnessEngine`]; `visual-hash`
-//! hashes RGBA screenshots through adapters with an offscreen renderer and
-//! remains skipped for adapters that cannot provide pixels.
+//! All 16 manifest check types are defined. Native adapters execute source and
+//! runtime checks; `flutter-js-eval`, `layout-box`, `visual-hash`, and
+//! `ref-equivalent` remain in the shared schema but are skipped here and executed
+//! by the chrome-less Flutter fixture host.
 
 #![forbid(unsafe_code)]
 
@@ -17,9 +16,8 @@ pub mod check;
 pub mod harness;
 pub mod manifest;
 pub mod profile;
-pub mod visual_hash;
 
 pub use check::{Check, Outcome};
-pub use harness::{HarnessEngine, Report, RgbaScreenshot, run_fixture, run_manifest};
+pub use harness::{HarnessEngine, Report, run_fixture, run_manifest};
 pub use manifest::{Fixture, Manifest, ManifestError};
 pub use profile::{ProfileError, WPT_REPOSITORY_URL, WptProfile, WptProfileFixture, WptUpstream};

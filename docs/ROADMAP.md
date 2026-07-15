@@ -56,7 +56,7 @@ As of 2026-07-15 the repository has:
   input, semantic actions, replay rejection, and explicit handle retirement;
 - one `BrowserCore` owner for profile services, contexts, navigation generations,
   DOM/Page state, V8 runtimes, history, input intent, inspection, and ordered
-  events used by Flutter, native headless, CDP, and WPT;
+  events used by Flutter, native text utilities, CDP, and WPT;
 - `html5ever`, Stylo selector/cascade integration, `deno_core`/V8, shared
   network/security policy, and bounded redb profile tables;
 - generation-cancellable main-document, external-script, stylesheet, and bounded
@@ -64,15 +64,9 @@ As of 2026-07-15 the repository has:
 - a useful CDP/Playwright slice and a Linux Flutter shell with native Wayland
   chrome, input/IME, Semantics, scrolling/find/zoom, recovery, and deterministic
   release/Cage evidence; and
-- a remaining partially implemented Rust layout tree/display-list island that is
-  no longer connected to a paint backend.
-
-The final bullet is now **migration debt**, not a foundation to widen. It remains
-only for BrowserCore semantics/input/scroll compatibility while those projections
-move to accepted Flutter commits. WebRender/gleam, both EGL owners, native visual
-headless, the RGBA frame ABI/pools, Dart frame transfer, and the Linux texture
-plugin/presenter are deleted. Partially implemented code does not justify
-preserving the wrong ownership boundary.
+- one Flutter renderer: R7 deleted the Rust layout/paint island, WebRender/gleam,
+  both EGL owners, native visual headless, RGBA frame transport, Linux texture
+  presentation, raw coordinate input, and their obsolete tests/gates.
 
 ## Architecture rules for every stage
 
@@ -178,9 +172,10 @@ renderer changed.
 - Prohibit renderer-to-BrowserCore re-entry during layout and release every
   retained payload/resource explicitly.
 
-**Proof:** ABI/header/layout checks, Dart/Rust golden round trips, malformed and
-stale wire tests, cancellation/timeout tests, queue bounds, worker-blocked broker
-service, shutdown, and full resync. Production still displays the old frame.
+**Proof at R2:** ABI/header/layout checks, Dart/Rust golden round trips,
+malformed and stale wire tests, cancellation/timeout tests, queue bounds,
+worker-blocked broker service, shutdown, and full resync. Production still
+displayed the old frame at that checkpoint.
 
 **Implemented evidence:** the bounded `RenderBroker` is independent of the
 serialized BrowserCore controller lock. Ordinary snapshots, every mutation
@@ -196,8 +191,8 @@ JSON encoding, incoming messages remain capped at 64 KiB, and encoded output at
 queue saturation, shutdown wakeup, malformed wire, double release,
 worker-blocked progress, native header, and Rust/Dart golden tests are checked
 in. A small Dart service drives the formatter from the same transport; the
-scripted fake enforces the same queue/payload bounds. Normal browsing still uses
-the old frame.
+scripted fake enforces the same queue/payload bounds. Normal browsing still used
+the old frame at R2.
 
 ### R3. First Flutter-rendered document — landed test-only
 
@@ -264,8 +259,8 @@ revision, fragment, viewport point, and local point; Rust validates all of them,
 resolves text hits to the nearest BrowserCore semantic element, and only then
 dispatches the DOM event. Snapshot replacement, submissions, releases, and
 queues stay bounded; consuming a submission and publishing all resulting handle
-releases is atomic. The WebRender/RGBA texture remains the explicit fallback
-when no current Flutter commit is available.
+releases is atomic. At R4 the WebRender/RGBA texture was still the explicit
+fallback; R7 deleted it.
 
 All six R4 behavior slices now cross the production seam:
 
@@ -317,7 +312,7 @@ no compositor/chrome pixels in page screenshots.
 page-only Dart host with an undecorated Linux runner window. One strict
 `--vixen-automation` invocation requires an absolute file/HTTP(S) URL, a viewport
 within the existing 4,096-pixel/64-MiB bounds, and an absolute bounded `.png`
-output path. It bypasses profile tab restore/save and all legacy frame/Semantics
+output path. It bypasses profile tab restore/save and browser/frame fallback
 capture, paints the accepted formatter view without browser widgets, then only
 after a Flutter frame acknowledges and captures the exact still-presented commit
 through `Scene.toImage`. Startup/capture is bounded to 60 seconds; successful
@@ -356,8 +351,9 @@ Flutter host runs the listener against its sole BrowserCore. Rendered CDP
 screenshots publish a target-specific full snapshot, wait for its exact Flutter
 commit and `Presented` acknowledgement, then return bounded raw PNG bytes from
 the displayed scene. `DOM.getContentQuads`/`DOM.getBoxModel` and mouse input use
-Flutter commit geometry/hit testing in this mode; the native CDP mode retains its
-transitional comparison backend. `just flutter-cdp-playwright-smoke` proves
+Flutter commit geometry/hit testing in this mode. At that checkpoint native CDP
+retained a comparison backend; R7 later deleted it. `just
+flutter-cdp-playwright-smoke` proves
 320×240 and 480×300 targets alive together, target isolation, Flutter-routed
 input, before/after mutation pixels, target switching, no chrome pixels, and a
 forced renderer reset followed by byte-identical full-resync capture. The old
@@ -372,13 +368,14 @@ deterministic text line geometry, backgrounds, borders, and images. `just
 flutter-fixture-manifest` starts one release/AOT Flutter host under Cage and runs
 all **270 fixtures / 2,027 checks** in manifest order. Every fixture uses a fresh
 target in the host's sole BrowserCore, so script/style mutations and rendered
-assertions share one document/runtime lifecycle. The 1,887 document/runtime
-checks use typed BrowserCore inspection; all 104 `layout-box`, 25 `visual-hash`,
-and 11 `ref-equivalent` checks use exact presented Flutter commits. Reference
+assertions share one document/runtime lifecycle. The 1,868 native-safe
+document/runtime checks use typed BrowserCore inspection; 19 `flutter-js-eval`,
+104 `layout-box`, 25 `visual-hash`, and 11 `ref-equivalent` checks use exact
+presented Flutter commits. Reference
 checks compare direct RGBA scene pixels, visual baselines now name Flutter
 scenes, and the native runner is text/runtime-only. `just gate-r5` composes this
 manifest with the one-shot and external Playwright gates. R6 synchronous layout
-is now also complete; R7 is the next renderer-transition stage.
+and R7 cutover/deletion are now also complete; R8 stabilization is next.
 
 ### R6. Synchronous layout and recovery gate — landed
 
@@ -421,9 +418,9 @@ rendered fixture/CDP/Cage evidence.
 
 ### R7. Production cutover and aggressive deletion
 
-Cut over only after R3–R6 are green, then remove in one reviewed migration series:
+R7 cut over after R3–R6 were green and removed in one reviewed migration series:
 
-- `webrender`, `gleam`, `GlContext`, renderer integration, and image upload code;
+- `webrender`, `gleam`, `GlContext`, native renderer integration, and WebRender image upload;
 - native-headless and FFI frame EGL implementations;
 - RGBA frame ABI/tokens/pools, Dart frame worker, Linux pixel-buffer texture
   plugin/presenter, and texture recovery tests;
@@ -440,13 +437,15 @@ for hypothetical embedders.
 transport; GUI and chrome-less host share mutation/commit code; all supported
 layout/pixel/input/semantics/CDP evidence uses it.
 
-**In progress:** production GUI and automation now always paint Flutter commits;
-the RGBA C/Dart transport and Linux texture path are deleted. WebRender, gleam,
-`GlContext`, both EGL implementations, native screenshot/incremental CLI flags,
-native rendered CDP smoke, `PaintSnapshot`, and obsolete Phase 4/5 gates are also
-deleted. The remaining blocker is removal of the Rust layout/display-list island
-after semantics, selector metadata, scroll/find, and fallback hit testing stop
-consulting it.
+**Landed:** production GUI and automation always paint Flutter commits. The
+WebRender/gleam dependency graph, `GlContext`, both EGL implementations, native
+visual headless, screenshot/incremental CLI flags, RGBA C/Dart transport, Linux
+texture path, Rust layout/display-list/paint and paint-helper modules,
+`PaintSnapshot`, Page hit testing/geometry/semantic bounds, raw coordinate-input
+ABI, native rendered WPT/CDP checks, and obsolete Phase 4/5 gates are deleted.
+`flutter-js-eval` makes renderer-dependent manifest checks explicit. `just
+test-r7` proves source/dependency absence and both native/Flutter surfaces;
+`just gate-r7` composes all R5/R6 rendered evidence.
 
 ### R8. Linux stabilization and rebaseline
 
@@ -644,12 +643,12 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **R7 cutover/deletion:** switch now that R6 is green and remove every transitional
-   renderer, frame-transport, and superseded layout/paint owner in the inventory.
+1. **R8 Linux stabilization/rebaseline:** reproduce compatibility, interaction,
+   accessibility, release, size, startup, memory, and capture evidence against
+   the final Flutter-only architecture; fix transition regressions before breadth.
 
-Do not start another native interaction, font, Rust layout, paint, texture, or
-packaging slice before these are complete unless it fixes a security/data-loss or
-release-blocking regression.
+Do not reintroduce native layout/paint/frame ownership while stabilizing. A
+security, data-loss, or release-blocking regression may preempt the queue.
 
 ## Velocity and deletion policy
 

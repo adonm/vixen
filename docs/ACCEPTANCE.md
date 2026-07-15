@@ -99,9 +99,8 @@ mutation, and renderer-loss evidence now covered below.
 The follow-up renderer-source checkpoint is also green: the exact scene is built
 from bounded renderable DOM topology, viewport-resolved styles, accepted images,
 stable BrowserCore element ids, disjoint renderer text ids, and semantic/scroll
-metadata. The native bridge smoke proves a Flutter text hit resolves back to the
-BrowserCore semantic element before DOM click dispatch. This source checkpoint
-does not waive any remaining full-R5 evidence above.
+metadata. The native bridge smoke proves a Flutter hit target is commit-bound
+before BrowserCore DOM dispatch.
 
 The shared-core rendered CDP checkpoint is green through `just
 flutter-cdp-playwright-smoke`. The release host owns one BrowserCore and a
@@ -114,11 +113,11 @@ prior scene.
 Full R5 acceptance is green through `just gate-r5`. `just
 flutter-fixture-manifest` keeps every fixture's ordered document/runtime/style
 and rendered assertions on one target in the release Flutter host's sole
-BrowserCore. The result is 270/270 fixtures and 2,027/2,027 checks: 1,887 typed
-BrowserCore document/runtime checks plus 104 exact Flutter layout boxes, 25
-Flutter visual hashes, and 11 exact-pixel Flutter references. The transitional
-`display-list-contains` check no longer exists, and the native fixture runner no
-longer claims rendered evidence.
+BrowserCore. The result is 270/270 fixtures and 2,027/2,027 checks: 1,868
+native-safe BrowserCore source/runtime checks plus 19 Flutter geometry-dependent
+JavaScript checks, 104 exact Flutter layout boxes, 25 Flutter visual hashes, and
+11 exact-pixel Flutter references. The native fixture runner does not claim
+rendered evidence.
 
 ### Synchronous geometry
 
@@ -145,9 +144,9 @@ browser commands, malformed-commit and renderer-resync recovery, inert late
 replies, and same-isolate reuse. `just gate-r6` composes that focused evidence
 with the complete R5 fixture/CDP/Cage gate.
 
-### Cutover and deletion
+### Cutover and deletion — implemented
 
-Done when source/dependency/gate searches prove the full R7 inventory is gone:
+Source/dependency/gate searches prove the full R7 inventory is gone:
 WebRender/gleam, `GlContext`, both EGL paths, image upload, frame ABI/tokens/pools,
 the Dart frame worker, texture presenter/plugin and recovery tests, superseded
 Rust layout/paint, duplicate scale/hit/scroll/text/semantic projections, obsolete
@@ -158,6 +157,11 @@ active Dart consumer through a named stable formatter contract, focused
 cross-language tests, and documented evidence that reuse is simpler than
 deletion; no Rust geometry, text measurement, hit testing, or paint authority
 survives.
+
+`just test-r7` checks that inventory, all native source/runtime suites, WPT
+ownership routing, C header syntax, Rust clippy, Dart formatting/analyze, and the
+full Impeller-requested Flutter test suite. `just gate-r7` preserves the complete
+R5/R6 rendered fixture/CDP/Cage evidence before running the deletion gate.
 
 ## Browser capability acceptance
 
@@ -202,7 +206,7 @@ proves content and actions; pixels alone do not satisfy accessibility.
 
 ## CLI, CDP, WPT, and automation
 
-- Every non-transitional flag in `SPEC.md` works with stable errors.
+- Every documented flag in `SPEC.md` works with stable errors.
 - Screenshot, visible extraction, coordinate input, layout CDP, and visual WPT
   use the chrome-less Flutter host; text-only fast paths fabricate no geometry.
 - CDP supports the declared methods, independent contexts/targets, reliable waits,
@@ -258,9 +262,8 @@ Measure separately:
 4. any text-only launcher/client.
 
 Reports attribute Flutter engine/ICU, Dart AOT/formatter/assets, native runner/
-plugins, BrowserCore/Rust, V8/ICU/snapshots, resources, packaging, symbols, and
-any transitional WebRender/EGL code still present. After cutover, removed native
-renderer costs must be absent. Reports include locks/revisions, commands, hashes,
+plugins, BrowserCore/Rust, V8/ICU/snapshots, resources, packaging, and symbols.
+Deleted native renderer dependencies and symbols must remain absent. Reports include locks/revisions, commands, hashes,
 architecture, AOT/strip/LTO settings, compressed/unpacked/install sizes, startup,
 memory, layout/commit/frame/capture timings, and comparison statistics.
 

@@ -25,12 +25,10 @@ just baseline-headless
 just baseline-headless-json 9 2  # 9 measured runs, 2 warmups per scenario
 ```
 
-The suite in `fixtures/performance/headless-local.json` currently measures the
-transitional native renderer's
-process startup/version, local navigation plus runtime evaluation, layout-tree
-output, display-list plus paint-stat output, and a temporary PNG screenshot. Each
-scenario has its own output validation. Warmups are discarded; temporary outputs
-are removed.
+The suite in `fixtures/performance/headless-local.json` measures native process
+startup/version and local navigation plus runtime evaluation. Rendered layout,
+commit, and capture performance belongs to the Flutter GUI/chrome-less baselines.
+Each scenario has its own output validation; warmups are discarded.
 
 Measure profile growth through the release headless binary and its public
 `--profile-dir` seam:
@@ -85,9 +83,9 @@ The analyzer requires release bundle structure (`libapp.so`, Flutter engine,
 and ICU), requires exactly one `libvixen_ffi.so` only in Vixen, rejects debug and
 build artifacts, verifies byte-identical shared Flutter engine/ICU files, and
 reports every file plus component and Vixen-minus-hello logical/allocated deltas.
-The native Vixen library remains an honest aggregate because stripped static
-BrowserCore/V8/transitional-WebRender attribution needs separate linker-map
-evidence.
+The native Vixen library remains an aggregate because stripped static
+BrowserCore/V8 attribution needs separate linker-map evidence. The recorded
+pre-R7 artifact also includes now-deleted renderer code.
 
 ## Recorded Flutter raw-bundle reference
 
@@ -124,8 +122,8 @@ dead-code stripping where reproducible. Record compressed download, unpacked or
 installed size, native executables/libraries, assets, and separately supplied
 runtime/shared-system costs. Attribute at least Flutter engine/ICU, Dart AOT
 formatter/assets, runner/plugins, BrowserCore/Rust, V8/ICU/snapshots, Vixen
-resources, packaging metadata, symbols, and any transitional WebRender/EGL/frame
-cost still present. R7 reports must show those transitional costs removed.
+resources, packaging metadata, and symbols. R7 reports must verify the deleted
+WebRender/EGL/frame dependencies and symbols are absent.
 Report both the hello-Flutter delta and the delta from the prior accepted Vixen
 artifact.
 

@@ -1,13 +1,19 @@
 use std::io::Cursor;
 use std::sync::Arc;
 
-use crate::display_list::RasterImage;
 use crate::doc::{DocumentImage, DocumentImageItem};
 use crate::page::Page;
 
 pub(crate) const MAX_RASTER_IMAGE_BODY_BYTES: u64 = 8 * 1024 * 1024;
 pub(crate) const MAX_RASTER_IMAGE_DIMENSION: u32 = 2048;
 pub(crate) const MAX_DECODED_RASTER_IMAGE_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RasterImage {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Arc<Vec<u8>>,
+}
 
 pub(crate) struct PageImageRunner {
     items: std::vec::IntoIter<DocumentImageItem>,

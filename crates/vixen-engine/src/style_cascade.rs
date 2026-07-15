@@ -64,9 +64,8 @@ impl AuthorStylesheet {
 
     /// Compute the cascade projection for one element under a concrete viewport.
     ///
-    /// `Page::layout_tree(viewport)` uses this so `@media` rules respond to the
-    /// same dimensions as layout, while the public WPT/headless computed-style
-    /// surface keeps the existing 800×600 default.
+    /// Renderer source projection uses this so `@media` rules respond to the
+    /// exact host viewport, while public inspection keeps the 800×600 default.
     pub fn computed_style_for_viewport(
         &self,
         document: &Document,

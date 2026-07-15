@@ -29,143 +29,65 @@ the Apple Silicon iOS Simulator.
 Linux is the highest-priority GUI and release target: architecture integration,
 host services, packaging, accessibility, and performance evidence converge there
 first, then the same boundary expands to the other committed platforms.
-The checked-in Linux Flutter runner and release archive are implemented; the
-runner requires a native Wayland GDK display and rejects X11/XWayland; headless
-CLI/CDP rendering currently remains display-server-independent through the
-transitional EGL path. ADR-022 replaces that path with a chrome-less Flutter
-host; Linux rendered automation will therefore use bounded Cage/headless
-Wayland. The non-Linux runners remain targets. Flutter is the only rendered
-frontend; the former Rust GTK4/Relm4 adapter was removed. See
-[`FLUTTER_SHELL.md`](FLUTTER_SHELL.md) for the
-bridge and platform gates. Flutter's Linux embedder uses GTK3 internally, so the
-Linux runtime is not GTK-free even though Vixen owns no second GTK widget tree.
+The checked-in Linux Flutter runner and release archive require native Wayland;
+X11/XWayland is rejected. Rendered automation uses the same executable in
+chrome-less mode under bounded Cage/headless Wayland. Native `vixen-headless`
+is intentionally text/runtime-only.
 
 ## Crates and responsibilities
 
-| Crate | Implemented responsibility | Target boundary |
-|-------|----------------------------|-----------------|
-| `vixen-api` | Browser-scoped typed lifecycle ids, command/event/error/handle contracts, diagnostics, transitional graphics-context trait, plus R1 versioned/bounded renderer revision, mutation/resync, commit/presented, geometry, query, target, and semantic-action DTO/reference validation | GUI/protocol-neutral browser plus renderer mutation/commit/query contracts; no implementation dependencies |
-| `vixen-net` | HTTP client primitives and URL/cookie/CSP/CORS/referrer/mixed-content/permissions/security policy | Pure network and policy leaf; no DOM, runtime, GTK, or profile orchestration |
-| `vixen-store` | Bounded redb profile tables and clear-data operations | Persistence leaf using opaque partition/id keys; no network or UI policy |
-| `vixen-engine` | Initial production BrowserCore/thread/profile/context lifecycle, HTML, DOM/Page, Stylo integration, V8 host runtime, forms/history, plus transitional Rust layout/display-list/WebRender integration | Sole owner of browser/profile/context/document/navigation/resource lifecycle; produces revisions/mutations and validates returned commits, but owns no paint backend after cutover |
-| `vixen-cdp` | Bounded CDP target/session/runtime adapter over a non-owning BrowserCore command/event subscription with an injected rendered-evidence backend | Reusable protocol adapter; creates no second BrowserCore and owns no renderer or profile when embedded |
-| `vixen-ffi` | Non-clone safe GUI controller over one `EngineBrowserHandle`, independent bounded event subscriptions for embedded automation, handwritten C ABI v1, renderer broker, in-host CDP composition, retained transitional frames, and panic containment | Safe mutation/commit/query/command/event transport behind Dart; embeds `vixen-cdp` with the Flutter exact-commit backend; frame tokens disappear after cutover |
-| `vixen-headless` | BrowserCore-backed text CLI plus native-comparison `vixen-cdp` composition and transitional EGL surfaceless surface | Text-only launcher/client and frozen native rendered comparison; product rendered evidence runs through the chrome-less Flutter host |
-| `vixen-wpt` | Fixture/profile manifest, runner, reports, checks, visual evidence | Engine-consumer test adapter; no engine internals or alternate semantics |
+| Crate | Current responsibility |
+|-------|------------------------|
+| `vixen-api` | Browser lifecycle and bounded renderer revision/mutation/commit/query/input/semantic contracts; no implementation dependencies |
+| `vixen-net` | HTTP and URL/cookie/CSP/CORS/referrer/mixed-content/security policy |
+| `vixen-store` | Bounded redb profile persistence and clear-data operations |
+| `vixen-engine` | Sole BrowserCore owner for contexts, navigation, DOM/Page source, cascade, V8, history, input intent, resources, and accessibility meaning; no layout or paint backend |
+| `vixen-cdp` | Bounded target/session/runtime adapter over a non-owning BrowserCore subscription and injected rendered backend |
+| `vixen-ffi` | Safe one-owner controller, C ABI v1, renderer broker, in-host CDP composition, copied bounded JSON, and panic containment; no frame ABI |
+| `vixen-headless` | Native text/runtime/profile CLI and non-rendered CDP test composition; rendered methods fail closed |
+| `vixen-wpt` | Source-check manifest/runner/report schema; rendered checks remain in the schema but execute only in Flutter |
 
-The packaged Linux GUI composition root is the Flutter runner plus the narrow
-`vixen-ffi` bridge into BrowserCore. There is no Rust GUI binary or fallback
-shell. The Linux runner is under `flutter/vixen_shell`; its locked
-Yaru/Adwaita-blue chrome and in-scene titlebar remain presentation above the same
-bridge. Other platform runners remain targets. `data/` contains application metadata;
-`scripts/package-linux-release.py` creates the official archive consumed by FlatPark;
-`fixtures/` contains the hermetic compatibility suite and external-profile
-descriptors.
+The packaged Linux composition root is the Flutter runner plus `vixen-ffi` into
+one BrowserCore. There is no Rust GUI, native screenshot renderer, texture
+fallback, or second browser core.
 
 ## Dependency direction
 
-### ADR-022 target
-
 ```text
-Flutter/Dart web renderer + chrome ─► native mutation/commit bridge ─────┬─► vixen-api
-                                                                         └─► vixen-engine
-                                                                                ├─► vixen-net
-                                                                                └─► vixen-store
+Flutter renderer + chrome ─► vixen-ffi broker/controller ─┬─► vixen-api
+                                                          ├─► vixen-cdp
+                                                          └─► vixen-engine
+                                                                 ├─► vixen-net
+                                                                 └─► vixen-store
 
-rendered CLI/CDP/WPT ─► chrome-less Flutter host + vixen-cdp ─► same bridge/core
-text-only utilities ──► vixen-api + vixen-engine where no geometry is invented
-
-vixen-wpt ────────────► vixen-api
+rendered automation/WPT ─► chrome-less Flutter host ─► same bridge/core
+native text utilities ──► BrowserCore, with no invented geometry
+vixen-wpt ───────────────► vixen-api
 ```
-
-A logical rendered CLI/CDP/WPT session has exactly one BrowserCore, owned inside
-the chrome-less Flutter host for that session. The native launcher/protocol
-adapter is its client; it never creates a second core for “fast” DOM/runtime
-operations. A wholly text-only invocation may own BrowserCore natively only when
-it never requests renderer-derived geometry, input, pixels, or Semantics.
 
 Rules:
 
-- `vixen-api`, `vixen-net`, and `vixen-store` are leaves with no dependencies on
-  other Vixen implementation crates.
-- `vixen-wpt` may depend only on `vixen-api` among Vixen crates.
-- `vixen-engine` is the only crate that combines network, persistence, DOM, and
-  runtime behavior. It owns render generations and validates returned geometry;
-  Flutter owns web formatting and paint after cutover.
-- Composition roots may construct `vixen-engine`, but adapters use its browser
-  core rather than directly combining `Page`, `Network`, `Store`, or `JsRuntime`.
-- Dart/Flutter and platform runner types stay above the native bridge. Native
-  Linux GTK embedder types stay inside `flutter/vixen_shell/linux`; none leak
-  into BrowserCore state. Transitional EGL types are deleted at cutover.
-- Dart retains bounded active renderer revisions/resources and owns formatting,
-  Canvas paint, scene capture, chrome, and host-service presentation. BrowserCore
-  remains the sole owner of browser state and durable accessibility meaning.
-- Public Flutter Canvas/Paragraph/scene APIs are the renderer boundary, with
-  Impeller required underneath them. No Vixen Skia fallback or private
-  Impeller-specific painter is permitted; platform gates prove the backend.
+- `vixen-api`, `vixen-net`, and `vixen-store` are implementation leaves.
+- `vixen-wpt` depends only on `vixen-api` among Vixen crates.
+- `vixen-engine` owns browser truth and renderer source generations, but no
+  formatting, text measurement, hit testing, geometry, semantic bounds, or
+  paint authority.
+- Flutter owns formatter state, Paragraph/Canvas/scene output, exact geometry,
+  hit testing, scroll mechanics, semantic bounds, and rendered capture. Public
+  Flutter APIs run over explicitly enabled Impeller.
+- A rendered CLI/CDP/WPT session is hosted by Flutter and has one BrowserCore.
+  Native-only sessions may inspect source/runtime state but renderer-dependent
+  operations fail closed.
+- Pointer input crosses the C ABI only with an exact displayed-commit query and
+  optional Flutter hit target. The old raw coordinate-input command is deleted.
+- Renderer-dependent fixture checks use `flutter-js-eval`, `layout-box`,
+  `visual-hash`, or `ref-equivalent`; the native WPT runner excludes them and the
+  Flutter fixture host executes them.
 
-### Current adapter status
-
-- `vixen-cdp` depends only on `vixen-api` and `vixen-engine`; `vixen-headless`
-  and `vixen-ffi` inject the frozen native-comparison or exact Flutter render
-  backend. CLI and CDP targets route through BrowserCore and do not own `Page`,
-  `JsRuntime`, cookies, network, or session history. Its EGL screenshot path is
-  transitional under ADR-022.
-- `vixen-api::Engine` remains a transitional tab-shaped trait with only a test
-  implementation. Production paths use the browser-scoped `BrowserHandle` seam.
-- `vixen-ffi` provides the safe Rust controller core plus C ABI v1: immediate
-  navigation acceptance, stop/history/profile commands, exactly one event
-  receiver, non-reused process tokens instead of caller-owned Rust pointers,
-  bounded copied UTF-8 JSON, stable event/response/error projections, and one
-  explicitly size-capped, tokenized Rust-owned output-buffer release path, plus
-  bounded retained RGBA frames. Those frames are the implemented baseline, not
-  the ADR-022 target. The Linux Flutter package adds handwritten Dart
-  bindings, one worker-isolate owner, injected fake tests, an
-  `FlPixelBufferTexture` runner, and strict generation-tagged pointer/wheel/key
-  commands that hit-test only in BrowserCore. BrowserCore also exposes a bounded,
-  mutation-generation-tagged semantic projection that Flutter maps without a
-  second DOM. ADR-022's bounded R1 mutation/full-resync, atomic-commit, query,
-  target, replay, and explicit handle-retirement model is implemented in
-  `vixen-api`; R2's dedicated C/Dart broker and R3's formatter are implemented.
-  The production R4 vertical presents post-frame acknowledgements,
-  commit-bound pointer/semantic targets, Paragraph find geometry,
-  zoom/viewport revisions, lifecycle generations, and renderer-clamped root
-  scroll commits after BrowserCore cancellation policy. R5 now adds full-DOM
-  block/inline/flex/grid fixture formatting, exact scene capture, embedded CDP,
-  independent targets, input, mutation capture, reset/resync, and the complete
-  270-fixture manifest. R6 adds synchronous mutation flush, commit/text geometry,
-  cancellation, and recovery. The old frame remains the normal-GUI fallback
-  only until R7 deletion. Single-touch root dragging reuses the bounded
-  cancelable wheel path. Complete renderer cutover,
-  semantics/native AT, richer gesture/lifecycle, and non-Linux runners remain
-  open.
-
-`just gate-architecture` now enforces these frontend boundaries in addition to
-the stable leaf-crate rules. Remaining migration debt is inside the document
-implementation: compatibility projections and synchronous runtime/resource work
-must converge on the live document lifecycle.
-
-The committed/external WPT adapter is no longer an exception. The native test
-runner keeps 1,887 text/runtime checks over generation-checked BrowserCore
-inspection. The R5 release Flutter host executes the complete 270-fixture /
-2,027-check manifest in order and owns all 104 layout, 25 visual, and 11
-reference assertions. `vixen-wpt` itself remains engine-independent.
-
-The headless CLI `--eval`, screenshot, selector, textual DOM/layout/paint
-projections, interaction summaries, and URL-only paths also create one
-ephemeral-profile BrowserCore context and wait for the matching typed navigation
-terminal event. Evaluation, inspection, hit testing, focus/form projections, and
-paint snapshots are generation checked; EGL/PNG is transitional. The target
-keeps text-only output where useful and routes screenshots, visual fixtures,
-layout geometry, and rendered CDP through the chrome-less Flutter host.
-
-CDP maps every target to a BrowserCore context, keeps only bounded protocol
-presentation/session/remote-handle state, and retains events by target while
-waiting. Its socket loop polls BrowserCore events while `Page.navigate` or
-`Page.reload` is pending, so the same connection can dispatch `Page.stopLoading`
-without creating a second event consumer. Flutter uses the same context/history/
-paint and profile-session commands through `vixen-ffi`. Host-runnable
-multi-context tests cover the headless and FFI adapters.
+R1–R7 are implemented. `just test-r7` enforces absence of WebRender/gleam,
+`GlContext`, EGL, native frame/screenshot ownership, Rust layout/display-list/
+paint modules, frame transport/texture presentation, and raw coordinate input.
+`just gate-r7` composes this with the R5/R6 rendered fixture/CDP/Cage evidence.
 
 ## Authoritative ownership model (target)
 
@@ -335,8 +257,8 @@ released only by opaque token, and each delivered event receives a monotonically
 increasing per-handle sequence. The crate builds `rlib`, `cdylib`, and `staticlib`
 forms. `just gate-native-abi` is native ABI/header/wire evidence only.
 
-The implemented Dart FFI binding, worker isolate, and Linux texture integration
-are transitional transport adapters over the same browser-scoped seam:
+The Dart FFI binding and worker isolate are transport adapters over the same
+browser-scoped seam:
 
 - opaque browser handles plus typed context/frame ids, explicit version
   negotiation and destruction, and no Rust references retained by Dart;
@@ -344,8 +266,7 @@ are transitional transport adapters over the same browser-scoped seam:
 - commands copied to BrowserCore and bounded ordered events copied to Dart with
   typed ids/generations;
 - no synchronous Dart callback while Rust locks or V8 scopes are active;
-- a bounded, generation-checked RGBA frame channel, replaced under ADR-022 by
-  bounded mutation/commit/query channels plus explicit payload release; and
+- bounded mutation/commit/query channels plus explicit payload release; and
 - stable structured errors rather than panic/exception-driven lifecycle flow.
 
 A generated bridge is optional, not architectural. Adopt one only if its output,
@@ -402,10 +323,9 @@ resource jobs.
 
 ## Document, runtime, and Web APIs
 
-`Page` is the implemented transitional facade over parsed DOM, computed/style
-data, Rust layout/display-list, diagnostics, form/history state, and runtime
-snapshots. BrowserCore remains the document owner while renderer-dependent Page
-state is replaced by render-source revisions and accepted Flutter commits. `Page`
+`Page` is the BrowserCore facade over parsed DOM, computed styles, accepted
+resources, diagnostics, form/history state, runtime snapshots, and renderer
+source projection. It owns no formatting, layout, hit testing, or paint state and
 is not a profile/browser lifecycle coordinator.
 
 JS uses `deno_core` directly:
@@ -420,9 +340,7 @@ JS uses `deno_core` directly:
 - parser scripts, modules, tasks, and microtasks join the document lifecycle.
 
 The obsolete `Page` string-expression and headless classifier shims are deleted;
-all evaluation adapters use `BrowserCore`/`JsRuntime`. Runtime/document snapshots
-remain transitional, so this cleanup does not establish live DOM snapshot
-convergence.
+all evaluation adapters use `BrowserCore`/`JsRuntime`.
 
 API surface alone is not support. Inert media/canvas/web-component objects may
 help automation probes, but `COMPAT.md` must classify them as shape-only until
@@ -432,15 +350,7 @@ See [`RUNTIME_WEB_PLATFORM.md`](RUNTIME_WEB_PLATFORM.md) for host-module rules.
 
 ## Style, layout, paint, and inspection
 
-The implemented production path is transitional and frozen except for critical
-correctness:
-
-```text
-html5ever DOM → Stylo-compatible styles → Rust layout/display list
-  → WebRender on surfaceless EGL → RGBA texture or native-headless PNG
-```
-
-The target path is:
+The implemented production path is:
 
 ```text
 BrowserCore DOM + Stylo computed styles + accepted resources/semantics
@@ -474,15 +384,13 @@ BrowserCore fetches and validates image/font bytes under URL/CSP/CORS/integrity/
 cache policy before renderer exposure. Node count/depth, text, mutations,
 resources, decoded bytes, fragments, commits, and queues are bounded.
 
-The current R5 full-snapshot source is the first production implementation of
-that boundary: it projects renderable DOM elements with stable BrowserCore ids,
+The full-snapshot source projects renderable DOM elements with stable BrowserCore ids,
 renderer-only text ids, resolved style properties, accepted PNG bytes, semantic
 descriptors, and root scroll intent. Non-rendered metadata/script/style subtrees
 still participate in DOM id allocation but are omitted from renderer payload.
-R6 now diffs this source deterministically into exact same-document mutation
+R6 diffs this source deterministically into exact same-document mutation
 batches and falls back to the full snapshot on first load, missed state, or
-resync. The source projection is not permission to consult the transitional Rust
-display list from Flutter.
+resync. R7 deleted the former Rust layout/display-list projection.
 
 ### Formatter and commit authority
 
@@ -558,22 +466,14 @@ The same renderer runs without chrome for screenshots, layout/visual WPT, and
 rendered CDP. Linux hosts it in Cage/headless Wayland and captures an exact
 presented scene without compositor chrome.
 
-### Migration rule
+### Cutover invariant
 
-The bounded Flutter vertical may run in production with the old frame as an
-explicit fallback, but it is not the renderer cutover. R4's interactive
-controlled vertical is complete. R5's page-only release host captures a
-full-DOM/computed-style source as an exact acknowledged Flutter scene at two
-Cage viewports while skipping chrome and the legacy frame path; R6 adds
-synchronous layout, cancellation, and recovery. Production now cuts over once.
-Apply the complete R7 deletion inventory:
-WebRender/gleam, `GlContext`, both EGL paths, image upload, RGBA frame ABI/pools,
-the Dart frame worker, pixel-buffer plugin/presenter and recovery tests,
-superseded Rust layout/paint, duplicated geometry/input projections, obsolete
-fixtures/gates/docs/dependencies, and renderer-internal CLI flags. Keep no
-fallback renderer or compatibility API. Pure CSS algorithms survive only through
-an explicit stable formatter contract when measured reuse is simpler than
-deletion.
+R7 is complete. No fallback renderer or compatibility API may reintroduce
+WebRender/EGL/frame transport, Rust layout/paint authority, native screenshots,
+or raw coordinate input. Renderer-dependent evidence must use the same Flutter
+formatter/commit path as the GUI. A pure shared algorithm may be added only
+through an explicit stable formatter contract when measured reuse is simpler
+than a direct Dart implementation.
 
 ## Resource loading, network, and policy
 
@@ -726,8 +626,7 @@ panic = "abort"
 structured size commands measure the GUI, chrome-less Flutter host, and any
 text-only launcher separately. Hard budgets
 must be based on published reproducible baselines for the active
-`deno_core`/V8/Flutter dependency graph. Measurements before ADR-022 cutover
-include transitional WebRender/EGL costs and must label them explicitly.
+`deno_core`/V8/Flutter dependency graph. Pre-R7 measurements include deleted renderer costs and must be labeled historical.
 
 Each Flutter GUI release uses release/AOT/strip/LTO controls and a per-platform/
 ABI hello-Flutter versus Flutter+Vixen report with component attribution. Debug

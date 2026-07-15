@@ -92,9 +92,6 @@ jobs:
           cc -std=c11 -Wall -Wextra -Werror -fsyntax-only crates/vixen-ffi/tests/header_smoke.c
           cargo test -p vixen-ffi c_abi::tests
 
-      - name: Run external Playwright CDP smoke
-        run: npm run cdp:playwright-smoke
-
   security:
     name: Security checks
     runs-on: ubuntu-24.04

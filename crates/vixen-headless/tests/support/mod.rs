@@ -7,7 +7,7 @@ use vixen_api::{
     EngineDiagnostic, NavigationId, NavigationPhase, PageSnapshot,
 };
 use vixen_engine::browser::{BrowserConfig, EngineBrowserHandle, spawn_browser};
-use vixen_wpt::harness::{HarnessEngine, RgbaScreenshot};
+use vixen_wpt::harness::HarnessEngine;
 
 /// One production BrowserCore shared by all fixture contexts in a report.
 pub struct HarnessBrowser {
@@ -158,23 +158,6 @@ impl HarnessEngine for PageHarnessEngine {
             BrowserCommandResult::Evaluation(evaluation) => Ok(evaluation.value.to_display()),
             result => Err(format!("unexpected evaluation result: {result:?}")),
         }
-    }
-
-    fn display_list(&self, _vw: u32, _vh: u32) -> Result<String, String> {
-        Err("rendered fixture checks require the Flutter host".to_owned())
-    }
-
-    fn reference_display_list(
-        &self,
-        _reference: &str,
-        _vw: u32,
-        _vh: u32,
-    ) -> Result<String, String> {
-        Err("rendered fixture checks require the Flutter host".to_owned())
-    }
-
-    fn screenshot_rgba(&self, _vw: u32, _vh: u32) -> Result<RgbaScreenshot, String> {
-        Err("rendered fixture checks require the Flutter host".to_owned())
     }
 }
 

@@ -23,13 +23,16 @@ fn fixtures_manifest_text_checks_pass_end_to_end() {
         fixture.checks.retain(|check| {
             !matches!(
                 check,
-                Check::LayoutBox { .. } | Check::VisualHash { .. } | Check::RefEquivalent { .. }
+                Check::LayoutBox { .. }
+                    | Check::VisualHash { .. }
+                    | Check::RefEquivalent { .. }
+                    | Check::FlutterJsEval { .. }
             )
         });
     }
 
     let browser = HarnessBrowser::new(&root);
     let report = vixen_wpt::run_manifest(&manifest, |url| Box::new(browser.engine_for(url)));
-    assert_eq!(report.total, 1_887);
+    assert_eq!(report.total, 1_868);
     assert_clean_report(&report);
 }

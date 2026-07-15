@@ -337,6 +337,22 @@ test-r6: _flutter-sdk-present
 # mutation-to-geometry and recovery proof.
 gate-r6: gate-r5 test-r6
 
+# R7 cutover/deletion proof: one Flutter renderer, no native paint/frame owner,
+# no raw coordinate-input ABI, and both native/Flutter test surfaces green.
+test-r7: _flutter-sdk-present
+    if rg -n 'webrender|gleam|khronos-egl|GlContext|PaintSnapshot|capture_paint_snapshot|RgbaFrame|BrowserFrame|VixenFrame|vixen_capture_frame|FlPixelBufferTexture|crate::display_list|pub mod display_list|crate::layout_tree|pub mod layout_tree|crate::line_layout|pub mod line_layout|"dispatch_mouse_event"' Cargo.toml Cargo.lock crates/vixen-api crates/vixen-engine crates/vixen-ffi crates/vixen-headless crates/vixen-wpt flutter/vixen_shell/lib flutter/vixen_shell/linux; then exit 1; fi
+    cargo test -p vixen-api -p vixen-engine -p vixen-cdp -p vixen-ffi -p vixen-headless -p vixen-wpt
+    cargo clippy --workspace --all-targets -- -D warnings
+    cc -std=c11 -Wall -Wextra -Werror -fsyntax-only crates/vixen-ffi/tests/header_smoke.c
+    jq empty fixtures/manifest.json
+    node --check scripts/flutter-fixture-manifest.mjs
+    cd flutter/vixen_shell && dart format --output=none --set-exit-if-changed lib test
+    cd flutter/vixen_shell && flutter analyze
+    cd flutter/vixen_shell && flutter test --enable-impeller --dart-define=VIXEN_REQUIRE_IMPELLER=true
+
+# Full R7 keeps every rendered R5/R6 product proof and adds deletion scans.
+gate-r7: gate-r6 test-r7
+
 # --- Lint / format -----------------------------------------------------------
 
 fmt:

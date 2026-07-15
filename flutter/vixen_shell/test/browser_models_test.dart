@@ -102,46 +102,6 @@ void main() {
       },
     );
     expect(
-      BrowserCommand.dispatchMouseEvent(
-        contextId: 7,
-        documentId: 70,
-        runtimeContextId: 700,
-        viewportWidth: 800,
-        viewportHeight: 600,
-        eventType: 'mousedown',
-        event: const BrowserMouseEvent(
-          x: 12.5,
-          y: 20,
-          button: 0,
-          buttons: 0,
-          detail: 1,
-        ),
-      ).toWire(),
-      {
-        'v': 1,
-        'type': 'dispatch_mouse_event',
-        'context_id': 7,
-        'document_id': 70,
-        'runtime_context_id': 700,
-        'viewport': {'width': 800, 'height': 600},
-        'event_type': 'mousedown',
-        'event': {
-          'x': 12.5,
-          'y': 20.0,
-          'button': 0,
-          'buttons': 0,
-          'detail': 1,
-          'bubbles': true,
-          'ctrl_key': false,
-          'shift_key': false,
-          'alt_key': false,
-          'meta_key': false,
-          'delta_x': 0.0,
-          'delta_y': 0.0,
-        },
-      },
-    );
-    expect(
       BrowserCommand.dispatchKeyEvent(
         contextId: 7,
         documentId: 70,

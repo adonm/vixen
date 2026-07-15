@@ -105,8 +105,10 @@ typedef struct VixenBuffer {
  *   dispatch_accessibility_action additionally requires runtime_context_id,
  *   source_generation, generation, node_id, viewport, and action. Action is
  *   focus, increase, decrease, or set_value; only set_value carries value.
- *   dispatch_mouse_event and dispatch_key_event additionally require document
- *   and runtime context ids, viewport, event_type, and one bounded event object.
+ *   dispatch_renderer_mouse_event additionally requires document/runtime ids,
+ *   viewport, event_type, a bounded event, and an exact displayed-commit query
+ *   plus optional Flutter hit target. dispatch_key_event requires the same ids,
+ *   viewport, event_type, and one bounded key event.
  *
  * Successful commands return:
  *   {"v":1,"type":"response","response":{"type":TAG,...}}

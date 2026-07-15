@@ -47,6 +47,7 @@ final class FormatterTextMatch {
     required this.startCaret,
     required this.endCaret,
     required List<RenderRect> boxes,
+    this.clip,
   }) : boxes = List.unmodifiable(boxes);
 
   final int nodeId;
@@ -55,6 +56,10 @@ final class FormatterTextMatch {
   final RenderRect startCaret;
   final RenderRect endCaret;
   final List<RenderRect> boxes;
+  final RenderRect? clip;
+  Iterable<RenderRect> get visibleBoxes => clip == null
+      ? boxes
+      : boxes.map((box) => _intersectRect(box, clip!)).whereType<RenderRect>();
 }
 
 final class FormatterFindResult {
@@ -64,7 +69,7 @@ final class FormatterFindResult {
     required this.query,
     required List<FormatterTextMatch> matches,
   }) : matches = List.unmodifiable(matches),
-       boxes = List.unmodifiable(matches.expand((match) => match.boxes));
+       boxes = List.unmodifiable(matches.expand((match) => match.visibleBoxes));
 
   final int commitId;
   final RenderRevision revision;
@@ -349,6 +354,7 @@ final class FormatterCommitView {
               ),
               endCaret: _caretRect(entry.key, end, RenderTextAffinity.upstream),
               boxes: boxes,
+              clip: paragraph.clip?.renderRect,
             ),
           );
           start = end;
@@ -708,6 +714,78 @@ final class VixenFormatter {
     return true;
   }
 
+  Future<FormatterCommitView?> revealTextMatch(FormatterTextMatch match) async {
+    _requireOpen();
+    final source = _source;
+    final current = _staged;
+    if (source == null || current == null || current.isRetired) return null;
+    final boxes = match.boxes.map((box) => box.uiRect).toList(growable: false);
+    if (boxes.isEmpty) return null;
+    var target = boxes
+        .skip(1)
+        .fold(boxes.first, (rect, box) => rect.expandToInclude(box));
+    final scrollById = {
+      for (final scroll in current.commit.scroll) scroll.scrollNodeId: scroll,
+    };
+    final desired = <int, ui.Offset>{};
+    final targetGeometry = current.commit.geometry
+        .where((entry) => entry.nodeId == match.nodeId)
+        .firstOrNull;
+    final nestedId = targetGeometry?.scrollNodeId;
+    if (nestedId != null && nestedId != 1) {
+      final scroll = scrollById[nestedId];
+      if (scroll != null) {
+        final offset = _revealOffset(scroll, target);
+        desired[nestedId] = offset;
+        target = target.shift(
+          ui.Offset(scroll.offsetX - offset.dx, scroll.offsetY - offset.dy),
+        );
+      }
+    }
+    final root = scrollById[1];
+    if (root != null) desired[1] = _revealOffset(root, target);
+    if (desired.entries.every((entry) {
+      final scroll = scrollById[entry.key]!;
+      return entry.value.dx == scroll.offsetX &&
+          entry.value.dy == scroll.offsetY;
+    })) {
+      return null;
+    }
+
+    final scrollIntents = Map<int, RenderScrollIntent>.of(source.scrollIntents);
+    for (final entry in desired.entries) {
+      final scroll = scrollById[entry.key]!;
+      scrollIntents[entry.key] = RenderScrollIntent(
+        scrollNodeId: entry.key,
+        nodeId: scroll.nodeId,
+        kind: RenderScrollIntentKind.to,
+        point: RenderPoint(entry.value.dx, entry.value.dy),
+      );
+    }
+    final candidate = _FormatterSource(
+      revision: source.revision,
+      viewport: source.viewport,
+      nodes: source.nodes,
+      resources: source.resources,
+      scrollIntents: scrollIntents,
+    );
+    _validateSource(candidate);
+    final epoch = ++_stageEpoch;
+    final view = await _stage(candidate);
+    if (_disposed || epoch != _stageEpoch) {
+      view.retire();
+      throw const RenderProtocolException(
+        'render.stale',
+        'find reveal was superseded before publication',
+      );
+    }
+    if (_staged != null && !identical(_staged, _presented)) {
+      _staged!.retire();
+    }
+    _staged = view;
+    return view;
+  }
+
   RenderResyncRequest reset({required int contextId, required int documentId}) {
     _stageEpoch++;
     _staged?.retire();
@@ -784,21 +862,53 @@ final class VixenFormatter {
         }
         decodedImages[resource.id] = image;
       }
+      final previousScrollOffsets = <int, ui.Offset>{};
+      final staged = _staged;
+      if (staged != null &&
+          staged.commit.revision.contextId == revision.contextId &&
+          staged.commit.revision.documentId == revision.documentId) {
+        for (final scroll in staged.commit.scroll) {
+          previousScrollOffsets[scroll.scrollNodeId] = ui.Offset(
+            scroll.offsetX,
+            scroll.offsetY,
+          );
+        }
+      }
       layout = _FixtureLayout(
         nodes: source.nodes,
         images: decodedImages,
         viewport: viewport,
+        scrollIntents: source.scrollIntents,
+        previousScrollOffsets: previousScrollOffsets,
       ).build();
+      final maxScrollX = (layout.contentWidth - viewport.width)
+          .clamp(0, double.infinity)
+          .toDouble();
       final maxScrollY = (layout.contentHeight - viewport.height)
           .clamp(0, double.infinity)
           .toDouble();
       final scrollOffset = _resolveScrollOffset(
         source,
         rootNodeId: layout.rootNodeId,
+        maxScrollX: maxScrollX,
         maxScrollY: maxScrollY,
       );
+      final viewportClip = ui.Rect.fromLTWH(
+        0,
+        0,
+        viewport.width.toDouble(),
+        viewport.height.toDouble(),
+      );
+      final rootNodeId = layout.rootNodeId;
       final geometry = layout.geometry
-          .map((entry) => _translateGeometry(entry, scrollOffset))
+          .map(
+            (entry) => _translateGeometry(
+              entry,
+              scrollOffset,
+              viewportClip,
+              rootNodeId,
+            ),
+          )
           .toList(growable: false);
       final paragraphs = layout.paragraphs
           .map(
@@ -807,6 +917,8 @@ final class VixenFormatter {
               origin: paragraph.origin - scrollOffset,
               ranges: paragraph.ranges,
               textByNode: paragraph.textByNode,
+              clip: (paragraph.clip?.shift(-scrollOffset) ?? viewportClip)
+                  .intersect(viewportClip),
             ),
           )
           .toList(growable: false);
@@ -826,6 +938,7 @@ final class VixenFormatter {
         (count, bounds) => count + bounds.rects.length,
       );
       if (geometry.length > renderMaxGeometryEntries ||
+          layout.scroll.length + 1 > renderMaxScrollEntries ||
           semanticBounds.length > renderMaxSemanticBounds ||
           semanticRectCount > renderMaxGeometryEntries) {
         throw const RenderProtocolException(
@@ -882,7 +995,7 @@ final class VixenFormatter {
               nodeId: layout.rootNodeId,
               offsetX: scrollOffset.dx,
               offsetY: scrollOffset.dy,
-              maxOffsetX: 0,
+              maxOffsetX: maxScrollX,
               maxOffsetY: maxScrollY,
               viewport: RenderRect(
                 0,
@@ -890,8 +1003,11 @@ final class VixenFormatter {
                 viewport.width.toDouble(),
                 viewport.height.toDouble(),
               ),
-              contentWidth: viewport.width.toDouble(),
+              contentWidth: layout.contentWidth,
               contentHeight: layout.contentHeight,
+            ),
+            ...layout.scroll.map(
+              (scroll) => _translateScrollState(scroll, scrollOffset),
             ),
           ],
           semantics: semanticBounds,
@@ -1050,20 +1166,15 @@ final class VixenFormatter {
   ui.Offset _resolveScrollOffset(
     _FormatterSource source, {
     required int rootNodeId,
+    required double maxScrollX,
     required double maxScrollY,
   }) {
-    if (source.scrollIntents.isEmpty) return ui.Offset.zero;
-    if (source.scrollIntents.length != 1) {
-      throw const RenderProtocolException(
-        'render.unsupported',
-        'R4 formatter supports exactly one root scroll intent',
-      );
-    }
-    final intent = source.scrollIntents.values.single;
+    final intent = source.scrollIntents[1];
+    if (intent == null) return ui.Offset.zero;
     if (intent.scrollNodeId != 1 || intent.nodeId != rootNodeId) {
       throw const RenderProtocolException(
         'render.unsupported',
-        'R4 formatter scroll intent must name the root scroll node',
+        'root scroll intent must name the root render node',
       );
     }
     var previous = ui.Offset.zero;
@@ -1083,7 +1194,10 @@ final class VixenFormatter {
         intent.point.y,
       ),
     };
-    return ui.Offset(0, requested.dy.clamp(0, maxScrollY).toDouble());
+    return ui.Offset(
+      requested.dx.clamp(0, maxScrollX).toDouble(),
+      requested.dy.clamp(0, maxScrollY).toDouble(),
+    );
   }
 
   void _validateNodeGraph(Iterable<RenderNode> nodes, Set<int> resourceIds) {
@@ -1212,11 +1326,13 @@ final class _ParagraphState {
     required this.origin,
     required this.ranges,
     required this.textByNode,
+    this.clip,
   });
   final ui.Paragraph paragraph;
   final ui.Offset origin;
   final Map<int, _TextRange> ranges;
   final Map<int, String> textByNode;
+  final ui.Rect? clip;
 }
 
 final class _TextRange {
@@ -1307,21 +1423,46 @@ final class _ImagePaint extends _PaintItem {
   }
 }
 
+final class _ScrollPaint extends _PaintItem {
+  const _ScrollPaint({
+    required this.items,
+    required this.clip,
+    required this.offset,
+  });
+  final List<_PaintItem> items;
+  final ui.Rect clip;
+  final ui.Offset offset;
+  @override
+  void paint(ui.Canvas canvas) {
+    canvas.save();
+    canvas.clipRect(clip);
+    canvas.translate(-offset.dx, -offset.dy);
+    for (final item in items) {
+      item.paint(canvas);
+    }
+    canvas.restore();
+  }
+}
+
 final class _LayoutResult {
   const _LayoutResult({
     required this.rootNodeId,
+    required this.contentWidth,
     required this.contentHeight,
     required this.items,
     required this.geometry,
     required this.paragraphs,
+    required this.scroll,
     required this.semanticBounds,
     required this.semanticRegions,
   });
   final int rootNodeId;
+  final double contentWidth;
   final double contentHeight;
   final List<_PaintItem> items;
   final List<RenderGeometryEntry> geometry;
   final List<_ParagraphState> paragraphs;
+  final List<RenderScrollState> scroll;
   final List<RenderSemanticBounds> semanticBounds;
   final List<FormatterSemanticRegion> semanticRegions;
   void paint(ui.Canvas canvas) {
@@ -1342,13 +1483,19 @@ final class _FixtureLayout {
     required this.nodes,
     required this.images,
     required this.viewport,
+    required this.scrollIntents,
+    required this.previousScrollOffsets,
   });
   final Map<int, RenderNode> nodes;
   final Map<int, ui.Image> images;
   final RenderViewport viewport;
+  final Map<int, RenderScrollIntent> scrollIntents;
+  final Map<int, ui.Offset> previousScrollOffsets;
+  double get _outputScale => viewport.deviceScale * viewport.pageZoom;
   final List<_PaintItem> _items = [];
   final List<RenderGeometryEntry> _geometry = [];
   final List<_ParagraphState> _paragraphs = [];
+  final List<RenderScrollState> _scroll = [];
   final List<RenderSemanticBounds> _semanticBounds = [];
   final List<FormatterSemanticRegion> _semanticRegions = [];
   int _nextFragment = 1;
@@ -1405,12 +1552,44 @@ final class _FixtureLayout {
     ).where((child) => !_isHidden(child))) {
       y = _layoutElement(child, 0, y, viewport.width.toDouble());
     }
+    final resolvedContentWidth = _geometry
+        .skip(1)
+        .fold(
+          viewport.width.toDouble(),
+          (width, geometry) =>
+              width < geometry.borderBox.x + geometry.borderBox.width
+              ? geometry.borderBox.x + geometry.borderBox.width
+              : width,
+        );
+    final resolvedContentHeight = contentHeight
+        .clamp(y, double.infinity)
+        .toDouble();
+    final rootRect = ui.Rect.fromLTWH(
+      0,
+      0,
+      resolvedContentWidth,
+      resolvedContentHeight,
+    );
+    _items[0] = _RectPaint(rootRect, rootBackground);
+    final rootGeometry = _geometry[0];
+    _geometry[0] = RenderGeometryEntry(
+      nodeId: rootGeometry.nodeId,
+      fragmentId: rootGeometry.fragmentId,
+      borderBox: rootRect.renderRect,
+      paddingBox: rootRect.renderRect,
+      contentBox: rootRect.renderRect,
+      clip: rootGeometry.clip,
+      scrollNodeId: rootGeometry.scrollNodeId,
+      paintOrder: rootGeometry.paintOrder,
+    );
     return _LayoutResult(
       rootNodeId: root.id,
-      contentHeight: contentHeight.clamp(y, double.infinity),
+      contentWidth: resolvedContentWidth,
+      contentHeight: resolvedContentHeight,
       items: List.unmodifiable(_items),
       geometry: List.unmodifiable(_geometry),
       paragraphs: List.unmodifiable(_paragraphs),
+      scroll: List.unmodifiable(_scroll),
       semanticBounds: List.unmodifiable(_semanticBounds),
       semanticRegions: List.unmodifiable(_semanticRegions),
     );
@@ -1431,7 +1610,7 @@ final class _FixtureLayout {
     final box = _CssBox.resolve(
       node,
       availableWidth,
-      viewport.pageZoom,
+      _outputScale,
       forcedBorderWidth: forcedBorderWidth,
       forcedBorderHeight: forcedBorderHeight,
       shrinkToFitWidth: inlineMode ? _intrinsicContentWidth(node) : null,
@@ -1490,6 +1669,11 @@ final class _FixtureLayout {
       return normalTop + rect.height + box.marginBottom;
     }
 
+    final geometryStart = _geometry.length;
+    final paragraphStart = _paragraphs.length;
+    final scrollStart = _scroll.length;
+    final semanticBoundsStart = _semanticBounds.length;
+    final semanticRegionsStart = _semanticRegions.length;
     final elementPaintOrder = _paintOrder++;
     final children = _children(node.id);
     final textChildren = children
@@ -1547,21 +1731,188 @@ final class _FixtureLayout {
       box.contentWidth + box.padding.horizontal + box.border.horizontal,
       contentHeight + box.padding.vertical + box.border.vertical,
     );
+    final contentRect = ui.Rect.fromLTWH(
+      contentLeft,
+      contentTop,
+      box.contentWidth,
+      contentHeight,
+    );
+    _applyOverflow(
+      node,
+      contentRect,
+      naturalContentHeight,
+      paintStart: paintStart,
+      geometryStart: geometryStart,
+      paragraphStart: paragraphStart,
+      scrollStart: scrollStart,
+      semanticBoundsStart: semanticBoundsStart,
+      semanticRegionsStart: semanticRegionsStart,
+    );
     _insertBoxPaint(node, rect, box, paintStart);
     _addGeometry(
       node,
       rect,
       paddingBox: box.paddingRect(rect),
-      contentBox: ui.Rect.fromLTWH(
-        contentLeft,
-        contentTop,
-        box.contentWidth,
-        contentHeight,
-      ),
+      contentBox: contentRect,
       paintOrder: elementPaintOrder,
     );
     _addSemantic(node, semanticRects.isEmpty ? [rect] : semanticRects);
     return normalTop + rect.height + box.marginBottom;
+  }
+
+  void _applyOverflow(
+    RenderNode node,
+    ui.Rect viewportRect,
+    double naturalContentHeight, {
+    required int paintStart,
+    required int geometryStart,
+    required int paragraphStart,
+    required int scrollStart,
+    required int semanticBoundsStart,
+    required int semanticRegionsStart,
+  }) {
+    final overflowX = _overflow(node.styles, 'x');
+    final overflowY = _overflow(node.styles, 'y');
+    final clips = overflowX != 'visible' || overflowY != 'visible';
+    final scrollsX = overflowX != 'visible' && overflowX != 'clip';
+    final scrollsY = overflowY != 'visible' && overflowY != 'clip';
+    if (!clips && !scrollsX && !scrollsY) return;
+
+    var contentRight = viewportRect.right;
+    var contentBottom = viewportRect.top + naturalContentHeight;
+    for (final geometry in _geometry.skip(geometryStart)) {
+      contentRight =
+          contentRight < geometry.borderBox.x + geometry.borderBox.width
+          ? geometry.borderBox.x + geometry.borderBox.width
+          : contentRight;
+      contentBottom =
+          contentBottom < geometry.borderBox.y + geometry.borderBox.height
+          ? geometry.borderBox.y + geometry.borderBox.height
+          : contentBottom;
+    }
+    final contentWidth = (contentRight - viewportRect.left)
+        .clamp(viewportRect.width, double.infinity)
+        .toDouble();
+    final contentHeight = (contentBottom - viewportRect.top)
+        .clamp(viewportRect.height, double.infinity)
+        .toDouble();
+    final maxX = scrollsX ? contentWidth - viewportRect.width : 0.0;
+    final maxY = scrollsY ? contentHeight - viewportRect.height : 0.0;
+    final scrollNodeId = node.id + 1;
+    var offset = ui.Offset.zero;
+    if (scrollsX || scrollsY) {
+      final intent = scrollIntents[scrollNodeId];
+      if (intent != null && intent.nodeId != node.id) {
+        throw const RenderProtocolException(
+          'render.invalid-graph',
+          'element scroll intent does not match its render node',
+        );
+      }
+      final previous = previousScrollOffsets[scrollNodeId] ?? ui.Offset.zero;
+      final requested = switch (intent?.kind) {
+        RenderScrollIntentKind.by =>
+          previous + ui.Offset(intent!.point.x, intent.point.y),
+        RenderScrollIntentKind.to || RenderScrollIntentKind.restore =>
+          ui.Offset(intent!.point.x, intent.point.y),
+        null => previous,
+      };
+      offset = ui.Offset(
+        (scrollsX ? requested.dx : 0).clamp(0, maxX).toDouble(),
+        (scrollsY ? requested.dy : 0).clamp(0, maxY).toDouble(),
+      );
+    }
+
+    final childItems = _items.sublist(paintStart);
+    if (childItems.isNotEmpty) {
+      _items
+        ..removeRange(paintStart, _items.length)
+        ..add(
+          _ScrollPaint(
+            items: List.unmodifiable(childItems),
+            clip: viewportRect,
+            offset: offset,
+          ),
+        );
+    }
+    for (var index = geometryStart; index < _geometry.length; index++) {
+      final entry = _geometry[index];
+      final shiftedClip = entry.clip?.shift(-offset);
+      _geometry[index] = RenderGeometryEntry(
+        nodeId: entry.nodeId,
+        fragmentId: entry.fragmentId,
+        borderBox: entry.borderBox.shift(-offset),
+        paddingBox: entry.paddingBox.shift(-offset),
+        contentBox: entry.contentBox.shift(-offset),
+        clip: _intersectRenderRects(shiftedClip, viewportRect.renderRect),
+        scrollNodeId: (scrollsX || scrollsY) && entry.scrollNodeId == 1
+            ? scrollNodeId
+            : entry.scrollNodeId,
+        paintOrder: entry.paintOrder,
+      );
+    }
+    for (var index = paragraphStart; index < _paragraphs.length; index++) {
+      final paragraph = _paragraphs[index];
+      _paragraphs[index] = _ParagraphState(
+        paragraph: paragraph.paragraph,
+        origin: paragraph.origin - offset,
+        ranges: paragraph.ranges,
+        textByNode: paragraph.textByNode,
+        clip: (paragraph.clip?.shift(-offset) ?? viewportRect).intersect(
+          viewportRect,
+        ),
+      );
+    }
+    for (var index = scrollStart; index < _scroll.length; index++) {
+      _scroll[index] = _translateScrollState(_scroll[index], offset);
+    }
+    final shiftedBounds = _semanticBounds
+        .sublist(semanticBoundsStart)
+        .map(
+          (bounds) => RenderSemanticBounds(
+            semanticNodeId: bounds.semanticNodeId,
+            nodeId: bounds.nodeId,
+            rects: bounds.rects
+                .map((rect) => rect.shift(-offset))
+                .toList(growable: false),
+          ),
+        )
+        .toList(growable: false);
+    _semanticBounds
+      ..removeRange(semanticBoundsStart, _semanticBounds.length)
+      ..addAll(shiftedBounds);
+    final shiftedRegions = _semanticRegions
+        .sublist(semanticRegionsStart)
+        .map(
+          (region) =>
+              (region, region.rect.shift(-offset).intersect(viewportRect)),
+        )
+        .where((entry) => !entry.$2.isEmpty)
+        .map(
+          (entry) => FormatterSemanticRegion(
+            descriptor: entry.$1.descriptor,
+            rect: entry.$2,
+          ),
+        )
+        .toList(growable: false);
+    _semanticRegions
+      ..removeRange(semanticRegionsStart, _semanticRegions.length)
+      ..addAll(shiftedRegions);
+
+    if (scrollsX || scrollsY) {
+      _scroll.add(
+        RenderScrollState(
+          scrollNodeId: scrollNodeId,
+          nodeId: node.id,
+          offsetX: offset.dx,
+          offsetY: offset.dy,
+          maxOffsetX: maxX,
+          maxOffsetY: maxY,
+          viewport: viewportRect.renderRect,
+          contentWidth: contentWidth,
+          contentHeight: contentHeight,
+        ),
+      );
+    }
   }
 
   double _layoutBlockChildren(
@@ -1647,13 +1998,13 @@ final class _FixtureLayout {
     final direction = parent.styles['flex-direction'] ?? 'row';
     final column = direction.startsWith('column');
     final reverse = direction.endsWith('reverse');
-    final gap = _flexGap(parent.styles, column) * viewport.pageZoom;
+    final gap = _flexGap(parent.styles, column) * _outputScale;
     final mainExtent = column ? authoredHeight : width;
     final bases = <double>[];
     final grows = <double>[];
     for (final child in children) {
       final basis = _scaledLength(child.styles['flex-basis']);
-      final box = _CssBox.resolve(child, width, viewport.pageZoom);
+      final box = _CssBox.resolve(child, width, _outputScale);
       bases.add(
         basis ??
             (column
@@ -1729,16 +2080,13 @@ final class _FixtureLayout {
         )
         .toList(growable: false);
     if (children.isEmpty) return 0;
-    final columnGap = _gridGap(parent.styles, column: true) * viewport.pageZoom;
-    final rowGap = _gridGap(parent.styles, column: false) * viewport.pageZoom;
+    final columnGap = _gridGap(parent.styles, column: true) * _outputScale;
+    final rowGap = _gridGap(parent.styles, column: false) * _outputScale;
     var columns = _parseTracks(
       parent.styles['grid-template-columns'],
-      viewport.pageZoom,
+      _outputScale,
     );
-    var rows = _parseTracks(
-      parent.styles['grid-template-rows'],
-      viewport.pageZoom,
-    );
+    var rows = _parseTracks(parent.styles['grid-template-rows'], _outputScale);
     if (columns.isEmpty) columns = [_Track(base: width)];
     final rowCount = (children.length / columns.length).ceil();
     if (rows.isEmpty) {
@@ -1783,7 +2131,7 @@ final class _FixtureLayout {
       textNodes.map((node) => node.text).join(),
       width,
       textNodes.first.styles,
-      viewport.pageZoom,
+      _outputScale,
     );
     final origin = ui.Offset(x, y);
     _items.add(_ParagraphPaint(paragraph, origin));
@@ -1793,6 +2141,7 @@ final class _FixtureLayout {
         origin: origin,
         ranges: Map.unmodifiable(ranges),
         textByNode: Map.unmodifiable(textByNode),
+        clip: null,
       ),
     );
     final textLength = ranges.values.fold(
@@ -1883,14 +2232,14 @@ final class _FixtureLayout {
         .where((child) => child.kind == RenderNodeKind.text)
         .map((child) => _collapseWhitespace(child.text))
         .join();
-    return text.length * 8.0 * viewport.pageZoom;
+    return text.length * 8.0 * _outputScale;
   }
 
   double _intrinsicBorderWidth(RenderNode node, double availableWidth) {
     final box = _CssBox.resolve(
       node,
       availableWidth,
-      viewport.pageZoom,
+      _outputScale,
       shrinkToFitWidth: _intrinsicContentWidth(node),
     );
     return box.authoredBorderWidth ??
@@ -1904,7 +2253,7 @@ final class _FixtureLayout {
         .join();
     return text.isEmpty
         ? 0
-        : _deterministicTextHeight(text, width, node.styles, viewport.pageZoom);
+        : _deterministicTextHeight(text, width, node.styles, _outputScale);
   }
 
   (ui.Paragraph, Map<int, _TextRange>, Map<int, String>) _paragraph(
@@ -1922,12 +2271,11 @@ final class _FixtureLayout {
     var offset = 0;
     for (final node in nodes) {
       final text = _collapseWhitespace(node.text);
-      final fontSize =
-          _number(node.styles['font-size'], 16) * viewport.pageZoom;
+      final fontSize = _number(node.styles['font-size'], 16) * _outputScale;
       final lineHeight =
           (_length(node.styles['line-height']) ??
               _number(node.styles['font-size'], 16) * 1.2) *
-          viewport.pageZoom;
+          _outputScale;
       builder.pushStyle(
         ui.TextStyle(
           color: _color(
@@ -2009,7 +2357,7 @@ final class _FixtureLayout {
 
   double? _scaledLength(String? value) {
     final parsed = _length(value);
-    return parsed == null ? null : parsed * viewport.pageZoom;
+    return parsed == null ? null : parsed * _outputScale;
   }
 }
 
@@ -2572,13 +2920,20 @@ bool _scrollIntentsEqual(
 RenderGeometryEntry _translateGeometry(
   RenderGeometryEntry entry,
   ui.Offset offset,
+  ui.Rect viewportClip,
+  int rootNodeId,
 ) => RenderGeometryEntry(
   nodeId: entry.nodeId,
   fragmentId: entry.fragmentId,
   borderBox: entry.borderBox.shift(-offset),
   paddingBox: entry.paddingBox.shift(-offset),
   contentBox: entry.contentBox.shift(-offset),
-  clip: entry.clip,
+  clip: entry.nodeId == rootNodeId
+      ? viewportClip.renderRect
+      : _intersectRenderRects(
+          entry.clip?.shift(-offset),
+          viewportClip.renderRect,
+        ),
   scrollNodeId: entry.scrollNodeId,
   paintOrder: entry.paintOrder,
 );
@@ -2593,6 +2948,77 @@ RenderSemanticBounds _translateSemanticBounds(
       .map((rect) => rect.shift(-offset))
       .toList(growable: false),
 );
+
+RenderScrollState _translateScrollState(
+  RenderScrollState scroll,
+  ui.Offset offset,
+) => RenderScrollState(
+  scrollNodeId: scroll.scrollNodeId,
+  nodeId: scroll.nodeId,
+  offsetX: scroll.offsetX,
+  offsetY: scroll.offsetY,
+  maxOffsetX: scroll.maxOffsetX,
+  maxOffsetY: scroll.maxOffsetY,
+  viewport: scroll.viewport.shift(-offset),
+  contentWidth: scroll.contentWidth,
+  contentHeight: scroll.contentHeight,
+);
+
+RenderRect _intersectRenderRects(RenderRect? rect, RenderRect clip) =>
+    _intersectRect(rect ?? clip, clip) ?? RenderRect(clip.x, clip.y, 0, 0);
+
+RenderRect? _intersectRect(RenderRect rect, RenderRect clip) {
+  final intersection = rect.uiRect.intersect(clip.uiRect);
+  return intersection.isEmpty ? null : intersection.renderRect;
+}
+
+String _overflow(Map<String, String> styles, String axis) {
+  final explicit = styles['overflow-$axis']?.trim().toLowerCase();
+  if (explicit != null && explicit.isNotEmpty) return explicit;
+  final values = styles['overflow']?.trim().toLowerCase().split(RegExp(r'\s+'));
+  if (values == null || values.isEmpty || values.first.isEmpty) {
+    return 'visible';
+  }
+  return axis == 'y' && values.length > 1 ? values[1] : values.first;
+}
+
+ui.Offset _revealOffset(RenderScrollState scroll, ui.Rect target) {
+  final viewport = scroll.viewport.uiRect;
+  double axis(
+    double current,
+    double maximum,
+    double targetStart,
+    double targetEnd,
+    double viewportStart,
+    double viewportEnd,
+  ) {
+    final delta = targetStart < viewportStart
+        ? targetStart - viewportStart
+        : targetEnd > viewportEnd
+        ? targetEnd - viewportEnd
+        : 0.0;
+    return (current + delta).clamp(0, maximum).toDouble();
+  }
+
+  return ui.Offset(
+    axis(
+      scroll.offsetX,
+      scroll.maxOffsetX,
+      target.left,
+      target.right,
+      viewport.left,
+      viewport.right,
+    ),
+    axis(
+      scroll.offsetY,
+      scroll.maxOffsetY,
+      target.top,
+      target.bottom,
+      viewport.top,
+      viewport.bottom,
+    ),
+  );
+}
 
 void _validateCommitRect(RenderRect rect) {
   if (!rect.x.isFinite ||

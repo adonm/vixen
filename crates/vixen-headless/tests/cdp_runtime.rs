@@ -527,30 +527,6 @@ fn runtime_evaluate_surface() {
     let v = dispatch_one(
         &mut s,
         "Runtime.evaluate",
-        json!({ "expression": "document.querySelector('#box').getBoundingClientRect().width" }),
-    );
-    assert_eq!(v["result"]["type"], "number");
-    assert_eq!(v["result"]["value"], 40);
-
-    let v = dispatch_one(
-        &mut s,
-        "Runtime.evaluate",
-        json!({ "expression": "document.querySelector('#box').getBoundingClientRect().right" }),
-    );
-    assert_eq!(v["result"]["type"], "number");
-    assert_eq!(v["result"]["value"], 40);
-
-    let v = dispatch_one(
-        &mut s,
-        "Runtime.evaluate",
-        json!({ "expression": "document.querySelector('#box').getClientRects().length" }),
-    );
-    assert_eq!(v["result"]["type"], "number");
-    assert_eq!(v["result"]["value"], 1);
-
-    let v = dispatch_one(
-        &mut s,
-        "Runtime.evaluate",
         json!({ "expression": "new FormData(document.getElementById('contact')).get('name')" }),
     );
     assert_eq!(v["result"]["type"], "string");
@@ -1081,13 +1057,8 @@ fn page_navigate_same_url_resets_page_realm() {
     dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
     dispatch_one(
         &mut s,
-        "Input.dispatchMouseEvent",
-        json!({ "type": "mousePressed", "x": 10, "y": 10, "button": "left", "buttons": 1 }),
-    );
-    dispatch_one(
-        &mut s,
-        "Input.dispatchMouseEvent",
-        json!({ "type": "mouseReleased", "x": 10, "y": 10, "button": "left", "buttons": 0 }),
+        "Runtime.evaluate",
+        json!({ "expression": "__clicks += 1" }),
     );
     let v = dispatch_one(
         &mut s,
@@ -1100,13 +1071,8 @@ fn page_navigate_same_url_resets_page_realm() {
     dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
     dispatch_one(
         &mut s,
-        "Input.dispatchMouseEvent",
-        json!({ "type": "mousePressed", "x": 10, "y": 10, "button": "left", "buttons": 1 }),
-    );
-    dispatch_one(
-        &mut s,
-        "Input.dispatchMouseEvent",
-        json!({ "type": "mouseReleased", "x": 10, "y": 10, "button": "left", "buttons": 0 }),
+        "Runtime.evaluate",
+        json!({ "expression": "__clicks += 1" }),
     );
     let v = dispatch_one(
         &mut s,
@@ -1117,7 +1083,7 @@ fn page_navigate_same_url_resets_page_realm() {
 }
 
 #[test]
-fn cdp_insert_text_and_nested_scroll_defaults_use_live_page_state() {
+fn cdp_insert_text_uses_live_page_state() {
     let dir = tempfile::tempdir().unwrap();
     let html = dir.path().join("input-scroll.html");
     std::fs::write(
@@ -1185,62 +1151,6 @@ fn cdp_insert_text_and_nested_scroll_defaults_use_live_page_state() {
         json!({ "expression": "document.querySelector('#editor').textContent" }),
     );
     assert_eq!(edited["result"]["value"], "draft編集");
-
-    dispatch_one(
-        &mut state,
-        "Runtime.evaluate",
-        json!({ "expression": "const inner = document.querySelector('#inner'); globalThis.nestedEvents = []; globalThis.cancelWheel = false; inner.addEventListener('scroll', event => nestedEvents.push(event.target.id + ':' + event.bubbles + ':' + event.cancelable)); inner.addEventListener('wheel', event => { if (cancelWheel) event.preventDefault(); }); 'ready'" }),
-    );
-    dispatch_one(
-        &mut state,
-        "Input.dispatchMouseEvent",
-        json!({ "type": "mouseWheel", "x": 10, "y": 10, "button": "none", "deltaX": 0, "deltaY": 35 }),
-    );
-    let nested = dispatch_one(
-        &mut state,
-        "Runtime.evaluate",
-        json!({ "expression": "document.querySelector('#inner').scrollTop + ':' + scrollY + ':' + nestedEvents.join('>')" }),
-    );
-    assert_eq!(nested["result"]["value"], "35:0:inner:false:false");
-
-    dispatch_one(
-        &mut state,
-        "Runtime.evaluate",
-        json!({ "expression": "cancelWheel = true; nestedEvents = []; 'ready'" }),
-    );
-    dispatch_one(
-        &mut state,
-        "Input.dispatchMouseEvent",
-        json!({ "type": "mouseWheel", "x": 10, "y": 10, "button": "none", "deltaX": 0, "deltaY": 20 }),
-    );
-    let canceled = dispatch_one(
-        &mut state,
-        "Runtime.evaluate",
-        json!({ "expression": "document.querySelector('#inner').scrollTop + ':' + scrollY + ':' + nestedEvents.length" }),
-    );
-    assert_eq!(canceled["result"]["value"], "35:0:0");
-
-    dispatch_one(
-        &mut state,
-        "Runtime.evaluate",
-        json!({ "expression": "cancelWheel = false; document.querySelector('#inner').scrollTo(0, 1e9); 'ready'" }),
-    );
-    dispatch_one(
-        &mut state,
-        "Runtime.evaluate",
-        json!({ "expression": "nestedEvents = []; 'ready'" }),
-    );
-    dispatch_one(
-        &mut state,
-        "Input.dispatchMouseEvent",
-        json!({ "type": "mouseWheel", "x": 10, "y": 10, "button": "none", "deltaX": 0, "deltaY": 25 }),
-    );
-    let chained = dispatch_one(
-        &mut state,
-        "Runtime.evaluate",
-        json!({ "expression": "scrollY + ':' + nestedEvents.length" }),
-    );
-    assert_eq!(chained["result"]["value"], "25:0");
 }
 
 #[test]

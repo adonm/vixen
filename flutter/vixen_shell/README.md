@@ -1,191 +1,90 @@
 # Vixen Flutter shell
 
-Vixen's first web renderer and browser chrome target on Linux. BrowserCore owns
-profiles, contexts, navigation, committed DOM/V8, Stylo computed styles,
-resource/security policy, events, persistence, and accessibility meaning.
-Flutter owns bounded CSS formatting, Paragraph/Canvas scenes, geometry, hit
-testing, text/scroll/semantic-bound commits, capture, chrome, and presentation.
-The runner explicitly enables Impeller. Vixen uses public Flutter scene APIs and
-does not treat a Skia-backed launch as renderer/release evidence.
+This package contains Vixen's only rendered frontend. BrowserCore owns browser,
+DOM/runtime, computed-style, resource-policy, event, profile, and accessibility
+meaning. Flutter owns formatting, Paragraph/Canvas scenes, geometry, hit testing,
+scroll mechanics, semantic bounds, capture, chrome, and presentation.
 
-The production entry point uses a persistent Dart worker isolate and the
-handwritten `vixen-ffi` C ABI. It fails closed if the bundled native library or
-ABI is unavailable. Unit and widget tests inject a scripted controller; the
-production binary never silently falls back to it.
+## Entrypoints
 
-## Chrome and window contract
+`lib/main.dart` selects one of three compositions:
 
-The locked Yaru 10.2.0 suite supplies Adwaita-blue light, dark, and high-contrast
-themes plus the compatible icon buttons, menu, progress, banner, and window
-controls. BrowserCore-backed tabs are embedded in `YaruWindowTitleBar`; its Linux
-plugin hides the native GTK headerbar and provides drag/minimize/maximize/
-restore/close operations. The runner creates that GTK headerbar first as a
-fallback if Dart/plugin startup fails. The titlebar lives in the browser
-`Scaffold`, so modal routes block it normally.
+- normal Yaru browser chrome;
+- page-only automation with an explicit URL/viewport/output; or
+- long-lived chrome-less CDP.
 
-Address and find fields intentionally remain Material `TextField`s under the
-Yaru theme. Yaru's search field does not expose all Vixen requirements: disabled
-state, the exact Go/Search input actions, and the find query's 4096-byte UI cap.
-This is Yaru with an Adwaita accent/style target, not a claim that Yaru is
-pixel-identical to libadwaita.
+All three use the same formatter, commit state, and `RenderCommitPainter`. The
+normal body is `BrowserContentSurface`; a missing/stale/retired commit shows
+`Renderer commit unavailable` and never falls back to native pixels.
 
-The Linux GUI is native-Wayland-only. The runner exits nonzero if GTK selected
-X11 or XWayland. Use `just run-flutter` in a native Wayland session or `just
-run-flutter-cage` for a local isolated compositor; release and AT-SPI smokes use
-the same Cage headless-wlroots shape.
+## Bridge
 
-## Linux commit presentation contract
+`NativeBrowserController` owns one worker isolate and one opaque C ABI browser
+handle. Commands/events are bounded copied JSON. Native output buffers use opaque
+release tokens; no Rust pointer or callback crosses into Dart.
 
-The normal GUI and both automation entrypoints use the same Flutter formatter
-and `RenderCommitPainter`. The old RGBA frame ABI, Dart worker transfer, Linux
-pixel-buffer texture plugin/presenter, retry pool, and FFI EGL owner have been
-deleted. A missing, stale, retired, or hidden commit shows the
-renderer-unavailable placeholder; it never falls back to native renderer pixels.
+Renderer traffic has dedicated bounded update/submission/request channels for
+full snapshots, exact mutations, reset/resync, commits, presentation,
+`EnsureLayout`, Paragraph text queries, and hit tests. The UI isolate services
+broker requests independently of the browser command worker. Navigation, stop,
+close, shutdown, and V8 deadlines cancel pending layout; late responses are
+inert.
 
-Physical viewport dimensions remain bounded to 4096 per axis and a 64 MiB area
-budget before BrowserCore source, input, accessibility metadata, or Flutter
-formatting work is requested. Accessibility metadata is refreshed independently
-of presentation so commit-bound semantic actions and platform text input remain
-available without a legacy frame pairing.
+## Presentation and input
 
-## Target renderer contract
+`ShellCoordinator` accepts only exact source/viewport commits and acknowledges
+presentation from a post-frame callback. Pointer input is answered by the
+currently displayed Flutter hit-test handle. The native command includes that
+commit query and optional target; raw coordinate-only input is not part of the
+ABI. Keyboard and platform text input remain exact document/runtime/viewport
+commands.
 
-BrowserCore emits bounded mutation batches with exact context/document/source/
-style/viewport/resource revisions. The Flutter renderer applies only the named
-base revision, requests a full snapshot on a gap, builds Vixen CSS box/anonymous
-trees, lays out text with `dart:ui` Paragraph, paints a Canvas scene, and returns
-one atomic commit containing basic geometry, an opaque Flutter-side hit-test
-handle, text-query state, scroll state, semantic bounds, and truncation. A
-separate `Presented(commitId)` controls visible input and Semantics identity.
+Physical viewport dimensions are bounded to 4096 per axis and a 64 MiB area
+budget. Flutter logical coordinates are normalized into the exact commit
+viewport. Hidden or lifecycle-retired views do not dispatch input or resurrect
+late commits.
 
-Common geometry is copied back for synchronous BrowserCore DOM/CSSOM/CDP reads;
-Paragraph-specific caret/range queries use a bounded renderer service. Same-task
-mutation plus geometry uses a dedicated `EnsureLayout` request/response broker
-that the Flutter renderer can service while V8 waits, without direct callback or
-BrowserCore re-entry. The chrome-less Flutter entrypoint uses this same formatter
-and captures exact commits under Cage.
+## Accessibility and text input
 
-Flutter hit-tests the displayed commit; BrowserCore validates the target and owns
-DOM dispatch, cancellation, and default actions. Flutter owns mechanical scroll
-geometry, while BrowserCore owns script intent, event effects, history, and
-persistence. BrowserCore semantic descriptors combine with commit bounds only for
-the displayed commit.
+BrowserCore accessibility snapshots provide role/name/value/state,
+relationships, focus, selection, input type/action, and allowed actions. Flutter
+commit semantics provide displayed bounds. BrowserCore does not fabricate layout
+bounds. Focused writable controls attach the platform text-input client and
+reconcile UTF-16 selection/composition state.
 
-## Input contract
+Semantic actions are generation checked. Pointer-like activation uses displayed
+commit hit testing; focus/value/range actions retain their BrowserCore capability
+checks. Accessibility metadata refresh is independent of scene capture.
 
-The content surface maps Flutter logical pointer/wheel coordinates into the exact
-physical renderer viewport. Commands carry current context, document, and runtime
-ids; displayed-commit pointer input carries a Flutter hit-test query and
-BrowserCore validates the returned target. Pointer and key events use a
-serialized, bounded 64-event queue. A stale
-generation is discarded, input effects/navigation outcomes are retained, and an
-accepted event requests a new frame. Pointer cancellation clears only the
-matching pending primary press and cannot synthesize a click. A monotonic
-BrowserCore-owned host-view command now carries effective scale, content focus,
-visibility, and Flutter lifecycle; stale updates fail, hidden/inactive views
-reject input, and the live document receives focus/visibility state and events.
-Uncanceled wheel and navigation-key defaults apply one bounded Page-owned root
-scroll offset used by paint, hit testing, and accessibility bounds; fixed-
-position content remains anchored. Arrow, Page Up/Down, Home/End, and Space
-scrolling respects focused controls and page `preventDefault()` handlers.
-Page scripts also use that exact root offset through bounded numeric/options
-`scroll()`/`scrollTo()`/`scrollBy()`, synchronized window offsets, and root/body
-`scrollTop`/`scrollLeft`; BrowserCore refreshes its CSS viewport and overflow
-clamp on host-view and page-zoom changes.
-Focused writable native text controls and contenteditable editing hosts attach
-Flutter's platform text-input client; bounded full values and UTF-16 selection/
-composing ranges cross the exact BrowserCore generation and update the live DOM.
-BrowserCore projects normalized `inputmode`, input-type, and `enterkeyhint`
-intent for writable hosts; Flutter maps it to platform keyboard and action
-configuration, and performed actions reuse exact-generation Enter down/up. A
-controlled Cage/wtype/IBus Anthy gate now proves native and contenteditable
-preedit/commit plus nested wheel ownership, cancellation, and root chaining;
-broader IME/device and gesture matrices, scroll restoration, CSS/physical scale
-correctness, and lifecycle/native surface-loss recovery remain follow-up work.
-Single-touch drags already cross platform touch slop, cancel the pending
-synthetic press, and reuse the cancelable BrowserCore root-wheel path; taps remain
-taps and secondary touches are ignored.
+## Automation and fixtures
 
-Ctrl+F and the browser menu expose a find bar backed by an exact active-
-document BrowserCore command. The query is bounded to 4 KiB at the native
-boundary and traverses a Page-owned, 10,000-match-bounded rendered-text result;
-stale responses are discarded and the active/total result is a Flutter live
-region. Enter/F3 and Previous/Next traverse with wrapping, while BrowserCore
-updates the shared root scroll offset to reveal the active match and Flutter
-requests a fresh paired frame/Semantics projection. BrowserCore paints orange
-active and yellow other range highlights in the same display list consumed by
-WebRender. Soft-wrapped phrases remain one logical match with per-run
-highlights; precision remains limited by the current deterministic text metrics.
+Page-only automation and rendered CDP capture direct Flutter scenes after exact
+presentation; browser/runner/compositor chrome cannot enter those PNGs. The
+fixture manifest routes `flutter-js-eval`, `layout-box`, `visual-hash`, and
+`ref-equivalent` checks through this host. Native headless executes only
+source/runtime checks.
 
-Ctrl++/Ctrl+-/Ctrl+0 and menu actions adjust a 25–500% per-context zoom owned by
-BrowserCore. The core derives the CSS viewport, scales the single display list
-to the physical texture, converts hit testing/wheel input to CSS coordinates,
-and emits matching physical Semantics bounds. Flutter does not rescale pixels or
-own page zoom state. Profile persistence and device-scale/native surface recovery
-remain open.
+## Linux runner
 
-## Accessibility contract
+The runner requires native Wayland and rejects X11/XWayland. It has no
+pixel-buffer texture plugin, frame pool, EGL surface, or native renderer. The GTK
+headerbar is a startup fallback only; Yaru renders the in-scene titlebar/chrome.
 
-BrowserCore supplies a bounded projection of authoritative roles, names, values,
-states, focus, tap/focus actions, physical bounds, and nearest emitted semantic-parent
-relationships. Bounded `aria-controls`, `aria-describedby`, and `aria-details`
-targets plus descriptions cross the ABI; controls map to stable Flutter semantic
-identifiers. Native and authored ranges expose bounded values and route
-increase/decrease through the exact-generation live runtime action path. Focused
-writable native text controls and contenteditable hosts also project live UTF-16
-selection offsets. The ABI exposes at most 192 document-order nodes and tags the
-exact projection with a deterministic mutation generation. The coordinator
-publishes it only with the matching frame/context/document/viewport generation;
-Flutter maps the hierarchy to keyed nested `Semantics` nodes and routes taps back
-through BrowserCore hit testing. Focus requires exact source and capped-wire
-generations and executes through the live runtime before a refreshed projection
-is published. A 16 KiB-bounded `onSetText` path uses the same generation checks
-and live value/event machinery for enabled writable native text controls and
-contenteditable editing hosts;
-passwords, readonly controls, unsupported types, and ARIA-only textboxes are not
-advertised. Live regions and event-driven same-document full refresh are also
-implemented, as are bounded `aria-owns` reparenting, heading levels, and mixed
-checkbox state. Same-document refreshes atomically swap frame/semantics pairs,
-and content-sensitive keys reconcile only changed nodes. Long-tail relationships,
-general document-range selection and broader screen-reader coverage remain
-open. `just linux-at-spi-smoke` already proves that the real release bundle
-exports BrowserCore's `DOM Basic` heading through the process-filtered native
-Linux AT-SPI tree.
+## R7 deletion
 
-From the repository root, install the pinned Flutter 3.47.0-0.1.pre beta through
-mise and run:
+Deleted components include WebRender/gleam, `GlContext`, both EGL owners, native
+visual headless, Rust layout/display-list/paint owners and paint helpers, RGBA
+frame ABI/worker transfer, Linux texture presentation, raw coordinate input, and
+obsolete tests/gates.
 
-```sh
-just setup-flutter
-just gate-flutter-shell
-just run-flutter
+## Verification
+
+```bash
+flutter analyze
+flutter test --enable-impeller --dart-define=VIXEN_REQUIRE_IMPELLER=true
+just test-r7
+just gate-r7
 ```
 
-For the measurement-only Linux release-bundle comparison against the checked-in
-hello-Flutter peer:
-
-```sh
-just flutter-size-prefetch # network-capable input staging
-just size-flutter-linux    # controlled hello-versus-Vixen comparison
-```
-
-The official Linux release path uses the same GNOME 50 builder environment:
-
-```sh
-just linux-release-prefetch
-just linux-release-smoke
-just linux-at-spi-smoke
-just linux-interaction-smoke
-```
-
-That path builds release/AOT Flutter and the Rust bridge, creates and extracts
-the deterministic GitHub Release archive, and requires an Impeller launch log.
-FlatPark repackages the released archive unchanged; broader host-matrix, native
-AT, portal, and accepted size-baseline gates remain separate. FlatPark
-submission and publishing are deferred until visible navigation/rendering,
-broader engine-owned scrolling and IME/device coverage, core navigation controls,
-find/zoom, and bounded recovery make this a basic usable browser.
-
-Set `VIXEN_FFI_LIBRARY` to an absolute `libvixen_ffi.so` path only for the
-native bridge smoke test. Normal Linux bundles load `lib/libvixen_ffi.so`
-relative to the executable.
+The release Linux build additionally requires CMake and the standard Flutter
+Linux toolchain.

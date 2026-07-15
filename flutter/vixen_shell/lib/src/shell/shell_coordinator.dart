@@ -307,6 +307,7 @@ final class ShellCoordinator extends ChangeNotifier {
           if (rendererResult.matches.isEmpty) _findActiveMatch = null;
         }
         if (result.activeMatch != null) {
+          await _revealRendererFindMatch();
           _scheduleRendererProjection(force: true);
         }
         _notify();
@@ -460,15 +461,7 @@ final class ShellCoordinator extends ChangeNotifier {
           );
           return;
         }
-        _lastInputResult = await controller.dispatchMouseEvent(
-          contextId: generation.contextId,
-          documentId: generation.documentId,
-          runtimeContextId: generation.runtimeContextId,
-          viewportWidth: generation.viewportWidth,
-          viewportHeight: generation.viewportHeight,
-          eventType: eventType,
-          event: event,
-        );
+        return;
       }, scheduleProjection: eventType != 'mousedown');
 
   int _takeRendererQueryId() {
@@ -1334,6 +1327,44 @@ final class ShellCoordinator extends ChangeNotifier {
       _findQuery,
       caseSensitive: _findCaseSensitive,
     );
+  }
+
+  Future<void> _revealRendererFindMatch() async {
+    final service = _rendererService;
+    final transport = controller is RendererTransport
+        ? controller as RendererTransport
+        : null;
+    final result = _rendererFindResult;
+    final active = _findActiveMatch;
+    if (service == null ||
+        transport == null ||
+        result == null ||
+        active == null ||
+        active <= 0 ||
+        active > result.matches.length) {
+      return;
+    }
+    final operation = _rendererTail.then((_) async {
+      final current = _rendererView;
+      if (current == null ||
+          !identical(current, _formatter.displayedView) ||
+          current.isRetired) {
+        return;
+      }
+      final revealed = await _formatter.revealTextMatch(
+        result.matches[active - 1],
+      );
+      if (revealed == null) return;
+      transport.submitRenderer(rendererCommitSubmission(revealed.commit));
+      await controller.flushRendererSubmissions();
+      await _drainRenderer(service);
+      if (revealed.isRetired) return;
+      _rendererView = revealed;
+      _refreshRendererFindGeometry();
+      _notify();
+    });
+    _rendererTail = operation.then<void>((_) {}, onError: (_, _) {});
+    await operation;
   }
 
   void _scheduleAccessibilityCapture(_PresentationKey key) {

@@ -614,7 +614,7 @@ void main() {
   });
 
   test(
-    'input carries the selected BrowserCore generation and viewport',
+    'commit-independent input carries the selected generation and viewport',
     () async {
       final controller = ScriptedBrowserController(
         snapshot: BrowserSnapshot(
@@ -658,7 +658,7 @@ void main() {
           .where((command) => command.type.startsWith('dispatch_'))
           .map((command) => command.toWire())
           .toList();
-      expect(input, hasLength(3));
+      expect(input, hasLength(2));
       for (final command in input) {
         expect(command['context_id'], 4);
         expect(command['document_id'], 400);
@@ -798,15 +798,12 @@ void main() {
     final refreshed = coordinator.accessibility!;
     final button = refreshed.nodes.singleWhere((node) => node.id == 11);
     await coordinator.dispatchSemanticTap(refreshed, button);
-    final mouseCommands = controller.commands
-        .where((command) => command.type == 'dispatch_mouse_event')
-        .map((command) => command.toWire())
-        .toList();
-    expect(mouseCommands.map((command) => command['event_type']), [
-      'mousedown',
-      'mouseup',
-    ]);
-    expect((mouseCommands.first['event']! as Map<Object?, Object?>)['x'], 60.0);
+    expect(
+      controller.commands.where(
+        (command) => command.type == 'dispatch_renderer_mouse_event',
+      ),
+      isEmpty,
+    );
     await coordinator.close();
   });
 

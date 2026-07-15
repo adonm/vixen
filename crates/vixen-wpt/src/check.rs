@@ -1,14 +1,12 @@
 //! The WPT check types (docs/SPEC.md "WPT harness — check types") and the
-//! per-check runner. Checks map to [`HarnessEngine`]'s inspection surface;
-//! `ref-equivalent` compares the stable display-list render projection;
-//! `visual-hash` consumes RGBA screenshots from adapters with an offscreen
-//! renderer.
+//! per-check runner. Native checks map to [`HarnessEngine`]'s source inspection
+//! surface. Rendered checks are retained in the manifest schema but run only in
+//! the Flutter fixture host.
 
 use serde::{Deserialize, Serialize};
 use vixen_api::PageSnapshot;
 
 use crate::harness::HarnessEngine;
-use crate::visual_hash::{VisualHash, hash_rgba};
 
 /// Default viewport the harness inspects at (matches `vixen-headless`).
 const VW: u32 = 800;
@@ -43,6 +41,10 @@ pub enum Check {
         expected: String,
     },
     JsEval {
+        expr: String,
+        expected: String,
+    },
+    FlutterJsEval {
         expr: String,
         expected: String,
     },
@@ -222,69 +224,29 @@ impl Check {
                 }
                 None => Outcome::Fail("element-attribute: selector matched nothing".into()),
             },
-            Check::LayoutBox {
-                selector,
-                expected,
-                tolerance,
-            } => match first_match_info(engine, selector) {
-                Some(info) => match info.bbox {
-                    Some(got) if box_matches(got, *expected, *tolerance) => Outcome::Pass,
-                    Some(got) => Outcome::Fail(format!(
-                        "layout-box: expected {:?} ±{}, got {:?}",
-                        expected, tolerance, got
-                    )),
-                    None => Outcome::Fail("layout-box: element has no layout bbox".into()),
-                },
-                None => Outcome::Fail("layout-box: selector matched nothing".into()),
-            },
+            Check::LayoutBox { .. } => {
+                Outcome::Skipped("layout-box requires the Flutter renderer fixture host".into())
+            }
             Check::JsEval { expr, expected } => match engine.eval(expr) {
                 Ok(got) if got == *expected => Outcome::Pass,
                 Ok(got) => Outcome::Fail(format!("js-eval: expected {expected:?}, got {got:?}")),
                 Err(e) => Outcome::Fail(format!("js-eval: {e}")),
             },
-            Check::VisualHash { expected } => match engine.screenshot_rgba(VW, VH) {
-                Err(_) => Outcome::Skipped("needs offscreen renderer (Phase 5)".into()),
-                Ok(screenshot) => {
-                    let expected = match expected.parse::<VisualHash>() {
-                        Ok(hash) => hash,
-                        Err(err) => return Outcome::Fail(format!("visual-hash: {err}")),
-                    };
-                    match hash_rgba(screenshot.width, screenshot.height, &screenshot.rgba) {
-                        Some(actual) if expected.matches(actual) => Outcome::Pass,
-                        Some(actual) => Outcome::Fail(format!(
-                            "visual-hash: expected {expected}, got {actual} (distance {}, tolerance {})",
-                            expected.distance(actual),
-                            expected.tolerance
-                        )),
-                        None => Outcome::Fail("visual-hash: invalid RGBA screenshot buffer".into()),
-                    }
-                }
-            },
-            Check::RefEquivalent { reference } => match (
-                engine.display_list(VW, VH),
-                engine.reference_display_list(reference, VW, VH),
-            ) {
-                (Ok(got), Ok(expected)) if render_dumps_match(&got, &expected) => Outcome::Pass,
-                (Ok(got), Ok(expected)) => Outcome::Fail(format!(
-                    "ref-equivalent {reference}: render dumps differ ({})",
-                    first_render_dump_difference(&got, &expected)
-                )),
-                (Err(e), _) => Outcome::Fail(format!("ref-equivalent: {e}")),
-                (_, Err(e)) => Outcome::Fail(format!("ref-equivalent reference {reference}: {e}")),
-            },
+            Check::FlutterJsEval { .. } => Outcome::Skipped(
+                "flutter-js-eval requires the Flutter renderer fixture host".into(),
+            ),
+            Check::VisualHash { .. } => {
+                Outcome::Skipped("visual-hash requires the Flutter renderer fixture host".into())
+            }
+            Check::RefEquivalent { .. } => {
+                Outcome::Skipped("ref-equivalent requires the Flutter renderer fixture host".into())
+            }
         }
     }
 }
 
 fn default_layout_tolerance() -> f64 {
     0.1
-}
-
-fn box_matches(got: (f64, f64, f64, f64), expected: [f64; 4], tolerance: f64) -> bool {
-    let got = [got.0, got.1, got.2, got.3];
-    got.iter()
-        .zip(expected)
-        .all(|(got, expected)| (got - expected).abs() <= tolerance)
 }
 
 /// First match's node id for `selector`, if any.
@@ -301,23 +263,6 @@ fn first_match_info(engine: &dyn HarnessEngine, selector: &str) -> Option<vixen_
     engine.query_selector_all(selector).ok()?.into_iter().next()
 }
 
-fn render_dumps_match(got: &str, expected: &str) -> bool {
-    got.trim_end() == expected.trim_end()
-}
-
-fn first_render_dump_difference(got: &str, expected: &str) -> String {
-    for (line, (got, expected)) in got.lines().zip(expected.lines()).enumerate() {
-        if got != expected {
-            return format!("line {}: got {got:?}, expected {expected:?}", line + 1);
-        }
-    }
-    format!(
-        "line count differs: got {}, expected {}",
-        got.lines().count(),
-        expected.lines().count()
-    )
-}
-
 // `PageSnapshot` is referenced in trait bounds/docs; keep the import live.
 #[allow(dead_code)]
 fn _snapshot_bound(_: &PageSnapshot) {}
@@ -325,7 +270,7 @@ fn _snapshot_bound(_: &PageSnapshot) {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harness::{MockEngine, RgbaScreenshot};
+    use crate::harness::MockEngine;
     use vixen_api::{ElementInfo, EngineDiagnostic, EngineDiagnosticCategory, PageSnapshot};
 
     fn snap(title: Option<&str>, text: &str, n: usize) -> PageSnapshot {
@@ -473,34 +418,25 @@ mod tests {
                 tolerance: 0.1,
             }
             .run(&e),
-            Outcome::Pass
+            Outcome::Skipped("layout-box requires the Flutter renderer fixture host".into())
         );
-        assert!(
+        assert_eq!(
             Check::LayoutBox {
                 selector: "div".into(),
                 expected: [10.0, 20.0, 31.0, 40.0],
                 tolerance: 0.1,
             }
-            .run(&e)
-            .is_fail()
+            .run(&e),
+            Outcome::Skipped("layout-box requires the Flutter renderer fixture host".into())
         );
     }
 
     #[test]
-    fn js_eval_display_list_and_ref_equivalent() {
-        let mut e = MockEngine {
+    fn js_eval_and_rendered_checks_use_separate_hosts() {
+        let e = MockEngine {
             eval_result: Some(Ok("3".into())),
-            display_list: Some(Ok("cmd 1: text x=0.0 y=0.0 w=40.0 h=10.0".into())),
             ..Default::default()
         };
-        e.reference_display_lists.insert(
-            "same.html".into(),
-            Ok("cmd 1: text x=0.0 y=0.0 w=40.0 h=10.0".into()),
-        );
-        e.reference_display_lists.insert(
-            "different.html".into(),
-            Ok("cmd 1: text x=0.0 y=0.0 w=41.0 h=10.0".into()),
-        );
         assert_eq!(
             Check::JsEval {
                 expr: "1+2".into(),
@@ -514,14 +450,7 @@ mod tests {
                 reference: "same.html".into()
             }
             .run(&e),
-            Outcome::Pass
-        );
-        assert!(
-            Check::RefEquivalent {
-                reference: "different.html".into()
-            }
-            .run(&e)
-            .is_fail()
+            Outcome::Skipped("ref-equivalent requires the Flutter renderer fixture host".into())
         );
         assert!(matches!(
             Check::VisualHash {
@@ -533,47 +462,6 @@ mod tests {
     }
 
     #[test]
-    fn visual_hash_uses_rgba_screenshots_when_available() {
-        let mut rgba = Vec::new();
-        for _y in 0..8 {
-            for x in 0..8 {
-                let value = if x < 4 { 0 } else { 255 };
-                rgba.extend_from_slice(&[value, value, value, 255]);
-            }
-        }
-        let e = MockEngine {
-            screenshot: Some(Ok(RgbaScreenshot {
-                width: 8,
-                height: 8,
-                rgba,
-            })),
-            ..Default::default()
-        };
-
-        assert_eq!(
-            Check::VisualHash {
-                expected: "0f0f0f0f0f0f0f0f".into()
-            }
-            .run(&e),
-            Outcome::Pass
-        );
-        assert!(
-            Check::VisualHash {
-                expected: "f0f0f0f0f0f0f0f0@0".into()
-            }
-            .run(&e)
-            .is_fail()
-        );
-        assert!(
-            Check::VisualHash {
-                expected: "bad".into()
-            }
-            .run(&e)
-            .is_fail()
-        );
-    }
-
-    #[test]
     fn check_round_trips_json() {
         // Manifests are JSON; every variant must (de)serialize with its tag.
         let cases = [
@@ -582,6 +470,7 @@ mod tests {
             r#"{"type":"selectors-exact","selector":"div","expected":["a"]}"#,
             r#"{"type":"body-contains","expected":"x"}"#,
             r#"{"type":"js-eval","expr":"1+2","expected":"3"}"#,
+            r#"{"type":"flutter-js-eval","expr":"scrollY","expected":"3"}"#,
             r#"{"type":"min-nodes","min":3}"#,
             r#"{"type":"no-critical-diagnostics"}"#,
             r#"{"type":"visual-hash","expected":"h"}"#,

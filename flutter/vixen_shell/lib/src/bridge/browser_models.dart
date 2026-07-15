@@ -833,22 +833,6 @@ final class BrowserCommand {
     'node_id': nodeId,
     'action': increase ? 'increase' : 'decrease',
   });
-  factory BrowserCommand.dispatchMouseEvent({
-    required int contextId,
-    required int documentId,
-    required int runtimeContextId,
-    required int viewportWidth,
-    required int viewportHeight,
-    required String eventType,
-    required BrowserMouseEvent event,
-  }) => BrowserCommand._('dispatch_mouse_event', {
-    'context_id': contextId,
-    'document_id': documentId,
-    'runtime_context_id': runtimeContextId,
-    'viewport': {'width': viewportWidth, 'height': viewportHeight},
-    'event_type': eventType,
-    'event': event.toWire(),
-  });
   factory BrowserCommand.dispatchRendererMouseEvent({
     required int contextId,
     required int documentId,

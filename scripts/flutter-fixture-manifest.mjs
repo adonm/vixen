@@ -215,7 +215,8 @@ async function runCheck({ check, fixture, page, session, context, referencePage 
       if (!actual?.includes(check.expected)) throw new Error(`body does not contain ${JSON.stringify(check.expected)}`);
       return;
     }
-    case 'js-eval': {
+    case 'js-eval':
+    case 'flutter-js-eval': {
       const actual = (await session.send('Vixen.evaluate', {
         expression: check.expr,
       })).value;

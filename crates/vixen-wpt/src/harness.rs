@@ -7,15 +7,6 @@ use vixen_api::{ElementInfo, EngineDiagnostic, PageSnapshot};
 use crate::check::{Check, Outcome};
 use crate::manifest::{Fixture, FixtureSource};
 
-/// RGBA screenshot captured from the same render path used by the GUI.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RgbaScreenshot {
-    pub width: u32,
-    pub height: u32,
-    /// Packed RGBA8 pixels, row-major, exactly `width * height * 4` bytes.
-    pub rgba: Vec<u8>,
-}
-
 /// The engine surface the harness needs. This is a vixen-wpt-local trait over
 /// `vixen_api` DTOs (the real engine implements it; tests use a mock). Per
 /// docs/ARCHITECTURE.md the harness never touches engine internals.
@@ -32,28 +23,6 @@ pub trait HarnessEngine {
     /// Evaluate a JS expression, returning its stringified result. `Err` ⇒
     /// JS unavailable or evaluation threw.
     fn eval(&self, expr: &str) -> Result<String, String>;
-    /// Stable display-list text dump for paint/layout checks. Engines without
-    /// the Page paint seam should return `Err` so checks fail closed.
-    fn display_list(&self, vw: u32, vh: u32) -> Result<String, String>;
-    /// Stable display-list text dump for a reference HTML fixture resolved by
-    /// the engine adapter. This keeps `vixen-wpt` engine-agnostic while letting
-    /// `ref-equivalent` compare the same paint projection for the test page and
-    /// its reference. Adapters without reference loading return `Err` so the
-    /// check fails closed.
-    fn reference_display_list(
-        &self,
-        reference: &str,
-        _vw: u32,
-        _vh: u32,
-    ) -> Result<String, String> {
-        Err(format!("reference rendering not available for {reference}"))
-    }
-    /// Rendered RGBA framebuffer for `visual-hash` checks. Adapters without an
-    /// offscreen surface return `Err`; the check remains skipped until the
-    /// Phase 5+ pixel path is wired.
-    fn screenshot_rgba(&self, _vw: u32, _vh: u32) -> Result<RgbaScreenshot, String> {
-        Err("RGBA screenshot not available".into())
-    }
 }
 
 /// Per-fixture results.
@@ -290,9 +259,6 @@ pub(crate) mod test_support {
         pub styles: HashMap<usize, Vec<(String, String)>>,
         pub diagnostics: Vec<EngineDiagnostic>,
         pub eval_result: Option<Result<String, String>>,
-        pub display_list: Option<Result<String, String>>,
-        pub reference_display_lists: HashMap<String, Result<String, String>>,
-        pub screenshot: Option<Result<RgbaScreenshot, String>>,
     }
 
     impl HarnessEngine for MockEngine {
@@ -312,29 +278,6 @@ pub(crate) mod test_support {
             self.eval_result
                 .clone()
                 .unwrap_or(Err("JS not available".into()))
-        }
-        fn display_list(&self, _vw: u32, _vh: u32) -> Result<String, String> {
-            self.display_list
-                .clone()
-                .unwrap_or(Err("display-list not available".into()))
-        }
-        fn reference_display_list(
-            &self,
-            reference: &str,
-            _vw: u32,
-            _vh: u32,
-        ) -> Result<String, String> {
-            self.reference_display_lists
-                .get(reference)
-                .cloned()
-                .unwrap_or(Err(format!(
-                    "reference rendering not available for {reference}"
-                )))
-        }
-        fn screenshot_rgba(&self, _vw: u32, _vh: u32) -> Result<RgbaScreenshot, String> {
-            self.screenshot
-                .clone()
-                .unwrap_or(Err("RGBA screenshot not available".into()))
         }
     }
 }

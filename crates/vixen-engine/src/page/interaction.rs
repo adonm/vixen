@@ -6,12 +6,10 @@ use markup5ever_rcdom::{Handle, NodeData};
 use vixen_api::ElementInfo;
 
 use super::Page;
-use crate::display_list::Rect;
 use crate::form_submission::{
     FormEnctype, FormEntry, encode_multipart, encode_text_plain, encode_urlencoded,
     multipart_content_type,
 };
-use crate::layout_tree::{LayoutNodeId, LayoutTree};
 
 /// Page-owned selection state that survives runtime realm replacement.
 ///
@@ -49,32 +47,6 @@ impl Page {
             .ok()?
             .into_iter()
             .find(|element| element.id.as_deref() == Some(id))
-    }
-
-    /// Hit-test against the current layout boxes for a viewport.
-    pub fn element_at(&self, viewport: (u32, u32), x: f64, y: f64) -> Option<ElementInfo> {
-        if x < 0.0 || y < 0.0 || x >= f64::from(viewport.0) || y >= f64::from(viewport.1) {
-            return None;
-        }
-        let tree = self.layout_tree(viewport);
-        tree.nodes.iter().rev().find_map(|node| {
-            let node_id = node.dom_node_id?;
-            (rect_contains(node.rect, x as f32, y as f32)
-                && point_inside_clipping_ancestors(&tree, node.id, x as f32, y as f32))
-            .then(|| {
-                let mut info = self
-                    .document
-                    .element_by_node_id(node_id)?
-                    .into_element_info();
-                info.bbox = Some((
-                    node.rect.x as f64,
-                    node.rect.y as f64,
-                    node.rect.w as f64,
-                    node.rect.h as f64,
-                ));
-                Some(info)
-            })?
-        })
     }
 
     /// Build the entry list and encoded body for the form with `form_id`.
@@ -170,28 +142,6 @@ impl Page {
             body,
         })
     }
-}
-
-fn rect_contains(rect: Rect, x: f32, y: f32) -> bool {
-    !rect.is_empty() && x >= rect.x && y >= rect.y && x < rect.x + rect.w && y < rect.y + rect.h
-}
-
-fn point_inside_clipping_ancestors(
-    tree: &LayoutTree,
-    node_id: LayoutNodeId,
-    x: f32,
-    y: f32,
-) -> bool {
-    let mut parent = tree.node(node_id).parent;
-    while let Some(parent_id) = parent {
-        let ancestor = tree.node(parent_id);
-        if ancestor.style.overflow.clips_contents() && !rect_contains(ancestor.boxes.padding, x, y)
-        {
-            return false;
-        }
-        parent = ancestor.parent;
-    }
-    true
 }
 
 fn find_element_by_node_id(root: &Handle, node_id: usize) -> Option<Handle> {
@@ -453,45 +403,6 @@ fn collect_text(node: &Handle, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn element_at_uses_layout_boxes() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<style>body { margin: 0; } #hit { width: 40px; height: 20px; }</style><div id='hit'>Target</div><div id='miss'>Miss</div>",
-        )
-        .unwrap();
-
-        let hit = page.element_at((120, 80), 10.0, 10.0).unwrap();
-        assert_eq!(hit.id.as_deref(), Some("hit"));
-        assert_eq!(hit.bbox, Some((0.0, 0.0, 40.0, 20.0)));
-        assert!(page.element_at((120, 80), -1.0, -1.0).is_none());
-    }
-
-    #[test]
-    fn element_at_respects_nested_scrollport_clip_and_offset() {
-        let mut page = Page::from_html(
-            "file:///nested-hit.html",
-            "<style>body{margin:0}#scroll{width:100px;height:50px;overflow:auto}#content{height:200px}#target{display:block;margin-top:120px;width:40px;height:20px}</style><div id='scroll'><div id='content'><button id='target'>Hit</button></div></div>",
-        )
-        .unwrap();
-        let viewport = (120, 160);
-        page.set_layout_viewport(viewport);
-        assert_ne!(
-            page.element_at(viewport, 10.0, 125.0)
-                .and_then(|element| element.id),
-            Some("target".to_owned())
-        );
-
-        let scroll_id = page.element_by_id("scroll").unwrap().node_id;
-        assert!(page.scroll_element_to(scroll_id, (0.0, 110.0)));
-        assert_eq!(
-            page.element_at(viewport, 10.0, 15.0)
-                .and_then(|element| element.id)
-                .as_deref(),
-            Some("target")
-        );
-    }
 
     #[test]
     fn form_submission_builds_successful_controls_and_body() {

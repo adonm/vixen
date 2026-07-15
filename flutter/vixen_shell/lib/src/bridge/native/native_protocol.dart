@@ -357,20 +357,6 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
       _validatePositiveId(normalized['generation'], 'generation');
       _validatePositiveId(normalized['node_id'], 'node_id');
       break;
-    case 'dispatch_mouse_event':
-      _validateInputCommand(normalized);
-      final eventType = normalized['event_type'];
-      if (eventType != 'mousemove' &&
-          eventType != 'mousedown' &&
-          eventType != 'mouseup' &&
-          eventType != 'wheel' &&
-          eventType != 'cancel') {
-        _invalidCommand(
-          'event_type must be mousemove, mousedown, mouseup, wheel, or cancel',
-        );
-      }
-      _validateMouseEvent(normalized['event']);
-      break;
     case 'dispatch_renderer_mouse_event':
       _expectKeys(normalized, const <String>{
         'v',

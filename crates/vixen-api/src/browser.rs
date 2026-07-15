@@ -528,6 +528,11 @@ pub enum BrowserCommand {
         viewport_generation: u64,
         page_zoom: f64,
     },
+    /// Reconcile mechanical state from an already protocol-validated Flutter
+    /// commit with BrowserCore's matching document/runtime projection.
+    ApplyRendererCommit {
+        commit: crate::RenderCommit,
+    },
     AccessibilitySnapshot {
         context_id: BrowsingContextId,
         document_id: DocumentId,
@@ -564,13 +569,6 @@ pub enum BrowserCommand {
         viewport: (u32, u32),
         kind: DocumentTextKind,
     },
-    HitTest {
-        context_id: BrowsingContextId,
-        document_id: DocumentId,
-        viewport: (u32, u32),
-        x: f64,
-        y: f64,
-    },
     FocusProjection {
         context_id: BrowsingContextId,
         document_id: DocumentId,
@@ -604,7 +602,6 @@ pub enum BrowserCommandResult {
     ComputedStyle(Vec<(String, String)>),
     Diagnostics(Vec<crate::EngineDiagnostic>),
     DocumentText(String),
-    HitTest(Option<crate::ElementInfo>),
     FocusProjection(FocusProjection),
     FormSubmission(FormSubmissionInfo),
 }

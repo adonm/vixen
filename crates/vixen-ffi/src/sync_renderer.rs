@@ -285,6 +285,7 @@ mod tests {
         let context_id = controller.create_context().unwrap();
         let navigation_id = controller.navigate(context_id, url).unwrap();
         wait_for_navigation(&mut controller, navigation_id.get());
+        controller.set_page_zoom(context_id, 2.0).unwrap();
         let context = controller.context_state(context_id).unwrap();
         let mut browser = controller.subscribe_browser();
 
@@ -320,11 +321,11 @@ mod tests {
                 .unwrap()
                 .geometry_index
                 .iter()
-                .find(|entry| entry.border_box.width == 64.0)
+                .find(|entry| entry.border_box.width == 128.0)
                 .unwrap()
                 .border_box
                 .height,
-            20.0
+            40.0
         );
     }
 
@@ -536,6 +537,24 @@ mod tests {
     }
 
     #[test]
+    fn draining_a_valid_commit_returns_it_for_browsercore_reconciliation() {
+        let broker = RenderBroker::new();
+        let mut state = RendererState::default();
+        let snapshot = source_snapshot(1, "64px");
+        publish_renderer_source(&broker, &mut state, snapshot.clone(), false).unwrap();
+        let _ = broker.poll_message(Duration::ZERO).unwrap();
+        let commit = commit_for_snapshot(&snapshot, 1);
+        broker
+            .submit(RenderBridgeSubmission::Commit(commit.clone()))
+            .unwrap();
+
+        let accepted = drain_renderer_submissions(&broker, &mut state).unwrap();
+
+        assert_eq!(accepted, vec![commit]);
+        assert!(state.commits.accepted_commit().is_some());
+    }
+
+    #[test]
     fn malformed_commit_recovers_once_and_does_not_poison_reuse() {
         let broker = RenderBroker::new();
         let state = Arc::new(Mutex::new(RendererState::default()));
@@ -622,6 +641,7 @@ mod tests {
                     .any(|style| style.name == "width" && style.value == "64px")
             })
             .expect("mutated target render node");
+        let output_scale = snapshot.viewport.device_scale * snapshot.viewport.page_zoom;
         let geometry_index = snapshot
             .nodes
             .iter()
@@ -630,9 +650,9 @@ mod tests {
                 let target_node = node.id == target.id;
                 let rect = RenderRect {
                     x: 0.0,
-                    y: index as f64 * 24.0,
-                    width: if target_node { 64.0 } else { 800.0 },
-                    height: if target_node { 20.0 } else { 24.0 },
+                    y: index as f64 * 24.0 * output_scale,
+                    width: if target_node { 64.0 } else { 800.0 } * output_scale,
+                    height: if target_node { 20.0 } else { 24.0 } * output_scale,
                 };
                 RenderGeometryEntry {
                     node_id: node.id,
@@ -702,10 +722,10 @@ mod tests {
                         RenderTextQueryKind::CaretForOffset { affinity, .. } => {
                             RenderTextQueryValue::Caret {
                                 rect: RenderRect {
-                                    x: 31.0,
+                                    x: 31.0 * output_scale,
                                     y: 0.0,
-                                    width: 1.0,
-                                    height: 12.0,
+                                    width: output_scale,
+                                    height: 12.0 * output_scale,
                                 },
                                 affinity,
                             }
@@ -715,8 +735,8 @@ mod tests {
                                 rect: RenderRect {
                                     x: 0.0,
                                     y: 0.0,
-                                    width: 31.0,
-                                    height: 12.0,
+                                    width: 31.0 * output_scale,
+                                    height: 12.0 * output_scale,
                                 },
                                 direction: RenderTextDirection::LeftToRight,
                             }])

@@ -22,7 +22,7 @@ use crate::doc::DocumentScriptItem;
 use crate::engine_error::{EngineError, codes};
 #[cfg(test)]
 use crate::mime::MimeType;
-use crate::page::{ElementScrollRequest, Page};
+use crate::page::Page;
 use crate::storage_key::{StorageKind, StoragePartition};
 
 mod cssom;
@@ -58,6 +58,7 @@ pub struct JsRuntime {
 pub(crate) struct RenderViewState {
     pub viewport: (u32, u32),
     pub viewport_generation: u64,
+    pub device_scale: f64,
     pub page_zoom: f64,
 }
 
@@ -892,7 +893,6 @@ fn apply_dom_mutation_list(
     page: &mut Page,
     mutations: Vec<dom::DomMutation>,
 ) -> Result<(), EngineError> {
-    let mut element_scrolls = std::collections::HashMap::new();
     for mutation in mutations {
         match mutation {
             dom::DomMutation::SetDocumentTitle { value } => page
@@ -901,7 +901,6 @@ fn apply_dom_mutation_list(
             dom::DomMutation::SetTextContent { node_id, value } => {
                 page.set_element_text_content(node_id, &value)
                     .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
-                element_scrolls.clear();
             }
             dom::DomMutation::SetAttribute {
                 node_id,
@@ -916,7 +915,6 @@ fn apply_dom_mutation_list(
             dom::DomMutation::SetInnerHtml { node_id, html } => {
                 page.set_element_inner_html(node_id, &html)
                     .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
-                element_scrolls.clear();
             }
             dom::DomMutation::SetControlValue {
                 node_id,
@@ -974,19 +972,10 @@ fn apply_dom_mutation_list(
                 x,
                 y,
             } => {
-                element_scrolls.insert(
-                    node_id,
-                    ElementScrollRequest {
-                        node_id,
-                        element_id,
-                        tag,
-                        position: (x, y),
-                    },
-                );
+                page.set_element_scroll(node_id, element_id.as_deref(), &tag, (x, y));
             }
         }
     }
-    page.scroll_elements_to(element_scrolls.into_values());
     Ok(())
 }
 
@@ -3259,204 +3248,6 @@ mod tests {
             JsValue::String("font-size".to_owned())
         );
 
-        let geometry_page = Page::from_html(
-            "file:///dom-geometry-host.html",
-            "<style>#box { width: 40px; height: 20px; }</style><main><div id='box'>Box</div><input id='empty'><input id='check' type='checkbox'><button id='named'>Hit me</button></main>",
-        )
-        .unwrap();
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#box').getBoundingClientRect().x",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Int32(8)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#box').getBoundingClientRect().width",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Int32(40)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#box').getBoundingClientRect() instanceof DOMRectReadOnly",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Bool(true)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#box').getBoundingClientRect().right",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Int32(48)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#box').getBoundingClientRect().toJSON().height",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Int32(20)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#box').getClientRects().length",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Int32(1)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#box').getClientRects() instanceof DOMRectList",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Bool(true)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#box').getClientRects().item(0).width",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Int32(40)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "(() => { const r = document.createRange(); r.selectNode(document.querySelector('#box')); return r.getClientRects().length + ':' + r.getClientRects().item(0).width + ':' + (r.getBoundingClientRect() instanceof DOMRectReadOnly); })()",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::String("1:40:true".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "(() => { const r = document.createRange(); r.setStart(document.querySelector('#box'), 0); r.collapse(true); return r.getClientRects().length + ':' + r.getBoundingClientRect().width; })()",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::String("0:0".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "(() => { const box = document.querySelector('#box'); return box.clientWidth + ':' + box.clientHeight + ':' + box.clientTop + ':' + box.clientLeft; })()",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::String("40:20:0:0".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "(() => { const box = document.querySelector('#box'); return box.offsetWidth + ':' + box.offsetHeight + ':' + box.offsetLeft + ':' + box.offsetTop + ':' + (box.offsetParent === document.body); })()",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::String("40:20:8:8:true".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "(() => { const box = document.querySelector('#box'); box.scrollTop = 7.5; box.scrollLeft = 3; return box.scrollWidth + ':' + box.scrollHeight + ':' + box.scrollTop + ':' + box.scrollLeft; })()",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::String("40:20:0:0".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "(() => { const quad = document.querySelector('#box').getBoxQuads()[0]; return document.querySelector('#box').getBoxQuads().length + ':' + (quad instanceof DOMQuad) + ':' + quad.getBounds().width; })()",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::String("1:true:40".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.documentElement.parentNode === document && document.documentElement.parentElement === null",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Bool(true)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#box').getRootNode() === document && document.contains(document.querySelector('#box'))",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Bool(true)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "Node.ELEMENT_NODE + ':' + Node.TEXT_NODE + ':' + document.nodeType",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::String("1:3:9".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page("document.elementFromPoint(10, 10).id", &geometry_page)
-                .unwrap(),
-            JsValue::String("box".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page("document.elementsFromPoint(10, 10)[0].id", &geometry_page)
-                .unwrap(),
-            JsValue::String("box".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#box').scrollIntoView(); 'done'",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::String("done".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#empty').getBoundingClientRect().width > 0",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Bool(true)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "document.querySelector('#check').getBoundingClientRect().width",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::Int32(13)
-        );
-        assert_eq!(
-            rt.evaluate_with_page(
-                "(() => { const text = document.querySelector('#named').firstChild; return document.querySelector('#named').childNodes.length + ':' + text.nodeType + ':' + text.data + ':' + (text.parentNode.id); })()",
-                &geometry_page
-            )
-            .unwrap(),
-            JsValue::String("1:3:Hit me:named".to_owned())
-        );
-
-        let actionability_page = Page::from_html(
-            "file:///dom-actionability-host.html",
-            "<form><label>Typed name <input id='typed-name'></label><label>Typed body <textarea id='typed-body'></textarea></label></form>",
-        )
-        .unwrap();
-        assert_eq!(
-            rt.evaluate_with_page(
-                "(() => { const input = document.querySelector('#typed-name'); const r = input.getBoundingClientRect(); const hit = document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2); return hit && hit.id; })()",
-                &actionability_page
-            )
-            .unwrap(),
-            JsValue::String("typed-name".to_owned())
-        );
-
         let form_page = Page::from_html(
             "file:///dom-formdata-host.html",
             "<form id='contact'><label id='name-label' for='name-input'>Name</label><input id='name-input' name='name' value='Ada'><label id='body-label'>Body<textarea name='body'>Hello</textarea></label><input type='checkbox' name='format' value='html' checked><select name='plan'><option value='free'>Free</option><option value='pro' selected>Pro</option></select><button id='reset-contact' type='reset'>Reset</button></form><form id='upload' enctype='multipart/form-data'><input type='file' name='attachment'></form>",
@@ -4169,7 +3960,7 @@ mod tests {
     }
 
     #[test]
-    fn page_text_content_mutation_updates_page_facade_and_paint_inputs() {
+    fn page_text_content_mutation_updates_page_and_renderer_source() {
         let mut rt = JsRuntime::new().expect("engine init");
         let mut page = Page::from_html(
             "file:///mutate.html",
@@ -4190,8 +3981,19 @@ mod tests {
             page.query_selector_all("#status").unwrap()[0].text,
             "clicked"
         );
-        assert!(page.dump_lines((200, 100)).contains("clicked"));
-        assert!(page.dump_display_list((200, 100)).contains("clicked"));
+        let snapshot = page
+            .render_snapshot(
+                vixen_api::BrowsingContextId::new(1).unwrap(),
+                vixen_api::DocumentId::new(1).unwrap(),
+                (200, 100),
+                1,
+                1.0,
+                1.0,
+            )
+            .unwrap();
+        assert!(snapshot.nodes.iter().any(|node| {
+            matches!(&node.kind, vixen_api::RenderNodeKind::Text { text } if text == "clicked")
+        }));
     }
 
     #[test]
@@ -4248,10 +4050,9 @@ mod tests {
         assert_eq!(page.query_selector_all("#made").unwrap().len(), 1);
         assert_eq!(page.query_selector_all("#replacement").unwrap().len(), 1);
         assert!(page.query_selector_all("#gone").unwrap().is_empty());
-        let lines = page.dump_lines((240, 120));
         assert!(page.text_content().contains("made"));
-        assert!(lines.contains("fresh"));
-        assert!(lines.contains("tail"));
+        assert!(page.text_content().contains("fresh"));
+        assert!(page.text_content().contains("tail"));
     }
 
     #[test]
@@ -5525,60 +5326,6 @@ mod tests {
             )
             .unwrap(),
             JsValue::Bool(true)
-        );
-    }
-
-    #[test]
-    fn structural_mutation_resynchronizes_page_owned_element_scroll_state() {
-        let mut rt = JsRuntime::new().expect("engine init");
-        let mut page = Page::from_html(
-            "file:///scroll-sync.html",
-            "<style>#scroller{width:100px;height:50px;overflow:auto}#content{height:200px}</style><div id='scroller'><div id='content'>Content</div></div><p id='other'>Before</p>",
-        )
-        .unwrap();
-
-        assert_eq!(
-            rt.evaluate_with_page_mut(
-                "globalThis.scrollEvents = 0; const scroller = document.querySelector('#scroller'); scroller.addEventListener('scroll', () => scrollEvents++); scroller.scrollTop = 45; document.querySelector('#other').textContent = 'After'; 'done'",
-                &mut page,
-            )
-            .unwrap(),
-            JsValue::String("done".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page_mut(
-                "document.querySelector('#scroller').scrollTop + ':' + scrollEvents",
-                &mut page,
-            )
-            .unwrap(),
-            JsValue::String("0:2".to_owned())
-        );
-    }
-
-    #[test]
-    fn layout_mutation_clamps_and_resynchronizes_element_scroll_state() {
-        let mut rt = JsRuntime::new().expect("engine init");
-        let mut page = Page::from_html(
-            "file:///scroll-clamp.html",
-            "<div id='scroller' style='width:100px;height:50px;overflow:auto'><div style='height:200px'>Content</div></div>",
-        )
-        .unwrap();
-
-        assert_eq!(
-            rt.evaluate_with_page_mut(
-                "globalThis.scrollEvents = 0; const scroller = document.querySelector('#scroller'); scroller.addEventListener('scroll', () => scrollEvents++); scroller.scrollTop = 140; scroller.style.height = '190px'; 'done'",
-                &mut page,
-            )
-            .unwrap(),
-            JsValue::String("done".to_owned())
-        );
-        assert_eq!(
-            rt.evaluate_with_page_mut(
-                "document.querySelector('#scroller').scrollTop + ':' + scrollEvents",
-                &mut page,
-            )
-            .unwrap(),
-            JsValue::String("10:2".to_owned())
         );
     }
 

@@ -266,7 +266,6 @@ final class ScriptedBrowserController extends BrowserController
         return InputDispatchedResponse.empty();
       case 'update_host_view_state':
       case 'dispatch_accessibility_action':
-      case 'dispatch_mouse_event':
       case 'dispatch_key_event':
       case 'dispatch_text_input':
         _knownContext(command.contextId);

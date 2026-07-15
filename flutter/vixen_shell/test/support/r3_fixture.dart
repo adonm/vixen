@@ -21,6 +21,7 @@ FullRenderSnapshot r3Snapshot({
   int viewportGeneration = 1,
   bool updated = false,
   double? scrollY,
+  double deviceScale = 1,
 }) {
   final nodes = <RenderNode>[
     RenderNode(
@@ -164,7 +165,11 @@ FullRenderSnapshot r3Snapshot({
   ];
   return FullRenderSnapshot(
     revision: r3Revision(generation, viewportGeneration: viewportGeneration),
-    viewport: const RenderViewport(width: 240, height: 160),
+    viewport: RenderViewport(
+      width: (240 * deviceScale).round(),
+      height: (160 * deviceScale).round(),
+      deviceScale: deviceScale,
+    ),
     nodes: nodes,
     resources: [
       RenderResource(id: 1, mime: 'image/png', bytes: base64Decode(_png)),

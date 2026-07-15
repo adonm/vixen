@@ -69,6 +69,22 @@ void main() {
     expect(rect(6).width, closeTo(153.333, 0.001));
   });
 
+  test('device scale formats CSS pixels into physical commit pixels', () async {
+    final formatter = VixenFormatter();
+    addTearDown(formatter.dispose);
+    final view = (await formatter.acceptFullSnapshot(
+      r3Snapshot(deviceScale: 2),
+    ) as RenderApplied).view;
+    final article = view.commit.geometry.singleWhere(
+      (entry) => entry.nodeId == 2,
+    );
+
+    expect(view.commit.viewport.deviceScale, 2);
+    expect(view.commit.viewport.width, 480);
+    expect(article.borderBox.x, 24);
+    expect(article.contentBox.x - article.borderBox.x, 24);
+  });
+
   test('root scroll intent clamps and shifts one whole commit', () async {
     final formatter = VixenFormatter();
     addTearDown(formatter.dispose);
@@ -127,6 +143,90 @@ void main() {
     ) as RenderApplied).view;
     expect(clamped.commit.scroll.single.offsetY, maxScrollY);
   });
+
+  test('root horizontal overflow publishes and applies x scroll', () async {
+    final formatter = VixenFormatter();
+    addTearDown(formatter.dispose);
+    final view = (await formatter.acceptFullSnapshot(
+      _rootHorizontalScrollSnapshot(),
+    ) as RenderApplied).view;
+    final root = view.commit.scroll.first;
+    final child = view.commit.geometry.singleWhere(
+      (entry) => entry.nodeId == 2,
+    );
+
+    expect(root.maxOffsetX, 160);
+    expect(root.offsetX, 75);
+    expect(root.contentWidth, 400);
+    expect(child.borderBox.x, -75);
+  });
+
+  test(
+    'nested scroll commits clamp, clip, and translate descendants',
+    () async {
+      final formatter = VixenFormatter();
+      addTearDown(formatter.dispose);
+      final initial = (await formatter.acceptFullSnapshot(
+        _nestedScrollSnapshot(generation: 1),
+      ) as RenderApplied).view;
+      final initialScroll = initial.commit.scroll.singleWhere(
+        (scroll) => scroll.scrollNodeId == 4,
+      );
+      expect([initialScroll.maxOffsetX, initialScroll.maxOffsetY], [160, 240]);
+
+      final scrolled = (await formatter.acceptFullSnapshot(
+        _nestedScrollSnapshot(generation: 2, x: 25, y: 45),
+      ) as RenderApplied).view;
+      final nested = scrolled.commit.scroll.singleWhere(
+        (scroll) => scroll.scrollNodeId == 4,
+      );
+      expect([nested.offsetX, nested.offsetY], [25, 45]);
+      final content = scrolled.commit.geometry.singleWhere(
+        (entry) => entry.nodeId == 4,
+      );
+      expect([content.borderBox.x, content.borderBox.y], [-25, -45]);
+      expect(content.scrollNodeId, 4);
+      expect(content.clip?.toWire(), const {
+        'x': 0.0,
+        'y': 0.0,
+        'width': 120.0,
+        'height': 80.0,
+      });
+
+      final clamped = (await formatter.acceptFullSnapshot(
+        _nestedScrollSnapshot(generation: 3, x: 500, y: 500),
+      ) as RenderApplied).view;
+      final clampedScroll = clamped.commit.scroll.singleWhere(
+        (scroll) => scroll.scrollNodeId == 4,
+      );
+      expect([clampedScroll.offsetX, clampedScroll.offsetY], [160, 240]);
+    },
+  );
+
+  test(
+    'find reveal scrolls nested matches and clips highlight overlays',
+    () async {
+      final formatter = VixenFormatter();
+      addTearDown(formatter.dispose);
+      final initial = (await formatter.acceptFullSnapshot(
+        _nestedScrollSnapshot(generation: 1),
+      ) as RenderApplied).view;
+      final hidden = initial.findText('Needle');
+      expect(hidden.matches, hasLength(1));
+      expect(hidden.matches.single.boxes, isNotEmpty);
+      expect(hidden.boxes, isEmpty);
+
+      final revealed = await formatter.revealTextMatch(hidden.matches.single);
+      expect(revealed, isNotNull);
+      final nested = revealed!.commit.scroll.singleWhere(
+        (scroll) => scroll.scrollNodeId == 4,
+      );
+      expect(nested.offsetY, greaterThan(0));
+      final visible = revealed.findText('Needle');
+      expect(visible.boxes, isNotEmpty);
+      expect(visible.boxes.single.y, inInclusiveRange(0, 80));
+    },
+  );
 
   test('Paragraph owns wrapping, UTF-16 ranges, and point offsets', () async {
     final formatter = VixenFormatter();
@@ -564,6 +664,115 @@ void main() {
     expect(secondSemantics.first.properties.label, 'Updated Vixen');
   });
 }
+
+FullRenderSnapshot _nestedScrollSnapshot({
+  required int generation,
+  double? x,
+  double? y,
+}) => FullRenderSnapshot(
+  revision: r3Revision(generation),
+  viewport: const RenderViewport(width: 240, height: 160),
+  nodes: [
+    RenderNode(
+      id: 1,
+      parentId: null,
+      siblingIndex: 0,
+      depth: 0,
+      kind: RenderNodeKind.element,
+      name: 'html',
+    ),
+    RenderNode(
+      id: 2,
+      parentId: 1,
+      siblingIndex: 0,
+      depth: 1,
+      kind: RenderNodeKind.element,
+      name: 'body',
+      styles: const {'margin': '0'},
+    ),
+    RenderNode(
+      id: 3,
+      parentId: 2,
+      siblingIndex: 0,
+      depth: 2,
+      kind: RenderNodeKind.element,
+      name: 'div',
+      styles: const {'width': '120px', 'height': '80px', 'overflow': 'auto'},
+    ),
+    RenderNode(
+      id: 4,
+      parentId: 3,
+      siblingIndex: 0,
+      depth: 3,
+      kind: RenderNodeKind.element,
+      name: 'div',
+      styles: const {'width': '280px', 'height': '320px'},
+    ),
+    RenderNode(
+      id: 5,
+      parentId: 4,
+      siblingIndex: 0,
+      depth: 4,
+      kind: RenderNodeKind.element,
+      name: 'span',
+      styles: const {'display': 'block', 'margin-top': '160px'},
+    ),
+    RenderNode(
+      id: 6,
+      parentId: 5,
+      siblingIndex: 0,
+      depth: 5,
+      kind: RenderNodeKind.text,
+      name: '#text',
+      text: 'Needle',
+      styles: const {'font-size': '16px'},
+    ),
+  ],
+  resources: const [],
+  scrollIntents: x == null || y == null
+      ? const []
+      : [
+          RenderScrollIntent(
+            scrollNodeId: 4,
+            nodeId: 3,
+            kind: RenderScrollIntentKind.to,
+            point: RenderPoint(x, y),
+          ),
+        ],
+);
+
+FullRenderSnapshot _rootHorizontalScrollSnapshot() => FullRenderSnapshot(
+  revision: r3Revision(1),
+  viewport: const RenderViewport(width: 240, height: 160),
+  nodes: [
+    RenderNode(
+      id: 1,
+      parentId: null,
+      siblingIndex: 0,
+      depth: 0,
+      kind: RenderNodeKind.element,
+      name: 'html',
+    ),
+    RenderNode(
+      id: 2,
+      parentId: 1,
+      siblingIndex: 0,
+      depth: 1,
+      kind: RenderNodeKind.element,
+      name: 'div',
+      styles: const {'width': '400px', 'height': '20px'},
+    ),
+  ],
+  resources: const [],
+  scrollIntents: const [
+    RenderScrollIntent(
+      scrollNodeId: 1,
+      nodeId: 1,
+      kind: RenderScrollIntentKind.to,
+      point: RenderPoint(75, 0),
+    ),
+  ],
+);
 
 FullRenderSnapshot _flexLayoutSnapshot() => FullRenderSnapshot(
   revision: r3Revision(1),

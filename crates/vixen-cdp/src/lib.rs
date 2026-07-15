@@ -61,9 +61,9 @@ const MAX_PENDING_SOCKET_NAVIGATIONS: usize = 64;
 const NAVIGATION_WAIT_TIMEOUT: Duration = Duration::from_secs(35);
 const CORE_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-/// Renderer-owned evidence needed by rendered CDP methods. Composition roots
-/// provide either the transitional native renderer or the Flutter exact-commit
-/// host without moving browser state out of BrowserCore.
+/// Renderer-owned evidence needed by rendered CDP methods. The Flutter host
+/// provides exact commits; native text/runtime compositions use the unavailable
+/// backend and fail rendered methods closed.
 pub trait CdpRenderBackend: Send + Sync {
     fn uses_commit_geometry(&self) -> bool {
         false
@@ -565,13 +565,6 @@ struct MouseDomEvent {
 struct EmulatedMedia {
     media_type: Option<String>,
     color_scheme: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct CdpRuntimeHit {
-    node_id: usize,
-    id: Option<String>,
-    tag: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -3557,16 +3550,11 @@ impl CdpState {
         &mut self,
         node_id: usize,
     ) -> Result<Option<(f64, f64, f64, f64)>, String> {
-        if self.renderer.uses_commit_geometry() {
-            let viewport = self.current_viewport();
-            let state = self.current_state()?;
-            return self
-                .renderer
-                .layout_box(&mut self.browser, &state, viewport, node_id)
-                .map(|bbox| bbox.map(|[x, y, width, height]| (x, y, width, height)));
-        }
-        self.element_for_node_id(node_id)
-            .map(|element| element.and_then(element_cdp_bbox))
+        let viewport = self.current_viewport();
+        let state = self.current_state()?;
+        self.renderer
+            .layout_box(&mut self.browser, &state, viewport, node_id)
+            .map(|bbox| bbox.map(|[x, y, width, height]| (x, y, width, height)))
     }
 
     fn dom_object_expr_from_params(
@@ -3636,28 +3624,6 @@ impl CdpState {
             _ => Err(format!(
                 "{method}: objectId does not reference a Vixen Element"
             )),
-        }
-    }
-
-    fn dom_node_at_point_from_runtime(
-        &mut self,
-        x: f64,
-        y: f64,
-    ) -> Result<Option<CdpRuntimeHit>, String> {
-        let x = serde_json::to_string(&x).map_err(|err| err.to_string())?;
-        let y = serde_json::to_string(&y).map_err(|err| err.to_string())?;
-        let probe = format!(
-            "(() => {{ const __e = document.elementFromPoint({x}, {y}); const __id = __e && __e.__vixenNodeId; return Number.isInteger(__id) && __id > 0 ? JSON.stringify({{ node_id: __id, id: __e.id || null, tag: String(__e.localName || __e.tagName || '').toLowerCase() }}) : null; }})()"
-        );
-        match self
-            .evaluate_js(&probe)
-            .map_err(|err| format!("Input.dispatchMouseEvent: {err}"))?
-        {
-            ScriptValue::String(value) => serde_json::from_str(&value)
-                .map(Some)
-                .map_err(|err| format!("Input.dispatchMouseEvent: invalid point target: {err}")),
-            ScriptValue::Null | ScriptValue::Undefined => Ok(None),
-            _ => Err("Input.dispatchMouseEvent: point probe returned a non-node".to_owned()),
         }
     }
 
@@ -3731,68 +3697,12 @@ impl CdpState {
             Ok(state) => state,
             Err(error) => return CdpDispatch::error(-32000, error),
         };
-        let target_node_id = if self.renderer.uses_commit_geometry() {
-            match self
-                .renderer
-                .hit_test(&mut self.browser, &state, viewport, x, y)
-            {
-                Ok(target) => target,
-                Err(error) => return CdpDispatch::error(-32603, error),
-            }
-        } else {
-            let page_hit = match self.browser.dispatch(BrowserCommand::HitTest {
-                context_id: state.context_id,
-                document_id: state.document_id,
-                viewport,
-                x,
-                y,
-            }) {
-                Ok(BrowserCommandResult::HitTest(target)) => target,
-                _ => None,
-            };
-            let runtime_hit = self.dom_node_at_point_from_runtime(x, y).ok().flatten();
-            runtime_hit
-                .as_ref()
-                .and_then(|runtime_hit| {
-                    page_hit
-                        .as_ref()
-                        .filter(|page_hit| {
-                            page_hit.tag == runtime_hit.tag
-                                && runtime_hit
-                                    .id
-                                    .as_deref()
-                                    .is_none_or(|id| page_hit.id.as_deref() == Some(id))
-                        })
-                        .map(|page_hit| page_hit.node_id)
-                })
-                .or_else(|| {
-                    let runtime_hit = runtime_hit.as_ref()?;
-                    let result = self
-                        .browser
-                        .dispatch(BrowserCommand::QuerySelectorAll {
-                            context_id: state.context_id,
-                            document_id: state.document_id,
-                            selector: "*".to_owned(),
-                            viewport,
-                        })
-                        .ok()?;
-                    let BrowserCommandResult::SelectorMatches(elements) = result else {
-                        return None;
-                    };
-                    elements
-                        .into_iter()
-                        .find(|element| {
-                            element.tag == runtime_hit.tag
-                                && runtime_hit
-                                    .id
-                                    .as_deref()
-                                    .map_or(element.node_id == runtime_hit.node_id, |id| {
-                                        element.id.as_deref() == Some(id)
-                                    })
-                        })
-                        .map(|element| element.node_id)
-                })
-                .or_else(|| page_hit.map(|page_hit| page_hit.node_id))
+        let target_node_id = match self
+            .renderer
+            .hit_test(&mut self.browser, &state, viewport, x, y)
+        {
+            Ok(target) => target,
+            Err(error) => return CdpDispatch::error(-32603, error),
         };
         let mut dom_events = Vec::new();
         let mut next_mouse_down = self.last_mouse_down.clone();
@@ -5756,32 +5666,6 @@ fn cdp_node_from_element(element: &vixen_api::ElementInfo) -> Value {
     })
 }
 
-fn element_cdp_bbox(element: vixen_api::ElementInfo) -> Option<(f64, f64, f64, f64)> {
-    let (x, y, width, height) = element.bbox?;
-    let width = width.max(0.0);
-    let height = height.max(0.0);
-    if width > 0.0 && height > 0.0 {
-        return Some((x, y, width, height));
-    }
-    let (fallback_width, fallback_height) = match element.tag.to_ascii_lowercase().as_str() {
-        "input" => (150.0, 20.0),
-        "textarea" => (200.0, 60.0),
-        "select" => (120.0, 20.0),
-        "button" => (64.0, 24.0),
-        _ => return Some((x, y, width, height)),
-    };
-    Some((
-        x,
-        y,
-        if width > 0.0 { width } else { fallback_width },
-        if height > 0.0 {
-            height
-        } else {
-            fallback_height
-        },
-    ))
-}
-
 fn quad_from_bbox((x, y, width, height): (f64, f64, f64, f64)) -> Value {
     json!([x, y, x + width, y, x + width, y + height, x, y + height])
 }
@@ -6482,6 +6366,64 @@ fn now_ms() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct TestCommitRenderBackend;
+
+    impl CdpRenderBackend for TestCommitRenderBackend {
+        fn uses_commit_geometry(&self) -> bool {
+            true
+        }
+
+        fn capture_png(
+            &self,
+            _browser: &mut EngineBrowserClient,
+            _state: &BrowsingContextState,
+            _viewport: (u32, u32),
+        ) -> Result<Vec<u8>, String> {
+            Err("test capture is unavailable".to_owned())
+        }
+
+        fn layout_box(
+            &self,
+            _browser: &mut EngineBrowserClient,
+            _state: &BrowsingContextState,
+            _viewport: (u32, u32),
+            _node_id: usize,
+        ) -> Result<Option<[f64; 4]>, String> {
+            Ok(Some([0.0, 0.0, 120.0, 30.0]))
+        }
+
+        fn hit_test(
+            &self,
+            browser: &mut EngineBrowserClient,
+            state: &BrowsingContextState,
+            viewport: (u32, u32),
+            _x: f64,
+            _y: f64,
+        ) -> Result<Option<usize>, String> {
+            match browser
+                .dispatch(BrowserCommand::QuerySelectorAll {
+                    context_id: state.context_id,
+                    document_id: state.document_id,
+                    selector: "*".to_owned(),
+                    viewport,
+                })
+                .map_err(|error| error.to_string())?
+            {
+                BrowserCommandResult::SelectorMatches(elements) => Ok(elements
+                    .iter()
+                    .find(|element| element.id.as_deref() == Some("hit"))
+                    .or_else(|| elements.iter().find(|element| element.tag == "body"))
+                    .or_else(|| elements.first())
+                    .map(|element| element.node_id)),
+                result => Err(format!("unexpected selector result: {result:?}")),
+            }
+        }
+    }
+
+    fn rendered_state() -> CdpState {
+        CdpState::new_with_profile_and_renderer(None, Arc::new(TestCommitRenderBackend)).unwrap()
+    }
 
     #[test]
     fn cdp_explicit_profile_creates_database() {
@@ -8071,7 +8013,7 @@ mod tests {
 
     #[test]
     fn input_mouse_event_validates_on_initial_target() {
-        let mut s = CdpState::default();
+        let mut s = rendered_state();
         let req = CdpRequest {
             id: 1,
             session_id: None,
@@ -8152,7 +8094,7 @@ mod tests {
         .unwrap();
         let url = format!("file://{}", html.display());
 
-        let mut s = CdpState::default();
+        let mut s = rendered_state();
         dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
         dispatch_one(
             &mut s,
@@ -8182,7 +8124,7 @@ mod tests {
         .unwrap();
         let url = format!("file://{}", html.display());
 
-        let mut s = CdpState::default();
+        let mut s = rendered_state();
         dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
         for (event_type, buttons, click_count) in [
             ("mousePressed", 1, 1),
@@ -8216,7 +8158,7 @@ mod tests {
         .unwrap();
         let url = format!("file://{}", html.display());
 
-        let mut s = CdpState::default();
+        let mut s = rendered_state();
         dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
         for (event_type, buttons) in [("mousePressed", 2), ("mouseReleased", 0)] {
             dispatch_one(
@@ -8248,7 +8190,7 @@ mod tests {
         .unwrap();
         let url = format!("file://{}", html.display());
 
-        let mut s = CdpState::default();
+        let mut s = rendered_state();
         dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
         dispatch_one(
             &mut s,
@@ -8835,7 +8777,7 @@ mod tests {
         .unwrap();
         let url = format!("file://{}", html.display());
 
-        let mut s = CdpState::default();
+        let mut s = rendered_state();
         dispatch_one(&mut s, "Page.navigate", json!({ "url": url }));
         let document = dispatch_one(&mut s, "DOM.getDocument", json!({}));
         let node_id = dispatch_one(
@@ -9352,7 +9294,7 @@ mod tests {
 
     #[test]
     fn socket_capacity_only_rejects_commands_that_need_a_continuation() {
-        let mut state = CdpState::default();
+        let mut state = rendered_state();
         let target_count = state.targets.len();
 
         for (id, method, params) in [

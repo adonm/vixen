@@ -18,8 +18,7 @@ and more correct: **Stylo/selectors** for CSS matching and cascade,
 **Paragraph/Canvas/scene/Semantics** substrate. BrowserCore owns browser truth;
 Flutter owns bounded CSS formatting, paint, geometry, hit testing, semantic
 bounds, capture, chrome, and host presentation through exact mutation/commit
-protocols. The implemented WebRender/RGBA path is transitional and scheduled for
-aggressive deletion after the Flutter vertical passes.
+protocols. R7 deleted the former WebRender/EGL/RGBA and Rust layout/paint path.
 
 ## Linux release
 

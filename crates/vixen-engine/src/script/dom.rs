@@ -25,7 +25,7 @@ use crate::dataset::collect_dataset;
 use crate::engine_error::{EngineError, codes};
 use crate::form_submission::{FormEntry, FormEntryValue};
 use crate::media_query::Viewport;
-use crate::page::{ElementScrollMetrics, Page, PageSelection};
+use crate::page::{Page, PageSelection};
 use crate::responsive_select::select_from as select_responsive_image_source;
 use crate::style_dom::ElementRelation;
 
@@ -210,6 +210,7 @@ deno_core::extension!(
         op_vixen_dom_set_contenteditable_state,
         op_vixen_dom_set_focused_element,
         op_vixen_dom_set_selection,
+        op_vixen_dom_scroll_state,
         op_vixen_dom_set_root_scroll,
         op_vixen_dom_set_element_scroll,
     ],
@@ -261,39 +262,25 @@ pub(super) fn refresh(
 }
 
 pub(super) fn element_scroll_state_source(page: &Page, emit_scroll: bool) -> String {
-    let identities = page
-        .query_selector_all("*")
-        .unwrap_or_default()
+    let states = page
+        .element_scroll_state_snapshot()
         .into_iter()
-        .map(|element| (element.node_id, (element.id, element.tag)))
-        .collect::<HashMap<_, _>>();
-    let mut metrics = page
-        .element_scroll_metrics_snapshot()
-        .into_iter()
-        .collect::<Vec<_>>();
-    metrics.sort_by_key(|(node_id, _)| *node_id);
-    let metrics = metrics
-        .into_iter()
-        .map(|(node_id, metrics)| {
-            let (id, tag) = identities
-                .get(&node_id)
-                .cloned()
-                .unwrap_or((None, String::new()));
+        .map(|state| {
             json!({
-                "nodeId": node_id,
-                "id": id,
-                "tag": tag,
-                "left": metrics.position.0,
-                "top": metrics.position.1,
-                "maxX": metrics.max.0,
-                "maxY": metrics.max.1,
-                "userScrollable": metrics.user_scrollable,
+                "nodeId": state.node_id,
+                "id": state.element_id,
+                "tag": state.tag,
+                "left": state.position.0,
+                "top": state.position.1,
+                "maxX": state.max.0,
+                "maxY": state.max.1,
+                "userScrollable": state.user_scrollable,
             })
         })
         .collect::<Vec<_>>();
     format!(
         "globalThis.__vixenSyncElementScrollState ? globalThis.__vixenSyncElementScrollState({}, {emit_scroll}) : false",
-        deno_core::serde_json::Value::Array(metrics)
+        deno_core::serde_json::Value::Array(states),
     )
 }
 
@@ -641,6 +628,55 @@ fn op_vixen_dom_set_root_scroll(
 
 #[deno_core::op2]
 #[serde]
+fn op_vixen_dom_scroll_state(state: &mut OpState) -> deno_core::serde_json::Value {
+    let host = state.borrow::<DomHost>().0.clone();
+    let Some(layout) = &host.synchronous_layout else {
+        return json!({ "ok": true, "rendererState": false });
+    };
+    let (_, commit) = match synchronous_layout(layout) {
+        Ok(result) => result,
+        Err(message) => return json!({ "ok": false, "message": message }),
+    };
+    let output_scale = commit.viewport.device_scale * commit.viewport.page_zoom;
+    let root = commit
+        .scroll_snapshot
+        .iter()
+        .find(|scroll| scroll.scroll_node_id.get() == 1)
+        .map(|scroll| {
+            json!({
+                "left": scroll.offset.x / output_scale,
+                "top": scroll.offset.y / output_scale,
+                "maxX": scroll.max_offset.x / output_scale,
+                "maxY": scroll.max_offset.y / output_scale,
+            })
+        });
+    let page = layout.config.page.borrow();
+    let states = page
+        .element_scroll_state_snapshot()
+        .into_iter()
+        .map(|scroll| {
+            json!({
+                "nodeId": scroll.node_id,
+                "id": scroll.element_id,
+                "tag": scroll.tag,
+                "left": scroll.position.0,
+                "top": scroll.position.1,
+                "maxX": scroll.max.0,
+                "maxY": scroll.max.1,
+                "userScrollable": scroll.user_scrollable,
+            })
+        })
+        .collect::<Vec<_>>();
+    json!({
+        "ok": true,
+        "rendererState": true,
+        "root": root,
+        "states": states,
+    })
+}
+
+#[deno_core::op2]
+#[serde]
 fn op_vixen_dom_set_element_scroll(
     state: &mut OpState,
     node_id: u32,
@@ -737,7 +773,7 @@ fn synchronous_layout_rect(
         .filter(|geometry| geometry.node_id.get() == raw_node_id)
         .map(|geometry| geometry.border_box)
         .reduce(union_render_rect);
-    renderer_rect_result(rect)
+    renderer_rect_result(rect, renderer_output_scale(&commit))
 }
 
 #[deno_core::op2]
@@ -768,7 +804,7 @@ fn op_vixen_dom_range_rect(
         .filter(|node| render_node_is_descendant(&snapshot, node.id, parent_id))
         .collect::<Vec<_>>();
     if text_nodes.is_empty() {
-        return renderer_rect_result(None);
+        return renderer_rect_result(None, renderer_output_scale(&commit));
     }
 
     let selected = if whole_text {
@@ -841,7 +877,7 @@ fn op_vixen_dom_range_rect(
             RenderTextQueryValue::Offset { .. } => Vec::new(),
         })
         .reduce(union_render_rect);
-    renderer_rect_result(rect)
+    renderer_rect_result(rect, renderer_output_scale(&commit))
 }
 
 fn synchronous_layout(
@@ -864,6 +900,7 @@ fn synchronous_layout(
             layout.config.document_id,
             view.viewport,
             view.viewport_generation.max(1),
+            view.device_scale,
             view.page_zoom,
         )
         .map_err(|message| message.to_string())?;
@@ -872,6 +909,11 @@ fn synchronous_layout(
         .renderer
         .ensure_layout(snapshot.clone(), &layout.cancellation)
         .map_err(|error| error.to_string())?;
+    layout
+        .config
+        .page
+        .borrow_mut()
+        .apply_renderer_scroll(&commit);
     Ok((snapshot, commit))
 }
 
@@ -914,12 +956,19 @@ fn union_render_rect(
     }
 }
 
-fn renderer_rect_result(rect: Option<vixen_api::RenderRect>) -> deno_core::serde_json::Value {
+fn renderer_output_scale(commit: &vixen_api::RenderCommit) -> f64 {
+    commit.viewport.device_scale * commit.viewport.page_zoom
+}
+
+fn renderer_rect_result(
+    rect: Option<vixen_api::RenderRect>,
+    output_scale: f64,
+) -> deno_core::serde_json::Value {
     json!({ "ok": true, "rendererGeometry": true, "rect": rect.map(|rect| json!({
-        "x": rect.x,
-        "y": rect.y,
-        "width": rect.width,
-        "height": rect.height,
+        "x": rect.x / output_scale,
+        "y": rect.y / output_scale,
+        "width": rect.width / output_scale,
+        "height": rect.height / output_scale,
     })) })
 }
 
@@ -959,16 +1008,9 @@ fn dom_host_state(
     synchronous_layout: Option<SynchronousLayoutHost>,
 ) -> Result<DomHostState, String> {
     let elements = page.query_selector_all_in_viewport("*", page.layout_viewport())?;
-    let element_scroll_metrics = page.element_scroll_metrics_snapshot();
     let records = elements
         .iter()
-        .map(|info| {
-            element_record(
-                page,
-                info,
-                element_scroll_metrics.get(&info.node_id).copied(),
-            )
-        })
+        .map(|info| element_record(page, info))
         .collect::<Vec<_>>();
     let document_element_node_id = records
         .iter()
@@ -1031,24 +1073,24 @@ fn dom_host_state(
     })
 }
 
-fn element_record(
-    page: &Page,
-    info: &ElementInfo,
-    scroll_metrics: Option<ElementScrollMetrics>,
-) -> DomElementRecord {
+fn element_record(page: &Page, info: &ElementInfo) -> DomElementRecord {
     let text_content = page
         .document()
         .element_text_content(info.node_id)
         .unwrap_or_else(|| info.text.clone());
 
-    let overflow_clips = scroll_metrics.is_some();
-    let scroll_metrics = scroll_metrics.unwrap_or(ElementScrollMetrics {
-        position: (0.0, 0.0),
-        max: (0.0, 0.0),
-        user_scrollable: false,
-    });
-    let fixed_position = page
-        .computed_style_for_viewport(info.node_id, page.layout_viewport())
+    let styles = page.computed_style_for_viewport(info.node_id, page.layout_viewport());
+    let overflow = styles
+        .iter()
+        .find(|(name, _)| name == "overflow" || name == "overflow-y")
+        .map(|(_, value)| value.to_ascii_lowercase());
+    let overflow_clips = overflow
+        .as_deref()
+        .is_some_and(|value| matches!(value, "auto" | "scroll" | "hidden" | "clip"));
+    let user_scrollable = overflow
+        .as_deref()
+        .is_some_and(|value| matches!(value, "auto" | "scroll"));
+    let fixed_position = styles
         .iter()
         .any(|(name, value)| name == "position" && value.eq_ignore_ascii_case("fixed"));
     DomElementRecord {
@@ -1067,9 +1109,9 @@ fn element_record(
             .element_outer_html(info.node_id)
             .unwrap_or_default(),
         bbox: info.bbox,
-        scroll_position: scroll_metrics.position,
-        scroll_max: scroll_metrics.max,
-        user_scrollable: scroll_metrics.user_scrollable,
+        scroll_position: (0.0, 0.0),
+        scroll_max: (0.0, 0.0),
+        user_scrollable,
         overflow_clips,
         fixed_position,
         form_entries: form_entries_for_element(page, info),
@@ -1485,6 +1527,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     op_vixen_dom_set_contenteditable_state,
     op_vixen_dom_set_focused_element,
     op_vixen_dom_set_selection,
+    op_vixen_dom_scroll_state,
     op_vixen_dom_set_root_scroll,
     op_vixen_dom_set_element_scroll,
     op_vixen_document_cookie_get,
@@ -1762,6 +1805,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
   function elementRect(nodeId) {
     const record = recordForElementNodeId(nodeId);
     if (record && Number(nodeId) < 0) return normalizedElementRect(record, { x: 0, y: 0, width: 0, height: 0 });
+    syncRendererScrollState(false);
     const result = unwrapDomOp(op_vixen_dom_element_rect(nodeId));
     if (result.rendererGeometry === true) return normalizedElementRect(record, result.rect);
     if (record && Object.prototype.hasOwnProperty.call(record, 'bbox')) return liveElementRect(record);
@@ -2704,6 +2748,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   function applyTopLevelScroll(x, y) {
+    syncRendererScrollState(false);
     const nextX = Math.min(topLevelScrollMaxX, Math.max(0, finiteScrollCoordinate(x)));
     const nextY = Math.min(topLevelScrollMaxY, Math.max(0, finiteScrollCoordinate(y)));
     if (nextX === topLevelScrollX && nextY === topLevelScrollY) return;
@@ -2808,7 +2853,24 @@ const DOM_API_BOOTSTRAP: &str = r#"
     configurable: true,
   });
 
+  function syncRendererScrollState(emitScroll = false) {
+    const result = unwrapDomOp(op_vixen_dom_scroll_state());
+    if (result.rendererState !== true) return false;
+    const root = result.root || {};
+    topLevelScrollX = Math.max(0, Number(root.left) || 0);
+    topLevelScrollY = Math.max(0, Number(root.top) || 0);
+    topLevelScrollMaxX = Math.max(0, Number(root.maxX) || 0);
+    topLevelScrollMaxY = Math.max(0, Number(root.maxY) || 0);
+    if (globalThis.visualViewport) {
+      globalThis.visualViewport.pageLeft = topLevelScrollX;
+      globalThis.visualViewport.pageTop = topLevelScrollY;
+    }
+    globalThis.__vixenSyncElementScrollState(result.states || [], emitScroll);
+    return true;
+  }
+
   function applyElementScroll(element, x, y) {
+    syncRendererScrollState(false);
     const record = elementRecord(element);
     if (!record || !Number.isInteger(record.nodeId) || record.nodeId <= 0) return false;
     const maxX = Math.max(0, Number(record.scrollMaxX) || 0);
@@ -2941,6 +3003,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   function scrollElementIntoView(element, value = true) {
     if (!element || typeof element.__vixenNodeId !== 'number') return;
+    syncRendererScrollState(false);
     const options = scrollIntoViewOptions(value);
     let targetRect = elementRect(element.__vixenNodeId);
     if (!targetRect) return;
@@ -4934,6 +4997,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get scrollWidth() { return elementScrollSize(this, 'x'); }
     get scrollHeight() { return elementScrollSize(this, 'y'); }
     get scrollTop() {
+      syncRendererScrollState(false);
       if (this === vixenDocument.documentElement || this === vixenDocument.body) return topLevelScrollY;
       return Number(elementRecord(this).scrollTop) || 0;
     }
@@ -4942,6 +5006,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
       else applyElementScroll(this, this.scrollLeft, value);
     }
     get scrollLeft() {
+      syncRendererScrollState(false);
       if (this === vixenDocument.documentElement || this === vixenDocument.body) return topLevelScrollX;
       return Number(elementRecord(this).scrollLeft) || 0;
     }
@@ -6643,7 +6708,7 @@ mod tests {
     }
 
     #[test]
-    fn element_geometry_crosses_dom_op() {
+    fn element_geometry_requires_the_synchronous_renderer() {
         assert!(DOM_API_BOOTSTRAP.contains("getBoundingClientRect"));
         assert!(DOM_API_BOOTSTRAP.contains("getClientRects"));
         assert!(DOM_API_BOOTSTRAP.contains("elementFromPoint"));
@@ -6661,12 +6726,8 @@ mod tests {
             .iter()
             .find(|record| record.id.as_deref() == Some("box"))
             .unwrap();
-        let rect = rect_value(box_record.bbox.expect("box has layout bbox"));
-
-        assert_eq!(rect["x"].as_f64(), Some(8.0));
-        assert_eq!(rect["width"].as_f64(), Some(40.0));
-        assert_eq!(rect["height"].as_f64(), Some(20.0));
-        assert_eq!(element_record_value(box_record)["bbox"], rect);
+        assert!(box_record.bbox.is_none());
+        assert!(element_record_value(box_record)["bbox"].is_null());
     }
 
     #[test]

@@ -20,7 +20,7 @@ use vixen_api::{
     BrowsingContextState, CrossDocumentNavigationKind, DiagnosticScope, DownloadEvent,
     EngineDiagnostic, EngineDiagnosticCategory, HostLifecycle, HostViewState, InputDispatchResult,
     KeyEventData, MouseEventData, NavigationActionOutcome, NavigationCancellationReason,
-    NavigationPhase, RenderBridgeSubmission, RenderBridgeUpdate, RenderCommitState,
+    NavigationPhase, RenderBridgeSubmission, RenderBridgeUpdate, RenderCommit, RenderCommitState,
     RenderHandleRelease, RenderReplica, RuntimeConsoleArg, RuntimeConsoleValue, RuntimeEffects,
     RuntimeNetworkEvent, TextInputState,
 };
@@ -312,7 +312,14 @@ pub unsafe extern "C" fn vixen_command(
                     .renderer_state
                     .lock()
                     .map_err(|_| AbiError::internal("renderer acceptance state is unavailable"))?;
-                drain_renderer_submissions(&entry.renderer, &mut renderer_state)?;
+                let commits = drain_renderer_submissions(&entry.renderer, &mut renderer_state)?;
+                drop(renderer_state);
+                for commit in commits {
+                    state
+                        .controller
+                        .apply_renderer_commit(commit)
+                        .map_err(browser_error)?;
+                }
             }
             let response = match command {
                 ControllerCommand::DispatchRendererMouseEvent(dispatch) => {
@@ -406,9 +413,10 @@ pub unsafe extern "C" fn vixen_command(
 pub(crate) fn drain_renderer_submissions(
     renderer: &crate::RenderBroker,
     state: &mut RendererState,
-) -> Result<(), AbiError> {
+) -> Result<Vec<RenderCommit>, AbiError> {
+    let mut accepted_commits = Vec::new();
     while let Some(submission) = renderer.peek_submission().map_err(renderer_broker_error)? {
-        let (next_commits, releases) = match &submission {
+        let (next_commits, releases, accepted_commit) = match &submission {
             RenderBridgeSubmission::Commit(commit) => {
                 let mut commits = state.commits.clone();
                 let releases = match commits.accept_commit(&state.replica, commit.clone()) {
@@ -428,7 +436,7 @@ pub(crate) fn drain_renderer_submissions(
                         return Err(render_protocol_error(error));
                     }
                 };
-                (Some(commits), releases)
+                (Some(commits), releases, Some(commit.clone()))
             }
             RenderBridgeSubmission::Presented(presented) => {
                 let mut commits = state.commits.clone();
@@ -441,12 +449,12 @@ pub(crate) fn drain_renderer_submissions(
                         return Err(render_protocol_error(error));
                     }
                 };
-                (Some(commits), releases)
+                (Some(commits), releases, None)
             }
             RenderBridgeSubmission::Resync(_) => {
                 state.needs_resync = true;
                 state.commits = RenderCommitState::default();
-                (None, Vec::new())
+                (None, Vec::new(), None)
             }
         };
         renderer
@@ -458,8 +466,11 @@ pub(crate) fn drain_renderer_submissions(
         if let Some(commits) = next_commits {
             state.commits = commits;
         }
+        if let Some(commit) = accepted_commit {
+            accepted_commits.push(commit);
+        }
     }
-    Ok(())
+    Ok(accepted_commits)
 }
 
 fn render_protocol_error(error: vixen_api::RenderProtocolError) -> AbiError {
@@ -1022,38 +1033,6 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
                 generation,
                 node_id,
                 action,
-            }
-        }
-        "dispatch_mouse_event" => {
-            exact_keys(
-                object,
-                &[
-                    "context_id",
-                    "document_id",
-                    "event",
-                    "event_type",
-                    "runtime_context_id",
-                    "type",
-                    "v",
-                    "viewport",
-                ],
-            )?;
-            let event_type = required_string(object, "event_type")?;
-            if !matches!(
-                event_type,
-                "mousemove" | "mousedown" | "mouseup" | "wheel" | "cancel"
-            ) {
-                return Err(AbiError::invalid_command(
-                    "event_type must be mousemove, mousedown, mouseup, wheel, or cancel",
-                ));
-            }
-            ControllerCommand::DispatchMouseEvent {
-                context_id: required_context_id(object)?,
-                document_id: required_document_id(object)?,
-                runtime_context_id: required_runtime_context_id(object)?,
-                viewport: required_viewport(object)?,
-                event_type: event_type.to_owned(),
-                event: required_mouse_event(object)?,
             }
         }
         "dispatch_renderer_mouse_event" => {
@@ -2661,74 +2640,6 @@ mod tests {
     }
 
     #[test]
-    fn mouse_input_json_is_strict_and_bounded() {
-        let _scope = test_scope();
-        let parsed = parse_command(&mouse_command().to_string()).unwrap();
-        assert!(matches!(
-            parsed,
-            ControllerCommand::DispatchMouseEvent {
-                context_id,
-                document_id,
-                runtime_context_id,
-                viewport: (800, 600),
-                ref event_type,
-                ref event,
-            } if context_id.get() == 1
-                && document_id.get() == 2
-                && runtime_context_id.get() == 3
-                && event_type == "mousedown"
-                && event.x == 10.5
-                && event.y == 20.25
-        ));
-
-        let mut cases = Vec::new();
-        let mut value = mouse_command();
-        value["extra"] = json!(true);
-        cases.push(value);
-        let mut value = mouse_command();
-        value["viewport"]["extra"] = json!(1);
-        cases.push(value);
-        let mut value = mouse_command();
-        value["event"]["extra"] = json!(1);
-        cases.push(value);
-        for field in ["context_id", "document_id", "runtime_context_id"] {
-            let mut value = mouse_command();
-            value[field] = json!(0);
-            cases.push(value);
-        }
-        for (field, invalid) in [("width", json!(0)), ("height", json!(4097))] {
-            let mut value = mouse_command();
-            value["viewport"][field] = invalid;
-            cases.push(value);
-        }
-        let mut value = mouse_command();
-        value["event_type"] = json!("click");
-        cases.push(value);
-        let mut value = mouse_command();
-        value["event_type"] = json!("dblclick");
-        cases.push(value);
-        let mut value = mouse_command();
-        value["event"]["button"] = json!(i64::MAX);
-        cases.push(value);
-        let mut value = mouse_command();
-        value["event"]["bubbles"] = json!(1);
-        cases.push(value);
-        let mut value = mouse_command();
-        value["event"]["node_id"] = json!(1);
-        cases.push(value);
-        let mut value = mouse_command();
-        value["event"]["delta_x"] = json!("NaN");
-        cases.push(value);
-
-        for value in cases {
-            assert!(
-                parse_command(&value.to_string()).is_err(),
-                "accepted invalid mouse command: {value}"
-            );
-        }
-    }
-
-    #[test]
     fn renderer_mouse_input_json_is_strict_and_commit_bound() {
         let _scope = test_scope();
         let parsed = parse_command(&renderer_mouse_command().to_string()).unwrap();
@@ -2964,10 +2875,10 @@ mod tests {
         );
     }
 
-    fn mouse_command() -> Value {
+    fn base_renderer_mouse_command() -> Value {
         json!({
             "v": 1,
-            "type": "dispatch_mouse_event",
+            "type": "dispatch_renderer_mouse_event",
             "context_id": 1,
             "document_id": 2,
             "runtime_context_id": 3,
@@ -2991,8 +2902,7 @@ mod tests {
     }
 
     fn renderer_mouse_command() -> Value {
-        let mut command = mouse_command();
-        command["type"] = json!("dispatch_renderer_mouse_event");
+        let mut command = base_renderer_mouse_command();
         let revision = json!({
             "context_id": 1,
             "document_id": 2,

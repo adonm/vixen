@@ -250,28 +250,6 @@ abstract class BrowserController {
     ),
   );
 
-  Future<InputDispatchedResponse> dispatchMouseEvent({
-    required int contextId,
-    required int documentId,
-    required int runtimeContextId,
-    required int viewportWidth,
-    required int viewportHeight,
-    required String eventType,
-    required BrowserMouseEvent event,
-  }) async => _expect<InputDispatchedResponse>(
-    await dispatch(
-      BrowserCommand.dispatchMouseEvent(
-        contextId: contextId,
-        documentId: documentId,
-        runtimeContextId: runtimeContextId,
-        viewportWidth: viewportWidth,
-        viewportHeight: viewportHeight,
-        eventType: eventType,
-        event: event,
-      ),
-    ),
-  );
-
   Future<InputDispatchedResponse> dispatchRendererMouseEvent({
     required int contextId,
     required int documentId,

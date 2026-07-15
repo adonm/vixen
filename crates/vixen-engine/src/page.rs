@@ -11,36 +11,25 @@
 
 use vixen_api::{
     ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityNode, AccessibilityRange,
-    AccessibilityRect, AccessibilitySnapshot, AccessibilityTextInputAction,
-    AccessibilityTextInputType, AccessibilityTextSelection, BrowsingContextId, DocumentId,
-    ElementInfo, EngineDiagnostic, FindTextResult, FullRenderSnapshot, PageSnapshot, RenderNode,
-    RenderNodeId, RenderNodeKind, RenderPoint, RenderResource, RenderResourceId,
-    RenderResourceKind, RenderRevision, RenderScrollIntent, RenderScrollIntentKind,
-    RenderScrollNodeId, RenderSemanticActionKind, RenderSemanticNode, RenderStyleProperty,
-    RenderViewport, SemanticNodeId,
+    AccessibilitySnapshot, AccessibilityTextInputAction, AccessibilityTextInputType,
+    AccessibilityTextSelection, BrowsingContextId, DocumentId, ElementInfo, EngineDiagnostic,
+    FindTextResult, FullRenderSnapshot, PageSnapshot, RenderCommit, RenderNode, RenderNodeId,
+    RenderNodeKind, RenderPoint, RenderResource, RenderResourceId, RenderResourceKind,
+    RenderRevision, RenderScrollIntent, RenderScrollIntentKind, RenderScrollNodeId,
+    RenderSemanticActionKind, RenderSemanticNode, RenderStyleProperty, RenderViewport,
+    SemanticNodeId,
 };
 use vixen_net::csp::ContentSecurityPolicy;
 
-use crate::display_list::{
-    BackgroundAttachment, BackgroundBox, Color, DisplayListBuilder, DrawItem, PaintCommand,
-    PaintStats, RasterImage, Rect, TextRun, dump_paint_commands, dump_paint_stats,
-};
 use crate::doc::{Document, DocumentParser, DocumentRenderNodeKind, DocumentStyleItem, ParseError};
 use crate::history::{HistoryElementScroll, HistoryEntry, HistoryScrollState, SessionHistory};
-use crate::layout_tree::{
-    LayoutFragment, LayoutFragmentKind, LayoutNodeId, LayoutNodeKind, LayoutPosition, LayoutTree,
-    apply_element_scrolls, apply_root_scroll, build_layout_tree, dump_layout_tree,
-    layout_fragments_from_tree, line_boxes_from_tree,
-};
-use crate::line_layout::{LineBox, dump_line_boxes};
+use crate::raster_image::RasterImage;
 use crate::style_cascade::AuthorStylesheet;
 use crate::style_dom::{AccessibilityElement, Selector};
 use crate::whatwg_url::{parse as parse_url, parse_with_base as parse_url_with_base};
 
 mod interaction;
 pub use interaction::{FormSubmissionSnapshot, PageSelection};
-
-const MAX_HISTORY_SCROLLPORTS: usize = 1024;
 
 /// A loaded page at the current vertical integration boundary.
 pub struct Page {
@@ -58,23 +47,30 @@ pub struct Page {
     text_selections: std::collections::HashMap<usize, AccessibilityTextSelection>,
     layout_viewport: (u32, u32),
     root_scroll: (f32, f32),
-    element_scrolls: std::collections::HashMap<usize, (f32, f32)>,
+    root_scroll_intent: (f32, f32),
+    root_scroll_max: (f32, f32),
+    renderer_scroll_known: bool,
+    element_scrolls: std::collections::HashMap<usize, ElementScrollState>,
     find_state: Option<FindState>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) struct ElementScrollMetrics {
-    pub position: (f32, f32),
-    pub max: (f32, f32),
-    pub user_scrollable: bool,
+struct ElementScrollState {
+    scroll_node_id: RenderScrollNodeId,
+    position: (f32, f32),
+    intent: Option<(f32, f32)>,
+    max: (f32, f32),
+    user_scrollable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub(crate) struct ElementScrollRequest {
+pub(crate) struct ElementScrollProjection {
     pub node_id: usize,
     pub element_id: Option<String>,
     pub tag: String,
-    pub position: (f64, f64),
+    pub position: (f32, f32),
+    pub max: (f32, f32),
+    pub user_scrollable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -84,22 +80,7 @@ struct FindState {
     active_match: usize,
 }
 
-#[derive(Debug, Clone)]
-struct FindMatch {
-    rect: Rect,
-    fixed: bool,
-    highlights: Vec<FindHighlight>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct FindHighlight {
-    rect: Rect,
-    order: u32,
-    clip: Option<Rect>,
-}
-
 const MAX_FIND_MATCHES: usize = 10_000;
-const MAX_FIND_HIGHLIGHTS_PER_MATCH: usize = 64;
 
 /// Incremental page construction retained on BrowserCore's owner thread.
 pub(crate) struct PageParser {
@@ -166,6 +147,9 @@ impl Page {
             text_selections: std::collections::HashMap::new(),
             layout_viewport: (800, 600),
             root_scroll: (0.0, 0.0),
+            root_scroll_intent: (0.0, 0.0),
+            root_scroll_max: (0.0, 0.0),
+            renderer_scroll_known: false,
             element_scrolls: std::collections::HashMap::new(),
             find_state: None,
         })
@@ -186,20 +170,17 @@ impl Page {
     pub(crate) fn history_with_current_scroll(&self) -> SessionHistory {
         let mut history = self.history.clone();
         let mut element_offsets = self
-            .element_scrolls
-            .iter()
-            .filter_map(|(node_id, offset)| {
-                let element = self.document.element_by_node_id(*node_id)?;
-                Some(HistoryElementScroll {
-                    node_id: *node_id,
-                    element_id: element.id,
-                    tag: element.tag,
-                    offset: *offset,
-                })
+            .element_scroll_state_snapshot()
+            .into_iter()
+            .filter(|scroll| scroll.position != (0.0, 0.0))
+            .map(|scroll| HistoryElementScroll {
+                node_id: scroll.node_id,
+                element_id: scroll.element_id,
+                tag: scroll.tag,
+                offset: scroll.position,
             })
             .collect::<Vec<_>>();
         element_offsets.sort_by_key(|scroll| scroll.node_id);
-        element_offsets.truncate(MAX_HISTORY_SCROLLPORTS);
         if self.root_scroll != (0.0, 0.0)
             || !element_offsets.is_empty()
             || history
@@ -227,18 +208,14 @@ impl Page {
                 f64::from(restoration.root_offset.0),
                 f64::from(restoration.root_offset.1),
             ));
-            if !self.element_scrolls.is_empty() {
-                self.element_scrolls.clear();
-                self.bump_accessibility_mutation_epoch();
+            for scroll in restoration.element_offsets {
+                self.set_element_scroll(
+                    scroll.node_id,
+                    scroll.element_id.as_deref(),
+                    &scroll.tag,
+                    (f64::from(scroll.offset.0), f64::from(scroll.offset.1)),
+                );
             }
-            self.scroll_elements_to(restoration.element_offsets.into_iter().map(|scroll| {
-                ElementScrollRequest {
-                    node_id: scroll.node_id,
-                    element_id: scroll.element_id,
-                    tag: scroll.tag,
-                    position: (f64::from(scroll.offset.0), f64::from(scroll.offset.1)),
-                }
-            }));
         }
     }
 
@@ -292,10 +269,9 @@ impl Page {
         self.document.set_element_text_content(node_id, value)?;
         self.focused_element_node_id = None;
         self.text_selections.clear();
-        self.element_scrolls.clear();
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
-        self.clamp_scroll_offsets();
+        self.renderer_scroll_known = false;
         Ok(())
     }
 
@@ -309,7 +285,7 @@ impl Page {
         self.document.set_element_attribute(node_id, name, value)?;
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
-        self.clamp_scroll_offsets();
+        self.renderer_scroll_known = false;
         Ok(())
     }
 
@@ -318,7 +294,7 @@ impl Page {
         self.document.remove_element_attribute(node_id, name)?;
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
-        self.clamp_scroll_offsets();
+        self.renderer_scroll_known = false;
         Ok(())
     }
 
@@ -336,10 +312,9 @@ impl Page {
         self.document.set_element_inner_html(node_id, html)?;
         self.focused_element_node_id = None;
         self.text_selections.clear();
-        self.element_scrolls.clear();
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
-        self.clamp_scroll_offsets();
+        self.renderer_scroll_known = false;
         Ok(())
     }
 
@@ -409,7 +384,7 @@ impl Page {
         if text_changed {
             self.document.set_element_text_content(node_id, value)?;
             self.refresh_author_stylesheet();
-            self.clamp_scroll_offsets();
+            self.renderer_scroll_known = false;
         }
         if selection_changed {
             self.text_selections.insert(node_id, selection);
@@ -465,7 +440,7 @@ impl Page {
             .set_form_control_value(node_id, element_id, name, tag, value)?;
         self.bump_accessibility_mutation_epoch();
         self.refresh_author_stylesheet();
-        self.clamp_scroll_offsets();
+        self.renderer_scroll_known = false;
         Ok(())
     }
 
@@ -508,7 +483,7 @@ impl Page {
         }
         self.external_stylesheets.insert(index, source);
         self.refresh_author_stylesheet();
-        self.clamp_scroll_offsets();
+        self.renderer_scroll_known = false;
         self.bump_accessibility_mutation_epoch();
         Ok(())
     }
@@ -536,19 +511,17 @@ impl Page {
     /// Empty queries deliberately return zero so UI callers can clear find state
     /// without special-casing at the trust boundary.
     pub fn find_text_count(&self, query: &str, case_sensitive: bool) -> u32 {
-        self.find_text_matches(query, case_sensitive, (800, 600))
-            .len() as u32
+        self.find_text_match_count(query, case_sensitive) as u32
     }
 
-    /// Select a visible-text match in document order and scroll the top-level
-    /// viewport just enough to reveal it. Repeating the same query advances or
-    /// reverses with wrapping; a changed query starts at the first/last match.
+    /// Select a visible-text match in document order. Repeating the same query
+    /// advances or reverses with wrapping; Flutter reveals the selected match
+    /// from exact commit-bound Paragraph geometry.
     pub fn find_text(
         &mut self,
         query: &str,
         case_sensitive: bool,
         forward: bool,
-        viewport: (u32, u32),
     ) -> FindTextResult {
         if query.is_empty() {
             self.find_state = None;
@@ -558,8 +531,8 @@ impl Page {
             };
         }
 
-        let matches = self.find_text_matches(query, case_sensitive, viewport);
-        if matches.is_empty() {
+        let matches = self.find_text_match_count(query, case_sensitive);
+        if matches == 0 {
             self.find_state = Some(FindState {
                 query: query.to_owned(),
                 case_sensitive,
@@ -579,28 +552,24 @@ impl Page {
             let current = self
                 .find_state
                 .as_ref()
-                .map_or(0, |state| state.active_match.min(matches.len() - 1));
+                .map_or(0, |state| state.active_match.min(matches - 1));
             if forward {
-                (current + 1) % matches.len()
+                (current + 1) % matches
             } else {
-                current.checked_sub(1).unwrap_or(matches.len() - 1)
+                current.checked_sub(1).unwrap_or(matches - 1)
             }
         } else if forward {
             0
         } else {
-            matches.len() - 1
+            matches - 1
         };
         self.find_state = Some(FindState {
             query: query.to_owned(),
             case_sensitive,
             active_match,
         });
-        let selected = &matches[active_match];
-        if !selected.fixed {
-            self.scroll_root_to_rect(viewport, selected.rect);
-        }
         FindTextResult {
-            matches: matches.len() as u32,
+            matches: matches as u32,
             active_match: Some(active_match as u32 + 1),
         }
     }
@@ -615,190 +584,188 @@ impl Page {
         self.layout_viewport
     }
 
-    /// Update the live CSS viewport and clamp the retained root offset.
-    pub(crate) fn set_layout_viewport(&mut self, viewport: (u32, u32)) {
-        self.layout_viewport = viewport;
-        self.clamp_scroll_offsets();
+    pub(crate) fn renderer_source_generation(&self) -> u64 {
+        self.accessibility_mutation_epoch.max(1)
     }
 
-    fn clamp_scroll_offsets(&mut self) {
-        let viewport = self.layout_viewport;
-        self.scroll_root_by(viewport, (0.0, 0.0));
-        let tree = build_layout_tree(&self.document, viewport, |node_id| {
-            self.layout_style_for_viewport(node_id, viewport)
-        });
-        let mut changed = false;
-        self.element_scrolls.retain(|node_id, position| {
-            let Some(limits) = element_scroll_limits_in_tree(&tree, *node_id) else {
-                changed = true;
-                return false;
-            };
-            let next = (
-                position.0.clamp(0.0, limits.0),
-                position.1.clamp(0.0, limits.1),
-            );
-            changed |= next != *position;
-            *position = next;
-            next != (0.0, 0.0)
-        });
-        if changed {
-            self.bump_accessibility_mutation_epoch();
+    /// Update the live CSS viewport. Flutter recomputes and commits exact scroll
+    /// limits for this source viewport.
+    pub(crate) fn set_layout_viewport(&mut self, viewport: (u32, u32)) {
+        if self.layout_viewport != viewport {
+            self.layout_viewport = viewport;
+            self.renderer_scroll_known = false;
         }
     }
 
-    /// Current maximum top-level scroll offset for the live CSS viewport.
+    /// Maximum top-level offset from the most recent exact Flutter commit.
     pub(crate) fn root_scroll_max(&self) -> (f32, f32) {
-        self.root_scroll_limits(self.layout_viewport)
+        self.root_scroll_max
     }
 
-    /// Apply an absolute script-driven top-level scroll request.
+    /// Apply an absolute script-driven top-level scroll intent. The formatter
+    /// owns exact clamping and reports the accepted offset in its next commit.
     pub(crate) fn scroll_root_to(&mut self, position: (f64, f64)) -> bool {
         if !position.0.is_finite() || !position.1.is_finite() {
             return false;
         }
-        let (current_x, current_y) = self.root_scroll;
-        self.scroll_root_by(
-            self.layout_viewport,
-            (
-                position.0 - f64::from(current_x),
-                position.1 - f64::from(current_y),
-            ),
-        )
+        let limit = vixen_api::RENDER_MAX_COORDINATE;
+        let next = (
+            position.0.clamp(0.0, limit) as f32,
+            position.1.clamp(0.0, limit) as f32,
+        );
+        if next == self.root_scroll {
+            return false;
+        }
+        self.root_scroll = next;
+        self.root_scroll_intent = next;
+        self.bump_accessibility_mutation_epoch();
+        true
     }
 
-    /// Current position and maximum offset for a page-backed element
-    /// scrollport. Non-scroll containers report a zero maximum.
-    #[cfg(test)]
-    pub(crate) fn element_scroll_metrics(&self, node_id: usize) -> Option<ElementScrollMetrics> {
-        let tree = build_layout_tree(&self.document, self.layout_viewport, |node_id| {
-            self.layout_style_for_viewport(node_id, self.layout_viewport)
-        });
-        let limits = element_scroll_limits_in_tree(&tree, node_id)?;
-        let current = self
+    pub(crate) fn set_element_scroll(
+        &mut self,
+        node_id: usize,
+        element_id: Option<&str>,
+        tag: &str,
+        position: (f64, f64),
+    ) -> bool {
+        if !position.0.is_finite() || !position.1.is_finite() {
+            return false;
+        }
+        let Some(element) = self.document.element_by_node_id(node_id) else {
+            return false;
+        };
+        if element.tag != tag || element.id.as_deref() != element_id {
+            return false;
+        }
+        let Some(state) = self.element_scrolls.get_mut(&node_id) else {
+            return false;
+        };
+        let limit = vixen_api::RENDER_MAX_COORDINATE;
+        let next = (
+            position.0.clamp(0.0, limit) as f32,
+            position.1.clamp(0.0, limit) as f32,
+        );
+        if state.position == next {
+            return false;
+        }
+        state.position = next;
+        state.intent = Some(next);
+        self.bump_accessibility_mutation_epoch();
+        true
+    }
+
+    pub(crate) fn element_scroll_state_snapshot(&self) -> Vec<ElementScrollProjection> {
+        let mut states = self
             .element_scrolls
-            .get(&node_id)
-            .copied()
-            .unwrap_or((0.0, 0.0));
-        Some(ElementScrollMetrics {
-            position: (
-                current.0.clamp(0.0, limits.0),
-                current.1.clamp(0.0, limits.1),
-            ),
-            max: limits,
-            user_scrollable: tree.nodes.iter().any(|node| {
-                node.dom_node_id == Some(node_id) && node.style.overflow.user_scrollable()
-            }),
-        })
-    }
-
-    pub(crate) fn element_scroll_metrics_snapshot(
-        &self,
-    ) -> std::collections::HashMap<usize, ElementScrollMetrics> {
-        let tree = build_layout_tree(&self.document, self.layout_viewport, |node_id| {
-            self.layout_style_for_viewport(node_id, self.layout_viewport)
-        });
-        tree.nodes
             .iter()
-            .filter(|node| node.style.overflow.clips_contents())
-            .filter_map(|node| {
-                let node_id = node.dom_node_id?;
-                let limits = element_scroll_limits_in_tree(&tree, node_id).unwrap_or((0.0, 0.0));
-                let current = self
-                    .element_scrolls
-                    .get(&node_id)
-                    .copied()
-                    .unwrap_or((0.0, 0.0));
-                Some((
-                    node_id,
-                    ElementScrollMetrics {
-                        position: (
-                            current.0.clamp(0.0, limits.0),
-                            current.1.clamp(0.0, limits.1),
-                        ),
-                        max: limits,
-                        user_scrollable: node.style.overflow.user_scrollable(),
-                    },
-                ))
+            .filter_map(|(node_id, state)| {
+                let element = self.document.element_by_node_id(*node_id)?;
+                Some(ElementScrollProjection {
+                    node_id: *node_id,
+                    element_id: element.id,
+                    tag: element.tag,
+                    position: state.position,
+                    max: state.max,
+                    user_scrollable: state.user_scrollable,
+                })
             })
-            .collect()
+            .collect::<Vec<_>>();
+        states.sort_by_key(|state| state.node_id);
+        states
     }
 
-    /// Apply a bounded element scroll request. Returns whether paint, hit
-    /// testing, or accessibility geometry changed.
-    #[cfg(test)]
-    pub(crate) fn scroll_element_to(&mut self, node_id: usize, position: (f64, f64)) -> bool {
-        self.scroll_elements_to([ElementScrollRequest {
-            node_id,
-            element_id: None,
-            tag: String::new(),
-            position,
-        }])
-    }
-
-    pub(crate) fn scroll_elements_to<I>(&mut self, requests: I) -> bool
-    where
-        I: IntoIterator<Item = ElementScrollRequest>,
-    {
-        let tree = build_layout_tree(&self.document, self.layout_viewport, |node_id| {
-            self.layout_style_for_viewport(node_id, self.layout_viewport)
-        });
-        let mut changed = false;
-        for request in requests {
-            let Some(node_id) = self.resolve_element_scroll_node_id(&request) else {
-                continue;
-            };
-            let position = request.position;
-            if !position.0.is_finite() || !position.1.is_finite() {
+    /// Accept mechanical scroll state only from the formatter commit that owns
+    /// the current geometry. No Rust layout estimate participates.
+    pub(crate) fn apply_renderer_scroll(&mut self, commit: &RenderCommit) {
+        let output_scale = commit.viewport.device_scale * commit.viewport.page_zoom;
+        let mut source_changed = false;
+        let root = commit
+            .scroll_snapshot
+            .iter()
+            .find(|scroll| scroll.scroll_node_id.get() == 1);
+        let Some(root) = root else {
+            self.root_scroll = (0.0, 0.0);
+            self.root_scroll_max = (0.0, 0.0);
+            self.renderer_scroll_known = true;
+            return;
+        };
+        self.root_scroll = (
+            (root.offset.x / output_scale) as f32,
+            (root.offset.y / output_scale) as f32,
+        );
+        if self.root_scroll_intent != self.root_scroll {
+            self.root_scroll_intent = self.root_scroll;
+            source_changed = true;
+        }
+        self.root_scroll_max = (
+            (root.max_offset.x / output_scale) as f32,
+            (root.max_offset.y / output_scale) as f32,
+        );
+        let mut element_scrolls = std::collections::HashMap::new();
+        for scroll in &commit.scroll_snapshot {
+            if scroll.scroll_node_id.get() == 1 {
                 continue;
             }
-            let Some(limits) = element_scroll_limits_in_tree(&tree, node_id) else {
+            let Ok(node_id) = usize::try_from(scroll.node_id.get()) else {
                 continue;
             };
-            let current = self
+            if self.document.element_by_node_id(node_id).is_none() {
+                continue;
+            }
+            let styles = self.computed_style_for_viewport(node_id, self.layout_viewport);
+            let user_scrollable = ["overflow", "overflow-x", "overflow-y"]
+                .iter()
+                .filter_map(|name| {
+                    styles
+                        .iter()
+                        .find(|(candidate, _)| candidate == name)
+                        .map(|(_, value)| value.to_ascii_lowercase())
+                })
+                .any(|value| {
+                    value
+                        .split_ascii_whitespace()
+                        .any(|keyword| matches!(keyword, "auto" | "scroll"))
+                });
+            let previous = self
                 .element_scrolls
                 .get(&node_id)
-                .copied()
-                .unwrap_or((0.0, 0.0));
-            let next = (
-                position.0.clamp(0.0, f64::from(limits.0)) as f32,
-                position.1.clamp(0.0, f64::from(limits.1)) as f32,
+                .filter(|state| state.scroll_node_id == scroll.scroll_node_id);
+            let position = (
+                (scroll.offset.x / output_scale) as f32,
+                (scroll.offset.y / output_scale) as f32,
             );
-            if next == current {
-                continue;
+            let mut intent = previous.and_then(|state| state.intent);
+            if intent.is_some_and(|requested| requested != position)
+                || (intent.is_none() && position != (0.0, 0.0))
+            {
+                intent = Some(position);
+                source_changed = true;
             }
-            changed = true;
-            if next == (0.0, 0.0) {
-                self.element_scrolls.remove(&node_id);
-            } else {
-                self.element_scrolls.insert(node_id, next);
-            }
+            element_scrolls.insert(
+                node_id,
+                ElementScrollState {
+                    scroll_node_id: scroll.scroll_node_id,
+                    position,
+                    intent,
+                    max: (
+                        (scroll.max_offset.x / output_scale) as f32,
+                        (scroll.max_offset.y / output_scale) as f32,
+                    ),
+                    user_scrollable,
+                },
+            );
         }
-        if changed {
+        if self.element_scrolls.iter().any(|(node_id, state)| {
+            state.intent.is_some() && !element_scrolls.contains_key(node_id)
+        }) {
+            source_changed = true;
+        }
+        self.element_scrolls = element_scrolls;
+        self.renderer_scroll_known = true;
+        if source_changed {
             self.bump_accessibility_mutation_epoch();
         }
-        changed
-    }
-
-    fn resolve_element_scroll_node_id(&self, request: &ElementScrollRequest) -> Option<usize> {
-        let matches_identity = |element: &crate::style_dom::MatchedElement| {
-            (request.tag.is_empty() || element.tag == request.tag)
-                && request
-                    .element_id
-                    .as_deref()
-                    .is_none_or(|id| element.id.as_deref() == Some(id))
-        };
-        if let Some(element) = self.document.element_by_node_id(request.node_id)
-            && matches_identity(&element)
-        {
-            return Some(request.node_id);
-        }
-        let id = request.element_id.as_deref()?;
-        let selector = Selector::parse(&request.tag).ok()?;
-        self.document
-            .query_all(&selector)
-            .into_iter()
-            .find(|element| matches_identity(element) && element.id.as_deref() == Some(id))
-            .map(|element| element.node_id)
     }
 
     /// Whether the focused live element owns navigation-key defaults that must
@@ -819,75 +786,96 @@ impl Page {
             .any(|(name, value)| name == "contenteditable" && !value.eq_ignore_ascii_case("false"))
     }
 
-    /// Apply a bounded top-level default scroll action. Returns whether the
-    /// visible projection changed.
-    pub fn scroll_root_by(&mut self, viewport: (u32, u32), delta: (f64, f64)) -> bool {
+    /// Apply a top-level scroll intent. If an exact formatter commit is known,
+    /// clamp to it; otherwise stay within the renderer protocol bound until the
+    /// formatter returns authoritative mechanical state.
+    pub fn scroll_root_by(&mut self, _viewport: (u32, u32), delta: (f64, f64)) -> bool {
         if !delta.0.is_finite() || !delta.1.is_finite() {
             return false;
         }
-        let limits = self.root_scroll_limits(viewport);
+        let limits = if self.renderer_scroll_known {
+            (
+                f64::from(self.root_scroll_max.0),
+                f64::from(self.root_scroll_max.1),
+            )
+        } else {
+            (
+                vixen_api::RENDER_MAX_COORDINATE,
+                vixen_api::RENDER_MAX_COORDINATE,
+            )
+        };
         let next = (
-            (f64::from(self.root_scroll.0) + delta.0).clamp(0.0, f64::from(limits.0)) as f32,
-            (f64::from(self.root_scroll.1) + delta.1).clamp(0.0, f64::from(limits.1)) as f32,
+            (f64::from(self.root_scroll.0) + delta.0).clamp(0.0, limits.0) as f32,
+            (f64::from(self.root_scroll.1) + delta.1).clamp(0.0, limits.1) as f32,
         );
         if next == self.root_scroll {
             return false;
         }
         self.root_scroll = next;
+        self.root_scroll_intent = next;
         self.bump_accessibility_mutation_epoch();
         true
     }
 
-    fn scroll_root_to_rect(&mut self, viewport: (u32, u32), rect: Rect) -> bool {
-        let (current_x, current_y) = self.root_scroll;
-        let viewport_width = viewport.0 as f32;
-        let viewport_height = viewport.1 as f32;
-        let target_x = if rect.x < current_x {
-            rect.x
-        } else if rect.x + rect.w > current_x + viewport_width {
-            rect.x + rect.w - viewport_width
-        } else {
-            current_x
-        };
-        let target_y = if rect.y < current_y {
-            rect.y
-        } else if rect.y + rect.h > current_y + viewport_height {
-            rect.y + rect.h - viewport_height
-        } else {
-            current_y
-        };
-        self.scroll_root_by(
-            viewport,
-            (
-                f64::from(target_x - current_x),
-                f64::from(target_y - current_y),
-            ),
-        )
-    }
-
-    fn find_text_matches(
-        &self,
-        query: &str,
-        case_sensitive: bool,
-        viewport: (u32, u32),
-    ) -> Vec<FindMatch> {
+    fn find_text_match_count(&self, query: &str, case_sensitive: bool) -> usize {
         if query.is_empty() {
-            return Vec::new();
+            return 0;
         }
-        let tree = build_layout_tree(&self.document, viewport, |node_id| {
-            self.layout_style_for_viewport(node_id, viewport)
-        });
-        let mut fixed_subtree = vec![false; tree.nodes.len()];
-        for node in &tree.nodes {
-            let parent_fixed = node
-                .parent
-                .is_some_and(|parent| fixed_subtree[parent.index()]);
-            let fixed = parent_fixed || node.style.position == LayoutPosition::Fixed;
-            fixed_subtree[node.id.index()] = fixed;
+        let folded_query = (!case_sensitive).then(|| query.to_lowercase());
+        let mut hidden = std::collections::HashSet::new();
+        let mut matches = 0usize;
+        for node in self.document.render_nodes() {
+            match node.kind {
+                DocumentRenderNodeKind::Element {
+                    node_id,
+                    local_name,
+                } => {
+                    let parent_hidden = node
+                        .parent_element_node_id
+                        .is_some_and(|parent| hidden.contains(&parent));
+                    let intrinsically_hidden = matches!(
+                        local_name.as_str(),
+                        "head" | "title" | "style" | "script" | "template"
+                    ) || self
+                        .document
+                        .element_by_node_id(node_id)
+                        .is_some_and(|element| {
+                            element.attributes.iter().any(|(name, _)| name == "hidden")
+                        });
+                    let style_hidden = self
+                        .computed_style_for_viewport(node_id, self.layout_viewport)
+                        .iter()
+                        .any(|(name, value)| {
+                            (name == "display" && value.eq_ignore_ascii_case("none"))
+                                || (name == "visibility"
+                                    && matches!(
+                                        value.to_ascii_lowercase().as_str(),
+                                        "hidden" | "collapse"
+                                    ))
+                        });
+                    if parent_hidden || intrinsically_hidden || style_hidden {
+                        hidden.insert(node_id);
+                    }
+                }
+                DocumentRenderNodeKind::Text { text }
+                    if !node
+                        .parent_element_node_id
+                        .is_some_and(|parent| hidden.contains(&parent)) =>
+                {
+                    let count = if let Some(query) = folded_query.as_deref() {
+                        text.to_lowercase().match_indices(query).count()
+                    } else {
+                        text.match_indices(query).count()
+                    };
+                    matches = matches.saturating_add(count).min(MAX_FIND_MATCHES);
+                    if matches == MAX_FIND_MATCHES {
+                        break;
+                    }
+                }
+                DocumentRenderNodeKind::Text { .. } => {}
+            }
         }
-        find_matches_in_tree(&tree, query, case_sensitive, |node_id| {
-            fixed_subtree[node_id.index()]
-        })
+        matches
     }
 
     /// Fallback event target for wheel input over unpainted viewport space.
@@ -903,37 +891,6 @@ impl Page {
             .map(|element| element.node_id)
     }
 
-    fn root_scroll_limits(&self, viewport: (u32, u32)) -> (f32, f32) {
-        let tree = build_layout_tree(&self.document, viewport, |node_id| {
-            self.layout_style_for_viewport(node_id, viewport)
-        });
-        let mut fixed_subtree = vec![false; tree.nodes.len()];
-        let mut right = viewport.0 as f32;
-        let mut bottom = viewport.1 as f32;
-        for node in &tree.nodes {
-            if node.id == tree.root {
-                continue;
-            }
-            let parent_fixed = node
-                .parent
-                .is_some_and(|parent| fixed_subtree[parent.index()]);
-            let fixed = parent_fixed || node.style.position == LayoutPosition::Fixed;
-            fixed_subtree[node.id.index()] = fixed;
-            if fixed {
-                continue;
-            }
-            if has_clipping_ancestor(&tree, node.id, None) {
-                continue;
-            }
-            right = right.max(node.boxes.margin.x + node.boxes.margin.w);
-            bottom = bottom.max(node.boxes.margin.y + node.boxes.margin.h);
-        }
-        (
-            (right - viewport.0 as f32).max(0.0),
-            (bottom - viewport.1 as f32).max(0.0),
-        )
-    }
-
     pub(crate) fn document_base_uri(&self) -> String {
         let Some(base) = self
             .query_selector_all("base[href]")
@@ -944,101 +901,6 @@ impl Page {
             return self.url.clone();
         };
         resolve_url_string(&base, &self.url).unwrap_or(base)
-    }
-
-    /// First Vixen-owned layout tree slice: styled DOM projected into an
-    /// arena-backed tree with stable layout-node ids.
-    pub fn layout_tree(&self, viewport: (u32, u32)) -> LayoutTree {
-        let mut tree = build_layout_tree(&self.document, viewport, |node_id| {
-            self.layout_style_for_viewport(node_id, viewport)
-        });
-        let offsets = self
-            .element_scrolls
-            .iter()
-            .filter_map(|(node_id, position)| {
-                let limits = element_scroll_limits_in_tree(&tree, *node_id)?;
-                let position = (
-                    position.0.clamp(0.0, limits.0),
-                    position.1.clamp(0.0, limits.1),
-                );
-                (position != (0.0, 0.0)).then_some((*node_id, position))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
-        apply_element_scrolls(&mut tree, |node_id| offsets.get(&node_id).copied());
-        apply_root_scroll(&mut tree, self.root_scroll);
-        tree
-    }
-
-    /// Deterministic layout-tree dump (`vixen-headless --dump-layout-tree`).
-    pub fn dump_layout_tree(&self, viewport: (u32, u32)) -> String {
-        dump_layout_tree(&self.layout_tree(viewport))
-    }
-
-    /// First executable Phase 4 line slice: the layout tree's visible text
-    /// wrapped into stable line boxes for a viewport.
-    pub fn layout_lines(&self, viewport: (u32, u32)) -> Vec<LineBox> {
-        line_boxes_from_tree(&self.layout_tree(viewport))
-    }
-
-    /// Milestone 2 layout/paint seam: positioned fragments projected from the
-    /// layout tree. The renderer consumes this surface instead of re-walking
-    /// layout nodes directly.
-    pub fn layout_fragments(&self, viewport: (u32, u32)) -> Vec<LayoutFragment> {
-        layout_fragments_from_tree(&self.layout_tree(viewport))
-    }
-
-    /// Text dump for `vixen-headless --dump-lines`.
-    pub fn dump_lines(&self, viewport: (u32, u32)) -> String {
-        dump_line_boxes(&self.layout_lines(viewport), viewport)
-    }
-
-    /// First executable Phase 5 paint slice: convert Page-backed layout
-    /// fragments into the single invariant-enforced display-list command stream.
-    pub fn display_list(&self, viewport: (u32, u32)) -> Vec<PaintCommand> {
-        let viewport_rect = Rect::new(0.0, 0.0, viewport.0 as f32, viewport.1 as f32);
-        let mut builder = DisplayListBuilder::new();
-        builder.push(viewport_background_item(viewport_rect));
-        let tree = self.layout_tree(viewport);
-        let fragments = layout_fragments_from_tree(&tree);
-        if let Some(find) = self.find_state.as_ref()
-            && !find.query.is_empty()
-        {
-            let matches = find_matches_in_tree(&tree, &find.query, find.case_sensitive, |_| false);
-            let active_match = find.active_match.min(matches.len().saturating_sub(1));
-            for (index, found) in matches.into_iter().enumerate() {
-                for highlight in found.highlights {
-                    builder.push(find_highlight_draw_item(highlight, index == active_match));
-                }
-            }
-        }
-        for fragment in fragments {
-            if matches!(fragment.kind, LayoutFragmentKind::Image) {
-                if let Some(image) = fragment
-                    .dom_node_id
-                    .and_then(|node_id| self.raster_images.get(&node_id))
-                {
-                    builder.push(image_draw_item(&fragment, image.clone()));
-                }
-            } else {
-                builder.push(fragment_draw_item(&fragment));
-            }
-        }
-        builder.build()
-    }
-
-    /// Text dump for `vixen-headless --dump-display-list`.
-    pub fn dump_display_list(&self, viewport: (u32, u32)) -> String {
-        dump_paint_commands(&self.display_list(viewport), viewport)
-    }
-
-    /// Aggregate display-list stats for `vixen-headless --paint-stats`.
-    pub fn paint_stats(&self, viewport: (u32, u32)) -> PaintStats {
-        PaintStats::from_commands(&self.display_list(viewport))
-    }
-
-    /// Text dump for `vixen-headless --paint-stats`.
-    pub fn dump_paint_stats(&self, viewport: (u32, u32)) -> String {
-        dump_paint_stats(&self.display_list(viewport), viewport)
     }
 
     /// Coarse page snapshot at a viewport.
@@ -1060,6 +922,7 @@ impl Page {
         document_id: DocumentId,
         viewport: (u32, u32),
         viewport_generation: u64,
+        device_scale: f64,
         page_zoom: f64,
     ) -> Result<FullRenderSnapshot, String> {
         let accessibility = self.accessibility_snapshot(context_id, document_id, viewport);
@@ -1084,7 +947,7 @@ impl Page {
                     )
                     .ok_or_else(|| "DOM node id must be nonzero".to_owned())?;
                     let styles = self
-                        .layout_style_for_viewport(node_id, viewport)
+                        .renderer_style_for_viewport(node_id, self.layout_viewport)
                         .into_iter()
                         .map(|(name, value)| RenderStyleProperty { name, value })
                         .collect::<Vec<_>>();
@@ -1139,7 +1002,9 @@ impl Page {
                         .ok_or_else(|| "renderer text node ids exhausted".to_owned())?;
                     let styles = projected
                         .parent_element_node_id
-                        .map(|parent_id| self.layout_style_for_viewport(parent_id, viewport))
+                        .map(|parent_id| {
+                            self.renderer_style_for_viewport(parent_id, self.layout_viewport)
+                        })
                         .unwrap_or_default()
                         .into_iter()
                         .map(|(name, value)| RenderStyleProperty { name, value })
@@ -1187,6 +1052,41 @@ impl Page {
             .map(|node| node.id)
             .ok_or_else(|| "renderer document has no root element".to_owned())?;
         let generation = self.accessibility_mutation_epoch.max(1);
+        let output_scale = device_scale * page_zoom;
+        let mut scroll_intents = vec![RenderScrollIntent {
+            scroll_node_id: RenderScrollNodeId::new(1).expect("constant scroll id"),
+            node_id: root_id,
+            kind: RenderScrollIntentKind::To(RenderPoint {
+                x: f64::from(self.root_scroll_intent.0) * output_scale,
+                y: f64::from(self.root_scroll_intent.1) * output_scale,
+            }),
+        }];
+        let render_node_ids = nodes
+            .iter()
+            .map(|node| node.id)
+            .collect::<std::collections::HashSet<_>>();
+        let mut element_scrolls = self.element_scrolls.iter().collect::<Vec<_>>();
+        element_scrolls.sort_by_key(|(node_id, _)| **node_id);
+        for (node_id, scroll) in element_scrolls {
+            let Some(intent) = scroll.intent else {
+                continue;
+            };
+            let Some(render_node_id) = u64::try_from(*node_id).ok().and_then(RenderNodeId::new)
+            else {
+                continue;
+            };
+            if !render_node_ids.contains(&render_node_id) {
+                continue;
+            }
+            scroll_intents.push(RenderScrollIntent {
+                scroll_node_id: scroll.scroll_node_id,
+                node_id: render_node_id,
+                kind: RenderScrollIntentKind::To(RenderPoint {
+                    x: f64::from(intent.0) * output_scale,
+                    y: f64::from(intent.1) * output_scale,
+                }),
+            });
+        }
         let snapshot = FullRenderSnapshot {
             version: vixen_api::RENDER_PROTOCOL_VERSION,
             revision: RenderRevision {
@@ -1200,19 +1100,12 @@ impl Page {
             viewport: RenderViewport {
                 width: viewport.0,
                 height: viewport.1,
-                device_scale: 1.0,
+                device_scale,
                 page_zoom,
             },
             nodes,
             resources,
-            scroll_intents: vec![RenderScrollIntent {
-                scroll_node_id: RenderScrollNodeId::new(1).expect("constant scroll id"),
-                node_id: root_id,
-                kind: RenderScrollIntentKind::To(RenderPoint {
-                    x: f64::from(self.root_scroll.0) * page_zoom,
-                    y: f64::from(self.root_scroll.1) * page_zoom,
-                }),
-            }],
+            scroll_intents,
         };
         snapshot.validate().map_err(|error| error.to_string())?;
         Ok(snapshot)
@@ -1226,28 +1119,22 @@ impl Page {
         document_id: DocumentId,
         viewport: (u32, u32),
     ) -> AccessibilitySnapshot {
-        let layout = self.layout_tree(viewport);
-        let bounds = layout
-            .nodes
-            .iter()
-            .filter_map(|node| {
-                node.dom_node_id.map(|node_id| {
-                    (
-                        node_id,
-                        AccessibilityRect {
-                            x: f64::from(node.rect.x),
-                            y: f64::from(node.rect.y),
-                            width: f64::from(node.rect.w),
-                            height: f64::from(node.rect.h),
-                        },
-                    )
-                })
-            })
-            .collect::<std::collections::HashMap<_, _>>();
         let (elements, truncated) = self.document.accessibility_elements(
             ACCESSIBILITY_MAX_NODES,
             ACCESSIBILITY_MAX_STRING_BYTES,
-            |node_id| bounds.contains_key(&node_id),
+            |node_id| {
+                !self
+                    .computed_style_for_viewport(node_id, self.layout_viewport)
+                    .iter()
+                    .any(|(name, value)| {
+                        (name == "display" && value.eq_ignore_ascii_case("none"))
+                            || (name == "visibility"
+                                && matches!(
+                                    value.to_ascii_lowercase().as_str(),
+                                    "hidden" | "collapse"
+                                ))
+                    })
+            },
         );
         let mut nodes = Vec::with_capacity(elements.len());
         for element in elements {
@@ -1314,7 +1201,7 @@ impl Page {
                 text_input_type,
                 text_input_action,
                 range,
-                bbox: bounds.get(&element.node_id).copied(),
+                bbox: None,
                 focused: self.focused_element_node_id == Some(element.node_id),
                 disabled,
                 checked,
@@ -1385,20 +1272,20 @@ impl Page {
         self.query_selector_all_in_viewport(selector, (800, 600))
     }
 
-    /// Query selector facade with layout metadata resolved at `viewport`.
+    /// Query selector facade. Geometry belongs to an exact Flutter commit and
+    /// is attached by rendered CDP/automation callers, not fabricated here.
     pub fn query_selector_all_in_viewport(
         &self,
         selector: &str,
-        viewport: (u32, u32),
+        _viewport: (u32, u32),
     ) -> Result<Vec<ElementInfo>, String> {
         let parsed = Selector::parse(selector).map_err(|e| e.to_string())?;
-        let layout_tree = self.layout_tree(viewport);
         Ok(self
             .document
             .query_all(&parsed)
             .into_iter()
             .map(|m| ElementInfo {
-                bbox: layout_bbox_for_node(&layout_tree, m.node_id),
+                bbox: None,
                 node_id: m.node_id,
                 tag: m.tag,
                 id: m.id,
@@ -1430,7 +1317,7 @@ impl Page {
             .computed_style_for_viewport(&self.document, node_id, viewport)
     }
 
-    fn layout_style_for_viewport(
+    fn renderer_style_for_viewport(
         &self,
         node_id: usize,
         viewport: (u32, u32),
@@ -1525,185 +1412,6 @@ impl PageParser {
             self.csp.clone(),
         )?))
     }
-}
-
-fn element_scroll_limits_in_tree(tree: &LayoutTree, node_id: usize) -> Option<(f32, f32)> {
-    let scrollport = tree
-        .nodes
-        .iter()
-        .find(|node| node.dom_node_id == Some(node_id))?;
-    if !scrollport.style.overflow.programmatically_scrollable() {
-        return Some((0.0, 0.0));
-    }
-
-    let padding = scrollport.boxes.padding;
-    let mut right = padding.x + padding.w;
-    let mut bottom = padding.y + padding.h;
-    for node in &tree.nodes {
-        if node.id == scrollport.id || !is_descendant_of(tree, node.id, scrollport.id) {
-            continue;
-        }
-        if has_clipping_ancestor(tree, node.id, Some(scrollport.id)) {
-            continue;
-        }
-        right = right.max(node.boxes.margin.x + node.boxes.margin.w);
-        bottom = bottom.max(node.boxes.margin.y + node.boxes.margin.h);
-    }
-    Some((
-        (right - (padding.x + padding.w)).max(0.0),
-        (bottom - (padding.y + padding.h)).max(0.0),
-    ))
-}
-
-fn is_descendant_of(tree: &LayoutTree, node_id: LayoutNodeId, ancestor_id: LayoutNodeId) -> bool {
-    let mut parent = tree.node(node_id).parent;
-    while let Some(parent_id) = parent {
-        if parent_id == ancestor_id {
-            return true;
-        }
-        parent = tree.node(parent_id).parent;
-    }
-    false
-}
-
-fn has_clipping_ancestor(
-    tree: &LayoutTree,
-    node_id: LayoutNodeId,
-    stop_at: Option<LayoutNodeId>,
-) -> bool {
-    let mut parent = tree.node(node_id).parent;
-    while let Some(parent_id) = parent {
-        if Some(parent_id) == stop_at {
-            return false;
-        }
-        let parent_node = tree.node(parent_id);
-        if parent_node.style.overflow.clips_contents() {
-            return true;
-        }
-        parent = parent_node.parent;
-    }
-    false
-}
-
-fn viewport_background_item(rect: Rect) -> DrawItem {
-    DrawItem {
-        order: 0,
-        z_index: 0,
-        visibility: crate::display_list::Visibility::Visible,
-        opacity: 1.0,
-        clip: None,
-        is_viewport_background: true,
-        border_box: rect,
-        padding_box: rect,
-        content_box: rect,
-        background_clip: BackgroundBox::BorderBox,
-        background_origin: BackgroundBox::BorderBox,
-        background_attachment: BackgroundAttachment::Scroll,
-        background: Some(Color::WHITE),
-        image: None,
-        text: None,
-    }
-}
-
-fn fragment_draw_item(fragment: &LayoutFragment) -> DrawItem {
-    match &fragment.kind {
-        LayoutFragmentKind::Background { color, boxes } => DrawItem {
-            order: fragment.order,
-            z_index: 0,
-            visibility: crate::display_list::Visibility::Visible,
-            opacity: 1.0,
-            clip: fragment.clip,
-            is_viewport_background: false,
-            border_box: boxes.border,
-            padding_box: boxes.padding,
-            content_box: boxes.content,
-            background_clip: BackgroundBox::BorderBox,
-            background_origin: BackgroundBox::PaddingBox,
-            background_attachment: BackgroundAttachment::Scroll,
-            background: Some(*color),
-            image: None,
-            text: None,
-        },
-        LayoutFragmentKind::Text { color, text } => DrawItem {
-            order: fragment.order,
-            z_index: 0,
-            visibility: crate::display_list::Visibility::Visible,
-            opacity: 1.0,
-            clip: fragment.clip,
-            is_viewport_background: false,
-            border_box: fragment.rect,
-            padding_box: fragment.rect,
-            content_box: fragment.rect,
-            background_clip: BackgroundBox::BorderBox,
-            background_origin: BackgroundBox::ContentBox,
-            background_attachment: BackgroundAttachment::Scroll,
-            background: None,
-            image: None,
-            text: Some(TextRun {
-                color: *color,
-                text: text.clone(),
-            }),
-        },
-        LayoutFragmentKind::Image => unreachable!("image fragments use image_draw_item"),
-    }
-}
-
-fn image_draw_item(fragment: &LayoutFragment, image: RasterImage) -> DrawItem {
-    DrawItem {
-        order: fragment.order,
-        z_index: 0,
-        visibility: crate::display_list::Visibility::Visible,
-        opacity: 1.0,
-        clip: fragment.clip,
-        is_viewport_background: false,
-        border_box: fragment.rect,
-        padding_box: fragment.rect,
-        content_box: fragment.rect,
-        background_clip: BackgroundBox::ContentBox,
-        background_origin: BackgroundBox::ContentBox,
-        background_attachment: BackgroundAttachment::Scroll,
-        background: None,
-        image: Some(image),
-        text: None,
-    }
-}
-
-fn find_highlight_draw_item(found: FindHighlight, active: bool) -> DrawItem {
-    DrawItem {
-        order: found.order,
-        z_index: 0,
-        visibility: crate::display_list::Visibility::Visible,
-        opacity: 1.0,
-        clip: found.clip,
-        is_viewport_background: false,
-        border_box: found.rect,
-        padding_box: found.rect,
-        content_box: found.rect,
-        background_clip: BackgroundBox::BorderBox,
-        background_origin: BackgroundBox::ContentBox,
-        background_attachment: BackgroundAttachment::Scroll,
-        background: Some(if active {
-            Color::rgb(255, 152, 0)
-        } else {
-            Color::rgb(255, 235, 59)
-        }),
-        image: None,
-        text: None,
-    }
-}
-
-fn layout_bbox_for_node(tree: &LayoutTree, node_id: usize) -> Option<(f64, f64, f64, f64)> {
-    tree.nodes
-        .iter()
-        .find(|node| node.dom_node_id == Some(node_id))
-        .map(|node| {
-            (
-                node.rect.x as f64,
-                node.rect.y as f64,
-                node.rect.w as f64,
-                node.rect.h as f64,
-            )
-        })
 }
 
 fn accessibility_role(element: &AccessibilityElement) -> Option<String> {
@@ -1989,159 +1697,6 @@ fn aria_mixed(value: Option<&str>) -> bool {
     value.is_some_and(|value| value.trim().eq_ignore_ascii_case("mixed"))
 }
 
-fn text_match_ranges(haystack: &str, needle: &str, case_sensitive: bool) -> Vec<(usize, usize)> {
-    if needle.is_empty() {
-        return Vec::new();
-    }
-    let (search_haystack, character_map) = if case_sensitive {
-        (
-            haystack.to_owned(),
-            (0..haystack.chars().count()).collect::<Vec<_>>(),
-        )
-    } else {
-        fold_case_with_character_map(haystack)
-    };
-    let search_needle = if case_sensitive {
-        needle.to_owned()
-    } else {
-        needle.to_lowercase()
-    };
-    if search_needle.is_empty() {
-        return Vec::new();
-    }
-    let byte_starts = character_byte_starts(&search_haystack);
-    search_haystack
-        .match_indices(&search_needle)
-        .take(MAX_FIND_MATCHES)
-        .filter_map(|(start, matched)| {
-            let start_index = byte_starts.binary_search(&start).ok()?;
-            let end_index = byte_starts.binary_search(&(start + matched.len())).ok()?;
-            let original_start = *character_map.get(start_index)?;
-            let original_end = character_map.get(end_index.checked_sub(1)?)? + 1;
-            Some((original_start, original_end))
-        })
-        .collect()
-}
-
-fn fold_case_with_character_map(value: &str) -> (String, Vec<usize>) {
-    let mut folded = String::new();
-    let mut map = Vec::new();
-    for (index, character) in value.chars().enumerate() {
-        for folded_character in character.to_lowercase() {
-            folded.push(folded_character);
-            map.push(index);
-        }
-    }
-    (folded, map)
-}
-
-fn character_byte_starts(value: &str) -> Vec<usize> {
-    value
-        .char_indices()
-        .map(|(offset, _)| offset)
-        .chain(std::iter::once(value.len()))
-        .collect()
-}
-
-fn find_matches_in_tree(
-    tree: &LayoutTree,
-    query: &str,
-    case_sensitive: bool,
-    is_fixed: impl Fn(crate::layout_tree::LayoutNodeId) -> bool,
-) -> Vec<FindMatch> {
-    let fragments = layout_fragments_from_tree(tree);
-    let mut fragments_by_node = std::collections::HashMap::<_, Vec<_>>::new();
-    for fragment in &fragments {
-        if matches!(fragment.kind, LayoutFragmentKind::Text { .. }) {
-            fragments_by_node
-                .entry(fragment.node_id)
-                .or_default()
-                .push(fragment);
-        }
-    }
-    let mut matches = Vec::new();
-    for node in &tree.nodes {
-        if node.kind != LayoutNodeKind::Text {
-            continue;
-        }
-        let Some(text) = node.text.as_deref() else {
-            continue;
-        };
-        let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-        let Some(node_fragments) = fragments_by_node.get(&node.id) else {
-            continue;
-        };
-        let line_ranges = find_line_ranges(&normalized, node_fragments);
-        for (match_start, match_end) in text_match_ranges(&normalized, query, case_sensitive) {
-            let mut highlights = Vec::new();
-            for (fragment, line_start, line_end) in &line_ranges {
-                let start = match_start.max(*line_start);
-                let end = match_end.min(*line_end);
-                if start >= end {
-                    continue;
-                }
-                let LayoutFragmentKind::Text { text, .. } = &fragment.kind else {
-                    continue;
-                };
-                let character_width = fragment.rect.w / text.chars().count().max(1) as f32;
-                highlights.push(FindHighlight {
-                    rect: Rect::new(
-                        fragment.rect.x + (start - *line_start) as f32 * character_width,
-                        fragment.rect.y,
-                        ((end - start) as f32 * character_width).max(1.0),
-                        fragment.rect.h,
-                    ),
-                    order: fragment.order,
-                    clip: fragment.clip,
-                });
-                if highlights.len() == MAX_FIND_HIGHLIGHTS_PER_MATCH {
-                    break;
-                }
-            }
-            let Some(first) = highlights.first() else {
-                continue;
-            };
-            matches.push(FindMatch {
-                rect: first.rect,
-                fixed: is_fixed(node.id),
-                highlights,
-            });
-            if matches.len() == MAX_FIND_MATCHES {
-                return matches;
-            }
-        }
-    }
-    matches
-}
-
-fn find_line_ranges<'a>(
-    normalized: &str,
-    fragments: &[&'a LayoutFragment],
-) -> Vec<(&'a LayoutFragment, usize, usize)> {
-    let byte_starts = character_byte_starts(normalized);
-    let mut cursor = 0;
-    let mut ranges = Vec::new();
-    for fragment in fragments {
-        let LayoutFragmentKind::Text { text, .. } = &fragment.kind else {
-            continue;
-        };
-        let Some(relative_start) = normalized[cursor..].find(text) else {
-            continue;
-        };
-        let start_byte = cursor + relative_start;
-        let end_byte = start_byte + text.len();
-        let Ok(start) = byte_starts.binary_search(&start_byte) else {
-            continue;
-        };
-        let Ok(end) = byte_starts.binary_search(&end_byte) else {
-            continue;
-        };
-        ranges.push((*fragment, start, end));
-        cursor = end_byte;
-    }
-    ranges
-}
-
 fn initial_session_history(url: &str) -> SessionHistory {
     SessionHistory::new(HistoryEntry::navigation(url))
 }
@@ -2201,6 +1756,7 @@ mod tests {
                 (320, 240),
                 3,
                 1.0,
+                1.0,
             )
             .unwrap();
         snapshot.validate().unwrap();
@@ -2230,7 +1786,119 @@ mod tests {
     }
 
     #[test]
-    fn accessibility_snapshot_projects_dom_semantics_focus_and_layout() {
+    fn formatter_scroll_state_becomes_bounded_nested_source_intent() {
+        let mut page = Page::from_html(
+            "file:///scroll.html",
+            r#"<!doctype html><style>
+                #scroller { width:120px; height:80px; overflow:auto; }
+                #content { width:280px; height:320px; }
+            </style><div id="scroller"><div id="content"></div></div>"#,
+        )
+        .unwrap();
+        let scroller = page.query_selector_all("#scroller").unwrap()[0].clone();
+        let snapshot = page
+            .render_snapshot(
+                BrowsingContextId::new(1).unwrap(),
+                DocumentId::new(2).unwrap(),
+                (240, 160),
+                1,
+                1.0,
+                1.0,
+            )
+            .unwrap();
+        let root_id = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.parent_id.is_none())
+            .unwrap()
+            .id;
+        let raw_node_id = u64::try_from(scroller.node_id).unwrap();
+        let scroll_node_id = RenderScrollNodeId::new(raw_node_id + 1).unwrap();
+        let commit = RenderCommit {
+            version: vixen_api::RENDER_PROTOCOL_VERSION,
+            commit_id: vixen_api::RenderCommitId::new(1).unwrap(),
+            revision: snapshot.revision,
+            viewport: snapshot.viewport,
+            geometry_index: Vec::new(),
+            hit_test_handle: vixen_api::RenderHitTestHandle::new(1).unwrap(),
+            text_query_handle: vixen_api::RenderTextQueryHandle::new(1).unwrap(),
+            scroll_snapshot: vec![
+                vixen_api::RenderScrollState {
+                    scroll_node_id: RenderScrollNodeId::new(1).unwrap(),
+                    node_id: root_id,
+                    offset: RenderPoint { x: 0.0, y: 0.0 },
+                    max_offset: RenderPoint { x: 0.0, y: 0.0 },
+                    viewport: vixen_api::RenderRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 240.0,
+                        height: 160.0,
+                    },
+                    content_size: vixen_api::RenderSize {
+                        width: 240.0,
+                        height: 160.0,
+                    },
+                },
+                vixen_api::RenderScrollState {
+                    scroll_node_id,
+                    node_id: RenderNodeId::new(raw_node_id).unwrap(),
+                    offset: RenderPoint { x: 0.0, y: 0.0 },
+                    max_offset: RenderPoint { x: 160.0, y: 240.0 },
+                    viewport: vixen_api::RenderRect {
+                        x: 0.0,
+                        y: 0.0,
+                        width: 120.0,
+                        height: 80.0,
+                    },
+                    content_size: vixen_api::RenderSize {
+                        width: 280.0,
+                        height: 320.0,
+                    },
+                },
+            ],
+            semantic_bounds: Vec::new(),
+            truncations: Vec::new(),
+        };
+        page.apply_renderer_scroll(&commit);
+        assert_eq!(
+            page.renderer_source_generation(),
+            snapshot.revision.source_generation
+        );
+        let state = page.element_scroll_state_snapshot().pop().unwrap();
+        assert_eq!(state.node_id, scroller.node_id);
+        assert_eq!(state.max, (160.0, 240.0));
+        assert!(state.user_scrollable);
+
+        assert!(page.set_element_scroll(
+            scroller.node_id,
+            scroller.id.as_deref(),
+            &scroller.tag,
+            (25.0, 45.0),
+        ));
+        let next = page
+            .render_snapshot(
+                BrowsingContextId::new(1).unwrap(),
+                DocumentId::new(2).unwrap(),
+                (240, 160),
+                1,
+                1.0,
+                1.0,
+            )
+            .unwrap();
+        let intent = next
+            .scroll_intents
+            .iter()
+            .find(|intent| intent.scroll_node_id == scroll_node_id)
+            .unwrap();
+        assert_eq!(intent.node_id.get(), raw_node_id);
+        assert_eq!(
+            intent.kind,
+            RenderScrollIntentKind::To(RenderPoint { x: 25.0, y: 45.0 })
+        );
+    }
+
+    #[test]
+    fn accessibility_snapshot_projects_dom_semantics_and_focus() {
         let mut page = Page::from_html(
             "file:///accessibility.html",
             r#"<!doctype html>
@@ -2272,10 +1940,7 @@ mod tests {
         assert_eq!(button.expanded, Some(true));
         assert!(!button.focusable);
         assert!(button.actions.is_empty());
-        let bounds = button.bbox.unwrap();
-        assert_eq!(bounds.x, 0.0);
-        assert_eq!(bounds.width, 120.0);
-        assert_eq!(bounds.height, 24.0);
+        assert!(button.bbox.is_none());
 
         let checkbox = snapshot
             .nodes
@@ -3072,104 +2737,25 @@ mod tests {
         assert_eq!(page.find_text_count("hidden", false), 0);
         assert_eq!(page.find_text_count("", false), 0);
 
-        let viewport = (200, 100);
-        let first = page.find_text("Rust", true, true, viewport);
+        let first = page.find_text("Rust", true, true);
         assert_eq!(first.matches, 2);
         assert_eq!(first.active_match, Some(1));
-        let first_scroll = page.root_scroll();
 
-        let second = page.find_text("Rust", true, true, viewport);
+        let second = page.find_text("Rust", true, true);
         assert_eq!(second.active_match, Some(2));
-        let second_scroll = page.root_scroll().1;
-        assert!(second_scroll > first_scroll.1);
 
-        let wrapped = page.find_text("Rust", true, true, viewport);
+        let wrapped = page.find_text("Rust", true, true);
         assert_eq!(wrapped.active_match, Some(1));
-        let wrapped_scroll = page.root_scroll();
-        assert!(wrapped_scroll.1 < second_scroll);
 
-        let reversed = page.find_text("Rust", true, false, viewport);
+        let reversed = page.find_text("Rust", true, false);
         assert_eq!(reversed.active_match, Some(2));
-        assert!(page.root_scroll().1 > wrapped_scroll.1);
 
         assert_eq!(
-            page.find_text("", false, true, viewport),
+            page.find_text("", false, true),
             FindTextResult {
                 matches: 0,
                 active_match: None,
             }
-        );
-    }
-
-    #[test]
-    fn find_highlights_all_visible_matches_and_distinguishes_active_match() {
-        let mut page = Page::from_html(
-            "file:///find.html",
-            "<style>body{margin:0}</style><p>Rust rust</p>",
-        )
-        .unwrap();
-        let viewport = (300, 100);
-        let active_color = Color::rgb(255, 152, 0);
-        let other_color = Color::rgb(255, 235, 59);
-        let highlight_rects = |page: &Page| {
-            page.display_list(viewport)
-                .into_iter()
-                .filter_map(|command| match command {
-                    PaintCommand::Background { fill, color, .. }
-                        if color == active_color || color == other_color =>
-                    {
-                        Some((fill, color))
-                    }
-                    _ => None,
-                })
-                .collect::<Vec<_>>()
-        };
-
-        assert_eq!(
-            page.find_text("rust", false, true, viewport).active_match,
-            Some(1)
-        );
-        let first = highlight_rects(&page);
-        assert_eq!(first.len(), 2);
-        assert_eq!(first[0].1, active_color);
-        assert_eq!(first[1].1, other_color);
-        assert_eq!(first[0].0.w, 32.0);
-        assert!(first[0].0.x < first[1].0.x);
-
-        assert_eq!(
-            page.find_text("rust", false, true, viewport).active_match,
-            Some(2)
-        );
-        let second = highlight_rects(&page);
-        assert_eq!(second[0].1, other_color);
-        assert_eq!(second[1].1, active_color);
-
-        page.find_text("", false, true, viewport);
-        assert!(highlight_rects(&page).is_empty());
-
-        let mut wrapped = Page::from_html(
-            "file:///wrapped-find.html",
-            "<style>body{margin:0}</style><p>alpha beta</p>",
-        )
-        .unwrap();
-        let narrow_viewport = (60, 100);
-        assert_eq!(
-            wrapped.find_text("alpha beta", false, true, narrow_viewport),
-            FindTextResult {
-                matches: 1,
-                active_match: Some(1),
-            }
-        );
-        assert_eq!(
-            wrapped
-                .display_list(narrow_viewport)
-                .into_iter()
-                .filter(|command| matches!(
-                    command,
-                    PaintCommand::Background { color, .. } if *color == active_color
-                ))
-                .count(),
-            2
         );
     }
 
@@ -3185,117 +2771,6 @@ mod tests {
         assert_eq!(matches[0].id.as_deref(), Some("a"));
         assert_eq!(matches[0].tag, "p");
         assert!(page.query_selector_all("p >").is_err());
-    }
-
-    #[test]
-    fn selector_bboxes_use_requested_viewport() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<style>body { margin: 0; } #wide { height: 10px; }</style><div id='wide'>x</div>",
-        )
-        .unwrap();
-
-        let narrow = page
-            .query_selector_all_in_viewport("#wide", (200, 100))
-            .unwrap();
-        let wide = page
-            .query_selector_all_in_viewport("#wide", (400, 100))
-            .unwrap();
-
-        assert_eq!(narrow[0].bbox.unwrap().2, 200.0);
-        assert_eq!(wide[0].bbox.unwrap().2, 400.0);
-    }
-
-    #[test]
-    fn root_scroll_is_bounded_and_moves_document_but_not_fixed_content() {
-        let mut page = Page::from_html(
-            "file:///scroll.html",
-            "<style>body{margin:0}#spacer{height:600px}#fixed{position:fixed;top:4px;height:20px}</style><div id='spacer'>Top</div><button id='bottom'>Bottom</button><div id='fixed'>Fixed</div>",
-        )
-        .unwrap();
-        let viewport = (200, 100);
-        let before_bottom = page
-            .query_selector_all_in_viewport("#bottom", viewport)
-            .unwrap()[0]
-            .bbox
-            .unwrap();
-        let before_fixed = page
-            .query_selector_all_in_viewport("#fixed", viewport)
-            .unwrap()[0]
-            .bbox
-            .unwrap();
-
-        assert!(page.scroll_root_by(viewport, (0.0, 250.0)));
-        assert_eq!(page.root_scroll(), (0.0, 250.0));
-        let after_bottom = page
-            .query_selector_all_in_viewport("#bottom", viewport)
-            .unwrap()[0]
-            .bbox
-            .unwrap();
-        let after_fixed = page
-            .query_selector_all_in_viewport("#fixed", viewport)
-            .unwrap()[0]
-            .bbox
-            .unwrap();
-        assert_eq!(after_bottom.1, before_bottom.1 - 250.0);
-        assert_eq!(after_fixed, before_fixed);
-
-        assert!(page.scroll_root_by(viewport, (0.0, f64::MAX)));
-        let bottom_limit = page.root_scroll().1;
-        assert!(bottom_limit > 250.0);
-        assert!(!page.scroll_root_by(viewport, (0.0, f64::MAX)));
-        assert!(!page.scroll_root_by(viewport, (0.0, f64::NAN)));
-    }
-
-    #[test]
-    fn nested_scroll_is_bounded_moves_content_and_does_not_expand_root() {
-        let mut page = Page::from_html(
-            "file:///nested-scroll.html",
-            r#"
-                <style>
-                  html, body { margin: 0; }
-                  #scroll { width: 100px; height: 60px; overflow: auto; }
-                  #content { height: 220px; }
-                </style>
-                <div id="scroll"><div id="content">Scrollable</div></div>
-            "#,
-        )
-        .unwrap();
-        let viewport = (300, 200);
-        page.set_layout_viewport(viewport);
-        let scroll_id = page.query_selector_all("#scroll").unwrap()[0].node_id;
-        let before = page.query_selector_all("#content").unwrap()[0]
-            .bbox
-            .unwrap();
-        let metrics = page.element_scroll_metrics(scroll_id).unwrap();
-        assert_eq!(metrics.position, (0.0, 0.0));
-        assert_eq!(metrics.max.0, 0.0);
-        assert!(metrics.max.1 >= 160.0, "{metrics:?}");
-        assert!(metrics.user_scrollable);
-        assert_eq!(page.root_scroll_max(), (0.0, 0.0));
-
-        assert!(page.scroll_element_to(scroll_id, (0.0, 45.0)));
-        assert_eq!(
-            page.element_scroll_metrics(scroll_id).unwrap().position,
-            (0.0, 45.0)
-        );
-        let tree = page.layout_tree(viewport);
-        let content = tree
-            .nodes
-            .iter()
-            .find(|node| {
-                node.dom_node_id == Some(page.query_selector_all("#content").unwrap()[0].node_id)
-            })
-            .unwrap();
-        assert_eq!(content.rect.y as f64, before.1 - 45.0);
-
-        assert!(page.scroll_element_to(scroll_id, (0.0, f64::MAX)));
-        assert_eq!(
-            page.element_scroll_metrics(scroll_id).unwrap().position.1,
-            metrics.max.1
-        );
-        assert!(!page.scroll_element_to(scroll_id, (0.0, f64::MAX)));
-        assert!(!page.scroll_element_to(scroll_id, (0.0, f64::NAN)));
     }
 
     #[test]
@@ -3403,148 +2878,6 @@ mod tests {
             style_value(&page.computed_style(node_id), "color"),
             Some("red")
         );
-    }
-
-    #[test]
-    fn dump_lines_wraps_body_text_and_excludes_title() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<html><head><title>Hidden title</title></head><body><p>one two three four</p></body></html>",
-        )
-        .unwrap();
-        let dump = page.dump_lines((56, 200));
-        assert!(dump.contains("# line-boxes viewport=56x200 count=4"));
-        assert!(dump.contains("line 1:"));
-        assert!(dump.contains("text=\"one\""));
-        assert!(!dump.contains("Hidden title"));
-    }
-
-    #[test]
-    fn dump_layout_tree_runs_behind_page_facade() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<style>#drop { display: none }</style><main id='root'><p>Keep</p><p id='drop'>Drop</p></main>",
-        )
-        .unwrap();
-        let dump = page.dump_layout_tree((120, 200));
-        assert!(dump.contains("# layout-tree viewport=120x200"));
-        assert!(dump.contains("tag=main id=root"));
-        assert!(dump.contains("text=\"Keep\""));
-        assert!(!dump.contains("Drop"));
-        assert!(!dump.contains("id=drop"));
-    }
-
-    #[test]
-    fn layout_tree_consumes_author_box_model_styles() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<style>#box { width: 40px; height: 20px; padding: 5px; border-width: 2px; }</style><div id='box'>x</div>",
-        )
-        .unwrap();
-        let tree = page.layout_tree((120, 200));
-        let node = tree
-            .nodes
-            .iter()
-            .find(|node| node.html_id.as_deref() == Some("box"))
-            .unwrap();
-        assert_eq!(node.rect, Rect::new(8.0, 8.0, 54.0, 34.0));
-        assert_eq!(node.boxes.content, Rect::new(15.0, 15.0, 40.0, 20.0));
-    }
-
-    #[test]
-    fn dump_display_list_builds_background_and_text_commands() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<html><head><title>Hidden title</title></head><body><p>one two three four</p></body></html>",
-        )
-        .unwrap();
-        let dump = page.dump_display_list((56, 200));
-        assert!(dump.contains("# display-list viewport=56x200 count=5"));
-        assert!(dump.contains("cmd 0: background x=0.0 y=0.0 w=56.0 h=200.0"));
-        assert!(dump.contains("cmd 1: text"));
-        assert!(dump.contains("text=\"one\""));
-        assert!(dump.contains("text=\"four\""));
-        assert!(!dump.contains("Hidden title"));
-    }
-
-    #[test]
-    fn layout_fragments_split_wrapped_text_for_paint() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<style>body { margin: 0; } #wrap { width: 40px; }</style><div id='wrap'>alpha beta gamma</div>",
-        )
-        .unwrap();
-        let fragments = page.layout_fragments((120, 80));
-        let texts: Vec<_> = fragments
-            .iter()
-            .filter_map(|fragment| match &fragment.kind {
-                LayoutFragmentKind::Text { text, .. } => Some((text.as_str(), fragment.rect.y)),
-                LayoutFragmentKind::Background { .. } | LayoutFragmentKind::Image => None,
-            })
-            .collect();
-        assert_eq!(texts, vec![("alpha", 0.0), ("beta", 19.2), ("gamma", 38.4)]);
-    }
-
-    #[test]
-    fn display_list_uses_layout_tree_boxes_and_author_colours() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<style>#box { width: 40px; height: 20px; padding: 5px; border-width: 2px; background-color: #3366ff; color: white; }</style><div id='box'>Hi</div>",
-        )
-        .unwrap();
-        let dump = page.dump_display_list((120, 200));
-        assert!(dump.contains("cmd 1: background x=8.0 y=8.0 w=54.0 h=34.0 color=#3366ffff"));
-        assert!(dump.contains("cmd 2: text x=15.0 y=15.0"));
-        assert!(dump.contains("color=#ffffffff text=\"Hi\""));
-    }
-
-    #[test]
-    fn display_list_inherits_text_colour_and_currentcolor_background() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<style>body { margin: 0; } #parent { color: #123456; } #child { background-color: currentcolor; }</style><div id='parent'><span>Nested</span><div id='child'>Box</div></div>",
-        )
-        .unwrap();
-        let dump = page.dump_display_list((120, 200));
-        assert!(dump.contains("color=#123456ff text=\"Nested\""));
-        assert!(
-            dump.lines()
-                .any(|line| line.contains("background") && line.contains("color=#123456ff")),
-            "expected an inherited currentcolor background in:\n{dump}"
-        );
-        assert!(dump.contains("color=#123456ff text=\"Box\""));
-    }
-
-    #[test]
-    fn display_list_clips_descendants_to_overflow_scrollport() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<style>body { margin: 0; } #clip { width: 40px; height: 10px; overflow: hidden; }</style><div id='clip'>Overflowing text</div>",
-        )
-        .unwrap();
-        let dump = page.dump_display_list((120, 80));
-        assert!(
-            dump.contains("cmd 1: text x=0.0 y=0.0 w=40.0 h=10.0"),
-            "{dump}"
-        );
-        assert!(dump.contains("text=\"Overf\""));
-        assert!(!dump.contains("text=\"lowin\""));
-    }
-
-    #[test]
-    fn paint_stats_summarise_display_list() {
-        let page = Page::from_html(
-            "file:///fixture.html",
-            "<html><head><title>Hidden title</title></head><body><p>one two</p></body></html>",
-        )
-        .unwrap();
-        let stats = page.paint_stats((56, 200));
-        assert_eq!(stats.backgrounds, 1);
-        assert_eq!(stats.text_runs, 2);
-        assert_eq!(stats.commands, 3);
-        let dump = page.dump_paint_stats((56, 200));
-        assert!(dump.contains("# paint-stats viewport=56x200 commands=3"));
-        assert!(dump.contains("text-runs=2"));
     }
 
     fn style_value<'a>(styles: &'a [(String, String)], property: &str) -> Option<&'a str> {

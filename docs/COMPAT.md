@@ -2,10 +2,10 @@
 
 This is the honest v1.0 target matrix. It is not a claim of full Firefox or full
 WPT compatibility. Vixen delegates focused parser, cascade, runtime, and native
-rendering primitives where that improves correctness and size. The measured
-fixture baseline now uses Flutter-owned formatting/geometry/scenes; normal GUI
-browsing still retains the transitional Rust layout/WebRender frame fallback
-until R7. Every supported CSS semantic remains fixture/WPT-gated.
+rendering primitives where that improves correctness and size. All measured
+rendered compatibility now uses Flutter-owned formatting, geometry, semantics,
+and scenes. R7 deleted the native/Rust renderer path. Every supported CSS
+semantic remains fixture/WPT-gated.
 
 ---
 
@@ -148,25 +148,23 @@ global/storage persistence across `Runtime.evaluate`, focused `document`/`Elemen
 snapshot host-object evals, and read-only `DOMTokenList`/`DOMStringMap` property
 reads are also exercised directly through the persistent `deno_core` runtime seam.
 
-Static parser-discovered PNG `<img src>` now has one real resource-to-pixel
-vertical. BrowserCore applies exact document/runtime/navigation generations,
-URL/CSP/mixed-content/redirect policy, cookies/cache, successful `image/png`
-response policy, and explicit compressed/dimension/decoded limits before the
-decoded RGBA8 enters Page layout and the one display list. A 2×2 four-colour
-fixture proves the exact source pixels in a BrowserCore paint snapshot, a
-headless EGL PNG, and the Flutter FFI RGBA frame path. This does not yet claim
-dynamic image loading, `srcset`/`picture` selection, animated PNG, JPEG/WebP/GIF,
-SVG image documents, broad intrinsic replaced-element sizing, or image events.
+Static parser-discovered PNG `<img src>` has one resource-to-pixel vertical.
+BrowserCore applies exact generations, URL/CSP/mixed-content/redirect policy,
+cookies/cache, response MIME/status, and compressed/dimension/decoded limits
+before exposing accepted bytes to Flutter. A 2×2 four-colour fixture proves exact
+Flutter scene pixels. This does not yet claim dynamic image loading, complete
+`srcset`/`picture`, animated PNG, JPEG/WebP/GIF, SVG image documents, broad
+intrinsic replaced-element sizing, or image events.
 Runtime platform smoke now additionally covers secure `crypto.getRandomValues()` /
 `randomUUID()`, async Clipboard text and `ClipboardItem` shape, `MessageEvent`,
 `MessageChannel`, `BroadcastChannel`, first-callback `IntersectionObserver` /
 `ResizeObserver` geometry, and a fail-closed `WebSocket` close path. Imported
 smoke fixtures now also seed
-block/inline/position layout, flexbox, grid, and display-list `ref-equivalent`
-paint; imported layout smoke covers auto margins, border-box sizing, inline
+block/inline/position layout, flexbox, grid, and Flutter-scene
+`ref-equivalent` paint; imported layout smoke covers auto margins, border-box sizing, inline
 flow, flex reverse/gaps, and grid `minmax()`/fractional row/gap cases. Imported
 paint smoke now covers currentcolor, overflow clipping, positioned boxes,
-flex/grid backgrounds, and nested background/text display-list equivalence.
+flex/grid backgrounds, and nested background/text scene equivalence.
 
 ---
 
@@ -209,8 +207,7 @@ preflight connections close before sending a response. Runtime construction and
 other local native host calls remain open. Parser-discovered non-alternate
 `<link rel="stylesheet">` now uses the same cancellable bounded text-resource
 worker before author scripts. Relative file and HTTP(S) sheets apply in document
-order to Page cascade/layout/paint and refreshed runtime computed-style/geometry
-hosts. Redirect hops recheck `style-src`, mixed-content, and URL policy; accepted
+order to Page cascade/renderer source and refreshed runtime computed-style hosts. Redirect hops recheck `style-src`, mixed-content, and URL policy; accepted
 HTTP responses pass status/`nosniff` checks before cookie, bounded profile-cache,
 or style commit. A checked-in file fixture proves visible red 120×40 output, and
 gated HTTP/supersede tests prove request-id events and rejection of late cookie,
@@ -223,225 +220,32 @@ HTTP download manager or Playwright context-tracing archive implementation.
 
 ## Current Flutter shell smoke baseline
 
-Flutter is the sole rendered frontend target. `just gate-flutter-shell` covers
-its BrowserCore controller, tabs, input, texture, and Semantics seams;
-`just linux-release-smoke` covers the exact release archive under native
-Wayland. `just linux-interaction-smoke` separately drives that release bundle
-through Cage's virtual-keyboard and wlr virtual-pointer protocols, with GTK/IBus
-preedit/commit, physical chrome navigation controls, history/reload scroll
-restoration, active stop/recovery, and native nested-wheel evidence. The same
-gate now observes the production Flutter vertical's presented commit diagnostics:
-accepted script/root-wheel offsets advance exact commit ids, canceled wheel keeps
-the offset unchanged, and DOM `scroll` status agrees with the returned commit.
-These are integration gates rather than WPT surfaces.
+The Linux shell uses one BrowserCore and one Flutter renderer under native
+Wayland. Normal GUI, page-only automation, rendered CDP, Playwright, and the
+fixture manifest share the same formatter/commit/painter implementation.
 
-`just linux-automation-smoke` proves the bounded one-shot R5 chrome-less path.
-The same release executable runs a page-only Flutter composition under Cage,
-suppresses the transitional frame/accessibility captures, acknowledges one exact
-formatter commit, and writes direct scene PNGs at 320×240 and 480×300. The gate
-checks Impeller, strict PNG structure/dimensions, root scene pixels, pinned
-full-scene hashes, and bounded process exit; direct formatter-scene serialization
-excludes browser/runner/compositor chrome by construction. `just
-flutter-cdp-playwright-smoke` additionally proves in-host CDP screenshots,
-Flutter geometry/hit-tested input, two independent target viewports,
-before/after mutation, and forced renderer reset/full resync. `just
-flutter-fixture-manifest` runs all 270 fixtures and 2,027 checks in manifest order
-through one long-lived Flutter-owned BrowserCore: 1,887 document/runtime checks
-use typed BrowserCore inspection and all 104 layout boxes, 25 visual hashes, and
-11 reference comparisons use exact Flutter commits. Together these complete R5.
+Current evidence covers exact source revisions, full resync and mutation batches,
+block/inline/flex/grid formatting, Paragraph geometry, accepted PNG resources,
+commit-bound hit testing, pointer/key/text input, semantic actions and bounds,
+root scroll commits, scene PNGs at multiple viewports, renderer reset/recovery,
+and same-task element/Range/caret CSSOM geometry. Hidden/stale/missing commits
+fail closed with no native pixel fallback.
 
-R6 adds synchronous page-script geometry to that same commit authority. A
-same-task DOM/style mutation flushes Page/cascade state, publishes an exact
-mutation batch, and returns `getBoundingClientRect()`, Range boxes, and collapsed
-caret geometry from the matching Flutter commit/Paragraph query handle. Repeated
-basic reads reuse the accepted commit. This is focused renderer-transition
-evidence, not a claim that unsupported layout or Range semantics became complete.
+The C ABI has no frame descriptor or raw coordinate input. Pointer commands must
+carry an exact displayed-commit query and optional Flutter hit target. BrowserCore
+accessibility snapshots carry semantic meaning but no fabricated layout bounds;
+Flutter commits supply displayed semantic geometry.
 
-The Flutter semantics projection additionally carries bounded `aria-controls`,
-`aria-describedby`, and `aria-details` relationships to retained semantic nodes.
-Descriptions resolve bounded referenced text (including hidden referenced
-content), then `aria-description`, then an unused `title`, and map to Flutter's
-semantic hint. Native range min/max/current/step state and enabled
-`input[type=range]` increase/decrease actions execute through the same
-generation-checked BrowserCore/runtime path as focus and set-value. This is
-widget/native-bridge evidence. Authored `slider`/`spinbutton` roles with a finite
-`aria-valuenow` expose bounded min/max/current state and optional
-`aria-valuetext`; increase/decrease dispatch the orientation-appropriate
-`keydown` to the exact live target so the author remains responsible for
-updating ARIA state. This is not native AT or broad ARIA support.
+`fixtures/manifest.json` keeps source and rendered assertions together. Native
+WPT runs source/runtime checks only. Renderer-dependent JavaScript is tagged
+`flutter-js-eval`; `layout-box`, `visual-hash`, and `ref-equivalent` are also
+Flutter-only. `just flutter-fixture-manifest` remains the complete rendered
+compatibility measurement.
 
-Explicit `aria-live="polite"`/`"assertive"` and the implicit `alert`, `log`,
-`marquee`, `status`, and `timer` roles map to Flutter live regions; explicit
-`aria-live="off"` disables the implicit mapping. Runtime-effect events for the
-active context force a fresh generation-paired frame and full semantics
-snapshot, so same-document live mutations are not suppressed by the normal
-same-key capture coalescing. This is event-driven full-projection refresh, not a
-delta protocol or native assistive-technology proof.
-
-Focused writable native text inputs, textareas, and direct contenteditable
-editing hosts project the live runtime's bounded UTF-16 selection base/extent
-through BrowserCore and ABI v1 into Flutter's semantics configuration. Selection
-changes participate in the source generation, while unfocused controls and
-authored ARIA-only textboxes do not fabricate caret state. General document-
-range selection remains outside this slice.
-
-Those native controls and contenteditable hosts also attach Flutter's platform
-text-input client. Each update carries a value capped at 16 KiB plus selection
-and optional composing ranges in UTF-16 units through exact context/document/
-runtime ids. BrowserCore validates every range against the value, applies it to
-the live focused editing host, and emits composition-shaped events plus
-cancelable `beforeinput` and `input`; stale or non-writable targets fail closed.
-Widget/wire tests cover the shared transport, and BrowserCore tests cover native
-non-ASCII plus contenteditable surrogate-pair composition. The release-process
-interaction smoke uses IBus Anthy through Flutter's real Linux text-input client
-for native and contenteditable preedit/commit; broader desktop-IME/language
-coverage remains open. BrowserCore normalizes all standard
-`inputmode` values plus supported native input types into bounded keyboard
-intent and all standard `enterkeyhint` values into action intent. Flutter maps
-those values to its none/text/multiline/numeric/decimal/telephone/email/URL/search
-keyboard configurations and Newline/Done/Go/Next/Previous/Search/Send actions.
-`performAction` dispatches Enter down/up through the existing exact-generation
-key path; invalid or absent hints retain the multiline/search/single-line
-defaults.
-
-Top-level script scrolling now shares the Page-owned offset used by wheel/key
-defaults, paint, hit testing, find, and Semantics. The live runtime exposes
-numeric and options-object `scroll()`/`scrollTo()`/`scrollBy()`, synchronized
-`scrollX`/`scrollY` and `pageXOffset`/`pageYOffset`, and root/body
-`scrollTop`/`scrollLeft`; BrowserCore refreshes the CSS viewport and clamps the
-offset to current layout overflow on host-view and page-zoom changes. Actual
-top-level changes from script, uncanceled input defaults, find traversal,
-viewport changes, and zoom changes emit one non-cancelable bubbling document
-`scroll` event, coalesced after the current script evaluation, with synchronized
-offsets; document and window listeners observe the new value. Canceled defaults
-and clamped no-ops stay silent, and recursive synchronous dispatch is
-suppressed. Nested `auto`/`scroll` element offsets are now Page-owned and shared
-by paint, clipped hit testing, accessibility geometry, script-visible
-`scrollTop`/`scrollLeft`, and `scroll()`/`scrollTo()`/`scrollBy()`. Element scroll
-events are non-bubbling, non-cancelable, and coalesced; uncanceled wheel input
-prefers the nearest scrollport, chains unconsumed deltas through ancestors/root,
-and `scrollIntoView()` drives the same nested offsets for CDP/Playwright.
-BrowserCore captures the root and up to 1,024 document-identified nested offsets
-in each current history entry. Reload and cross-document back/forward restore
-that state after layout clamping when `history.scrollRestoration` is `auto`;
-`manual` leaves a newly loaded document at zero, and the live history/window/
-element state is resynchronized. Smooth scrolling, axis-specific overflow
-behavior, DOM touch/pointer events, inertia/multi-touch gestures, restoration
-scroll-event ordering, and BFCache-style document preservation are not claimed.
-Flutter single-touch drags cross platform touch slop, cancel the pending
-synthetic press, and reuse the cancelable physical-delta wheel path.
-
-Bounded `aria-owns` references now reparent only retained later semantic nodes;
-the first valid owner wins, parent-before-child ordering remains enforced, and
-cycles/backward ownership are ignored. Native `h1`–`h6` and valid authored
-`aria-level="1"`–`"6"` map to Flutter heading levels. `aria-checked="mixed"`
-maps to Flutter's tri-state semantics rather than being discarded as an invalid
-boolean.
-
-The Flutter coordinator stages a refreshed frame and semantics snapshot under
-one projection generation and publishes both atomically. Node reconciliation
-keys include context/document/node identity plus bounded semantic content, but
-not the whole-snapshot generation, so unchanged nodes retain platform identity
-while changed nodes are replaced. BrowserCore and the ABI still send a bounded
-full authoritative snapshot; wire-level semantic deltas are an optimization,
-not required state ownership.
-
-`just linux-at-spi-smoke` launches the real release/AOT Flutter bundle in Cage's
-headless Wayland compositor with a fresh BrowserCore profile and
-`fixtures/dom/basic.html`, then filters the native AT-SPI tree by the launched
-process and requires the BrowserCore-derived `DOM Basic` heading. This is
-concrete Linux native-bridge evidence, not a screen-reader interaction matrix or
-evidence for non-Linux accessibility backends. The Linux GUI rejects X11 and
-XWayland at startup.
-
-`just linux-interaction-smoke` uses AT-SPI only to locate and observe the
-release-process controls. Focus/click, IBus composition, and scrolling enter via
-Wayland virtual keyboard/pointer protocols; the test does not use AT-SPI
-`setText` or direct BrowserCore input commands. It requires composition
-start/update/end for both a native input and direct contenteditable host, proves
-an uncanceled wheel selects the nested scrollport, verifies authored
-`preventDefault()` leaves both offsets unchanged, and proves unconsumed wheel
-delta chains to the root at the inner boundary. The same process starts on one
-controlled page, physically focuses the address field and enters the interaction
-fixture, then uses native back/forward and reload controls while checking that
-the root and nested offsets restore. A FIFO-backed file navigation remains
-active until the visible stop control cancels it; the prior scrolled page must
-become visible again. This is controlled local-file evidence, not a real-site or
-host-network corridor.
-
-Flutter also sends one monotonic BrowserCore-owned host-view state for content
-focus, visibility, effective scale, and application lifecycle. Current documents
-expose the accepted state through `document.hasFocus()`, `hidden`, and
-`visibilityState`, dispatch focus/blur and `visibilitychange`, and reject input
-while inactive. Flutter now derives one bounded logical/physical viewport
-transform; BrowserCore uses its effective scale for the CSS viewport and runtime
-`devicePixelRatio`, then applies the same physical projection to paint, hit
-testing, pointer/wheel input, and accessibility bounds. Widget and BrowserCore
-tests prove the 2.0-scale path.
-
-The Flutter coordinator now retries a failing current-generation BrowserCore
-frame or Semantics capture twice while preserving the exact context/document/
-viewport/projection keys. The texture presenter also disposes and recreates its
-controller after a failed create/publish, with two retries per frame; exhaustion
-shows a recovery-failed placeholder rather than looping, and a newer frame gets
-a fresh bounded attempt. Deterministic fake-controller/widget tests prove this
-policy. The presenter now also consumes Flutter lifecycle directly: hidden,
-paused, and detached states invalidate the controller epoch, clear pending and
-visible frames, and queue texture disposal behind an in-flight publish;
-resumed/inactive presentation waits for that release before recreation. A
-deterministic blocked-publish fault proves the old generation remains invisible,
-then injects one texture loss into the newer post-resume frame and proves it is
-visible after one bounded recreation. Real compositor loss/GPU reset and
-process-recreation evidence remain open.
-
-The first interactive root-scrolling slice is BrowserCore-owned. Flutter scales
-wheel deltas into the physical frame coordinate space; the live runtime receives
-a cancelable `wheel` event; and only an uncanceled default action updates the
-bounded Page scroll offset. Unmodified Arrow, Page Up/Down, Home/End, and Space
-keydown defaults use the same CSS viewport and offset, including page zoom;
-`preventDefault()` blocks the scroll and focused native/editing controls retain
-their own key handling. The same translated layout projection drives WebRender
-paint, hit testing, selector/accessibility bounds, while fixed-position subtrees
-remain viewport anchored. A single Flutter touch drag crosses platform touch
-slop, cancels the pending synthetic press, and feeds physical deltas into that
-same cancelable root path; taps remain clicks and secondary touches are ignored.
-Nested scroll containers, element scroll events, and bounded history restoration
-use the shared Page-owned offsets described above. DOM touch/pointer-event
-fidelity, inertia/multi-touch, smooth scrolling, and restoration-event ordering
-remain open. Top-level scroll events and script `scrollTo`/`scrollBy` use the
-shared offset as described above.
-
-Flutter Ctrl+F sends a UTF-8-byte-bounded query with the exact active context and
-document generation through ABI v1. BrowserCore derives up to 10,000
-non-overlapping matches from rendered Page text nodes, excluding hidden,
-`display:none`, and title/head content. Enter/F3 and the Previous/Next controls
-advance or reverse with wrapping; Page owns the one-based active match and moves
-the same clamped root offset used by paint, hit testing, and Semantics just enough
-to reveal it. Soft-wrapped phrases remain one logical match while each intersected
-text run receives a highlight. The generation-checked result is exposed through a live region and
-forces a paired frame/Semantics refresh after traversal. Empty queries clear the
-active match; stale documents and queries above 4 KiB fail closed. Range-sized
-highlights are inserted before text in the one display list (orange
-for the active match, yellow for other matches). Their horizontal geometry uses
-the current deterministic text-run metrics; shaped-glyph precision follows the
-font-shaping milestone rather than creating a second find paint path.
-
-Page zoom is BrowserCore-owned per top-level context and bounded to 25–500%.
-Ctrl++/Ctrl+-/Ctrl+0 and menu actions send zoom intent through ABI v1; the core
-derives the CSS layout viewport from the physical frame, scales the same display
-list into that frame, maps physical hit-test/wheel coordinates back to CSS
-pixels, and scales accessibility bounds into the displayed coordinate space.
-Zoom survives document navigation in the context but is not yet persisted in
-the profile session. Text shaping quality, advanced scroll behavior,
-and native surface-loss evidence remain separate gaps.
-
-Legacy GUI paragraphs above that name display lists, WebRender frames, or RGBA
-textures describe the frozen transitional path. R5 rendered fixture/CDP evidence
-and R6 synchronous geometry already name atomic Flutter commits. R7 removes the
-display-list, deterministic-metric, EGL, frame, and texture implementation checks
-rather than counting both paths.
-
----
+Known shell gaps remain broader device/IME/AT matrices, non-Linux production
+runners, full CSS and text shaping breadth, advanced nested/smooth scrolling,
+GPU/compositor recovery on physical systems, process isolation, performance/size
+budgets, packaging, and sustained release evidence.
 
 ## WPT target profile
 

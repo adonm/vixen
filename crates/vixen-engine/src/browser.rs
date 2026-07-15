@@ -1166,6 +1166,7 @@ impl BrowserCore {
                     context.render_view.set(RenderViewState {
                         viewport: context.host_view.viewport,
                         viewport_generation: context.host_view.generation.max(1),
+                        device_scale: context.host_view.scale_factor,
                         page_zoom: zoom,
                     });
                     (
@@ -1285,45 +1286,12 @@ impl BrowserCore {
                         "find query exceeds the browser limit",
                     ));
                 }
-                let (result, scroll_sync) = {
+                let result = {
                     let context = self.context_for_document_mut(context_id, document_id)?;
-                    let viewport = page_layout_viewport(
-                        context.host_view.viewport,
-                        context.host_view.scale_factor,
-                        context.page_zoom,
-                    );
-                    let previous_scroll = context.page().root_scroll();
-                    let result =
-                        context
-                            .page_mut()
-                            .find_text(&query, case_sensitive, forward, viewport);
-                    let scroll_sync =
-                        (context.page().root_scroll() != previous_scroll).then(|| {
-                            (
-                                context.runtime_context_id,
-                                context.frame_id,
-                                context.page().url().to_owned(),
-                                host_view_runtime_source(&context.page(), context.host_view, true),
-                            )
-                        });
-                    (result, scroll_sync)
+                    context
+                        .page_mut()
+                        .find_text(&query, case_sensitive, forward)
                 };
-                if let Some((runtime_context_id, frame_id, url, source)) = scroll_sync {
-                    let evaluation = self.automation_evaluation(
-                        context_id,
-                        document_id,
-                        runtime_context_id,
-                        source,
-                    )?;
-                    self.emit_runtime_effects_event(
-                        context_id,
-                        frame_id,
-                        document_id,
-                        runtime_context_id,
-                        url,
-                        evaluation.effects,
-                    );
-                }
                 Ok(BrowserCommandResult::FindText(result))
             }
             BrowserCommand::Snapshot {
@@ -1362,12 +1330,52 @@ impl BrowserCore {
                         document_id,
                         viewport,
                         viewport_generation,
+                        context.host_view.scale_factor,
                         page_zoom,
                     )
                     .map_err(|message| {
                         BrowserError::new(browser_error_codes::INVALID_ARGUMENT, message)
                     })?;
                 Ok(BrowserCommandResult::RenderSnapshot(snapshot))
+            }
+            BrowserCommand::ApplyRendererCommit { commit } => {
+                let revision = commit.revision;
+                let (runtime_context_id, frame_id, url, source) = {
+                    let context =
+                        self.context_for_document_mut(revision.context_id, revision.document_id)?;
+                    let generation = context.page().renderer_source_generation();
+                    if revision.source_generation != generation
+                        || revision.style_generation != generation
+                        || revision.resource_generation != generation
+                    {
+                        return Err(BrowserError::new(
+                            browser_error_codes::STALE_DOCUMENT,
+                            "renderer commit does not match the current BrowserCore source",
+                        ));
+                    }
+                    context.page_mut().apply_renderer_scroll(&commit);
+                    (
+                        context.runtime_context_id,
+                        context.frame_id,
+                        context.page().url().to_owned(),
+                        host_view_runtime_source(&context.page(), context.host_view, true),
+                    )
+                };
+                let evaluation = self.automation_evaluation(
+                    revision.context_id,
+                    revision.document_id,
+                    runtime_context_id,
+                    source,
+                )?;
+                self.emit_runtime_effects_event(
+                    revision.context_id,
+                    frame_id,
+                    revision.document_id,
+                    runtime_context_id,
+                    url,
+                    evaluation.effects,
+                );
+                Ok(BrowserCommandResult::Accepted)
             }
             BrowserCommand::AccessibilitySnapshot {
                 context_id,
@@ -1454,33 +1462,6 @@ impl BrowserCore {
                     DocumentTextKind::TextContent => context.page().text_content(),
                 };
                 Ok(BrowserCommandResult::DocumentText(text))
-            }
-            BrowserCommand::HitTest {
-                context_id,
-                document_id,
-                viewport,
-                x,
-                y,
-            } => {
-                validate_viewport(viewport)?;
-                if !x.is_finite() || !y.is_finite() {
-                    return Err(BrowserError::new(
-                        browser_error_codes::INVALID_ARGUMENT,
-                        "hit-test coordinates must be finite",
-                    ));
-                }
-                let context = self.context_for_document(context_id, document_id)?;
-                let scale = page_output_scale(context);
-                let layout_viewport = page_layout_viewport(
-                    viewport,
-                    context.host_view.scale_factor,
-                    context.page_zoom,
-                );
-                Ok(BrowserCommandResult::HitTest(context.page().element_at(
-                    layout_viewport,
-                    x / scale,
-                    y / scale,
-                )))
             }
             BrowserCommand::FocusProjection {
                 context_id,
@@ -1682,6 +1663,7 @@ impl BrowserCore {
         let render_view = Rc::new(Cell::new(RenderViewState {
             viewport: HostViewState::default().viewport,
             viewport_generation: 1,
+            device_scale: HostViewState::default().scale_factor,
             page_zoom: 1.0,
         }));
         let runtime = if let Some(renderer) = self.synchronous_renderer.clone() {
@@ -2142,6 +2124,7 @@ impl BrowserCore {
         let render_view = Rc::new(Cell::new(RenderViewState {
             viewport: host_view.viewport,
             viewport_generation: host_view.generation.max(1),
+            device_scale: host_view.scale_factor,
             page_zoom,
         }));
         if self.runtime_slots.len() >= MAX_RUNTIME_SLOTS {
@@ -3709,6 +3692,7 @@ impl BrowserCore {
             context.render_view.set(RenderViewState {
                 viewport: state.viewport,
                 viewport_generation: state.generation.max(1),
+                device_scale: state.scale_factor,
                 page_zoom: context.page_zoom,
             });
             host_view_runtime_source(&context.page(), state, true)
@@ -6472,67 +6456,6 @@ mod tests {
         assert!(matches!(result, BrowserCommandResult::InputDispatched(_)));
     }
 
-    fn dispatch_test_wheel(
-        handle: &mut EngineBrowserHandle,
-        state: &BrowsingContextState,
-        delta_y: f64,
-    ) {
-        dispatch_test_wheel_at(handle, state, 0, delta_y);
-    }
-
-    fn dispatch_test_wheel_at(
-        handle: &mut EngineBrowserHandle,
-        state: &BrowsingContextState,
-        node_id: usize,
-        delta_y: f64,
-    ) {
-        let result = handle
-            .dispatch(BrowserCommand::DispatchMouseEvent {
-                context_id: state.context_id,
-                document_id: state.document_id,
-                runtime_context_id: state.runtime_context_id.unwrap(),
-                node_id,
-                event_type: "wheel".to_owned(),
-                event: MouseEventData {
-                    x: 10.0,
-                    y: 10.0,
-                    button: 0,
-                    buttons: 0,
-                    detail: 0,
-                    related_node_id: None,
-                    bubbles: true,
-                    ctrl_key: false,
-                    shift_key: false,
-                    alt_key: false,
-                    meta_key: false,
-                    delta_x: 0.0,
-                    delta_y,
-                },
-            })
-            .unwrap();
-        assert!(matches!(result, BrowserCommandResult::InputDispatched(_)));
-    }
-
-    fn element_y(
-        handle: &mut EngineBrowserHandle,
-        state: &BrowsingContextState,
-        selector: &str,
-        viewport: (u32, u32),
-    ) -> f64 {
-        let result = handle
-            .dispatch(BrowserCommand::QuerySelectorAll {
-                context_id: state.context_id,
-                document_id: state.document_id,
-                selector: selector.to_owned(),
-                viewport,
-            })
-            .unwrap();
-        let BrowserCommandResult::SelectorMatches(matches) = result else {
-            panic!("unexpected selector result: {result:?}");
-        };
-        matches[0].bbox.unwrap().1
-    }
-
     #[test]
     fn runtime_and_input_results_report_exact_navigation_ids() {
         let mut handle = spawn_browser(test_config()).unwrap();
@@ -6792,7 +6715,7 @@ mod tests {
             .unwrap();
         assert_eq!(link.role, "link");
         assert!(link.focusable);
-        assert!(link.bbox.is_some());
+        assert!(link.bbox.is_none());
 
         let invalid = handle
             .dispatch(BrowserCommand::AccessibilitySnapshot {
@@ -6907,7 +6830,7 @@ mod tests {
     }
 
     #[test]
-    fn physical_scale_drives_css_viewport_paint_hit_testing_and_accessibility() {
+    fn physical_scale_drives_css_viewport_and_accessibility_metadata() {
         let mut config = test_config();
         let url = "https://same.test/physical-scale";
         config.document_overrides.insert(
@@ -6941,6 +6864,34 @@ mod tests {
             ScriptValue::String("200:100:2:200:100".to_owned())
         );
 
+        let render = match handle
+            .dispatch(BrowserCommand::RenderSnapshot {
+                context_id,
+                document_id: current.document_id,
+                viewport,
+                viewport_generation: 1,
+                page_zoom: 1.0,
+            })
+            .unwrap()
+        {
+            BrowserCommandResult::RenderSnapshot(snapshot) => snapshot,
+            other => panic!("unexpected renderer result: {other:?}"),
+        };
+        assert_eq!(render.viewport.device_scale, 2.0);
+        let button = render
+            .nodes
+            .iter()
+            .find(|node| {
+                matches!(&node.kind, vixen_api::RenderNodeKind::Element { local_name } if local_name == "button")
+            })
+            .unwrap();
+        assert!(
+            button
+                .styles
+                .iter()
+                .any(|style| { style.name == "width" && style.value == "100px" })
+        );
+
         let semantic = match handle
             .dispatch(BrowserCommand::AccessibilitySnapshot {
                 context_id,
@@ -6956,468 +6907,7 @@ mod tests {
                 .unwrap(),
             other => panic!("unexpected accessibility result: {other:?}"),
         };
-        assert_eq!(semantic.bbox.unwrap().width, 200.0);
-
-        let target = match handle
-            .dispatch(BrowserCommand::HitTest {
-                context_id,
-                document_id: current.document_id,
-                viewport,
-                x: 150.0,
-                y: 25.0,
-            })
-            .unwrap()
-        {
-            BrowserCommandResult::HitTest(Some(target)) => target,
-            other => panic!("unexpected hit-test result: {other:?}"),
-        };
-        assert_eq!(target.id.as_deref(), Some("target"));
-    }
-
-    #[test]
-    fn uncancelled_navigation_keys_scroll_the_root_document() {
-        let mut handle = spawn_browser(test_config()).unwrap();
-        let context_id = create(&mut handle);
-        navigate(&mut handle, context_id, "https://same.test/scroll");
-        let current = state(&mut handle, context_id);
-        let viewport = (200, 100);
-        handle
-            .dispatch(BrowserCommand::UpdateHostViewState {
-                context_id,
-                state: HostViewState {
-                    generation: 1,
-                    viewport,
-                    ..HostViewState::default()
-                },
-            })
-            .unwrap();
-
-        let initial_y = element_y(&mut handle, &current, "#marker", viewport);
-        dispatch_test_key(&mut handle, &current, "PageDown", false);
-        let paged_y = element_y(&mut handle, &current, "#marker", viewport);
-        assert_eq!(initial_y - paged_y, 87.5);
-
-        dispatch_test_key(&mut handle, &current, "PageUp", false);
-        assert_eq!(
-            element_y(&mut handle, &current, "#marker", viewport),
-            paged_y
-        );
-
-        dispatch_test_key(&mut handle, &current, "Home", false);
-        assert_eq!(
-            element_y(&mut handle, &current, "#marker", viewport),
-            initial_y
-        );
-
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "document.querySelector('#field').focus(); document.activeElement.id"
-            ),
-            ScriptValue::String("field".to_owned())
-        );
-        dispatch_test_key(&mut handle, &current, "End", false);
-        assert_eq!(
-            element_y(&mut handle, &current, "#marker", viewport),
-            initial_y
-        );
-    }
-
-    #[test]
-    fn script_scroll_uses_the_browser_owned_root_offset_and_live_viewport() {
-        let mut handle = spawn_browser(test_config()).unwrap();
-        let context_id = create(&mut handle);
-        navigate(&mut handle, context_id, "https://same.test/scroll");
-        let current = state(&mut handle, context_id);
-        let viewport = (200, 100);
-        handle
-            .dispatch(BrowserCommand::UpdateHostViewState {
-                context_id,
-                state: HostViewState {
-                    generation: 1,
-                    viewport,
-                    ..HostViewState::default()
-                },
-            })
-            .unwrap();
-
-        let initial_y = element_y(&mut handle, &current, "#marker", viewport);
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "scrollTo({ top: 150 }); [innerWidth, innerHeight, scrollY, pageYOffset, document.documentElement.scrollTop].join(':')"
-            ),
-            ScriptValue::String("200:100:150:150:150".to_owned())
-        );
-        assert_eq!(
-            initial_y - element_y(&mut handle, &current, "#marker", viewport),
-            150.0
-        );
-
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "scrollBy(0, 25); document.body.scrollTop = document.body.scrollTop + 10; scrollY"
-            ),
-            ScriptValue::Int32(185)
-        );
-        assert_eq!(
-            initial_y - element_y(&mut handle, &current, "#marker", viewport),
-            185.0
-        );
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "scrollTo(0, 1e9); scrollY === pageYOffset && scrollY === document.scrollingElement.scrollTop && scrollY < 1e9"
-            ),
-            ScriptValue::Bool(true)
-        );
-    }
-
-    #[test]
-    fn root_scroll_events_cover_script_input_find_and_viewport_clamping() {
-        let mut handle = spawn_browser(test_config()).unwrap();
-        let context_id = create(&mut handle);
-        navigate(&mut handle, context_id, "https://same.test/scroll");
-        let current = state(&mut handle, context_id);
-        handle
-            .dispatch(BrowserCommand::UpdateHostViewState {
-                context_id,
-                state: HostViewState {
-                    generation: 1,
-                    viewport: (200, 100),
-                    ..HostViewState::default()
-                },
-            })
-            .unwrap();
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "globalThis.scrollEvents = []; document.addEventListener('scroll', event => scrollEvents.push('document-listener:' + event.bubbles + ':' + event.cancelable + ':' + (event.target === document) + ':' + (event.currentTarget === document) + ':' + scrollY)); document.onscroll = () => scrollEvents.push('document-handler:' + scrollY); globalThis.addEventListener('scroll', event => scrollEvents.push('window-listener:' + (event.target === document) + ':' + (event.currentTarget === globalThis) + ':' + scrollY)); globalThis.onscroll = () => scrollEvents.push('window-handler:' + scrollY); 'ready'"
-            ),
-            ScriptValue::String("ready".to_owned())
-        );
-
-        assert_eq!(
-            eval(&mut handle, &current, "scrollTo(0, 150); scrollY"),
-            ScriptValue::Int32(150)
-        );
-        assert_eq!(
-            eval(&mut handle, &current, "scrollEvents.join('>')"),
-            ScriptValue::String(
-                "document-listener:true:false:true:true:150>document-handler:150>window-listener:true:true:150>window-handler:150"
-                    .to_owned()
-            )
-        );
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "scrollTo(0, 150); scrollEvents.length"
-            ),
-            ScriptValue::Int32(4)
-        );
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "scrollEvents = []; globalThis.nestedScrollEvents = 0; document.addEventListener('scroll', () => { nestedScrollEvents += 1; scrollBy(0, 1); }, { once: true }); scrollTo(0, 160); scrollY"
-            ),
-            ScriptValue::Int32(160)
-        );
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "nestedScrollEvents + ':' + scrollEvents.length + ':' + scrollY"
-            ),
-            ScriptValue::String("1:4:161".to_owned())
-        );
-
-        assert_eq!(
-            eval(&mut handle, &current, "scrollTo(0, 150); scrollY"),
-            ScriptValue::Int32(150)
-        );
-        eval(
-            &mut handle,
-            &current,
-            "scrollEvents = []; document.body.addEventListener('wheel', event => event.preventDefault(), { once: true }); 0",
-        );
-        dispatch_test_wheel(&mut handle, &current, 25.0);
-        assert_eq!(
-            eval(&mut handle, &current, "scrollEvents.length + ':' + scrollY"),
-            ScriptValue::String("0:150".to_owned())
-        );
-        dispatch_test_wheel(&mut handle, &current, 25.0);
-        assert_eq!(
-            eval(&mut handle, &current, "scrollEvents.length + ':' + scrollY"),
-            ScriptValue::String("4:175".to_owned())
-        );
-
-        assert_eq!(
-            eval(&mut handle, &current, "scrollEvents = []; scrollY"),
-            ScriptValue::Int32(175)
-        );
-        dispatch_test_key(&mut handle, &current, "PageUp", false);
-        assert_eq!(
-            eval(&mut handle, &current, "scrollEvents.length + ':' + scrollY"),
-            ScriptValue::String("0:175".to_owned())
-        );
-        dispatch_test_key(&mut handle, &current, "PageDown", false);
-        assert_eq!(
-            eval(&mut handle, &current, "scrollEvents.length + ':' + scrollY"),
-            ScriptValue::String("4:262.5".to_owned())
-        );
-
-        eval(&mut handle, &current, "scrollEvents = []; 0");
-        let result = handle
-            .dispatch(BrowserCommand::FindText {
-                context_id,
-                document_id: current.document_id,
-                query: "Bottom".to_owned(),
-                case_sensitive: false,
-                forward: true,
-            })
-            .unwrap();
-        assert!(matches!(result, BrowserCommandResult::FindText(_)));
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "scrollEvents.length + ':' + (scrollY > 262.5)"
-            ),
-            ScriptValue::String("4:true".to_owned())
-        );
-        let result = handle
-            .dispatch(BrowserCommand::FindText {
-                context_id,
-                document_id: current.document_id,
-                query: "Bottom".to_owned(),
-                case_sensitive: false,
-                forward: true,
-            })
-            .unwrap();
-        assert!(matches!(result, BrowserCommandResult::FindText(_)));
-        assert_eq!(
-            eval(&mut handle, &current, "scrollEvents.length"),
-            ScriptValue::Int32(4)
-        );
-
-        eval(&mut handle, &current, "scrollEvents = []; 0");
-        handle
-            .dispatch(BrowserCommand::UpdateHostViewState {
-                context_id,
-                state: HostViewState {
-                    generation: 2,
-                    viewport: (200, 700),
-                    ..HostViewState::default()
-                },
-            })
-            .unwrap();
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "scrollEvents.length + ':' + (scrollY < 262.5)"
-            ),
-            ScriptValue::String("4:true".to_owned())
-        );
-        handle
-            .dispatch(BrowserCommand::UpdateHostViewState {
-                context_id,
-                state: HostViewState {
-                    generation: 3,
-                    viewport: (200, 700),
-                    ..HostViewState::default()
-                },
-            })
-            .unwrap();
-        assert_eq!(
-            eval(&mut handle, &current, "scrollEvents.length"),
-            ScriptValue::Int32(4)
-        );
-
-        eval(&mut handle, &current, "scrollEvents = []; 0");
-        let result = handle
-            .dispatch(BrowserCommand::SetPageZoom {
-                context_id,
-                zoom: 0.5,
-            })
-            .unwrap();
-        assert!(matches!(
-            result,
-            BrowserCommandResult::BrowsingContextState(_)
-        ));
-        assert_eq!(
-            eval(&mut handle, &current, "scrollEvents.length + ':' + scrollY"),
-            ScriptValue::String("4:0".to_owned())
-        );
-        handle
-            .dispatch(BrowserCommand::SetPageZoom {
-                context_id,
-                zoom: 0.5,
-            })
-            .unwrap();
-        assert_eq!(
-            eval(&mut handle, &current, "scrollEvents.length"),
-            ScriptValue::Int32(4)
-        );
-    }
-
-    #[test]
-    fn nested_wheel_scrolls_nearest_container_then_chains_to_root() {
-        let mut handle = spawn_browser(test_config()).unwrap();
-        let context_id = create(&mut handle);
-        navigate(&mut handle, context_id, "https://same.test/nested-scroll");
-        let current = state(&mut handle, context_id);
-        let inner_id = match eval(
-            &mut handle,
-            &current,
-            "const inner = document.querySelector('#inner'); globalThis.nestedScrollEvents = []; globalThis.cancelNestedWheel = false; inner.addEventListener('scroll', event => nestedScrollEvents.push(event.target.id + ':' + event.bubbles + ':' + event.cancelable)); inner.addEventListener('wheel', event => { if (cancelNestedWheel) event.preventDefault(); }); inner.__vixenNodeId",
-        ) {
-            ScriptValue::Int32(node_id) => node_id as usize,
-            other => panic!("unexpected inner node id: {other:?}"),
-        };
-        let before_y = element_y(&mut handle, &current, "#content", (800, 600));
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "(() => { const marker = document.querySelector('#clipped'); const rect = marker.getBoundingClientRect(); return document.elementFromPoint(rect.x + 1, rect.y + 1) === marker; })()"
-            ),
-            ScriptValue::Bool(false)
-        );
-
-        dispatch_test_wheel_at(&mut handle, &current, inner_id, 35.0);
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "document.querySelector('#inner').scrollTop + ':' + scrollY + ':' + nestedScrollEvents.join('>')"
-            ),
-            ScriptValue::String("35:0:inner:false:false".to_owned())
-        );
-        assert_eq!(
-            element_y(&mut handle, &current, "#content", (800, 600)),
-            before_y - 35.0
-        );
-
-        eval(
-            &mut handle,
-            &current,
-            "cancelNestedWheel = true; nestedScrollEvents = []; document.querySelector('#inner').scrollTop",
-        );
-        dispatch_test_wheel_at(&mut handle, &current, inner_id, 20.0);
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "document.querySelector('#inner').scrollTop + ':' + scrollY + ':' + nestedScrollEvents.length"
-            ),
-            ScriptValue::String("35:0:0".to_owned())
-        );
-
-        eval(
-            &mut handle,
-            &current,
-            "cancelNestedWheel = false; nestedScrollEvents = []; 0",
-        );
-        dispatch_test_wheel_at(&mut handle, &current, inner_id, 200.0);
-        assert_eq!(
-            eval(
-                &mut handle,
-                &current,
-                "document.querySelector('#inner').scrollTop + ':' + scrollY"
-            ),
-            ScriptValue::String("180:55".to_owned())
-        );
-        eval(
-            &mut handle,
-            &current,
-            "scrollTo(0, 0); document.querySelector('#inner').scrollTo(0, 35); 0",
-        );
-
-        eval(
-            &mut handle,
-            &current,
-            "cancelNestedWheel = false; document.querySelector('#inner').scrollTo({ top: 1e9 }); document.querySelector('#inner').scrollTop",
-        );
-        eval(&mut handle, &current, "nestedScrollEvents = []; 0");
-        dispatch_test_wheel_at(&mut handle, &current, inner_id, 25.0);
-        assert_eq!(
-            eval(&mut handle, &current, "scrollY"),
-            ScriptValue::Int32(25)
-        );
-        assert_eq!(
-            eval(&mut handle, &current, "nestedScrollEvents.length"),
-            ScriptValue::Int32(0)
-        );
-    }
-
-    #[test]
-    fn history_restores_root_and_nested_scrolls_and_honors_manual_mode() {
-        let mut handle = spawn_browser(test_config()).unwrap();
-        let context_id = create(&mut handle);
-        navigate(&mut handle, context_id, "https://same.test/nested-scroll");
-        let first = state(&mut handle, context_id);
-        assert_eq!(
-            eval(
-                &mut handle,
-                &first,
-                "document.getElementById('inner').scrollTop = 120; scrollTo(0, 150); `${scrollY}:${document.getElementById('inner').scrollTop}:${history.scrollRestoration}`",
-            ),
-            ScriptValue::String("150:120:auto".to_owned())
-        );
-        let reload_id = reload(&mut handle, context_id);
-        wait_for_navigation(&mut handle, context_id, reload_id).unwrap();
-        let reloaded = state(&mut handle, context_id);
-        assert_eq!(
-            eval(
-                &mut handle,
-                &reloaded,
-                "`${scrollY}:${document.getElementById('inner').scrollTop}:${history.scrollRestoration}`",
-            ),
-            ScriptValue::String("150:120:auto".to_owned())
-        );
-
-        navigate(&mut handle, context_id, "https://same.test/b");
-        let back = traverse_history(&mut handle, context_id, -1).unwrap();
-        wait_for_navigation(&mut handle, context_id, back).unwrap();
-        let restored = state(&mut handle, context_id);
-        assert_eq!(
-            eval(
-                &mut handle,
-                &restored,
-                "`${scrollY}:${document.getElementById('inner').scrollTop}:${history.scrollRestoration}:${history.length}`",
-            ),
-            ScriptValue::String("150:120:auto:2".to_owned())
-        );
-
-        assert_eq!(
-            eval(
-                &mut handle,
-                &restored,
-                "history.scrollRestoration = 'manual'; document.getElementById('inner').scrollTop = 160; scrollTo(0, 200); history.scrollRestoration",
-            ),
-            ScriptValue::String("manual".to_owned())
-        );
-        navigate(&mut handle, context_id, "https://same.test/b");
-        let manual_back = traverse_history(&mut handle, context_id, -1).unwrap();
-        wait_for_navigation(&mut handle, context_id, manual_back).unwrap();
-        let manual = state(&mut handle, context_id);
-        assert_eq!(
-            eval(
-                &mut handle,
-                &manual,
-                "`${scrollY}:${document.getElementById('inner').scrollTop}:${history.scrollRestoration}:${history.length}`",
-            ),
-            ScriptValue::String("0:0:manual:2".to_owned())
-        );
+        assert!(semantic.bbox.is_none());
     }
 
     #[test]
@@ -9079,7 +8569,7 @@ mod tests {
     }
 
     #[test]
-    fn gated_external_stylesheet_reaches_live_cascade_paint_and_runtime() {
+    fn gated_external_stylesheet_reaches_live_cascade_renderer_source_and_runtime() {
         let server = GatedHttpServer::start(1);
         let mut config = test_config();
         server.configure(&mut config);

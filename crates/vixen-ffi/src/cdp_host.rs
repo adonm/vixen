@@ -109,43 +109,57 @@ impl FlutterCdpRenderBackend {
             result => return Err(format!("unexpected renderer snapshot result: {result:?}")),
         };
 
-        {
+        let (accepted, current) = {
             let mut state = entry
                 .renderer_state
                 .lock()
                 .map_err(|_| "renderer acceptance state is unavailable".to_owned())?;
-            drain_renderer_submissions(&entry.renderer, &mut state)
+            let accepted = drain_renderer_submissions(&entry.renderer, &mut state)
                 .map_err(|error| format!("{}: {}", error.code, error.message))?;
-            if let Some(commit) = state.commits.presented_commit()
-                && commit.revision == snapshot.revision
-                && commit.viewport == snapshot.viewport
-            {
-                return Ok((entry.clone(), commit.clone()));
+            let current = state
+                .commits
+                .presented_commit()
+                .filter(|commit| {
+                    commit.revision == snapshot.revision && commit.viewport == snapshot.viewport
+                })
+                .cloned();
+            if current.is_none() {
+                crate::sync_renderer::publish_renderer_source(
+                    &entry.renderer,
+                    &mut state,
+                    snapshot.clone(),
+                    false,
+                )
+                .map_err(|error| format!("{}: {}", error.code, error.message))?;
             }
-            crate::sync_renderer::publish_renderer_source(
-                &entry.renderer,
-                &mut state,
-                snapshot.clone(),
-                false,
-            )
-            .map_err(|error| format!("{}: {}", error.code, error.message))?;
+            (accepted, current)
+        };
+        apply_renderer_commits(browser, accepted)?;
+        if let Some(commit) = current {
+            return Ok((entry.clone(), commit));
         }
 
         let deadline = Instant::now() + CAPTURE_TIMEOUT;
         let presented = loop {
-            {
+            let (accepted, presented) = {
                 let mut state = entry
                     .renderer_state
                     .lock()
                     .map_err(|_| "renderer acceptance state is unavailable".to_owned())?;
-                drain_renderer_submissions(&entry.renderer, &mut state)
+                let accepted = drain_renderer_submissions(&entry.renderer, &mut state)
                     .map_err(|error| format!("{}: {}", error.code, error.message))?;
-                if let Some(commit) = state.commits.presented_commit()
-                    && commit.revision == snapshot.revision
-                    && commit.viewport == snapshot.viewport
-                {
-                    break commit.clone();
-                }
+                let presented = state
+                    .commits
+                    .presented_commit()
+                    .filter(|commit| {
+                        commit.revision == snapshot.revision && commit.viewport == snapshot.viewport
+                    })
+                    .cloned();
+                (accepted, presented)
+            };
+            apply_renderer_commits(browser, accepted)?;
+            if let Some(commit) = presented {
+                break commit;
             }
             if Instant::now() >= deadline {
                 return Err(
@@ -156,6 +170,22 @@ impl FlutterCdpRenderBackend {
         };
         Ok((entry, presented))
     }
+}
+
+fn apply_renderer_commits(
+    browser: &mut EngineBrowserClient,
+    commits: Vec<RenderCommit>,
+) -> Result<(), String> {
+    for commit in commits {
+        match browser
+            .dispatch(BrowserCommand::ApplyRendererCommit { commit })
+            .map_err(|error| error.to_string())?
+        {
+            BrowserCommandResult::Accepted => {}
+            result => return Err(format!("unexpected renderer commit result: {result:?}")),
+        }
+    }
+    Ok(())
 }
 
 impl CdpRenderBackend for FlutterCdpRenderBackend {

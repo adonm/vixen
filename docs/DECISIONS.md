@@ -13,7 +13,7 @@ constraints into the replacement ADR and update `PROJECT_DIRECTION.md`,
 
 ## ADR-001: Delegate spec-heavy primitives, own browser integration
 
-**Status:** accepted
+**Status:** accepted; migration steps 1–7 implemented
 
 **Context.** A modern browser cannot credibly reimplement every parser, cascade,
 JavaScript, text, and graphics primitive. Whole-engine embedding, however, would
@@ -608,17 +608,14 @@ automation entrypoints.
 
 ### Migration and deletion policy
 
-The current Rust layout/display-list/WebRender/EGL/RGBA path is transitional and
-frozen except for security, data-loss, or release-blocking correctness fixes.
-Do not complete adjacent WebRender, EGL, texture, deterministic-font, or Rust
-layout breadth merely because scaffolding exists. Partially implemented code is
-not an asset when deleting it shortens the renderer transition and its behavior
-is not independently needed by BrowserCore.
+The former Rust layout/display-list/WebRender/EGL/RGBA path was transitional and
+was deleted by R7. Do not recreate it or preserve compatibility shims merely
+because historical scaffolding or plans exist.
 
-Experimental Flutter renderer work remains test-only until one controlled
-vertical proves layout, pixels, input, geometry, text ranges, scroll, Semantics,
-and scene capture from one commit. There are never two supported production
-renderers. Cutover removes WebRender/gleam, `GlContext`, headless/frame EGL,
+Flutter renderer work remained test-only until one controlled vertical proved
+layout, pixels, input, geometry, text ranges, scroll, Semantics, and scene
+capture from one commit. There are never two supported production renderers. R7
+removed WebRender/gleam, `GlContext`, headless/frame EGL,
 image upload, RGBA frame ABI/pools, the Dart frame worker, pixel-buffer texture
 plugin/presenter and recovery tests, superseded Rust paint/layout modules or
 DTOs, duplicate scale/hit/scroll/text/semantic projections, obsolete fixtures/
@@ -650,8 +647,8 @@ stable data contract and that is simpler than reimplementation.
   driver evidence; “a Flutter window opens” is not renderer proof.
 - CSS layout remains a major Vixen subsystem, now concentrated on Flutter's
   cross-platform text/scene substrate.
-- The FFI boundary grows render mutation/commit/query traffic before frame
-  buffers and native renderer dependencies are deleted. It is a primary
+- The FFI boundary carries render mutation/commit/query traffic and no frame
+  buffers or native renderer dependencies. It is a primary
   content-controlled trust and performance boundary.
 - Rendered headless startup may grow while total GUI/native complexity and
   platform-specific dependencies shrink. Measurements compare the chrome-less

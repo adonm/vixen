@@ -199,15 +199,6 @@ void main() {
           nodeId: 6,
           value: 'Ada',
         ),
-        BrowserCommand.dispatchMouseEvent(
-          contextId: 1,
-          documentId: 2,
-          runtimeContextId: 3,
-          viewportWidth: 320,
-          viewportHeight: 200,
-          eventType: 'mousedown',
-          event: const BrowserMouseEvent(x: 12.5, y: 9, button: 0, buttons: 1),
-        ),
         BrowserCommand.dispatchRendererMouseEvent(
           contextId: 1,
           documentId: 2,
@@ -229,15 +220,6 @@ void main() {
             viewportPoint: RenderPoint(12.5, 9),
             localPoint: RenderPoint(2.5, 3),
           ),
-        ),
-        BrowserCommand.dispatchMouseEvent(
-          contextId: 1,
-          documentId: 2,
-          runtimeContextId: 3,
-          viewportWidth: 320,
-          viewportHeight: 200,
-          eventType: 'cancel',
-          event: const BrowserMouseEvent(x: 12.5, y: 9, button: 0, buttons: 0),
         ),
         BrowserCommand.dispatchKeyEvent(
           contextId: 1,
@@ -281,22 +263,6 @@ void main() {
     });
 
     test('strictly rejects malformed production input commands', () {
-      final mouse = BrowserCommand.dispatchMouseEvent(
-        contextId: 1,
-        documentId: 2,
-        runtimeContextId: 3,
-        viewportWidth: 320,
-        viewportHeight: 200,
-        eventType: 'mousedown',
-        event: const BrowserMouseEvent(x: 12, y: 9, button: 0, buttons: 1),
-      ).toWire();
-      expect(
-        () => normalizeNativeCommand(<String, Object?>{
-          ...mouse,
-          'event_type': 'pointerdown',
-        }),
-        throwsA(isA<NativeBridgeException>()),
-      );
       const rendererRevision = RenderRevision(
         contextId: 1,
         documentId: 2,
@@ -360,16 +326,16 @@ void main() {
       );
       expect(
         () => normalizeNativeCommand(<String, Object?>{
-          ...mouse,
+          ...rendererMouse,
           'viewport': <String, Object?>{'width': 4096, 'height': 4097},
         }),
         throwsA(isA<NativeBridgeException>()),
       );
       expect(
         () => normalizeNativeCommand(<String, Object?>{
-          ...mouse,
+          ...rendererMouse,
           'event': <String, Object?>{
-            ...(mouse['event']! as Map<String, Object?>),
+            ...(rendererMouse['event']! as Map<String, Object?>),
             'x': double.nan,
           },
         }),

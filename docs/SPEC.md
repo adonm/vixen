@@ -33,64 +33,38 @@ error codes are a public contract — automation depends on them.
 vixen-headless --url <URL> [options]
 
   --url <URL>                 Load a URL (required).
-  --screenshot <file.png>     Save a PNG screenshot.
-  --viewport <WxH>            Viewport size (default 800x600).
+  --viewport <WxH>            CSS inspection viewport (default 800x600).
   --profile-dir <DIR>         Persist profile state under DIR.
-  --extract-text              Print visible text content.
-  --extract-selector <css>    Print JSON snapshots for matching elements.
+  --extract-text              Print document body text.
+  --extract-selector <css>    Print JSON source snapshots for matching elements.
   --eval <js>                 Execute JS, print result.
   --dump-dom                  Dump the DOM tree.
-  --click-at <X,Y>            Dispatch a MouseEvent at coordinates.
   --focus <id>                Focus an element by id.
   --submit-form <id>          Submit a form by id.
-  --incremental               Capture before/after frames (requires --screenshot + --eval).
-  --cdp                       Start CDP WebSocket server on 127.0.0.1.
+  --cdp                       Start text/runtime CDP on 127.0.0.1.
   --cdp-port <N>              CDP port (default 9222, with --cdp).
   --memory-stats              Print memory statistics.
 ```
 
-The currently implemented `--dump-layout-tree`, `--dump-display-list`,
-`--dump-lines`, `--paint-stats`, and `--list-fonts` flags expose transitional
-Rust renderer internals and are removed at ADR-022 cutover rather than recreated
-as compatibility APIs. Screenshot, viewport, visible extraction, coordinate
-input, layout CDP, and visual fixture operations launch the chrome-less Flutter
-host. DOM/runtime/network-only operations may remain native fast paths when they
-do not invent geometry or pixels.
+Native headless is text/runtime/profile-only. The removed CLI surface includes
+screenshots, incremental frames, coordinate clicks, layout/display-list/line
+and paint-stat dumps, and font listing. Native CDP methods that require geometry,
+pointer hit testing, semantic bounds, or pixels fail closed.
 
 Without `--profile-dir`, each invocation owns and removes an isolated temporary
 profile. With it, BrowserCore stores profile data in `<DIR>/profile.redb`; this
-also applies to `--cdp`.
+also applies to native `--cdp`.
 
-`--incremental` loads the URL once in one BrowserCore browsing context, captures
-the loaded document, evaluates `--eval` in that document's current runtime, then
-captures the resulting current document after any script-created navigation has
-settled. Given `--screenshot <name.ext>`, the frames are written as
-`<name>-frame-1.ext` and `<name>-frame-2.ext`; without an extension they are
-`<name>-frame-1` and `<name>-frame-2`. The requested `--screenshot` path itself
-is not written. On success stdout contains only the `--eval` result followed by
-a newline, as in a normal `--eval` run; frame paths are deterministic and are
-not printed. Other output, interaction, CDP, font-list, and memory-stat actions
-are incompatible with `--incremental` and produce a command-line usage error
-rather than being silently ignored.
-
-Any invocation that requests renderer-derived geometry, coordinate input,
-Semantics, or pixels runs its entire logical session—including evaluation and
-other DOM/runtime operations—against the single BrowserCore owned by the
-chrome-less Flutter host. `vixen-headless` is a launcher/client in that mode and
-does not create a second native core. A wholly text-only invocation may use a
-native BrowserCore fast path.
-
-`--gpu` remains removed: Flutter is the sole renderer and Vixen explicitly
-enables Impeller; callers cannot select another graphics backend. A Skia-backed
-launch does not satisfy Vixen renderer support. On Linux, rendered automation
-runs in Cage/headless Wayland. If the Flutter host cannot create/present/capture
-an exact commit, screenshots fail closed with `unsupported.screenshot`.
+Rendered automation runs the chrome-less Flutter host for the entire logical
+session. It owns one BrowserCore and uses the same formatter/commit/painter as
+the GUI. On Linux it runs under Cage/headless Wayland. No native fast path may
+invent geometry or pixels, and callers cannot select a graphics backend.
 
 **Stable error codes** (returned exactly as written):
 
 | Code                       | When                                                       |
 |----------------------------|------------------------------------------------------------|
-| `unsupported.screenshot`   | Screenshot requested without an exact rendered host available |
+| `unsupported.screenshot`   | Native/text-only CDP receives a screenshot request |
 | `invalid-selector`         | Malformed `--extract-selector` input                       |
 
 **CDP methods required** at v1.0:
@@ -123,10 +97,9 @@ an exact commit, screenshots fail closed with `unsupported.screenshot`.
 
 Flutter is the sole web renderer and native GUI shell target on Linux, macOS,
 Windows, Android, and the Apple Silicon iOS Simulator. The Linux alpha baseline
-implements chrome and BrowserCore FFI over transitional RGBA presentation; the
-mutation/commit renderer and every other platform stay evidence-gated.
+implements chrome and BrowserCore FFI over the Flutter mutation/commit renderer.
 The Linux GUI requires a native Wayland display and rejects X11/XWayland;
-rendered headless/CDP uses the chrome-less Flutter host under Cage after cutover.
+rendered automation/CDP uses the same host under Cage.
 
 Platform validation follows a rolling contemporary baseline: the latest stable
 major release of Linux's reference distribution, macOS, Windows client, Android,
@@ -164,8 +137,7 @@ The WPT harness asserts document state against fixture manifests. The committed
 Larger upstream slices may instead be described by small JSON WPT profiles and
 run against an ignored checkout such as `.tmp/wpt/` via `just wpt-profile
 fixtures/wpt-profiles/<profile>.json .tmp/wpt`. The check types below are the
-public contract for fixture/profile authors except where explicitly marked
-transitional.
+public contract for fixture/profile authors.
 
 | Check type              | Asserts                                                  |
 |-------------------------|----------------------------------------------------------|
@@ -174,6 +146,7 @@ transitional.
 | `selectors-exact`       | Exact set of element ids matching a selector             |
 | `body-contains`         | Body text contains a substring                           |
 | `js-eval`               | Evaluate JS, compare result to expected                  |
+| `flutter-js-eval`       | Evaluate JS whose result requires an exact Flutter commit |
 | `min-nodes`             | DOM has at least N elements                              |
 | `no-critical-diagnostics` | No critical `EngineDiagnostic` recorded                |
 | `visual-hash`           | Perceptual hash of rendered screenshot matches expected  |
@@ -188,13 +161,11 @@ WPT target profile lives in [`COMPAT.md`](COMPAT.md). End-to-end CSS/DOM/layout
 behavior should move into fixtures when practical. Target Rust tests cover pure
 logic such as URL/cookie/CSP parsing and redb round trips; a CSS algorithm remains
 in Rust only through ADR-022's explicit stable formatter contract and
-cross-language tests. R5 removed the transitional `display-list-contains` check;
-the former overflow/fragments assertions now use computed-style plus the
-existing layout-box and visual-hash evidence. The committed manifest's
+cross-language tests. The committed manifest's
 document/runtime assertions and rendered assertions execute in order against the
 same fixture target in the chrome-less Flutter host. Native `wpt_runner` retains
-the 1,887 text/runtime checks only; Flutter commits are authoritative for the 104
-layout boxes, 25 visual hashes, and 11 reference comparisons.
+1,868 source/runtime checks only; Flutter commits are authoritative for
+`flutter-js-eval`, layout boxes, visual hashes, and reference comparisons.
 
 ---
 
