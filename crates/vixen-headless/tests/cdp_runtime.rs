@@ -3,7 +3,6 @@
 //! Lives in its own integration-test binary so CDP's `Runtime.evaluate` owns a
 //! focused runtime lifecycle independent of the CLI lib tests.
 
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde_json::{Value, json};
 use vixen_engine::engine_error::codes;
 use vixen_engine::script::JsRuntime;
@@ -388,64 +387,6 @@ fn runtime_evaluate_surface() {
     assert_eq!(v["result"]["type"], "string");
     assert_eq!(v["result"]["value"], "false:true:true:false");
     dispatch_one(&mut s, "Emulation.setEmulatedMedia", json!({}));
-
-    let v = dispatch_one(
-        &mut s,
-        "Page.captureScreenshot",
-        json!({ "format": "png", "clip": { "x": 0, "y": 0, "width": 160, "height": 120, "scale": 1 } }),
-    );
-    let png = BASE64_STANDARD
-        .decode(v["data"].as_str().expect("base64 screenshot"))
-        .expect("valid base64 png");
-    assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
-
-    let lines = dispatch_lines(
-        &mut s,
-        "Input.dispatchMouseEvent",
-        json!({ "type": "mousePressed", "x": 10, "y": 10, "button": "left", "buttons": 1 }),
-    );
-    assert_eq!(lines[0]["result"], json!({}));
-    let lines = dispatch_lines(
-        &mut s,
-        "Input.dispatchMouseEvent",
-        json!({ "type": "mouseReleased", "x": 10, "y": 10, "button": "left", "buttons": 0 }),
-    );
-    assert_eq!(lines[0]["result"], json!({}));
-    assert_eq!(lines[1]["method"], "Runtime.consoleAPICalled");
-    assert_eq!(lines[1]["params"]["args"][0]["value"], "clicked");
-    assert_eq!(lines[1]["params"]["args"][1]["value"], "hit");
-
-    let v = dispatch_one(
-        &mut s,
-        "Runtime.evaluate",
-        json!({ "expression": "__cdpClicked" }),
-    );
-    assert_eq!(v["result"]["type"], "number");
-    assert_eq!(v["result"]["value"], 1);
-
-    let v = dispatch_one(
-        &mut s,
-        "Runtime.evaluate",
-        json!({ "expression": "document.querySelector('#status').textContent" }),
-    );
-    assert_eq!(v["result"]["type"], "string");
-    assert_eq!(v["result"]["value"], "clicked:1");
-
-    let v = dispatch_one(
-        &mut s,
-        "Runtime.evaluate",
-        json!({ "expression": "(() => document.querySelector('#status').classList.contains('clicked') + ':' + document.querySelector('#status').getAttribute('data-clicked') + ':' + document.querySelector('#status').style.width)()" }),
-    );
-    assert_eq!(v["result"]["type"], "string");
-    assert_eq!(v["result"]["value"], "true:1:140px");
-
-    let v = dispatch_one(
-        &mut s,
-        "Runtime.evaluate",
-        json!({ "expression": "(() => document.querySelector('#dynamic').textContent + ':' + document.querySelector('#dynamic').className + ':' + (document.querySelector('#gone') === null) + ':' + document.querySelector('#dynamic-root').textContent)()" }),
-    );
-    assert_eq!(v["result"]["type"], "string");
-    assert_eq!(v["result"]["value"], "dynamic:1:badge:true:dynamic:1 ready");
 
     let v = dispatch_one(
         &mut s,

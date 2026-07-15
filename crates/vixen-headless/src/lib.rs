@@ -2,43 +2,32 @@
 //!
 //! Phase 2 implements the CLI flag surface (docs/SPEC.md "Headless CLI
 //! surface"). `--eval` navigates and evaluates through the engine-owned browser
-//! core. Screenshot, selector, and URL-only actions use the same adapter;
-//! textual document and interaction-summary projections do as well. CDP routes
-//! targets through the same engine-owned browser core.
-//! Renderer/CDP-only failures keep stable error codes (`unsupported.screenshot`,
-//! `invalid-selector`) at their trust boundaries.
+//! core. Selector, URL-only, textual document, and DOM-side interaction actions
+//! use the same adapter. Rendered operations belong to the Flutter host; native
+//! CDP fails them closed.
 
 #![deny(unsafe_code)]
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::sync::Arc;
 
 use clap::Parser;
 
-use vixen_api::{BrowsingContextState, DocumentTextKind};
-use vixen_engine::browser::EngineBrowserClient;
+use vixen_api::DocumentTextKind;
 use vixen_engine::engine_error::codes;
-use vixen_engine::paint::{self, RgbaFrame};
 
 mod browser_adapter;
 pub use vixen_cdp as cdp;
 mod interactions;
-pub mod surface;
 
 /// The `vixen-headless` CLI (docs/SPEC.md "Headless CLI surface").
 /// Flags and stable error codes are a public contract — automation depends on them.
 #[derive(Parser, Debug)]
 #[command(name = "vixen-headless", version, about = "Vixen headless engine")]
 pub struct Cli {
-    /// Load a URL (required, except with --list-fonts).
+    /// Load a URL (required).
     #[arg(long)]
     pub url: Option<String>,
-
-    /// Save a PNG screenshot.
-    #[arg(long)]
-    pub screenshot: Option<PathBuf>,
 
     /// Viewport size (default 800x600).
     #[arg(long, default_value = "800x600")]
@@ -64,22 +53,6 @@ pub struct Cli {
     #[arg(long)]
     pub dump_dom: bool,
 
-    /// Dump paint commands.
-    #[arg(long)]
-    pub dump_display_list: bool,
-
-    /// Dump inline layout lines.
-    #[arg(long)]
-    pub dump_lines: bool,
-
-    /// Dump the Vixen layout tree.
-    #[arg(long)]
-    pub dump_layout_tree: bool,
-
-    /// Dispatch a MouseEvent at coordinates (X,Y).
-    #[arg(long)]
-    pub click_at: Option<String>,
-
     /// Focus an element by id.
     #[arg(long)]
     pub focus: Option<String>,
@@ -87,14 +60,6 @@ pub struct Cli {
     /// Submit a form by id.
     #[arg(long)]
     pub submit_form: Option<String>,
-
-    /// Print paint statistics.
-    #[arg(long)]
-    pub paint_stats: bool,
-
-    /// Capture before/after frames in one context (with --screenshot + --eval).
-    #[arg(long)]
-    pub incremental: bool,
 
     /// Start CDP WebSocket server on 127.0.0.1.
     #[arg(long)]
@@ -104,10 +69,6 @@ pub struct Cli {
     #[arg(long, default_value_t = 9222)]
     pub cdp_port: u16,
 
-    /// List system fonts and exit.
-    #[arg(long)]
-    pub list_fonts: bool,
-
     /// Print memory statistics.
     #[arg(long)]
     pub memory_stats: bool,
@@ -115,16 +76,6 @@ pub struct Cli {
 
 /// Run the CLI. Returns a process exit code.
 pub fn run(cli: Cli) -> ExitCode {
-    if let Err(error) = validate_incremental_options(&cli) {
-        eprintln!("error: {error}");
-        return ExitCode::from(2);
-    }
-
-    // `--list-fonts` short-circuits and needs no URL.
-    if cli.list_fonts {
-        return run_list_fonts();
-    }
-
     // `--url` is required otherwise (docs/SPEC.md).
     let Some(url) = cli.url.as_deref() else {
         eprintln!("error: --url <URL> is required");
@@ -149,22 +100,6 @@ pub fn run(cli: Cli) -> ExitCode {
         return run_memory_stats();
     }
 
-    if cli.incremental {
-        return run_incremental(
-            url,
-            viewport,
-            cli.screenshot.as_deref().expect("validated above"),
-            cli.eval.as_deref().expect("validated above"),
-            cli.profile_dir.as_deref(),
-        );
-    }
-
-    // --screenshot requires the offscreen renderer (Phase 5) and short-circuits
-    // the textual DOM/layout output modes.
-    if let Some(path) = cli.screenshot.as_deref() {
-        return run_screenshot(url, viewport, path, cli.profile_dir.as_deref());
-    }
-
     if has_interaction_action(&cli) {
         let code = interactions::run(url, &cli);
         if code != ExitCode::SUCCESS || !has_non_interaction_action(&cli) {
@@ -177,15 +112,8 @@ pub fn run(cli: Cli) -> ExitCode {
         return run_eval(url, js, cli.profile_dir.as_deref());
     }
 
-    // --dump-dom / --extract-text / --dump-layout-tree / --dump-lines /
-    // --dump-display-list / --paint-stats: load the URL's HTML and print.
-    if cli.dump_dom
-        || cli.extract_text
-        || cli.dump_layout_tree
-        || cli.dump_lines
-        || cli.dump_display_list
-        || cli.paint_stats
-    {
+    // Text-only document projections remain native.
+    if cli.dump_dom || cli.extract_text {
         return run_dom_outputs(url, &cli, viewport);
     }
 
@@ -243,12 +171,7 @@ fn run_cdp_server(initial_url: &str, port: u16, profile_dir: Option<PathBuf>) ->
     let local = tokio::task::LocalSet::new();
     let result = local.block_on(
         &rt,
-        cdp::serve_with_initial_url_profile_and_renderer(
-            port,
-            Some(initial_url.to_owned()),
-            profile_dir,
-            Arc::new(LegacyCdpRenderBackend),
-        ),
+        cdp::serve_with_initial_url_and_profile(port, Some(initial_url.to_owned()), profile_dir),
     );
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -259,245 +182,24 @@ fn run_cdp_server(initial_url: &str, port: u16, profile_dir: Option<PathBuf>) ->
     }
 }
 
-struct LegacyCdpRenderBackend;
-
-impl cdp::CdpRenderBackend for LegacyCdpRenderBackend {
-    fn capture_png(
-        &self,
-        browser: &mut EngineBrowserClient,
-        state: &BrowsingContextState,
-        viewport: (u32, u32),
-    ) -> Result<Vec<u8>, String> {
-        let paint = browser
-            .capture_paint_snapshot(state.context_id, state.document_id, viewport)
-            .map_err(|error| error.to_string())?;
-        capture_commands_png(&paint.commands, viewport)
-    }
-}
-
-/// Test adapter retaining the transitional native screenshot backend while CDP
-/// protocol ownership lives in `vixen-cdp`.
+/// Test adapter for text/runtime CDP. Rendered methods fail closed; product
+/// screenshot and coordinate-input evidence is hosted by Flutter.
 pub fn cdp_state_with_runtime(runtime: vixen_engine::script::JsRuntime) -> cdp::CdpState {
-    cdp::CdpState::with_runtime_and_renderer(runtime, Arc::new(LegacyCdpRenderBackend))
-}
-
-fn run_screenshot(
-    url: &str,
-    viewport: (u32, u32),
-    output: &Path,
-    profile_dir: Option<&Path>,
-) -> ExitCode {
-    let mut session = match browser_adapter::BrowserSession::load(url, profile_dir) {
-        Ok(session) => session,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let png = match capture_session_png(&mut session, viewport) {
-        Ok(png) => png,
-        Err(err) => {
-            eprintln!("{}: {err}", codes::UNSUPPORTED_SCREENSHOT);
-            return ExitCode::FAILURE;
-        }
-    };
-    match std::fs::write(output, png).map_err(|e| format!("write {}: {e}", output.display())) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(err) => {
-            eprintln!("error: {err}");
-            ExitCode::FAILURE
-        }
-    }
-}
-
-fn run_incremental(
-    url: &str,
-    viewport: (u32, u32),
-    output: &Path,
-    js: &str,
-    profile_dir: Option<&Path>,
-) -> ExitCode {
-    let mut session = match browser_adapter::BrowserSession::load(url, profile_dir) {
-        Ok(session) => session,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let frame_one_snapshot = match session.capture_paint_snapshot(viewport) {
-        Ok(snapshot) => snapshot,
-        Err(error) => {
-            eprintln!("{}: {error}", codes::UNSUPPORTED_SCREENSHOT);
-            return ExitCode::FAILURE;
-        }
-    };
-    let frame_one = match capture_commands_png(&frame_one_snapshot.commands, viewport) {
-        Ok(png) => png,
-        Err(error) => {
-            eprintln!("{}: {error}", codes::UNSUPPORTED_SCREENSHOT);
-            return ExitCode::FAILURE;
-        }
-    };
-    let value = match session.evaluate_for_incremental(js, frame_one_snapshot.document_id) {
-        Ok(value) => value,
-        Err(error) => {
-            eprintln!("error: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    let frame_two = match capture_session_png(&mut session, viewport) {
-        Ok(png) => png,
-        Err(error) => {
-            eprintln!("{}: {error}", codes::UNSUPPORTED_SCREENSHOT);
-            return ExitCode::FAILURE;
-        }
-    };
-
-    let (frame_one_path, frame_two_path) = incremental_frame_paths(output);
-    for (path, png) in [(&frame_one_path, frame_one), (&frame_two_path, frame_two)] {
-        if let Err(error) =
-            std::fs::write(path, png).map_err(|error| format!("write {}: {error}", path.display()))
-        {
-            eprintln!("error: {error}");
-            return ExitCode::FAILURE;
-        }
-    }
-    println!("{}", value.to_display());
-    ExitCode::SUCCESS
-}
-
-fn capture_session_png(
-    session: &mut browser_adapter::BrowserSession,
-    viewport: (u32, u32),
-) -> Result<Vec<u8>, String> {
-    let snapshot = session.capture_paint_snapshot(viewport)?;
-    capture_commands_png(&snapshot.commands, viewport)
-}
-
-fn incremental_frame_paths(output: &Path) -> (PathBuf, PathBuf) {
-    (
-        incremental_frame_path(output, 1),
-        incremental_frame_path(output, 2),
-    )
-}
-
-fn incremental_frame_path(output: &Path, frame: u8) -> PathBuf {
-    let file_name = output.file_name().unwrap_or(output.as_os_str());
-    let mut frame_name = match output.extension().filter(|extension| !extension.is_empty()) {
-        Some(_) => output
-            .file_stem()
-            .map(OsString::from)
-            .unwrap_or_else(|| file_name.to_os_string()),
-        None => file_name.to_os_string(),
-    };
-    frame_name.push(format!("-frame-{frame}"));
-    if let Some(extension) = output.extension().filter(|extension| !extension.is_empty()) {
-        frame_name.push(".");
-        frame_name.push(extension);
-    }
-    output.with_file_name(frame_name)
-}
-
-pub(crate) fn capture_commands_png(
-    commands: &[vixen_engine::display_list::PaintCommand],
-    viewport: (u32, u32),
-) -> Result<Vec<u8>, String> {
-    let surface = match surface::SurfacelessSurface::new(viewport) {
-        Ok(surface) => surface,
-        Err(err) => {
-            return Err(err.to_string());
-        }
-    };
-    let frame = match paint::render_commands_to_rgba(&surface, commands, viewport) {
-        Ok(frame) => frame,
-        Err(err) => {
-            return Err(err.to_string());
-        }
-    };
-    encode_png(&frame)
-}
-
-#[cfg(test)]
-fn write_png(path: &Path, frame: &RgbaFrame) -> Result<(), String> {
-    let png = encode_png(frame)?;
-    std::fs::write(path, png).map_err(|e| format!("write {}: {e}", path.display()))
-}
-
-fn encode_png(frame: &RgbaFrame) -> Result<Vec<u8>, String> {
-    let expected_len = frame
-        .width
-        .checked_mul(frame.height)
-        .and_then(|px| px.checked_mul(4))
-        .ok_or_else(|| "PNG dimensions overflow RGBA buffer length".to_owned())?
-        as usize;
-    if frame.rgba.len() != expected_len {
-        return Err(format!(
-            "invalid RGBA buffer length: got {}, expected {expected_len}",
-            frame.rgba.len()
-        ));
-    }
-
-    let mut out = Vec::new();
-    let mut encoder = png::Encoder::new(std::io::Cursor::new(&mut out), frame.width, frame.height);
-    encoder.set_color(png::ColorType::Rgba);
-    encoder.set_depth(png::BitDepth::Eight);
-    {
-        let mut writer = encoder
-            .write_header()
-            .map_err(|e| format!("write PNG header: {e}"))?;
-        writer
-            .write_image_data(&frame.rgba)
-            .map_err(|e| format!("write PNG data: {e}"))?;
-    }
-    Ok(out)
+    cdp::CdpState::with_runtime(runtime)
 }
 
 fn has_non_memory_action(cli: &Cli) -> bool {
-    cli.screenshot.is_some()
-        || cli.extract_text
+    cli.extract_text
         || cli.extract_selector.is_some()
         || cli.eval.is_some()
         || cli.dump_dom
-        || cli.dump_display_list
-        || cli.dump_lines
-        || cli.dump_layout_tree
-        || cli.click_at.is_some()
         || cli.focus.is_some()
         || cli.submit_form.is_some()
-        || cli.paint_stats
-        || cli.incremental
         || cli.cdp
-}
-
-fn validate_incremental_options(cli: &Cli) -> Result<(), String> {
-    if !cli.incremental {
-        return Ok(());
-    }
-    if cli.screenshot.is_none() || cli.eval.is_none() {
-        return Err("--incremental requires --screenshot and --eval".to_owned());
-    }
-    if cli.dump_dom
-        || cli.extract_text
-        || cli.dump_display_list
-        || cli.dump_lines
-        || cli.dump_layout_tree
-        || cli.paint_stats
-        || cli.extract_selector.is_some()
-        || has_interaction_action(cli)
-        || cli.cdp
-        || cli.list_fonts
-        || cli.memory_stats
-    {
-        return Err(
-            "--incremental cannot be combined with other output, interaction, CDP, font, or memory actions"
-                .to_owned(),
-        );
-    }
-    Ok(())
 }
 
 fn has_interaction_action(cli: &Cli) -> bool {
-    cli.click_at.is_some() || cli.focus.is_some() || cli.submit_form.is_some()
+    cli.focus.is_some() || cli.submit_form.is_some()
 }
 
 fn has_non_interaction_action(cli: &Cli) -> bool {
@@ -505,60 +207,7 @@ fn has_non_interaction_action(cli: &Cli) -> bool {
         || cli.extract_selector.is_some()
         || cli.eval.is_some()
         || cli.dump_dom
-        || cli.dump_display_list
-        || cli.dump_lines
-        || cli.dump_layout_tree
-        || cli.paint_stats
         || cli.cdp
-}
-
-fn run_list_fonts() -> ExitCode {
-    for path in collect_font_files() {
-        println!("{}", path.display());
-    }
-    ExitCode::SUCCESS
-}
-
-fn collect_font_files() -> Vec<PathBuf> {
-    let mut roots = vec![
-        PathBuf::from("/usr/share/fonts"),
-        PathBuf::from("/usr/local/share/fonts"),
-    ];
-    if let Some(home) = std::env::var_os("HOME") {
-        roots.push(PathBuf::from(home).join(".local/share/fonts"));
-    }
-
-    let mut fonts = Vec::new();
-    for root in roots {
-        collect_font_files_under(&root, 0, &mut fonts);
-    }
-    fonts.sort();
-    fonts.dedup();
-    fonts
-}
-
-fn collect_font_files_under(root: &Path, depth: u8, fonts: &mut Vec<PathBuf>) {
-    if depth > 8 {
-        return;
-    }
-    let Ok(entries) = std::fs::read_dir(root) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_font_files_under(&path, depth + 1, fonts);
-        } else if is_font_file(&path) {
-            fonts.push(path);
-        }
-    }
-}
-
-fn is_font_file(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(str::to_ascii_lowercase)
-        .is_some_and(|ext| matches!(ext.as_str(), "ttf" | "otf" | "ttc" | "woff" | "woff2"))
 }
 
 #[derive(serde::Serialize)]
@@ -683,9 +332,7 @@ fn run_eval(url: &str, js: &str, profile_dir: Option<&Path>) -> ExitCode {
     }
 }
 
-/// `--dump-dom` / `--extract-text` / `--dump-layout-tree` / `--dump-lines` /
-/// `--dump-display-list` / `--paint-stats`: load the URL's HTML and print the requested
-/// DOM/layout/paint projections.
+/// `--dump-dom` / `--extract-text`: load the URL and print source projections.
 fn run_dom_outputs(url: &str, cli: &Cli, viewport: (u32, u32)) -> ExitCode {
     let mut session = match browser_adapter::BrowserSession::load(url, cli.profile_dir.as_deref()) {
         Ok(session) => session,
@@ -705,27 +352,6 @@ fn run_dom_outputs(url: &str, cli: &Cli, viewport: (u32, u32)) -> ExitCode {
             println!(
                 "{}",
                 session.document_text(DocumentTextKind::TextContent, viewport)?
-            );
-        }
-        if cli.dump_layout_tree {
-            print!(
-                "{}",
-                session.document_text(DocumentTextKind::LayoutTree, viewport)?
-            );
-        }
-        if cli.dump_lines {
-            print!(
-                "{}",
-                session.document_text(DocumentTextKind::Lines, viewport)?
-            );
-        }
-        if cli.dump_display_list {
-            print!("{}", session.display_list_text(viewport)?);
-        }
-        if cli.paint_stats {
-            print!(
-                "{}",
-                session.document_text(DocumentTextKind::PaintStats, viewport)?
             );
         }
         Ok::<(), String>(())
@@ -785,13 +411,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_full_flag_surface() {
-        // Every flag from docs/SPEC.md parses.
+    fn parses_native_text_runtime_flag_surface() {
         let cli = parse(&[
             "--url",
             "https://example.com",
-            "--screenshot",
-            "out.png",
             "--viewport",
             "1280x720",
             "--profile-dir",
@@ -802,17 +425,10 @@ mod tests {
             "--eval",
             "1+2",
             "--dump-dom",
-            "--dump-display-list",
-            "--dump-lines",
-            "--dump-layout-tree",
-            "--click-at",
-            "10,20",
             "--focus",
             "q",
             "--submit-form",
             "f",
-            "--paint-stats",
-            "--incremental",
             "--cdp",
             "--cdp-port",
             "9999",
@@ -822,7 +438,7 @@ mod tests {
         assert_eq!(cli.viewport, "1280x720");
         assert_eq!(cli.profile_dir, Some(PathBuf::from("profiles/baseline")));
         assert_eq!(cli.cdp_port, 9999);
-        assert!(cli.dump_dom && cli.dump_layout_tree && cli.cdp && cli.incremental);
+        assert!(cli.dump_dom && cli.cdp && cli.memory_stats);
     }
 
     #[test]
@@ -846,53 +462,15 @@ mod tests {
     }
 
     #[test]
-    fn url_required_unless_list_fonts() {
-        // No URL, no --list-fonts → error exit 2.
+    fn url_is_required() {
         let cli = parse(&["--eval", "1+2"]);
         assert_eq!(run(cli), ExitCode::from(2));
-    }
-
-    #[test]
-    fn list_fonts_needs_no_url() {
-        let cli = parse(&["--list-fonts"]);
-        assert_eq!(run(cli), ExitCode::SUCCESS);
     }
 
     #[test]
     fn memory_stats_runs_as_standalone_action() {
         let cli = parse(&["--url", "file:///dev/null", "--memory-stats"]);
         assert_eq!(run(cli), ExitCode::SUCCESS);
-    }
-
-    #[test]
-    fn png_writer_persists_rgba_frames() {
-        let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("shot.png");
-        let frame = RgbaFrame {
-            width: 1,
-            height: 1,
-            rgba: vec![0xff, 0x00, 0x00, 0xff],
-        };
-
-        write_png(&output, &frame).unwrap();
-
-        let bytes = std::fs::read(&output).unwrap();
-        assert!(bytes.starts_with(b"\x89PNG\r\n\x1a\n"));
-    }
-
-    #[test]
-    fn png_writer_rejects_bad_rgba_lengths() {
-        let dir = tempfile::tempdir().unwrap();
-        let output = dir.path().join("bad.png");
-        let frame = RgbaFrame {
-            width: 2,
-            height: 1,
-            rgba: vec![0; 4],
-        };
-
-        let err = write_png(&output, &frame).unwrap_err();
-
-        assert!(err.contains("invalid RGBA buffer length"));
     }
 
     #[test]
@@ -927,86 +505,6 @@ mod tests {
     }
 
     #[test]
-    fn dump_lines_runs_through_browser_core() {
-        let dir = tempfile::tempdir().unwrap();
-        let html = dir.path().join("lines.html");
-        std::fs::write(
-            &html,
-            "<html><head><title>Hidden</title></head><body><p>one two three four</p></body></html>",
-        )
-        .unwrap();
-        let url = format!("file://{}", html.display());
-        let cli = parse(&[
-            "--url",
-            url.as_str(),
-            "--viewport",
-            "56x200",
-            "--dump-lines",
-        ]);
-        assert_eq!(run(cli), ExitCode::SUCCESS);
-    }
-
-    #[test]
-    fn dump_layout_tree_runs_through_browser_core() {
-        let dir = tempfile::tempdir().unwrap();
-        let html = dir.path().join("layout-tree.html");
-        std::fs::write(
-            &html,
-            "<html><head><title>Hidden</title></head><body><main id='root'><p>one two</p></main></body></html>",
-        )
-        .unwrap();
-        let url = format!("file://{}", html.display());
-        let cli = parse(&[
-            "--url",
-            url.as_str(),
-            "--viewport",
-            "120x200",
-            "--dump-layout-tree",
-        ]);
-        assert_eq!(run(cli), ExitCode::SUCCESS);
-    }
-
-    #[test]
-    fn dump_display_list_runs_through_browser_core() {
-        let dir = tempfile::tempdir().unwrap();
-        let html = dir.path().join("paint.html");
-        std::fs::write(
-            &html,
-            "<html><head><title>Hidden</title></head><body><p>one two three four</p></body></html>",
-        )
-        .unwrap();
-        let url = format!("file://{}", html.display());
-        let cli = parse(&[
-            "--url",
-            url.as_str(),
-            "--viewport",
-            "56x200",
-            "--dump-display-list",
-        ]);
-        assert_eq!(run(cli), ExitCode::SUCCESS);
-    }
-
-    #[test]
-    fn paint_stats_runs_through_browser_core() {
-        let dir = tempfile::tempdir().unwrap();
-        let html = dir.path().join("stats.html");
-        std::fs::write(
-            &html,
-            "<html><head><title>Hidden</title></head><body><p>one two three four</p></body></html>",
-        )
-        .unwrap();
-        let url = format!("file://{}", html.display());
-        let cli = parse(&[
-            "--url",
-            url.as_str(),
-            "--viewport",
-            "56x200",
-            "--paint-stats",
-        ]);
-        assert_eq!(run(cli), ExitCode::SUCCESS);
-    }
-
-    #[test]
     fn interaction_flags_run_through_browser_core() {
         let dir = tempfile::tempdir().unwrap();
         let html = dir.path().join("interactions.html");
@@ -1024,82 +522,12 @@ mod tests {
         let cli = parse(&[
             "--url",
             url.as_str(),
-            "--viewport",
-            "120x80",
-            "--click-at",
-            "10,10",
             "--focus",
             "name",
             "--submit-form",
             "contact",
         ]);
         assert_eq!(run(cli), ExitCode::SUCCESS);
-    }
-
-    #[test]
-    fn click_at_rejects_malformed_coordinates() {
-        let cli = parse(&["--url", "file:///dev/null", "--click-at", "10"]);
-        assert_eq!(run(cli), ExitCode::from(2));
-    }
-
-    #[test]
-    fn incremental_requires_both_inputs() {
-        let cli = parse(&[
-            "--url",
-            "file:///dev/null",
-            "--eval",
-            "1+2",
-            "--incremental",
-        ]);
-        assert_eq!(run(cli), ExitCode::from(2));
-    }
-
-    #[test]
-    fn incremental_rejects_dump_modes() {
-        let cli = parse(&[
-            "--url",
-            "file:///dev/null",
-            "--screenshot",
-            "capture.png",
-            "--eval",
-            "1+2",
-            "--incremental",
-            "--dump-dom",
-        ]);
-        assert_eq!(run(cli), ExitCode::from(2));
-    }
-
-    #[test]
-    fn incremental_rejects_other_actions_instead_of_ignoring_them() {
-        let cli = parse(&[
-            "--url",
-            "file:///dev/null",
-            "--screenshot",
-            "capture.png",
-            "--eval",
-            "1+2",
-            "--incremental",
-            "--paint-stats",
-        ]);
-        assert_eq!(run(cli), ExitCode::from(2));
-    }
-
-    #[test]
-    fn incremental_paths_preserve_extensions_and_extensionless_names() {
-        assert_eq!(
-            incremental_frame_paths(Path::new("captures/page.png")),
-            (
-                PathBuf::from("captures/page-frame-1.png"),
-                PathBuf::from("captures/page-frame-2.png")
-            )
-        );
-        assert_eq!(
-            incremental_frame_paths(Path::new("captures/page")),
-            (
-                PathBuf::from("captures/page-frame-1"),
-                PathBuf::from("captures/page-frame-2")
-            )
-        );
     }
 
     #[test]

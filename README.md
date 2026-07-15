@@ -62,8 +62,8 @@ answers element, Range, and caret geometry from the matching Flutter commit.
 Navigation/stop/deadline cancellation, malformed-commit and full-resync
 recovery, late-reply rejection, and repeated-read commit reuse are covered by
 `just test-r6`; `just gate-r6` preserves all R5 rendered evidence. WebRender/RGBA
-has now been removed from the production GUI/FFI presentation path; removing the
-remaining native-headless WebRender owner is the next R7 deletion slice.
+and both EGL owners are now deleted from the dependency graph; removing the
+remaining superseded Rust layout/display-list island is the next R7 slice.
 
 The checked-in Linux Flutter alpha shell uses handwritten Dart FFI over the
 one-owner `vixen-ffi` controller and presents exact Flutter renderer commits.

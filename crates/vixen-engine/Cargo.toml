@@ -29,11 +29,6 @@ base64 = "0.22"
 getrandom = "0.3"
 png = "0.18.1"
 
-# Phase 5: the single GPU paint path. `gleam` is used only at the GL FFI
-# loading boundary; all draw-command translation goes through WebRender.
-gleam = "0.15.1"
-webrender = "0.69.0"
-
 # Stylo CSS engine (Phase 3, docs/PLAN.md). The `servo` feature selects the
 # non-Gecko config; it brings in the web_atoms/string_cache atom sets and
 # the servo-flavoured `SelectorImpl`. `selectors`, `stylo_atoms` are direct

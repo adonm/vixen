@@ -5,10 +5,10 @@ use std::time::{Duration, Instant};
 
 use vixen_api::{
     BrowserCommand, BrowserCommandResult, BrowserEvent, BrowsingContextId, BrowsingContextState,
-    DocumentId, DocumentTextKind, ElementInfo, EvaluationResult, FocusProjection,
-    FormSubmissionInfo, NavigationActionOutcome, NavigationId, NavigationPhase, ScriptValue,
+    DocumentTextKind, ElementInfo, EvaluationResult, FocusProjection, FormSubmissionInfo,
+    NavigationId, NavigationPhase, ScriptValue,
 };
-use vixen_engine::browser::{BrowserConfig, EngineBrowserHandle, PaintSnapshot, spawn_browser};
+use vixen_engine::browser::{BrowserConfig, EngineBrowserHandle, spawn_browser};
 
 const NAVIGATION_WAIT_TIMEOUT: Duration = Duration::from_secs(35);
 
@@ -85,49 +85,6 @@ impl BrowserSession {
         Ok(self.evaluate_result(source)?.value)
     }
 
-    pub(crate) fn evaluate_for_incremental(
-        &mut self,
-        source: &str,
-        frame_one_document_id: DocumentId,
-    ) -> Result<ScriptValue, String> {
-        let state = self.state()?;
-        if state.document_id != frame_one_document_id {
-            return Err(
-                "incremental evaluation cannot run because the frame 1 document is no longer current"
-                    .to_owned(),
-            );
-        }
-        let evaluation = self.evaluate_result_in_state(source, state)?;
-        let navigation_ids = evaluation
-            .navigation_actions
-            .iter()
-            .filter_map(|action| match action {
-                NavigationActionOutcome::CrossDocument { navigation_id, .. } => {
-                    Some(*navigation_id)
-                }
-                NavigationActionOutcome::SameDocument { .. } => None,
-            })
-            .collect::<Vec<_>>();
-        if let Some(&navigation_id) = navigation_ids.last() {
-            self.wait_for_navigation(navigation_id).map_err(|error| {
-                format!(
-                    "incremental frame 2 cannot be captured deterministically after evaluation: {error}"
-                )
-            })?;
-        }
-
-        let refreshed = self.state().map_err(|error| {
-            format!("refresh incremental frame 2 browser state after evaluation: {error}")
-        })?;
-        if refreshed.is_loading {
-            return Err(
-                "incremental frame 2 cannot be captured deterministically while navigation is still loading"
-                    .to_owned(),
-            );
-        }
-        Ok(evaluation.value)
-    }
-
     fn evaluate_result(&mut self, source: &str) -> Result<EvaluationResult, String> {
         let state = self.state()?;
         self.evaluate_result_in_state(source, state)
@@ -177,16 +134,6 @@ impl BrowserSession {
         }
     }
 
-    pub(crate) fn capture_paint_snapshot(
-        &mut self,
-        viewport: (u32, u32),
-    ) -> Result<PaintSnapshot, String> {
-        let state = self.state()?;
-        self.handle
-            .capture_paint_snapshot(self.context_id, state.document_id, viewport)
-            .map_err(|error| error.to_string())
-    }
-
     pub(crate) fn current_url(&mut self) -> Result<String, String> {
         Ok(self.state()?.url)
     }
@@ -209,45 +156,6 @@ impl BrowserSession {
         {
             BrowserCommandResult::DocumentText(text) => Ok(text),
             result => Err(format!("unexpected document-text result: {result:?}")),
-        }
-    }
-
-    pub(crate) fn display_list_text(&mut self, viewport: (u32, u32)) -> Result<String, String> {
-        let state = self.state()?;
-        match self
-            .handle
-            .dispatch(BrowserCommand::DisplayListText {
-                context_id: self.context_id,
-                document_id: state.document_id,
-                viewport,
-            })
-            .map_err(|error| error.to_string())?
-        {
-            BrowserCommandResult::DisplayListText(text) => Ok(text),
-            result => Err(format!("unexpected display-list result: {result:?}")),
-        }
-    }
-
-    pub(crate) fn hit_test(
-        &mut self,
-        viewport: (u32, u32),
-        x: f64,
-        y: f64,
-    ) -> Result<Option<ElementInfo>, String> {
-        let state = self.state()?;
-        match self
-            .handle
-            .dispatch(BrowserCommand::HitTest {
-                context_id: self.context_id,
-                document_id: state.document_id,
-                viewport,
-                x,
-                y,
-            })
-            .map_err(|error| error.to_string())?
-        {
-            BrowserCommandResult::HitTest(target) => Ok(target),
-            result => Err(format!("unexpected hit-test result: {result:?}")),
         }
     }
 
@@ -389,9 +297,6 @@ mod tests {
                 .len(),
             1
         );
-        let paint = session.capture_paint_snapshot((800, 600)).unwrap();
-        assert_eq!(paint.context_id, session.context_id);
-        assert!(!paint.commands.is_empty());
         assert!(
             session
                 .document_text(DocumentTextKind::Dom, (800, 600))

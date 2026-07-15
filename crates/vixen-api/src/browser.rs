@@ -554,11 +554,6 @@ pub enum BrowserCommand {
         node_id: usize,
         viewport: (u32, u32),
     },
-    DisplayListText {
-        context_id: BrowsingContextId,
-        document_id: DocumentId,
-        viewport: (u32, u32),
-    },
     Diagnostics {
         context_id: BrowsingContextId,
         document_id: DocumentId,
@@ -607,7 +602,6 @@ pub enum BrowserCommandResult {
     AccessibilitySnapshot(AccessibilitySnapshot),
     SelectorMatches(Vec<crate::ElementInfo>),
     ComputedStyle(Vec<(String, String)>),
-    DisplayListText(String),
     Diagnostics(Vec<crate::EngineDiagnostic>),
     DocumentText(String),
     HitTest(Option<crate::ElementInfo>),
@@ -900,9 +894,6 @@ impl ProfileDataSelection {
 pub enum DocumentTextKind {
     Dom,
     TextContent,
-    LayoutTree,
-    Lines,
-    PaintStats,
 }
 
 #[derive(Debug, Clone, PartialEq)]

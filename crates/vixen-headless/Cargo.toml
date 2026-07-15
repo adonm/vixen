@@ -1,4 +1,4 @@
-# vixen-headless — CLI + CDP + EGL surfaceless render path.
+# vixen-headless — native text/runtime CLI + CDP server.
 # Phase 2 wires `--url`/`--eval` to vixen-engine's JS runtime seam.
 # ADR-014 uses deno_core/V8 behind vixen-engine's JS runtime seam.
 [package]
@@ -21,8 +21,6 @@ serde_json = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
 tokio-tungstenite = "0.27"
 futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
-khronos-egl = { version = "6.0.0", features = ["dynamic"] }
-png = "0.18.1"
 base64 = "0.22"
 tempfile = "3"
 

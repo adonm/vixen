@@ -45,7 +45,6 @@ pub struct PageHarnessEngine {
     shared: Arc<HarnessBrowserShared>,
     context_id: BrowsingContextId,
     document_id: DocumentId,
-    fixture_url: String,
 }
 
 pub type BrowserHarnessEngine = PageHarnessEngine;
@@ -71,23 +70,7 @@ impl PageHarnessEngine {
             shared,
             context_id,
             document_id: state.document_id,
-            fixture_url: fixture_url.to_owned(),
         }
-    }
-
-    fn resolve_reference(&self, reference: &str) -> PathBuf {
-        let reference_path = Path::new(reference);
-        if reference_path.is_absolute() {
-            return reference_path.to_path_buf();
-        }
-        if reference.starts_with("fixtures/") {
-            return self.shared.root.join(reference);
-        }
-        let fixture_path = self.shared.root.join(&self.fixture_url);
-        fixture_path
-            .parent()
-            .unwrap_or(&self.shared.root)
-            .join(reference_path)
     }
 
     fn dispatch(&self, command: BrowserCommand) -> Result<BrowserCommandResult, String> {
@@ -177,68 +160,21 @@ impl HarnessEngine for PageHarnessEngine {
         }
     }
 
-    fn display_list(&self, vw: u32, vh: u32) -> Result<String, String> {
-        match self.dispatch(BrowserCommand::DisplayListText {
-            context_id: self.context_id,
-            document_id: self.document_id,
-            viewport: (vw, vh),
-        })? {
-            BrowserCommandResult::DisplayListText(text) => Ok(text),
-            result => Err(format!("unexpected display-list result: {result:?}")),
-        }
+    fn display_list(&self, _vw: u32, _vh: u32) -> Result<String, String> {
+        Err("rendered fixture checks require the Flutter host".to_owned())
     }
 
-    fn reference_display_list(&self, reference: &str, vw: u32, vh: u32) -> Result<String, String> {
-        let path = self.resolve_reference(reference);
-        let html = std::fs::read_to_string(&path)
-            .map_err(|error| format!("read reference {}: {error}", path.display()))?;
-        let url = path.display().to_string();
-        let mut handle = self
-            .shared
-            .handle
-            .lock()
-            .map_err(|_| "WPT browser lock poisoned".to_owned())?;
-        let context_id = create_context(&mut handle)?;
-        let result = (|| {
-            navigate_html_and_wait(&mut handle, context_id, url, html)?;
-            let state = context_state(&mut handle, context_id)?;
-            match handle
-                .dispatch(BrowserCommand::DisplayListText {
-                    context_id,
-                    document_id: state.document_id,
-                    viewport: (vw, vh),
-                })
-                .map_err(|error| error.to_string())?
-            {
-                BrowserCommandResult::DisplayListText(text) => Ok(text),
-                result => Err(format!(
-                    "unexpected reference display-list result: {result:?}"
-                )),
-            }
-        })();
-        let _ = handle.dispatch(BrowserCommand::CloseBrowsingContext { context_id });
-        result
+    fn reference_display_list(
+        &self,
+        _reference: &str,
+        _vw: u32,
+        _vh: u32,
+    ) -> Result<String, String> {
+        Err("rendered fixture checks require the Flutter host".to_owned())
     }
 
-    fn screenshot_rgba(&self, vw: u32, vh: u32) -> Result<RgbaScreenshot, String> {
-        let viewport = (vw, vh);
-        let snapshot = self
-            .shared
-            .handle
-            .lock()
-            .map_err(|_| "WPT browser lock poisoned".to_owned())?
-            .capture_paint_snapshot(self.context_id, self.document_id, viewport)
-            .map_err(|error| error.to_string())?;
-        let surface = vixen_headless::surface::SurfacelessSurface::new(viewport)
-            .map_err(|e| e.to_string())?;
-        let frame =
-            vixen_engine::paint::render_commands_to_rgba(&surface, &snapshot.commands, viewport)
-                .map_err(|e| e.to_string())?;
-        Ok(RgbaScreenshot {
-            width: frame.width,
-            height: frame.height,
-            rgba: frame.rgba,
-        })
+    fn screenshot_rgba(&self, _vw: u32, _vh: u32) -> Result<RgbaScreenshot, String> {
+        Err("rendered fixture checks require the Flutter host".to_owned())
     }
 }
 
@@ -249,16 +185,6 @@ impl Drop for PageHarnessEngine {
                 context_id: self.context_id,
             });
         }
-    }
-}
-
-fn create_context(handle: &mut EngineBrowserHandle) -> Result<BrowsingContextId, String> {
-    match handle
-        .dispatch(BrowserCommand::CreateBrowsingContext)
-        .map_err(|error| error.to_string())?
-    {
-        BrowserCommandResult::BrowsingContextCreated { context_id } => Ok(context_id),
-        result => Err(format!("unexpected create-context result: {result:?}")),
     }
 }
 

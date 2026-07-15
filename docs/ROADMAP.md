@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap moves Vixen from the current WebRender/RGBA prototype to the full
+This roadmap moves Vixen from its original WebRender/RGBA prototype to the full
 project goal: a credible Firefox replacement with one Flutter-hosted web renderer
 and browser shell on Linux, macOS, Windows, Android, and the Apple Silicon iOS
 Simulator, plus first-class rendered CLI/CDP/WPT automation through the same
@@ -64,17 +64,15 @@ As of 2026-07-15 the repository has:
 - a useful CDP/Playwright slice and a Linux Flutter shell with native Wayland
   chrome, input/IME, Semantics, scrolling/find/zoom, recovery, and deterministic
   release/Cage evidence; and
-- a partially implemented Rust layout tree/display list/WebRender renderer,
-  surfaceless EGL in native headless and Flutter frame capture, retained RGBA
-  frame ABI/pools, and a Linux pixel-buffer texture presenter.
+- a remaining partially implemented Rust layout tree/display-list island that is
+  no longer connected to a paint backend.
 
 The final bullet is now **migration debt**, not a foundation to widen. It remains
-the production comparison path until the Flutter vertical proves parity, but it
-receives only security, data-loss, or release-blocking correctness fixes.
-Deterministic text metrics, unfinished Rust formatting helpers, paint primitives,
-EGL surface code, texture transport, and WebRender-specific tests may be removed
-as soon as their replacement evidence exists. Partially implemented code does not
-justify preserving the wrong ownership boundary.
+only for BrowserCore semantics/input/scroll compatibility while those projections
+move to accepted Flutter commits. WebRender/gleam, both EGL owners, native visual
+headless, the RGBA frame ABI/pools, Dart frame transfer, and the Linux texture
+plugin/presenter are deleted. Partially implemented code does not justify
+preserving the wrong ownership boundary.
 
 ## Architecture rules for every stage
 
@@ -441,6 +439,14 @@ for hypothetical embedders.
 **Proof:** one Flutter renderer in dependency/source scans; no WebRender/EGL/frame
 transport; GUI and chrome-less host share mutation/commit code; all supported
 layout/pixel/input/semantics/CDP evidence uses it.
+
+**In progress:** production GUI and automation now always paint Flutter commits;
+the RGBA C/Dart transport and Linux texture path are deleted. WebRender, gleam,
+`GlContext`, both EGL implementations, native screenshot/incremental CLI flags,
+native rendered CDP smoke, `PaintSnapshot`, and obsolete Phase 4/5 gates are also
+deleted. The remaining blocker is removal of the Rust layout/display-list island
+after semantics, selector metadata, scroll/find, and fallback hit testing stop
+consulting it.
 
 ### R8. Linux stabilization and rebaseline
 

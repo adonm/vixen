@@ -35,7 +35,6 @@ use vixen_net::{
 use vixen_store::{CacheEntry, ClearDataSelection, SessionRecord, Store};
 
 use crate::data_url::parse_data_url;
-use crate::display_list::PaintCommand;
 use crate::history::{HistoryEntry, ScrollRestoration, SessionHistory};
 use crate::page::{Page, PageParser};
 use crate::raster_image::{
@@ -182,16 +181,6 @@ pub struct EngineBrowserClient {
     control: Arc<CoreControl>,
 }
 
-/// Immutable, generation-tagged renderer input. Host surfaces own GL/EGL;
-/// BrowserCore owns the Page/display-list generation.
-#[derive(Debug, Clone)]
-pub struct PaintSnapshot {
-    pub context_id: BrowsingContextId,
-    pub document_id: DocumentId,
-    pub viewport: (u32, u32),
-    pub commands: Vec<PaintCommand>,
-}
-
 impl EngineBrowserHandle {
     pub fn subscribe(&self) -> EngineBrowserClient {
         EngineBrowserClient {
@@ -222,29 +211,6 @@ impl EngineBrowserHandle {
         timeout: Duration,
     ) -> Result<Option<BrowserEvent>, BrowserError> {
         self.events.pop(Some(timeout))
-    }
-
-    pub fn capture_paint_snapshot(
-        &mut self,
-        context_id: BrowsingContextId,
-        document_id: DocumentId,
-        viewport: (u32, u32),
-    ) -> Result<PaintSnapshot, BrowserError> {
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.commands
-            .try_send(CoreMessage::CapturePaint {
-                context_id,
-                document_id,
-                viewport,
-                reply: reply_tx,
-            })
-            .map_err(command_send_error)?;
-        reply_rx.recv().map_err(|_| {
-            BrowserError::new(
-                browser_error_codes::CLOSED,
-                "browser core closed before capturing paint",
-            )
-        })?
     }
 
     /// Test/embedded-host source injection that still traverses BrowserCore's
@@ -295,15 +261,6 @@ impl EngineBrowserClient {
     ) -> Result<Option<BrowserEvent>, BrowserError> {
         self.events.pop(Some(timeout))
     }
-
-    pub fn capture_paint_snapshot(
-        &mut self,
-        context_id: BrowsingContextId,
-        document_id: DocumentId,
-        viewport: (u32, u32),
-    ) -> Result<PaintSnapshot, BrowserError> {
-        capture_paint_snapshot(&self.commands, context_id, document_id, viewport)
-    }
 }
 
 impl BrowserHandle for EngineBrowserHandle {
@@ -341,29 +298,6 @@ fn dispatch_command(
         BrowserError::new(
             browser_error_codes::CLOSED,
             "browser core closed before acknowledging the command",
-        )
-    })?
-}
-
-fn capture_paint_snapshot(
-    commands: &mpsc::SyncSender<CoreMessage>,
-    context_id: BrowsingContextId,
-    document_id: DocumentId,
-    viewport: (u32, u32),
-) -> Result<PaintSnapshot, BrowserError> {
-    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-    commands
-        .try_send(CoreMessage::CapturePaint {
-            context_id,
-            document_id,
-            viewport,
-            reply: reply_tx,
-        })
-        .map_err(command_send_error)?;
-    reply_rx.recv().map_err(|_| {
-        BrowserError::new(
-            browser_error_codes::CLOSED,
-            "browser core closed before capturing paint",
         )
     })?
 }
@@ -477,12 +411,6 @@ enum CoreMessage {
         command: BrowserCommand,
         reply: mpsc::SyncSender<Result<BrowserCommandResult, BrowserError>>,
     },
-    CapturePaint {
-        context_id: BrowsingContextId,
-        document_id: DocumentId,
-        viewport: (u32, u32),
-        reply: mpsc::SyncSender<Result<PaintSnapshot, BrowserError>>,
-    },
     NavigateHtml {
         context_id: BrowsingContextId,
         url: String,
@@ -502,14 +430,6 @@ fn handle_core_message(core: &mut BrowserCore, message: CoreMessage) -> bool {
         CoreMessage::Dispatch { command, reply } => {
             let _ = reply.send(core.dispatch(command));
             core.start_pending_loads();
-        }
-        CoreMessage::CapturePaint {
-            context_id,
-            document_id,
-            viewport,
-            reply,
-        } => {
-            let _ = reply.send(core.capture_paint_snapshot(context_id, document_id, viewport));
         }
         CoreMessage::NavigateHtml {
             context_id,
@@ -1512,17 +1432,6 @@ impl BrowserCore {
                         .computed_style_for_viewport(node_id, viewport),
                 ))
             }
-            BrowserCommand::DisplayListText {
-                context_id,
-                document_id,
-                viewport,
-            } => {
-                validate_viewport(viewport)?;
-                let context = self.context_for_document(context_id, document_id)?;
-                Ok(BrowserCommandResult::DisplayListText(
-                    context.page().dump_display_list(viewport),
-                ))
-            }
             BrowserCommand::Diagnostics {
                 context_id,
                 document_id,
@@ -1543,9 +1452,6 @@ impl BrowserCore {
                 let text = match kind {
                     DocumentTextKind::Dom => context.page().dump_dom(),
                     DocumentTextKind::TextContent => context.page().text_content(),
-                    DocumentTextKind::LayoutTree => context.page().dump_layout_tree(viewport),
-                    DocumentTextKind::Lines => context.page().dump_lines(viewport),
-                    DocumentTextKind::PaintStats => context.page().dump_paint_stats(viewport),
                 };
                 Ok(BrowserCommandResult::DocumentText(text))
             }
@@ -1696,27 +1602,6 @@ impl BrowserCore {
             }
         }
         Ok(BrowserCommandResult::Accepted)
-    }
-
-    fn capture_paint_snapshot(
-        &self,
-        context_id: BrowsingContextId,
-        document_id: DocumentId,
-        viewport: (u32, u32),
-    ) -> Result<PaintSnapshot, BrowserError> {
-        validate_viewport(viewport)?;
-        let context = self.context_for_document(context_id, document_id)?;
-        let scale = page_output_scale(context);
-        let layout_viewport =
-            page_layout_viewport(viewport, context.host_view.scale_factor, context.page_zoom);
-        let mut commands = context.page().display_list(layout_viewport);
-        scale_paint_commands(&mut commands, scale as f32);
-        Ok(PaintSnapshot {
-            context_id,
-            document_id,
-            viewport,
-            commands,
-        })
     }
 
     fn accessibility_snapshot(
@@ -5392,19 +5277,6 @@ fn keyboard_scroll_delta(
     }
 }
 
-fn scale_paint_commands(commands: &mut [PaintCommand], scale: f32) {
-    for command in commands {
-        let rect = match command {
-            PaintCommand::Background { fill, .. } => fill,
-            PaintCommand::Text { rect, .. } | PaintCommand::Image { rect, .. } => rect,
-        };
-        rect.x *= scale;
-        rect.y *= scale;
-        rect.w *= scale;
-        rect.h *= scale;
-    }
-}
-
 fn validate_lookup_id(id: &str) -> Result<(), BrowserError> {
     if id.len() > MAX_SELECTOR_BYTES {
         return Err(BrowserError::new(
@@ -7068,23 +6940,6 @@ mod tests {
             ),
             ScriptValue::String("200:100:2:200:100".to_owned())
         );
-
-        let paint = handle
-            .capture_paint_snapshot(context_id, current.document_id, viewport)
-            .unwrap();
-        let red_width = paint
-            .commands
-            .iter()
-            .find_map(|command| match command {
-                PaintCommand::Background { fill, color, .. }
-                    if color.r == 255 && color.g == 0 && color.b == 0 =>
-                {
-                    Some(fill.w)
-                }
-                _ => None,
-            })
-            .unwrap();
-        assert_eq!(red_width, 200.0);
 
         let semantic = match handle
             .dispatch(BrowserCommand::AccessibilitySnapshot {
@@ -9271,15 +9126,6 @@ mod tests {
             ),
             ScriptValue::String("120px:red".to_owned())
         );
-        let paint = handle
-            .capture_paint_snapshot(context_id, settled.document_id, (320, 200))
-            .unwrap();
-        assert!(paint.commands.iter().any(|command| matches!(
-            command,
-            PaintCommand::Background { fill, color, .. }
-                if fill.w == 120.0 && fill.h == 40.0
-                    && color.r == 255 && color.g == 0 && color.b == 0
-        )));
         assert_exactly_one_terminal_phase(&events, navigation_id);
 
         server.join();
@@ -9320,48 +9166,6 @@ mod tests {
                 "`${getComputedStyle(document.querySelector('#external-style-target')).width}:${getComputedStyle(document.querySelector('#external-style-target')).backgroundColor}`"
             ),
             ScriptValue::String("120px:red".to_owned())
-        );
-        let paint = handle
-            .capture_paint_snapshot(context_id, settled.document_id, (320, 200))
-            .unwrap();
-        assert!(paint.commands.iter().any(|command| matches!(
-            command,
-            PaintCommand::Background { fill, color, .. }
-                if fill.w == 120.0 && fill.h == 40.0
-                    && color.r == 255 && color.g == 0 && color.b == 0
-        )));
-    }
-
-    #[test]
-    fn raster_image_fixture_reaches_the_shared_paint_snapshot_with_exact_pixels() {
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/images/raster-image.html")
-            .canonicalize()
-            .unwrap();
-        let url = url::Url::from_file_path(fixture).unwrap().to_string();
-        let mut handle = spawn_browser(test_config()).unwrap();
-        let context_id = create(&mut handle);
-        navigate(&mut handle, context_id, &url);
-        let settled = state(&mut handle, context_id);
-        let paint = handle
-            .capture_paint_snapshot(context_id, settled.document_id, (320, 200))
-            .unwrap();
-        let (rect, image) = paint
-            .commands
-            .iter()
-            .find_map(|command| match command {
-                PaintCommand::Image { rect, image } => Some((rect, image)),
-                _ => None,
-            })
-            .expect("decoded fixture image command");
-
-        assert_eq!((rect.x, rect.y, rect.w, rect.h), (0.0, 0.0, 40.0, 40.0));
-        assert_eq!((image.width, image.height), (2, 2));
-        assert_eq!(
-            image.rgba.as_slice(),
-            [
-                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255,
-            ]
         );
     }
 

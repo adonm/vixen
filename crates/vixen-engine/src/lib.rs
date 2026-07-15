@@ -1,10 +1,8 @@
 //! vixen-engine — engine integration glue.
 //!
 //! Phase 2 stands up the `deno_core` runtime here (`script.rs`). Phase 3
-//! adds HTML parse + Stylo cascade, Phase 4 layout, Phase 5 the single
-//! WebRender paint path consuming `vixen_api::GlContext`.
-//! The crate defaults to `deny(unsafe_code)`; the only localized exception is
-//! the documented GL symbol-loader boundary in `paint.rs`.
+//! adds HTML parse + Stylo cascade. Flutter owns formatting and paint through
+//! the renderer source/commit protocol.
 
 #![deny(unsafe_code)]
 
@@ -55,7 +53,6 @@ pub mod mime;
 pub mod multicol;
 pub mod mutation_observer;
 pub mod page;
-pub mod paint;
 pub mod radial_gradient;
 pub mod range;
 mod raster_image;

@@ -81,22 +81,6 @@ impl EngineDiagnostic {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Graphics context seam (docs/ARCHITECTURE.md "Style, layout, paint, and inspection")
-// ---------------------------------------------------------------------------
-
-/// Transitional graphics-context abstraction used by the implemented
-/// WebRender/EGL comparison path. ADR-022 removes this trait when Flutter's
-/// mutation/commit renderer cuts over; do not add new consumers or capabilities.
-pub trait GlContext {
-    /// Ensure this context is current on the calling thread.
-    fn make_current(&self);
-    /// GL function-pointer lookup; feeds WebRender's `gleam` loader.
-    fn proc_address(&self, name: &str) -> *const std::ffi::c_void;
-    /// Drawable size in physical pixels.
-    fn drawable_size(&self) -> (u32, u32);
-}
-
 /// Download lifecycle events surfaced through BrowserCore.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DownloadEvent {

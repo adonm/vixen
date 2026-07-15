@@ -1,16 +1,11 @@
 //! Vertical page pipeline facade — the small integration seam every large
 //! browser milestone should extend.
 //!
-//! Today this owns the loaded URL + parsed [`crate::doc::Document`] and exposes
-//! the common inspection operations used by headless and the WPT harness
-//! (snapshot, text, selector query, diagnostics). Phase 3 cascade, Phase 4
-//! layout, and Phase 5 paint should extend this type in order rather than land
-//! as more isolated pure modules.
+//! This owns the loaded URL + parsed [`crate::doc::Document`] and exposes the
+//! source/inspection operations used by BrowserCore and the renderer bridge.
 //!
 //! The intended growth path is deliberately boring:
-//! `Page::from_html` → `compute_styles()` → `layout()` → `build_display_list()`
-//! → `render(&dyn vixen_api::GlContext)`. Each step adds state behind this
-//! facade and is proven by a `just gate-*` command.
+//! `Page::from_html` → cascade/source projection → Flutter renderer commit.
 
 #![forbid(unsafe_code)]
 

@@ -294,9 +294,6 @@ test-headless-runtime:
 _node-deps:
     mise x node@24 -- npm ci
 
-cdp-playwright-smoke: _node-deps
-    mise x node@24 -- npm run cdp:playwright-smoke
-
 # R5 rendered CDP gate: the release Flutter host owns the sole BrowserCore and
 # CDP listener under Cage; Playwright drives commit geometry/input, two target
 # viewports, before/after scene capture, and renderer-reset full resync.
@@ -339,12 +336,6 @@ test-r6: _flutter-sdk-present
 # Full R6 preserves every R5 rendered product gate, then adds synchronous
 # mutation-to-geometry and recovery proof.
 gate-r6: gate-r5 test-r6
-
-# Focused Alpha 6 automation product gate: dispatcher/runtime integration plus
-# the real external Playwright client over CDP WebSocket.
-gate-alpha6-cdp: cdp-playwright-smoke
-    cargo test -p vixen-headless cdp::tests
-    cargo test -p vixen-headless --test cdp_runtime
 
 # --- Lint / format -----------------------------------------------------------
 
@@ -416,45 +407,6 @@ wpt-profile profile root=".tmp/wpt":
 # Reproduce the compatibility counts published in docs/COMPAT.md.
 compat-report:
     cargo test -p vixen-headless --test wpt_runner -- --nocapture
-
-# Phase 4 current gate: pure layout-resolution prep plus the first executable
-# Page-backed Vixen layout-tree / line-layout slices.
-gate-phase4:
-    cargo test -p vixen-engine layout_tree
-    cargo test -p vixen-engine line_layout
-    cargo test -p vixen-engine box_model
-    cargo test -p vixen-engine flex_resolve
-    cargo test -p vixen-engine grid_resolve
-    cargo test -p vixen-engine writing_modes
-    cargo test -p vixen-engine multicol
-    cargo test -p vixen-engine scroll_snap
-    case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/layout/flex-row.html --viewport 360x200 --dump-layout-tree)" in *"# layout-tree"*"tag=section id=flex"*"tag=div id=grow2"*"w=153.3 h=40.0"*) true;; *) false;; esac
-    case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/layout/boxes.html --viewport 120x200 --dump-lines)" in *"line 1:"*) true;; *) false;; esac
-
-# Phase 5 current gate: display-list contract + paint-geometry/compositing prep,
-# plus the first executable Page-backed display-list dump.
-gate-phase5:
-    cargo test -p vixen-engine display_list
-    cargo test -p vixen-engine page
-    cargo test -p vixen-engine transform
-    cargo test -p vixen-engine border_radius
-    cargo test -p vixen-engine gradient
-    cargo test -p vixen-engine radial_gradient
-    cargo test -p vixen-engine conic_gradient
-    cargo test -p vixen-engine box_shadow
-    cargo test -p vixen-engine background_position
-    cargo test -p vixen-engine stacking_context
-    cargo test -p vixen-engine blend
-    cargo test -p vixen-engine filter
-    cargo test -p vixen-engine border_image
-    cargo test -p vixen-engine clip_path
-    cargo test -p vixen-engine mask
-    cargo test -p vixen-engine animation
-    cargo test -p vixen-engine geometry
-    case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/paint/display-list.html --viewport 160x120 --dump-display-list)" in *"cmd 0: background"*"cmd 1: text"*) true;; *) false;; esac
-    case "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/paint/display-list.html --viewport 160x120 --paint-stats)" in *"# paint-stats"*"text-runs="*) true;; *) false;; esac
-    cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/paint/display-list.html --viewport 160x120 --screenshot target/vixen-phase5-shot.png
-    test -s target/vixen-phase5-shot.png
 
 # WebIDL/runtime host gate: generated constructor/prototype coverage plus the
 # user-visible headless/CDP seams that consume those bindings.
