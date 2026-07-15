@@ -15,14 +15,13 @@ import 'address.dart';
 
 final class ShellCoordinator extends ChangeNotifier {
   static const int maxPendingInputEvents = 64;
-  static const int maxCaptureRetries = 2;
+  static const int maxAccessibilityCaptureRetries = 2;
   static const int maxRendererPresentationRetries = 2;
   static const Duration rendererBrokerPollInterval = Duration(milliseconds: 4);
 
   ShellCoordinator(
     this.controller, {
     this.initialUrl = vixenStartUrl,
-    this.captureLegacyPresentation = true,
     this.useProfileSession = true,
     this.externalRendererUpdates = false,
   }) {
@@ -37,7 +36,6 @@ final class ShellCoordinator extends ChangeNotifier {
 
   final BrowserController controller;
   final String initialUrl;
-  final bool captureLegacyPresentation;
   final bool useProfileSession;
   final bool externalRendererUpdates;
   final VixenFormatter _formatter = VixenFormatter();
@@ -56,17 +54,13 @@ final class ShellCoordinator extends ChangeNotifier {
   Future<void> _rendererTail = Future<void>.value();
   Future<void> _rendererServiceTail = Future<void>.value();
   Timer? _rendererBrokerPoll;
-  _FrameCaptureRequest? _replacementCapture;
-  _FrameCaptureKey? _lastCaptureKey;
   _AccessibilityCaptureRequest? _replacementAccessibilityCapture;
-  _FrameCaptureKey? _lastAccessibilityKey;
+  _PresentationKey? _lastAccessibilityKey;
   int? _activeContextId;
   int? _lastEventSequence;
   int _viewportWidth = 0;
   int _viewportHeight = 0;
-  int _captureGeneration = 0;
   int _accessibilityGeneration = 0;
-  int _projectionGeneration = 0;
   int _inputGeneration = 0;
   int _hostViewGeneration = 0;
   int _rendererViewportGeneration = 0;
@@ -75,7 +69,6 @@ final class ShellCoordinator extends ChangeNotifier {
   int _rendererPresentationFailures = 0;
   int _pendingInputEvents = 0;
   int _findRequestGeneration = 0;
-  int _frameCaptureFailures = 0;
   int _accessibilityCaptureFailures = 0;
   String _findQuery = '';
   bool _findCaseSensitive = false;
@@ -83,24 +76,19 @@ final class ShellCoordinator extends ChangeNotifier {
   int? _findActiveMatch;
   FormatterFindResult? _rendererFindResult;
   String? _errorMessage;
-  BrowserFrame? _frame;
   BrowserAccessibilitySnapshot? _accessibility;
   FormatterCommitView? _rendererView;
-  _PendingAccessibility? _pendingAccessibility;
-  _PendingFrame? _pendingFrame;
   InputDispatchedResponse? _lastInputResult;
-  bool _captureInFlight = false;
   bool _accessibilityCaptureInFlight = false;
   bool _contentFocused = false;
   double _scaleFactor = 1;
   BrowserHostLifecycle _hostLifecycle = BrowserHostLifecycle.resumed;
   _HostViewKey? _lastHostViewKey;
-  _FrameCaptureKey? _frameCaptureFailureKey;
-  _FrameCaptureKey? _accessibilityCaptureFailureKey;
+  _PresentationKey? _accessibilityCaptureFailureKey;
   bool _isStarting = false;
   bool _isReady = false;
   bool _disposed = false;
-  _FrameCaptureKey? _lastRendererKey;
+  _PresentationKey? _lastRendererKey;
   int? _pendingRendererPresentationId;
   _RendererSnapshotRequest? _pendingRendererSnapshot;
   bool _rendererSnapshotScheduled = false;
@@ -121,7 +109,6 @@ final class ShellCoordinator extends ChangeNotifier {
   bool get isStarting => _isStarting;
   bool get isReady => _isReady;
   String? get errorMessage => _errorMessage;
-  BrowserFrame? get frame => _frame;
   BrowserAccessibilitySnapshot? get accessibility => _accessibility;
   FormatterCommitView? get rendererView => _rendererView;
   FormatterCommitView? get presentedRendererView => _formatter.displayedView;
@@ -175,7 +162,7 @@ final class ShellCoordinator extends ChangeNotifier {
         _replaceFromSnapshot(snapshot);
       }
       _isReady = true;
-      _scheduleFrameCapture();
+      _scheduleRendererProjection();
     } catch (error) {
       _showError('Unable to start browser', error);
     } finally {
@@ -212,14 +199,14 @@ final class ShellCoordinator extends ChangeNotifier {
     final navigationId = await controller.navigate(context.contextId, url);
     _pendingNavigations[context.contextId] = navigationId;
     _statusByContext[context.contextId] = 'Loading $url';
-    _clearFrame();
+    _clearPresentation();
   });
 
   Future<void> reload() => _withSelected((context) async {
     final navigationId = await controller.reload(context.contextId);
     _pendingNavigations[context.contextId] = navigationId;
     _statusByContext[context.contextId] = 'Reloading...';
-    _clearFrame();
+    _clearPresentation();
   });
 
   Future<void> stop() => _withSelected((context) async {
@@ -276,7 +263,7 @@ final class ShellCoordinator extends ChangeNotifier {
     _upsertContext(state);
     _statusByContext[state.contextId] =
         'Zoom ${(state.pageZoom * 100).round()}%';
-    _scheduleFrameCapture(force: true);
+    _scheduleRendererProjection(force: true);
   });
 
   Future<void> findText(
@@ -320,7 +307,7 @@ final class ShellCoordinator extends ChangeNotifier {
           if (rendererResult.matches.isEmpty) _findActiveMatch = null;
         }
         if (result.activeMatch != null) {
-          _scheduleFrameCapture(force: true);
+          _scheduleRendererProjection(force: true);
         }
         _notify();
       }
@@ -339,12 +326,12 @@ final class ShellCoordinator extends ChangeNotifier {
     if (navigationId != null) {
       _pendingNavigations[context.contextId] = navigationId;
       _statusByContext[context.contextId] = 'Loading history...';
-      _clearFrame();
+      _clearPresentation();
     }
   });
 
   void updatePhysicalViewport(int width, int height, [double scaleFactor = 1]) {
-    final bounded = boundFrameViewport(width, height);
+    final bounded = boundRendererViewport(width, height);
     if (_viewportWidth == bounded.width &&
         _viewportHeight == bounded.height &&
         _scaleFactor == scaleFactor) {
@@ -354,7 +341,7 @@ final class ShellCoordinator extends ChangeNotifier {
     _viewportHeight = bounded.height;
     _scaleFactor = scaleFactor;
     _scheduleHostViewUpdate();
-    _scheduleFrameCapture();
+    _scheduleRendererProjection();
   }
 
   void updateContentFocus(bool focused) {
@@ -375,7 +362,7 @@ final class ShellCoordinator extends ChangeNotifier {
       _notify();
     }
     _scheduleHostViewUpdate();
-    if (_hostViewVisible) _scheduleFrameCapture(force: true);
+    if (_hostViewVisible) _scheduleRendererProjection(force: true);
   }
 
   bool get _hostViewVisible =>
@@ -482,7 +469,7 @@ final class ShellCoordinator extends ChangeNotifier {
           eventType: eventType,
           event: event,
         );
-      }, scheduleCapture: eventType != 'mousedown');
+      }, scheduleProjection: eventType != 'mousedown');
 
   int _takeRendererQueryId() {
     if (_nextRendererQueryId > 0x7fffffffffffffff) {
@@ -775,7 +762,7 @@ final class ShellCoordinator extends ChangeNotifier {
 
   Future<void> _enqueueInput(
     Future<void> Function(_InputGeneration generation) operation, {
-    bool scheduleCapture = true,
+    bool scheduleProjection = true,
   }) {
     final selected = selectedContext;
     final runtimeContextId = selected?.runtimeContextId;
@@ -812,7 +799,7 @@ final class ShellCoordinator extends ChangeNotifier {
         if (_isCurrentInputGeneration(generation)) {
           await operation(generation);
           if (_isCurrentInputGeneration(generation)) {
-            if (scheduleCapture) _scheduleFrameCapture(force: true);
+            if (scheduleProjection) _scheduleRendererProjection(force: true);
             _notify();
           }
         }
@@ -895,7 +882,7 @@ final class ShellCoordinator extends ChangeNotifier {
     final refreshRuntimeProjection =
         envelope.event.type == 'runtime_effects' &&
         envelope.event.contextId == _activeContextId;
-    _scheduleFrameCapture(force: refreshRuntimeProjection);
+    _scheduleRendererProjection(force: refreshRuntimeProjection);
     _notify();
   }
 
@@ -904,7 +891,7 @@ final class ShellCoordinator extends ChangeNotifier {
       _replaceFromSnapshot(await controller.browserSnapshot());
       _pendingNavigations.clear();
       _statusByContext.clear();
-      _scheduleFrameCapture();
+      _scheduleRendererProjection();
       _notify();
     } catch (error) {
       _showError('Unable to reconcile browser state', error);
@@ -925,12 +912,12 @@ final class ShellCoordinator extends ChangeNotifier {
         _statusByContext.remove(contextId);
         if (_activeContextId == contextId) {
           _activeContextId = null;
-          _clearFrame();
+          _clearPresentation();
         }
       case 'active_browsing_context_changed':
         final contextId = event.contextId;
         if (contextId == null || _hasContext(contextId)) {
-          if (_activeContextId != contextId) _clearFrame();
+          if (_activeContextId != contextId) _clearPresentation();
           _activeContextId = contextId;
         }
       case 'browsing_context_state_changed':
@@ -942,13 +929,13 @@ final class ShellCoordinator extends ChangeNotifier {
           if (state.contextId == _activeContextId &&
               (previous?.documentId != state.documentId ||
                   previous?.isLoading == false && state.isLoading)) {
-            _clearFrame();
+            _clearPresentation();
           }
           if (!state.isLoading) _pendingNavigations.remove(state.contextId);
         }
       case 'navigation_requested':
       case 'navigation_started':
-        if (event.contextId == _activeContextId) _clearFrame();
+        if (event.contextId == _activeContextId) _clearPresentation();
         _setNavigationStatus(event, 'Loading...');
       case 'navigation_redirected':
         _setNavigationStatus(event, 'Redirecting...');
@@ -1011,7 +998,7 @@ final class ShellCoordinator extends ChangeNotifier {
     final selected = selectedContext;
     if (previous?.contextId != selected?.contextId ||
         previous?.documentId != selected?.documentId) {
-      _clearFrame();
+      _clearPresentation();
     }
     _closedContextIds.removeAll(
       snapshot.contexts.map((context) => context.contextId),
@@ -1040,7 +1027,7 @@ final class ShellCoordinator extends ChangeNotifier {
     return null;
   }
 
-  void _scheduleFrameCapture({bool force = false}) {
+  void _scheduleRendererProjection({bool force = false}) {
     if (_closeFuture != null || !_isReady) return;
     _scheduleHostViewUpdate();
     if (!_hostViewVisible) return;
@@ -1052,38 +1039,18 @@ final class ShellCoordinator extends ChangeNotifier {
         _viewportHeight <= 0) {
       return;
     }
-    final key = _FrameCaptureKey(
+    final key = _PresentationKey(
       contextId: selected.contextId,
       documentId: selected.documentId,
       width: _viewportWidth,
       height: _viewportHeight,
     );
     _scheduleRendererSnapshot(key, force: force);
-    if (!captureLegacyPresentation) return;
-    if (!force && key == _lastCaptureKey && key == _lastAccessibilityKey) {
-      return;
-    }
-    final projectionGeneration = ++_projectionGeneration;
-    _pendingAccessibility = null;
-    _pendingFrame = null;
-    _scheduleAccessibilityCapture(
-      key,
-      projectionGeneration: projectionGeneration,
-    );
-    _lastCaptureKey = key;
-    final request = _FrameCaptureRequest(
-      ++_captureGeneration,
-      projectionGeneration,
-      key,
-    );
-    if (_captureInFlight) {
-      _replacementCapture = request;
-      return;
-    }
-    unawaited(_captureFrame(request));
+    if (!force && key == _lastAccessibilityKey) return;
+    _scheduleAccessibilityCapture(key);
   }
 
-  void _scheduleRendererSnapshot(_FrameCaptureKey key, {required bool force}) {
+  void _scheduleRendererSnapshot(_PresentationKey key, {required bool force}) {
     if (externalRendererUpdates) return;
     if (_rendererService == null || controller is! RendererTransport) return;
     if (!force && key == _lastRendererKey) return;
@@ -1225,7 +1192,7 @@ final class ShellCoordinator extends ChangeNotifier {
       _closeFuture == null &&
       _hostViewVisible &&
       request.lifecycleGeneration == _rendererLifecycleGeneration &&
-      _isCurrentCapture(request.key);
+      _isCurrentPresentation(request.key);
 
   Future<void> rendererCommitPresented(FormatterCommitView view) async {
     final service = _rendererService;
@@ -1285,7 +1252,7 @@ final class ShellCoordinator extends ChangeNotifier {
           _rendererPresentationFailures++;
           _showError('Unable to acknowledge Flutter renderer commit', error);
           if (_rendererPresentationFailures <= maxRendererPresentationRetries) {
-            _scheduleFrameCapture(force: true);
+            _scheduleRendererProjection(force: true);
           }
         }
       } finally {
@@ -1369,65 +1336,10 @@ final class ShellCoordinator extends ChangeNotifier {
     );
   }
 
-  Future<void> _captureFrame(_FrameCaptureRequest request) async {
-    _captureInFlight = true;
-    try {
-      final key = request.key;
-      final captured = await controller.captureFrame(
-        contextId: key.contextId,
-        documentId: key.documentId,
-        width: key.width,
-        height: key.height,
-      );
-      if (captured != null &&
-          request.generation == _captureGeneration &&
-          _isCurrentCapture(key) &&
-          captured.contextId == key.contextId &&
-          captured.documentId == key.documentId &&
-          captured.width == key.width &&
-          captured.height == key.height &&
-          (_frame == null ||
-              _frame!.contextId != captured.contextId ||
-              _frame!.documentId != captured.documentId ||
-              captured.frameId > _frame!.frameId)) {
-        _clearFrameCaptureFailures(key);
-        _pendingFrame = _PendingFrame(request.projectionGeneration, captured);
-        _publishAccessibilityIfPaired();
-      }
-    } catch (error) {
-      if (request.generation == _captureGeneration &&
-          _isCurrentCapture(request.key)) {
-        if (_shouldRetryFrameCapture(request.key)) {
-          _replacementCapture = _FrameCaptureRequest(
-            ++_captureGeneration,
-            request.projectionGeneration,
-            request.key,
-          );
-        } else {
-          _showError('Unable to capture browser frame after recovery', error);
-        }
-      }
-    } finally {
-      _captureInFlight = false;
-      final replacement = _replacementCapture;
-      _replacementCapture = null;
-      if (replacement != null &&
-          _closeFuture == null &&
-          replacement.generation == _captureGeneration &&
-          _isCurrentCapture(replacement.key)) {
-        unawaited(_captureFrame(replacement));
-      }
-    }
-  }
-
-  void _scheduleAccessibilityCapture(
-    _FrameCaptureKey key, {
-    required int projectionGeneration,
-  }) {
+  void _scheduleAccessibilityCapture(_PresentationKey key) {
     _lastAccessibilityKey = key;
     final request = _AccessibilityCaptureRequest(
       ++_accessibilityGeneration,
-      projectionGeneration,
       key,
     );
     if (_accessibilityCaptureInFlight) {
@@ -1450,25 +1362,21 @@ final class ShellCoordinator extends ChangeNotifier {
         viewportHeight: key.height,
       );
       if (request.generation == _accessibilityGeneration &&
-          _isCurrentCapture(key) &&
+          _isCurrentPresentation(key) &&
           snapshot.contextId == key.contextId &&
           snapshot.documentId == key.documentId &&
           snapshot.viewportWidth == key.width &&
           snapshot.viewportHeight == key.height) {
         _clearAccessibilityCaptureFailures(key);
-        _pendingAccessibility = _PendingAccessibility(
-          request.projectionGeneration,
-          snapshot,
-        );
-        _publishAccessibilityIfPaired();
+        _accessibility = snapshot;
+        _notify();
       }
     } catch (error) {
       if (request.generation == _accessibilityGeneration &&
-          _isCurrentCapture(request.key)) {
+          _isCurrentPresentation(request.key)) {
         if (_shouldRetryAccessibilityCapture(request.key)) {
           _replacementAccessibilityCapture = _AccessibilityCaptureRequest(
             ++_accessibilityGeneration,
-            request.projectionGeneration,
             request.key,
           );
         } else {
@@ -1485,63 +1393,28 @@ final class ShellCoordinator extends ChangeNotifier {
       if (replacement != null &&
           _closeFuture == null &&
           replacement.generation == _accessibilityGeneration &&
-          _isCurrentCapture(replacement.key)) {
+          _isCurrentPresentation(replacement.key)) {
         unawaited(_captureAccessibility(replacement));
       }
     }
   }
 
-  void _publishAccessibilityIfPaired() {
-    final pending = _pendingAccessibility;
-    final pendingFrame = _pendingFrame;
-    final frame = pendingFrame?.frame;
-    if (pending == null ||
-        frame == null ||
-        pending.projectionGeneration != pendingFrame!.projectionGeneration ||
-        frame.contextId != pending.snapshot.contextId ||
-        frame.documentId != pending.snapshot.documentId ||
-        frame.width != pending.snapshot.viewportWidth ||
-        frame.height != pending.snapshot.viewportHeight) {
-      return;
-    }
-    _frame = frame;
-    _accessibility = pending.snapshot;
-    _pendingFrame = null;
-    _pendingAccessibility = null;
-    _notify();
-  }
-
-  bool _shouldRetryFrameCapture(_FrameCaptureKey key) {
-    if (_frameCaptureFailureKey != key) {
-      _frameCaptureFailureKey = key;
-      _frameCaptureFailures = 0;
-    }
-    _frameCaptureFailures++;
-    return _frameCaptureFailures <= maxCaptureRetries;
-  }
-
-  void _clearFrameCaptureFailures(_FrameCaptureKey key) {
-    if (_frameCaptureFailureKey != key) return;
-    _frameCaptureFailureKey = null;
-    _frameCaptureFailures = 0;
-  }
-
-  bool _shouldRetryAccessibilityCapture(_FrameCaptureKey key) {
+  bool _shouldRetryAccessibilityCapture(_PresentationKey key) {
     if (_accessibilityCaptureFailureKey != key) {
       _accessibilityCaptureFailureKey = key;
       _accessibilityCaptureFailures = 0;
     }
     _accessibilityCaptureFailures++;
-    return _accessibilityCaptureFailures <= maxCaptureRetries;
+    return _accessibilityCaptureFailures <= maxAccessibilityCaptureRetries;
   }
 
-  void _clearAccessibilityCaptureFailures(_FrameCaptureKey key) {
+  void _clearAccessibilityCaptureFailures(_PresentationKey key) {
     if (_accessibilityCaptureFailureKey != key) return;
     _accessibilityCaptureFailureKey = null;
     _accessibilityCaptureFailures = 0;
   }
 
-  bool _isCurrentCapture(_FrameCaptureKey key) {
+  bool _isCurrentPresentation(_PresentationKey key) {
     final selected = selectedContext;
     return selected != null &&
         !selected.isLoading &&
@@ -1551,7 +1424,7 @@ final class ShellCoordinator extends ChangeNotifier {
         _viewportHeight == key.height;
   }
 
-  void _clearFrame() {
+  void _clearPresentation() {
     _rendererView = null;
     _lastRendererKey = null;
     _pendingRendererPresentationId = null;
@@ -1563,21 +1436,12 @@ final class ShellCoordinator extends ChangeNotifier {
       contextId: selected?.contextId ?? 1,
       documentId: selected?.documentId ?? 1,
     );
-    _frame = null;
-    _lastCaptureKey = null;
-    _replacementCapture = null;
-    _captureGeneration++;
-    _pendingFrame = null;
-    _projectionGeneration++;
     _accessibility = null;
-    _pendingAccessibility = null;
     _lastAccessibilityKey = null;
     _replacementAccessibilityCapture = null;
     _accessibilityGeneration++;
     _inputGeneration++;
     _lastInputResult = null;
-    _frameCaptureFailureKey = null;
-    _frameCaptureFailures = 0;
     _accessibilityCaptureFailureKey = null;
     _accessibilityCaptureFailures = 0;
     _findRequestGeneration++;
@@ -1599,7 +1463,7 @@ final class ShellCoordinator extends ChangeNotifier {
 
   Future<void> _close() async {
     _rendererBrokerPoll?.cancel();
-    _clearFrame();
+    _clearPresentation();
     _notify();
     await _eventSubscription?.cancel();
     try {
@@ -1627,18 +1491,18 @@ final class ShellCoordinator extends ChangeNotifier {
   }
 }
 
-({int width, int height}) boundFrameViewport(int width, int height) {
+({int width, int height}) boundRendererViewport(int width, int height) {
   if (width <= 0 || height <= 0) return (width: 0, height: 0);
-  final boundedWidth = width.clamp(1, browserMaxFrameDimension);
-  final boundedHeight = height.clamp(1, browserMaxFrameDimension);
-  if (boundedWidth * boundedHeight * 4 > browserMaxFrameBytes) {
+  final boundedWidth = width.clamp(1, browserMaxViewportDimension);
+  final boundedHeight = height.clamp(1, browserMaxViewportDimension);
+  if (boundedWidth * boundedHeight * 4 > browserMaxViewportBytes) {
     return (width: 0, height: 0);
   }
   return (width: boundedWidth, height: boundedHeight);
 }
 
-final class _FrameCaptureKey {
-  const _FrameCaptureKey({
+final class _PresentationKey {
+  const _PresentationKey({
     required this.contextId,
     required this.documentId,
     required this.width,
@@ -1652,7 +1516,7 @@ final class _FrameCaptureKey {
 
   @override
   bool operator ==(Object other) =>
-      other is _FrameCaptureKey &&
+      other is _PresentationKey &&
       contextId == other.contextId &&
       documentId == other.documentId &&
       width == other.width &&
@@ -1704,18 +1568,6 @@ final class _HostViewKey {
   );
 }
 
-final class _FrameCaptureRequest {
-  const _FrameCaptureRequest(
-    this.generation,
-    this.projectionGeneration,
-    this.key,
-  );
-
-  final int generation;
-  final int projectionGeneration;
-  final _FrameCaptureKey key;
-}
-
 final class _RendererSnapshotRequest {
   const _RendererSnapshotRequest({
     required this.key,
@@ -1724,36 +1576,17 @@ final class _RendererSnapshotRequest {
     required this.lifecycleGeneration,
   });
 
-  final _FrameCaptureKey key;
+  final _PresentationKey key;
   final int viewportGeneration;
   final double pageZoom;
   final int lifecycleGeneration;
 }
 
 final class _AccessibilityCaptureRequest {
-  const _AccessibilityCaptureRequest(
-    this.generation,
-    this.projectionGeneration,
-    this.key,
-  );
+  const _AccessibilityCaptureRequest(this.generation, this.key);
 
   final int generation;
-  final int projectionGeneration;
-  final _FrameCaptureKey key;
-}
-
-final class _PendingAccessibility {
-  const _PendingAccessibility(this.projectionGeneration, this.snapshot);
-
-  final int projectionGeneration;
-  final BrowserAccessibilitySnapshot snapshot;
-}
-
-final class _PendingFrame {
-  const _PendingFrame(this.projectionGeneration, this.frame);
-
-  final int projectionGeneration;
-  final BrowserFrame frame;
+  final _PresentationKey key;
 }
 
 final class _InputGeneration {

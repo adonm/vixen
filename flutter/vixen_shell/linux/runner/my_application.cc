@@ -9,13 +9,11 @@
 #endif
 
 #include "flutter/generated_plugin_registrant.h"
-#include "vixen_texture.h"
 
 namespace {
 
-constexpr char kTextureChannel[] = "dev.adonm.vixen/texture";
 constexpr int64_t kMaxDimension = 4096;
-constexpr size_t kMaxFrameBytes = 64U * 1024U * 1024U;
+constexpr size_t kMaxViewportBytes = 64U * 1024U * 1024U;
 
 bool HasDartArgument(char** arguments, const char* expected) {
   if (arguments == nullptr) {
@@ -48,7 +46,7 @@ bool AutomationViewport(char** arguments, int* width, int* height) {
         parsed_width > kMaxDimension || parsed_height > kMaxDimension ||
         static_cast<size_t>(parsed_width) *
                 static_cast<size_t>(parsed_height) * 4U >
-            kMaxFrameBytes) {
+            kMaxViewportBytes) {
       return false;
     }
     *width = static_cast<int>(parsed_width);
@@ -63,140 +61,10 @@ bool AutomationViewport(char** arguments, int* width, int* height) {
 struct _MyApplication {
   GtkApplication parent_instance;
   char** dart_entrypoint_arguments;
-  FlMethodChannel* texture_channel;
-  FlTextureRegistrar* texture_registrar;
-  VixenTexture* texture;
   FlView* view;
 };
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
-
-static FlMethodResponse* method_error(const char* code, const char* message) {
-  return FL_METHOD_RESPONSE(
-      fl_method_error_response_new(code, message, nullptr));
-}
-
-static void unregister_texture(MyApplication* self) {
-  if (self->texture == nullptr) {
-    return;
-  }
-  if (self->texture_registrar != nullptr) {
-    fl_texture_registrar_unregister_texture(self->texture_registrar,
-                                            FL_TEXTURE(self->texture));
-  }
-  g_clear_object(&self->texture);
-}
-
-static FlMethodResponse* handle_texture_create(MyApplication* self,
-                                               FlMethodCall* method_call) {
-  FlValue* args = fl_method_call_get_args(method_call);
-  if (fl_value_get_type(args) != FL_VALUE_TYPE_NULL) {
-    return method_error("texture.invalid-arguments",
-                        "create does not accept arguments");
-  }
-  if (self->texture != nullptr) {
-    return method_error("texture.already-created",
-                        "the window texture was already created");
-  }
-  self->texture = vixen_texture_new();
-  if (!fl_texture_registrar_register_texture(self->texture_registrar,
-                                             FL_TEXTURE(self->texture))) {
-    g_clear_object(&self->texture);
-    return method_error("texture.registration-failed",
-                        "could not register the window texture");
-  }
-  g_autoptr(FlValue) result =
-      fl_value_new_int(fl_texture_get_id(FL_TEXTURE(self->texture)));
-  return FL_METHOD_RESPONSE(fl_method_success_response_new(result));
-}
-
-static FlMethodResponse* handle_texture_publish(MyApplication* self,
-                                                FlMethodCall* method_call) {
-  if (self->texture == nullptr) {
-    return method_error("texture.not-created",
-                        "publish requires a created texture");
-  }
-  FlValue* args = fl_method_call_get_args(method_call);
-  if (fl_value_get_type(args) != FL_VALUE_TYPE_MAP ||
-      fl_value_get_length(args) != 3) {
-    return method_error("texture.invalid-arguments",
-                        "publish requires width, height, and rgba");
-  }
-  FlValue* width_value = fl_value_lookup_string(args, "width");
-  FlValue* height_value = fl_value_lookup_string(args, "height");
-  FlValue* rgba_value = fl_value_lookup_string(args, "rgba");
-  if (width_value == nullptr || height_value == nullptr ||
-      rgba_value == nullptr ||
-      fl_value_get_type(width_value) != FL_VALUE_TYPE_INT ||
-      fl_value_get_type(height_value) != FL_VALUE_TYPE_INT ||
-      fl_value_get_type(rgba_value) != FL_VALUE_TYPE_UINT8_LIST) {
-    return method_error("texture.invalid-arguments",
-                        "publish payload has invalid field types");
-  }
-  const int64_t width_value_int = fl_value_get_int(width_value);
-  const int64_t height_value_int = fl_value_get_int(height_value);
-  if (width_value_int <= 0 || height_value_int <= 0 ||
-      width_value_int > kMaxDimension || height_value_int > kMaxDimension) {
-    return method_error("texture.invalid-dimensions",
-                        "publish dimensions exceed 4096 pixels");
-  }
-  const size_t width = static_cast<size_t>(width_value_int);
-  const size_t height = static_cast<size_t>(height_value_int);
-  const size_t expected_length = width * height * 4U;
-  const size_t rgba_length = fl_value_get_length(rgba_value);
-  if (expected_length > kMaxFrameBytes || rgba_length != expected_length) {
-    return method_error("texture.invalid-pixels",
-                        "rgba must contain exact packed RGBA8 bytes");
-  }
-  g_autoptr(GError) error = nullptr;
-  if (!vixen_texture_publish(
-          self->texture, static_cast<uint32_t>(width),
-          static_cast<uint32_t>(height), fl_value_get_uint8_list(rgba_value),
-          rgba_length, &error)) {
-    return method_error("texture.publish-failed", error->message);
-  }
-  if (!fl_texture_registrar_mark_texture_frame_available(
-          self->texture_registrar, FL_TEXTURE(self->texture))) {
-    return method_error("texture.frame-notification-failed",
-                        "could not notify Flutter of the texture frame");
-  }
-  return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
-}
-
-static FlMethodResponse* handle_texture_dispose(MyApplication* self,
-                                                FlMethodCall* method_call) {
-  FlValue* args = fl_method_call_get_args(method_call);
-  if (fl_value_get_type(args) != FL_VALUE_TYPE_NULL) {
-    return method_error("texture.invalid-arguments",
-                        "dispose does not accept arguments");
-  }
-  if (self->texture == nullptr) {
-    return method_error("texture.not-created",
-                        "there is no window texture to dispose");
-  }
-  unregister_texture(self);
-  return FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
-}
-
-static void texture_channel_method_cb(FlMethodChannel* channel,
-                                      FlMethodCall* method_call,
-                                      gpointer user_data) {
-  (void)channel;
-  MyApplication* self = MY_APPLICATION(user_data);
-  const char* method = fl_method_call_get_name(method_call);
-  g_autoptr(FlMethodResponse) response = nullptr;
-  if (g_str_equal(method, "create")) {
-    response = handle_texture_create(self, method_call);
-  } else if (g_str_equal(method, "publish")) {
-    response = handle_texture_publish(self, method_call);
-  } else if (g_str_equal(method, "dispose")) {
-    response = handle_texture_dispose(self, method_call);
-  } else {
-    fl_method_call_respond_not_implemented(method_call, nullptr);
-    return;
-  }
-  fl_method_call_respond(method_call, response, nullptr);
-}
 
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
@@ -257,16 +125,6 @@ static void my_application_activate(GApplication* application) {
                            self);
   gtk_widget_realize(GTK_WIDGET(self->view));
 
-  FlEngine* engine = fl_view_get_engine(self->view);
-  self->texture_registrar = FL_TEXTURE_REGISTRAR(
-      g_object_ref(fl_engine_get_texture_registrar(engine)));
-  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
-  self->texture_channel = fl_method_channel_new(
-      fl_engine_get_binary_messenger(engine), kTextureChannel,
-      FL_METHOD_CODEC(codec));
-  fl_method_channel_set_method_call_handler(
-      self->texture_channel, texture_channel_method_cb, self, nullptr);
-
   gtk_widget_grab_focus(GTK_WIDGET(self->view));
 }
 
@@ -316,13 +174,6 @@ static void my_application_startup(GApplication* application) {
 
 // Implements GApplication::shutdown.
 static void my_application_shutdown(GApplication* application) {
-  MyApplication* self = MY_APPLICATION(application);
-  if (self->texture_channel != nullptr) {
-    fl_method_channel_set_method_call_handler(self->texture_channel, nullptr,
-                                              nullptr, nullptr);
-  }
-  unregister_texture(self);
-
   G_APPLICATION_CLASS(my_application_parent_class)->shutdown(application);
 }
 
@@ -330,9 +181,6 @@ static void my_application_shutdown(GApplication* application) {
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
-  unregister_texture(self);
-  g_clear_object(&self->texture_channel);
-  g_clear_object(&self->texture_registrar);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }
 

@@ -10,7 +10,7 @@ import 'package:yaru/yaru.dart';
 import 'browser_models_test.dart' show contextState;
 
 void main() {
-  testWidgets('renders Yaru browser chrome and honest empty frame seam', (
+  testWidgets('renders Yaru browser chrome and honest empty commit seam', (
     tester,
   ) async {
     final controller = ScriptedBrowserController(
@@ -32,7 +32,7 @@ void main() {
     expect(find.byType(YaruWindowTitleBar), findsOneWidget);
     expect(find.byType(YaruIconButton), findsWidgets);
     expect(find.byKey(const Key('content-surface')), findsOneWidget);
-    expect(find.text('Renderer frame unavailable'), findsOneWidget);
+    expect(find.text('Renderer commit unavailable'), findsOneWidget);
     expect(find.byKey(const Key('status-bar')), findsOneWidget);
     expect(
       tester

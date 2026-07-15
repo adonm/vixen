@@ -1,74 +1,14 @@
-import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import '../bridge/browser_models.dart';
 import '../bridge/render_models.dart';
 import '../renderer/formatter.dart';
 import '../renderer/formatter_painter.dart';
-
-const String vixenTextureChannelName = 'dev.adonm.vixen/texture';
-
-abstract interface class BrowserTextureController {
-  Future<int> create();
-
-  Future<void> publish(BrowserFrame frame);
-
-  Future<void> dispose();
-}
-
-final class LinuxTextureController implements BrowserTextureController {
-  LinuxTextureController({MethodChannel? channel, bool? isLinux})
-    : _channel = channel ?? const MethodChannel(vixenTextureChannelName),
-      _isLinux = isLinux ?? Platform.isLinux;
-
-  final MethodChannel _channel;
-  final bool _isLinux;
-  bool _created = false;
-
-  void _requireLinux() {
-    if (!_isLinux) {
-      throw UnsupportedError('Vixen pixel-buffer textures require Linux');
-    }
-  }
-
-  @override
-  Future<int> create() async {
-    _requireLinux();
-    final textureId = await _channel.invokeMethod<int>('create');
-    if (textureId == null || textureId < 0) {
-      throw PlatformException(
-        code: 'texture.invalid-id',
-        message: 'Linux runner returned an invalid texture id',
-      );
-    }
-    _created = true;
-    return textureId;
-  }
-
-  @override
-  Future<void> publish(BrowserFrame frame) async {
-    _requireLinux();
-    await _channel.invokeMethod<void>('publish', <String, Object>{
-      'width': frame.width,
-      'height': frame.height,
-      'rgba': frame.rgba,
-    });
-  }
-
-  @override
-  Future<void> dispose() async {
-    if (!_isLinux || !_created) return;
-    _created = false;
-    await _channel.invokeMethod<void>('dispose');
-  }
-}
 
 final class BrowserViewportTransform {
   BrowserViewportTransform._({
@@ -103,24 +43,24 @@ final class BrowserViewportTransform {
       );
     }
     final byteScale = math.sqrt(
-      browserMaxFrameBytes / (rawWidth * rawHeight * 4),
+      browserMaxViewportBytes / (rawWidth * rawHeight * 4),
     );
     final boundedScale = math.min(
       1.0,
       math.min(
-        browserMaxFrameDimension / rawWidth,
-        math.min(browserMaxFrameDimension / rawHeight, byteScale),
+        browserMaxViewportDimension / rawWidth,
+        math.min(browserMaxViewportDimension / rawHeight, byteScale),
       ),
     );
     return BrowserViewportTransform._(
       logicalSize: logicalSize,
       width: (rawWidth * boundedScale).floor().clamp(
         1,
-        browserMaxFrameDimension,
+        browserMaxViewportDimension,
       ),
       height: (rawHeight * boundedScale).floor().clamp(
         1,
-        browserMaxFrameDimension,
+        browserMaxViewportDimension,
       ),
       scaleFactor: dpr * boundedScale,
     );
@@ -186,7 +126,10 @@ final class BrowserViewportTransform {
   int get hashCode => Object.hash(logicalSize, width, height, scaleFactor);
 }
 
-({int width, int height}) physicalFrameViewport(Size logicalSize, double dpr) {
+({int width, int height}) physicalRendererViewport(
+  Size logicalSize,
+  double dpr,
+) {
   final transform = BrowserViewportTransform.fromLogical(logicalSize, dpr);
   return (width: transform.width, height: transform.height);
 }
@@ -194,7 +137,6 @@ final class BrowserViewportTransform {
 final class BrowserContentSurface extends StatefulWidget {
   const BrowserContentSurface({
     required this.contextState,
-    required this.frame,
     this.rendererView,
     this.rendererFindResult,
     this.onRendererPresented,
@@ -206,16 +148,10 @@ final class BrowserContentSurface extends StatefulWidget {
     this.onKeyEvent,
     this.onTextInput,
     this.accessibility,
-    this.onSemanticTap,
-    this.onSemanticFocus,
-    this.onSemanticSetValue,
-    this.onSemanticAdjustment,
-    this.textureController,
     super.key,
   });
 
   final BrowsingContextState? contextState;
-  final BrowserFrame? frame;
   final FormatterCommitView? rendererView;
   final FormatterFindResult? rendererFindResult;
   final ValueChanged<FormatterCommitView>? onRendererPresented;
@@ -234,42 +170,12 @@ final class BrowserContentSurface extends StatefulWidget {
   final void Function(String eventType, BrowserKeyEvent event)? onKeyEvent;
   final ValueChanged<BrowserTextInputState>? onTextInput;
   final BrowserAccessibilitySnapshot? accessibility;
-  final void Function(
-    BrowserAccessibilitySnapshot snapshot,
-    BrowserAccessibilityNode node,
-  )?
-  onSemanticTap;
-  final void Function(
-    BrowserAccessibilitySnapshot snapshot,
-    BrowserAccessibilityNode node,
-  )?
-  onSemanticFocus;
-  final void Function(
-    BrowserAccessibilitySnapshot snapshot,
-    BrowserAccessibilityNode node,
-    String value,
-  )?
-  onSemanticSetValue;
-  final void Function(
-    BrowserAccessibilitySnapshot snapshot,
-    BrowserAccessibilityNode node,
-    bool increase,
-  )?
-  onSemanticAdjustment;
-  final BrowserTextureController? textureController;
 
   @override
   State<BrowserContentSurface> createState() => _BrowserContentSurfaceState();
 }
 
 final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
-  static const int _maxPresentationRetries = 2;
-
-  late BrowserTextureController _controller;
-  Future<int>? _createOperation;
-  BrowserFrame? _pendingFrame;
-  BrowserFrame? _publishedFrame;
-  BrowserFrame? _displayedFrame;
   BrowserViewportTransform? _viewportTransform;
   final FocusNode _contentFocus = FocusNode(debugLabel: 'browser-content');
   final Map<int, int> _pressedButtons = {};
@@ -282,16 +188,8 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   Size _logicalViewport = Size.zero;
   PointerEvent? _pendingMouseMove;
   bool _mouseMoveScheduled = false;
-  int? _textureId;
-  int _controllerEpoch = 0;
-  int _presentationFailures = 0;
-  bool _presenting = false;
-  Completer<void>? _presentationIdle;
-  Future<void> _surfaceRelease = Future<void>.value();
   bool _disposed = false;
   bool _contentFocused = false;
-  bool _presentationRecoveryFailed = false;
-  (int, int, int)? _presentationFailureKey;
   (int, int, int, BrowserTextInputType, BrowserTextInputAction)?
   _textInputTarget;
   (int, int, int)? _scheduledRendererPresentation;
@@ -300,171 +198,20 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   @override
   void initState() {
     super.initState();
-    _controller = widget.textureController ?? LinuxTextureController();
     _textInputClient = _BrowserTextInputClient(
       _handleTextInput,
       _handleTextInputAction,
     );
-    _queueFrame(widget.frame);
   }
 
   @override
   void didUpdateWidget(BrowserContentSurface oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.textureController != widget.textureController) {
-      _controllerEpoch++;
-      _queueControllerDispose(_controller);
-      _controller = widget.textureController ?? LinuxTextureController();
-      _createOperation = null;
-      _textureId = null;
-      _publishedFrame = null;
-      _displayedFrame = null;
-      _clearPresentationFailures();
-    }
-    final wasEnabled = _lifecycleAllowsPresentation(oldWidget.lifecycle);
-    final isEnabled = _lifecycleAllowsPresentation(widget.lifecycle);
-    if (wasEnabled && !isEnabled) {
-      _suspendPresentation();
-    }
-    _queueFrame(widget.frame);
     _syncTextInput();
-  }
-
-  void _queueFrame(BrowserFrame? frame) {
-    if (!_presentationEnabled) {
-      _pendingFrame = null;
-      return;
-    }
-    if (frame == null) {
-      _pendingFrame = null;
-      _displayedFrame = null;
-      return;
-    }
-    final key = _frameKey(frame);
-    if (_presentationFailureKey != key) {
-      _clearPresentationFailures();
-    } else if (_presentationFailures > _maxPresentationRetries) {
-      return;
-    }
-    _pendingFrame = frame;
-    if (!_presenting) unawaited(_presentFrames());
-  }
-
-  Future<void> _presentFrames() async {
-    _presenting = true;
-    _presentationIdle = Completer<void>();
-    BrowserFrame? attemptedFrame;
-    BrowserTextureController? attemptedController;
-    int? attemptedControllerEpoch;
-    try {
-      while (!_disposed && _pendingFrame != null) {
-        final frame = _pendingFrame!;
-        attemptedFrame = frame;
-        _pendingFrame = null;
-        if (!_isNewer(frame, _publishedFrame)) continue;
-        await _surfaceRelease;
-        if (_disposed || !_presentationEnabled) return;
-        final controller = _controller;
-        final controllerEpoch = _controllerEpoch;
-        attemptedController = controller;
-        attemptedControllerEpoch = controllerEpoch;
-        final textureId = await (_createOperation ??= controller.create());
-        if (_disposed || !_presentationEnabled) return;
-        if (controllerEpoch != _controllerEpoch) return;
-        if (_pendingFrame case final newer? when _isNewer(newer, frame)) {
-          continue;
-        }
-        await controller.publish(frame);
-        if (_disposed || !_presentationEnabled) return;
-        if (controllerEpoch != _controllerEpoch) return;
-        _textureId = textureId;
-        _publishedFrame = frame;
-        _clearPresentationFailures();
-        if (_sameFrame(widget.frame, frame)) {
-          _displayedFrame = frame;
-          if (mounted) setState(() {});
-        }
-      }
-    } catch (_) {
-      final attemptIsCurrent =
-          attemptedControllerEpoch == _controllerEpoch && _presentationEnabled;
-      _displayedFrame = null;
-      _publishedFrame = null;
-      _textureId = null;
-      _createOperation = null;
-      if (attemptIsCurrent) {
-        _controllerEpoch++;
-        try {
-          await attemptedController?.dispose();
-        } catch (_) {
-          // The original create/publish failure remains the recovery signal.
-        }
-      }
-      final newer = _pendingFrame;
-      final retry = newer ?? attemptedFrame;
-      if (!_disposed && attemptIsCurrent && retry != null) {
-        if (newer != null && _frameKey(newer) != _frameKey(attemptedFrame!)) {
-          _clearPresentationFailures();
-          _pendingFrame = newer;
-        } else if (_shouldRetryPresentation(retry)) {
-          _pendingFrame = retry;
-        } else {
-          _presentationRecoveryFailed = true;
-        }
-      }
-      if (mounted) setState(() {});
-    } finally {
-      _presenting = false;
-      _presentationIdle?.complete();
-      _presentationIdle = null;
-      if (!_disposed && _presentationEnabled && _pendingFrame != null) {
-        unawaited(_presentFrames());
-      }
-    }
   }
 
   bool get _presentationEnabled =>
       _lifecycleAllowsPresentation(widget.lifecycle);
-
-  void _suspendPresentation() {
-    _controllerEpoch++;
-    _pendingFrame = null;
-    _publishedFrame = null;
-    _displayedFrame = null;
-    _textureId = null;
-    _createOperation = null;
-    _clearPresentationFailures();
-    _queueControllerDispose(_controller);
-  }
-
-  void _queueControllerDispose(BrowserTextureController controller) {
-    final previousRelease = _surfaceRelease;
-    final presentationIdle = _presentationIdle?.future;
-    _surfaceRelease = _disposeAfterPresentation(
-      previousRelease,
-      presentationIdle,
-      controller,
-    );
-    unawaited(_surfaceRelease);
-  }
-
-  Future<void> _disposeAfterPresentation(
-    Future<void> previousRelease,
-    Future<void>? presentationIdle,
-    BrowserTextureController controller,
-  ) async {
-    try {
-      await previousRelease;
-    } catch (_) {
-      // A later release must still run after an earlier disposal failure.
-    }
-    if (presentationIdle != null) await presentationIdle;
-    try {
-      await controller.dispose();
-    } catch (_) {
-      // Lifecycle recovery is driven by recreation, not disposal success.
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -555,14 +302,6 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
     const event = BrowserKeyEvent(key: 'Enter', code: 'Enter');
     callback('keydown', event);
     callback('keyup', event);
-  }
-
-  void _handleSemanticFocus(
-    BrowserAccessibilitySnapshot snapshot,
-    BrowserAccessibilityNode node,
-  ) {
-    _contentFocus.requestFocus();
-    widget.onSemanticFocus?.call(snapshot, node);
   }
 
   void _syncTextInput() {
@@ -876,66 +615,31 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
         ),
       );
     }
-    final frame = _displayedFrame;
-    final textureId = _textureId;
-    final transform = _viewportTransform;
-    Widget visual;
-    if (frame != null &&
-        textureId != null &&
-        transform != null &&
-        transform.isValid &&
-        _sameFrame(widget.frame, frame)) {
-      visual = SizedBox.expand(
-        child: Stack(
+    return Center(
+      child: Semantics(
+        liveRegion: true,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Positioned(
-              left: transform.offsetX,
-              top: transform.offsetY,
-              width: transform.displayWidth,
-              height: transform.displayHeight,
-              child: Texture(
-                key: const Key('browser-texture'),
-                textureId: textureId,
-              ),
+            Icon(
+              Icons.web_asset_off,
+              size: 42,
+              color: Theme.of(context).colorScheme.outline,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Renderer commit unavailable',
+              key: Key('renderer-unavailable'),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              widget.contextState?.url ?? 'No browsing context',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
           ],
         ),
-      );
-    } else {
-      visual = Center(
-        child: Semantics(
-          liveRegion: true,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.web_asset_off,
-                size: 42,
-                color: Theme.of(context).colorScheme.outline,
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Renderer frame unavailable',
-                key: Key('renderer-unavailable'),
-              ),
-              if (_presentationRecoveryFailed) ...[
-                const SizedBox(height: 4),
-                const Text(
-                  'Surface recovery failed',
-                  key: Key('surface-recovery-failed'),
-                ),
-              ],
-              const SizedBox(height: 4),
-              Text(
-                widget.contextState?.url ?? 'No browsing context',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-    return _withAccessibility(visual);
+      ),
+    );
   }
 
   void _scheduleRendererPresentation(FormatterCommitView view) {
@@ -967,181 +671,11 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
     });
   }
 
-  bool _shouldRetryPresentation(BrowserFrame frame) {
-    final key = _frameKey(frame);
-    if (_presentationFailureKey != key) {
-      _presentationFailureKey = key;
-      _presentationFailures = 0;
-    }
-    _presentationFailures++;
-    return _presentationFailures <= _maxPresentationRetries;
-  }
-
-  void _clearPresentationFailures() {
-    _presentationFailureKey = null;
-    _presentationFailures = 0;
-    _presentationRecoveryFailed = false;
-  }
-
-  Widget _withAccessibility(Widget visual) {
-    final rendererView = widget.rendererView;
-    if (rendererView != null && !rendererView.isRetired) {
-      return visual;
-    }
-    final snapshot = widget.accessibility;
-    final contextState = widget.contextState;
-    final transform = _viewportTransform;
-    if (snapshot == null ||
-        contextState == null ||
-        transform == null ||
-        !transform.isValid ||
-        snapshot.contextId != contextState.contextId ||
-        snapshot.documentId != contextState.documentId ||
-        snapshot.viewportWidth != transform.width ||
-        snapshot.viewportHeight != transform.height ||
-        widget.frame?.width != snapshot.viewportWidth ||
-        widget.frame?.height != snapshot.viewportHeight) {
-      return visual;
-    }
-    final childrenByParent = <int?, List<BrowserAccessibilityNode>>{};
-    for (final node in snapshot.nodes) {
-      childrenByParent.putIfAbsent(node.parentId, () => []).add(node);
-    }
-
-    List<Widget> buildNodes(int? parentId, double originX, double originY) {
-      final widgets = <Widget>[];
-      for (final node in childrenByParent[parentId] ?? const []) {
-        if (node.hidden) continue;
-        final bounds = node.bounds;
-        if (bounds == null || bounds.width <= 0 || bounds.height <= 0) {
-          widgets.addAll(buildNodes(node.id, originX, originY));
-          continue;
-        }
-        final localBounds = transform.physicalRectToLocal(
-          Rect.fromLTWH(bounds.x, bounds.y, bounds.width, bounds.height),
-        );
-        final absoluteX = localBounds.left;
-        final absoluteY = localBounds.top;
-        final children = buildNodes(node.id, absoluteX, absoluteY);
-        final range = node.range;
-        final semanticIdentifier = _semanticIdentifier(snapshot, node.id);
-        widgets.add(
-          Positioned(
-            left: absoluteX - originX,
-            top: absoluteY - originY,
-            width: localBounds.width,
-            height: localBounds.height,
-            child: Semantics(
-              key: ValueKey((
-                snapshot.contextId,
-                snapshot.documentId,
-                node.id,
-                jsonEncode(node.toWire()),
-              )),
-              container: true,
-              explicitChildNodes: children.isNotEmpty,
-              identifier: semanticIdentifier,
-              controlsNodes: node.controlsIds.isEmpty
-                  ? null
-                  : Set<String>.from(
-                      node.controlsIds.map(
-                        (id) => _semanticIdentifier(snapshot, id),
-                      ),
-                    ),
-              label: node.label,
-              hint: node.description.isEmpty ? null : node.description,
-              value: node.value,
-              slider: node.role == 'slider' && range != null,
-              minValue: range == null
-                  ? null
-                  : _formatSemanticNumber(range.minimum),
-              maxValue: range == null
-                  ? null
-                  : _formatSemanticNumber(range.maximum),
-              increasedValue: range == null
-                  ? null
-                  : _formatSemanticNumber(
-                      math.min(range.maximum, range.current + range.step),
-                    ),
-              decreasedValue: range == null
-                  ? null
-                  : _formatSemanticNumber(
-                      math.max(range.minimum, range.current - range.step),
-                    ),
-              enabled: _roleHasEnabledState(node.role) ? !node.disabled : null,
-              checked: node.checked,
-              mixed: node.mixed,
-              selected: node.role == 'option' || node.role == 'tab'
-                  ? node.selected
-                  : null,
-              expanded: node.expanded,
-              headingLevel: node.headingLevel,
-              liveRegion: node.liveRegion,
-              focusable: node.focusable,
-              focused: node.focused,
-              button: node.role == 'button',
-              link: node.role == 'link',
-              header: node.role == 'heading',
-              image: node.role == 'image',
-              textField: node.role == 'textbox' || node.role == 'searchbox',
-              onTap: node.actions.contains('tap') && !node.disabled
-                  ? () => widget.onSemanticTap?.call(snapshot, node)
-                  : null,
-              onFocus: node.actions.contains('focus') && !node.disabled
-                  ? () => _handleSemanticFocus(snapshot, node)
-                  : null,
-              onSetText: node.actions.contains('set_value') && !node.disabled
-                  ? (value) =>
-                        widget.onSemanticSetValue?.call(snapshot, node, value)
-                  : null,
-              onIncrease: node.actions.contains('increase') && !node.disabled
-                  ? () =>
-                        widget.onSemanticAdjustment?.call(snapshot, node, true)
-                  : null,
-              onDecrease: node.actions.contains('decrease') && !node.disabled
-                  ? () =>
-                        widget.onSemanticAdjustment?.call(snapshot, node, false)
-                  : null,
-              child: _TextSelectionSemantics(
-                selection: node.textSelection == null
-                    ? null
-                    : TextSelection(
-                        baseOffset: node.textSelection!.baseOffset,
-                        extentOffset: node.textSelection!.extentOffset,
-                      ),
-                child: children.isEmpty
-                    ? const SizedBox.expand()
-                    : Stack(clipBehavior: Clip.none, children: children),
-              ),
-            ),
-          ),
-        );
-      }
-      return widgets;
-    }
-
-    final nodes = buildNodes(null, 0, 0);
-    if (nodes.isEmpty) return visual;
-    return Semantics(
-      container: true,
-      explicitChildNodes: true,
-      child: Stack(
-        fit: StackFit.expand,
-        children: [
-          ExcludeSemantics(child: visual),
-          Stack(clipBehavior: Clip.none, children: nodes),
-        ],
-      ),
-    );
-  }
-
   @override
   void dispose() {
     _disposed = true;
-    _controllerEpoch++;
     _textInputClient.close();
     _contentFocus.dispose();
-    _queueControllerDispose(_controller);
     super.dispose();
   }
 }
@@ -1263,71 +797,11 @@ TextInputAction _platformTextInputAction(BrowserTextInputAction action) =>
       BrowserTextInputAction.send => TextInputAction.send,
     };
 
-final class _TextSelectionSemantics extends SingleChildRenderObjectWidget {
-  const _TextSelectionSemantics({
-    required this.selection,
-    required super.child,
-  });
-
-  final TextSelection? selection;
-
-  @override
-  RenderObject createRenderObject(BuildContext context) =>
-      _RenderTextSelectionSemantics(selection);
-
-  @override
-  void updateRenderObject(
-    BuildContext context,
-    _RenderTextSelectionSemantics renderObject,
-  ) {
-    renderObject.selection = selection;
-  }
-}
-
-final class _RenderTextSelectionSemantics extends RenderProxyBox {
-  _RenderTextSelectionSemantics(this._selection);
-
-  TextSelection? _selection;
-
-  set selection(TextSelection? value) {
-    if (_selection == value) return;
-    _selection = value;
-    markNeedsSemanticsUpdate();
-  }
-
-  @override
-  void describeSemanticsConfiguration(SemanticsConfiguration config) {
-    super.describeSemanticsConfiguration(config);
-    final selection = _selection;
-    if (selection != null) config.textSelection = selection;
-  }
-}
-
-String _semanticIdentifier(BrowserAccessibilitySnapshot snapshot, int nodeId) =>
-    'vixen-${snapshot.contextId}-${snapshot.documentId}-$nodeId';
-
-String _formatSemanticNumber(double value) => value == value.truncateToDouble()
-    ? value.toInt().toString()
-    : value.toString();
-
 int _domButton(int buttons) {
   if (buttons & kMiddleMouseButton != 0) return 1;
   if (buttons & kSecondaryMouseButton != 0) return 2;
   return 0;
 }
-
-bool _roleHasEnabledState(String role) => switch (role) {
-  'button' ||
-  'link' ||
-  'checkbox' ||
-  'radio' ||
-  'textbox' ||
-  'searchbox' ||
-  'combobox' ||
-  'slider' ||
-  'spinbutton' => true,
-  _ => false,
-};
 
 String _domKey(KeyEvent event, HardwareKeyboard keyboard) {
   final character = event.character;
@@ -1443,24 +917,6 @@ String _domCode(PhysicalKeyboardKey key) {
       }[id] ??
       'Unidentified';
 }
-
-bool _isNewer(BrowserFrame candidate, BrowserFrame? previous) {
-  if (previous == null ||
-      candidate.contextId != previous.contextId ||
-      candidate.documentId != previous.documentId) {
-    return true;
-  }
-  return candidate.frameId > previous.frameId;
-}
-
-bool _sameFrame(BrowserFrame? first, BrowserFrame second) =>
-    first != null &&
-    first.contextId == second.contextId &&
-    first.documentId == second.documentId &&
-    first.frameId == second.frameId;
-
-(int, int, int) _frameKey(BrowserFrame frame) =>
-    (frame.contextId, frame.documentId, frame.frameId);
 
 bool _lifecycleAllowsPresentation(BrowserHostLifecycle lifecycle) =>
     lifecycle == BrowserHostLifecycle.resumed ||

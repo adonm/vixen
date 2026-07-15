@@ -14,7 +14,7 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   test(
-    'writes one exact presented commit without legacy frame capture',
+    'writes one exact presented commit through the Flutter renderer',
     () async {
       final state = BrowsingContextState(
         contextId: 1,
@@ -38,7 +38,6 @@ void main() {
       final coordinator = ShellCoordinator(
         controller,
         initialUrl: state.url,
-        captureLegacyPresentation: false,
         useProfileSession: false,
       );
       addTearDown(coordinator.close);
@@ -56,10 +55,9 @@ void main() {
       final view = coordinator.rendererView!;
       final png = await coordinator.capturePresentedRendererCommitPng(view);
       expect(identical(coordinator.presentedRendererView, view), isTrue);
-      expect(controller.frameRequests, isEmpty);
       expect(
         controller.commands.map((command) => command.type),
-        isNot(contains('accessibility_snapshot')),
+        contains('accessibility_snapshot'),
       );
       expect(
         controller.commands.map((command) => command.type),

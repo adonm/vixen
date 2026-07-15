@@ -3613,7 +3613,6 @@ dependencies = [
 name = "vixen-ffi"
 version = "0.1.6"
 dependencies = [
- "khronos-egl",
  "serde_json",
  "tokio",
  "vixen-api",

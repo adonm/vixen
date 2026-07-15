@@ -7,8 +7,8 @@ const int vixenMaxMessageBytes = 65536;
 const int vixenMaxOutputBytes = 1048576;
 const int vixenMaxWaitMilliseconds = 60000;
 const int vixenMaxEventsPerDrain = 64;
-const int vixenMaxFrameDimension = 4096;
-const int vixenMaxFrameBytes = 64 * 1024 * 1024;
+const int vixenMaxViewportDimension = 4096;
+const int vixenMaxViewportBytes = 64 * 1024 * 1024;
 const int vixenMaxAccessibilityValueBytes = 16 * 1024;
 const int vixenMaxTextInputBytes = 16 * 1024;
 
@@ -25,8 +25,7 @@ enum NativeStatus {
   panic(9, 'ffi.panic'),
   internalError(10, 'ffi.internal'),
   outputTooLarge(11, 'ffi.output-too-large'),
-  bufferLimit(12, 'ffi.buffer-limit'),
-  frameLimit(13, 'ffi.frame-limit');
+  bufferLimit(12, 'ffi.buffer-limit');
 
   const NativeStatus(this.value, this.defaultCode);
 
@@ -574,12 +573,10 @@ void _validateViewport(Object? value) {
       height is! int ||
       width <= 0 ||
       height <= 0 ||
-      width > vixenMaxFrameDimension ||
-      height > vixenMaxFrameDimension ||
-      width * height * 4 > vixenMaxFrameBytes) {
-    _invalidCommand(
-      'viewport must have positive bounded dimensions and RGBA byte length',
-    );
+      width > vixenMaxViewportDimension ||
+      height > vixenMaxViewportDimension ||
+      width * height * 4 > vixenMaxViewportBytes) {
+    _invalidCommand('viewport must have positive bounded dimensions and area');
   }
 }
 

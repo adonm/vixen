@@ -27,7 +27,6 @@ Future<void> main(List<String> arguments) async {
         coordinator: ShellCoordinator(
           NativeBrowserController(),
           initialUrl: config.url,
-          captureLegacyPresentation: false,
           useProfileSession: false,
           externalRendererUpdates: true,
         ),
@@ -51,7 +50,6 @@ Future<void> main(List<String> arguments) async {
         coordinator: ShellCoordinator(
           NativeBrowserController(),
           initialUrl: config.url,
-          captureLegacyPresentation: false,
           useProfileSession: false,
         ),
         onFinished: exit,

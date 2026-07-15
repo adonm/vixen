@@ -18,52 +18,6 @@ final class VixenBuffer extends Struct {
   external int len;
 }
 
-final class VixenFrame extends Struct {
-  @Uint64()
-  external int token;
-
-  external Pointer<Uint8> ptr;
-
-  @Size()
-  external int len;
-
-  @Uint32()
-  external int width;
-
-  @Uint32()
-  external int height;
-
-  @Size()
-  external int rowStride;
-
-  @Uint64()
-  external int frameId;
-
-  @Uint64()
-  external int contextId;
-
-  @Uint64()
-  external int documentId;
-}
-
-final class NativeCapturedFrame {
-  const NativeCapturedFrame({
-    required this.rgba,
-    required this.width,
-    required this.height,
-    required this.frameId,
-    required this.contextId,
-    required this.documentId,
-  });
-
-  final Uint8List rgba;
-  final int width;
-  final int height;
-  final int frameId;
-  final int contextId;
-  final int documentId;
-}
-
 typedef _AbiVersionNative = Uint32 Function();
 typedef _AbiVersionDart = int Function();
 typedef _OpenNative = Uint32 Function(
@@ -138,26 +92,6 @@ typedef _RendererShutdownNative = Uint32 Function(Uint64, Pointer<VixenBuffer>);
 typedef _RendererShutdownDart = int Function(int, Pointer<VixenBuffer>);
 typedef _BufferReleaseNative = Uint32 Function(Uint64);
 typedef _BufferReleaseDart = int Function(int);
-typedef _CaptureFrameNative = Uint32 Function(
-  Uint64,
-  Uint64,
-  Uint64,
-  Uint32,
-  Uint32,
-  Pointer<VixenFrame>,
-  Pointer<VixenBuffer>,
-);
-typedef _CaptureFrameDart = int Function(
-  int,
-  int,
-  int,
-  int,
-  int,
-  Pointer<VixenFrame>,
-  Pointer<VixenBuffer>,
-);
-typedef _FrameReleaseNative = Uint32 Function(Uint64);
-typedef _FrameReleaseDart = int Function(int);
 
 class _VixenNativeBindings {
   _VixenNativeBindings(DynamicLibrary library)
@@ -201,14 +135,6 @@ class _VixenNativeBindings {
       bufferRelease = library
           .lookupFunction<_BufferReleaseNative, _BufferReleaseDart>(
             'vixen_buffer_release',
-          ),
-      captureFrame = library
-          .lookupFunction<_CaptureFrameNative, _CaptureFrameDart>(
-            'vixen_capture_frame',
-          ),
-      frameRelease = library
-          .lookupFunction<_FrameReleaseNative, _FrameReleaseDart>(
-            'vixen_frame_release',
           );
 
   final _AbiVersionDart abiVersion;
@@ -223,8 +149,6 @@ class _VixenNativeBindings {
   final _RendererSubmitDart rendererSubmit;
   final _RendererShutdownDart rendererShutdown;
   final _BufferReleaseDart bufferRelease;
-  final _CaptureFrameDart captureFrame;
-  final _FrameReleaseDart frameRelease;
 }
 
 class VixenNativeApi {
@@ -430,91 +354,6 @@ class VixenNativeApi {
     }
   }
 
-  NativeCapturedFrame captureFrame({
-    required int handle,
-    required int contextId,
-    required int documentId,
-    required int width,
-    required int height,
-  }) {
-    validateFrameCaptureRequest(
-      contextId: contextId,
-      documentId: documentId,
-      width: width,
-      height: height,
-    );
-    final frame = calloc<VixenFrame>();
-    final output = calloc<VixenBuffer>();
-    NativeCapturedFrame? result;
-    Object? failure;
-    StackTrace? failureTrace;
-    try {
-      final status = _bindings.captureFrame(
-        handle,
-        contextId,
-        documentId,
-        width,
-        height,
-        frame,
-        output,
-      );
-      _consumeFrameStatus(status, output);
-      final descriptor = frame.ref;
-      validateNativeFrameDescriptor(
-        token: descriptor.token,
-        pointerAddress: descriptor.ptr.address,
-        length: descriptor.len,
-        width: descriptor.width,
-        height: descriptor.height,
-        rowStride: descriptor.rowStride,
-        frameId: descriptor.frameId,
-        contextId: descriptor.contextId,
-        documentId: descriptor.documentId,
-        expectedWidth: width,
-        expectedHeight: height,
-        expectedContextId: contextId,
-        expectedDocumentId: documentId,
-      );
-      result = NativeCapturedFrame(
-        rgba: Uint8List.fromList(descriptor.ptr.asTypedList(descriptor.len)),
-        width: descriptor.width,
-        height: descriptor.height,
-        frameId: descriptor.frameId,
-        contextId: descriptor.contextId,
-        documentId: descriptor.documentId,
-      );
-    } catch (error, stackTrace) {
-      failure = error;
-      failureTrace = stackTrace;
-    } finally {
-      final token = frame.ref.token;
-      if (token != 0) {
-        try {
-          final releaseStatus = NativeStatus.fromValue(
-            _bindings.frameRelease(token),
-          );
-          if (releaseStatus != NativeStatus.ok && failure == null) {
-            failure = NativeBridgeException(
-              'could not release native frame token',
-              code: releaseStatus.defaultCode,
-              status: releaseStatus,
-            );
-            failureTrace = StackTrace.current;
-          }
-        } catch (error, stackTrace) {
-          failure ??= error;
-          failureTrace ??= stackTrace;
-        }
-      }
-      calloc.free(output);
-      calloc.free(frame);
-    }
-    if (failure != null) {
-      Error.throwWithStackTrace(failure, failureTrace!);
-    }
-    return result!;
-  }
-
   void destroy(int handle) {
     final status = NativeStatus.fromValue(_bindings.destroy(handle));
     if (status != NativeStatus.ok) {
@@ -586,37 +425,6 @@ class VixenNativeApi {
     );
   }
 
-  void _consumeFrameStatus(int statusValue, Pointer<VixenBuffer> output) {
-    final payload = _copyDecodeAndRelease(output.ref);
-    final status = NativeStatus.fromValue(statusValue);
-    if (status == NativeStatus.ok) {
-      if (payload != null) {
-        throw const NativeProtocolException(
-          'successful frame capture returned error JSON',
-        );
-      }
-      return;
-    }
-    if (payload != null) {
-      if (payload['type'] != 'error') {
-        throw NativeProtocolException(
-          '${status.name} returned a non-error JSON envelope',
-        );
-      }
-      final error = payload['error']! as Map<String, Object?>;
-      throw NativeBridgeException(
-        error['message']! as String,
-        code: error['code']! as String,
-        status: status,
-      );
-    }
-    throw NativeBridgeException(
-      'native frame capture failed with ${status.name}',
-      code: status.defaultCode,
-      status: status,
-    );
-  }
-
   Map<String, Object?>? _copyDecodeAndRelease(VixenBuffer buffer) {
     final token = buffer.token;
     final pointer = buffer.ptr;
@@ -671,63 +479,5 @@ class VixenNativeApi {
       Error.throwWithStackTrace(failure, failureTrace!);
     }
     return payload;
-  }
-}
-
-void validateFrameCaptureRequest({
-  required int contextId,
-  required int documentId,
-  required int width,
-  required int height,
-}) {
-  if (contextId <= 0 || documentId <= 0) {
-    throw const NativeBridgeException(
-      'frame context and document ids must be nonzero',
-      code: 'ffi.invalid-argument',
-      status: NativeStatus.invalidArgument,
-    );
-  }
-  if (width <= 0 ||
-      height <= 0 ||
-      width > vixenMaxFrameDimension ||
-      height > vixenMaxFrameDimension ||
-      width * height * 4 > vixenMaxFrameBytes) {
-    throw const NativeBridgeException(
-      'frame dimensions exceed ABI bounds',
-      code: 'ffi.invalid-argument',
-      status: NativeStatus.invalidArgument,
-    );
-  }
-}
-
-void validateNativeFrameDescriptor({
-  required int token,
-  required int pointerAddress,
-  required int length,
-  required int width,
-  required int height,
-  required int rowStride,
-  required int frameId,
-  required int contextId,
-  required int documentId,
-  required int expectedWidth,
-  required int expectedHeight,
-  required int expectedContextId,
-  required int expectedDocumentId,
-}) {
-  final expectedLength = expectedWidth * expectedHeight * 4;
-  if (token == 0 ||
-      pointerAddress == 0 ||
-      width != expectedWidth ||
-      height != expectedHeight ||
-      rowStride != expectedWidth * 4 ||
-      length != expectedLength ||
-      length > vixenMaxFrameBytes ||
-      frameId <= 0 ||
-      contextId != expectedContextId ||
-      documentId != expectedDocumentId) {
-    throw const NativeProtocolException(
-      'native frame descriptor violates the packed RGBA8 contract',
-    );
   }
 }

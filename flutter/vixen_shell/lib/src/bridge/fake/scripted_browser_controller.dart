@@ -12,12 +12,6 @@ typedef BrowserCommandHandler = FutureOr<BrowserResponse> Function(
   BrowserCommand command,
   ScriptedBrowserController controller,
 );
-typedef BrowserFrameHandler = FutureOr<BrowserFrame?> Function(
-  int contextId,
-  int documentId,
-  int width,
-  int height,
-);
 typedef BrowserAccessibilityHandler = BrowserAccessibilitySnapshot Function(
   int contextId,
   int documentId,
@@ -33,7 +27,6 @@ final class ScriptedBrowserController extends BrowserController
     this.session = const ProfileSessionState(),
     BrowserSnapshot snapshot = const BrowserSnapshot(),
     this.onCommand,
-    this.onCaptureFrame,
     this.onAccessibilitySnapshot,
     this.findTextResponse = const FindTextResponse(
       matches: 0,
@@ -50,7 +43,6 @@ final class ScriptedBrowserController extends BrowserController
        );
 
   final BrowserCommandHandler? onCommand;
-  final BrowserFrameHandler? onCaptureFrame;
   final BrowserAccessibilityHandler? onAccessibilitySnapshot;
   final FindTextResponse findTextResponse;
   @override
@@ -72,8 +64,6 @@ final class ScriptedBrowserController extends BrowserController
   int startCount = 0;
   int shutdownCount = 0;
   int snapshotCount = 0;
-  final List<({int contextId, int documentId, int width, int height})>
-  frameRequests = [];
 
   @override
   Stream<SequencedBrowserEvent> get events => _events.stream;
@@ -287,22 +277,6 @@ final class ScriptedBrowserController extends BrowserController
           'Unknown command ${command.type}',
         );
     }
-  }
-
-  @override
-  Future<BrowserFrame?> captureFrame({
-    required int contextId,
-    required int documentId,
-    required int width,
-    required int height,
-  }) async {
-    frameRequests.add((
-      contextId: contextId,
-      documentId: documentId,
-      width: width,
-      height: height,
-    ));
-    return onCaptureFrame?.call(contextId, documentId, width, height);
   }
 
   NavigationAcceptedResponse _beginNavigation(int contextId, String url) {

@@ -17,49 +17,6 @@ void main() {
     expect(sizeOf<VixenBuffer>(), 24);
   });
 
-  test('VixenFrame matches the exact 64-bit Linux C layout', () {
-    expect(sizeOf<VixenFrame>(), 64);
-  });
-
-  test('validates exact packed native frame descriptors', () {
-    expect(
-      () => validateNativeFrameDescriptor(
-        token: 1,
-        pointerAddress: 1,
-        length: 8 * 6 * 4,
-        width: 8,
-        height: 6,
-        rowStride: 32,
-        frameId: 2,
-        contextId: 3,
-        documentId: 4,
-        expectedWidth: 8,
-        expectedHeight: 6,
-        expectedContextId: 3,
-        expectedDocumentId: 4,
-      ),
-      returnsNormally,
-    );
-    expect(
-      () => validateNativeFrameDescriptor(
-        token: 1,
-        pointerAddress: 1,
-        length: 8 * 6 * 4,
-        width: 8,
-        height: 6,
-        rowStride: 31,
-        frameId: 2,
-        contextId: 3,
-        documentId: 4,
-        expectedWidth: 8,
-        expectedHeight: 6,
-        expectedContextId: 3,
-        expectedDocumentId: 4,
-      ),
-      throwsA(isA<NativeProtocolException>()),
-    );
-  });
-
   test('profile path follows XDG and HOME precedence', () {
     expect(
       resolveProfilePath(
@@ -460,11 +417,11 @@ void main() {
     });
 
     test('maps every stable status value', () {
-      for (var value = 0; value <= 13; value++) {
+      for (var value = 0; value <= 12; value++) {
         expect(NativeStatus.fromValue(value).value, value);
       }
       expect(
-        () => NativeStatus.fromValue(14),
+        () => NativeStatus.fromValue(13),
         throwsA(isA<NativeProtocolException>()),
       );
     });

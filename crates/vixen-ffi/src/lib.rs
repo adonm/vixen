@@ -3,10 +3,8 @@
 #![deny(unsafe_code)]
 
 pub mod c_abi;
-pub mod c_frame;
 pub mod c_renderer;
 mod cdp_host;
-mod frame;
 mod render_wire;
 mod renderer_broker;
 mod sync_renderer;
@@ -25,7 +23,6 @@ pub use vixen_api::{
     MouseEventData, NavigationId, ProfileSessionState, RuntimeContextId, TextInputState,
 };
 pub use vixen_engine::browser::BrowserConfig;
-pub use vixen_engine::paint::RgbaFrame;
 
 use vixen_api::{
     BrowserCommand, BrowserCommandResult, FullRenderSnapshot, RenderHitTestQuery,
@@ -800,17 +797,6 @@ impl FlutterBrowserController {
         }
     }
 
-    /// Capture the active document through BrowserCore's authoritative paint
-    /// snapshot and Vixen's WebRender path using a local offscreen EGL surface.
-    pub fn capture_rgba_frame(
-        &mut self,
-        context_id: BrowsingContextId,
-        document_id: DocumentId,
-        viewport: (u32, u32),
-    ) -> Result<RgbaFrame, BrowserError> {
-        frame::capture_rgba_frame(&mut self.handle, context_id, document_id, viewport)
-    }
-
     /// Return the next ordered browser event without blocking.
     ///
     /// On `browser.event-lagged`, pending frontend operations are indeterminate;
@@ -1573,35 +1559,6 @@ mod tests {
             controller.set_page_zoom(context_id, 0.1).unwrap_err().code,
             browser_error_codes::INVALID_ARGUMENT
         );
-    }
-
-    #[test]
-    fn flutter_frame_capture_preserves_raster_fixture_pixels() {
-        let profile = TestProfile::new();
-        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/images/raster-image.html")
-            .canonicalize()
-            .unwrap();
-        let url = format!("file://{}", fixture.display());
-        let mut controller =
-            FlutterBrowserController::from_config(BrowserConfig::new(&profile.0)).unwrap();
-        let context_id = controller.create_context().unwrap();
-        let navigation_id = controller.navigate(context_id, url).unwrap();
-        wait_for_settled(&mut controller, navigation_id);
-        let state = controller.context_state(context_id).unwrap();
-        let frame = controller
-            .capture_rgba_frame(context_id, state.document_id, (80, 80))
-            .unwrap();
-        let pixel = |x: usize, y: usize| {
-            let offset = (y * frame.width as usize + x) * 4;
-            &frame.rgba[offset..offset + 4]
-        };
-
-        assert_eq!(pixel(5, 5), [255, 0, 0, 255]);
-        assert_eq!(pixel(35, 5), [0, 255, 0, 255]);
-        assert_eq!(pixel(5, 35), [0, 0, 255, 255]);
-        assert_eq!(pixel(35, 35), [255, 255, 0, 255]);
-        assert_eq!(pixel(50, 50), [255, 255, 255, 255]);
     }
 
     #[test]

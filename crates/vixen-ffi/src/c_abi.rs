@@ -30,11 +30,6 @@ use crate::{
     bounded_accessibility_snapshot,
 };
 
-pub use crate::c_frame::{
-    VIXEN_MAX_FRAME_BYTES, VIXEN_MAX_FRAME_DIMENSION, VIXEN_MAX_OUTSTANDING_FRAMES,
-    VIXEN_STATUS_FRAME_LIMIT, VixenFrame, vixen_capture_frame, vixen_frame_release,
-};
-
 pub const VIXEN_STATUS_OK: u32 = 0;
 pub const VIXEN_STATUS_NO_EVENT: u32 = 1;
 pub const VIXEN_STATUS_INVALID_ARGUMENT: u32 = 2;
@@ -93,7 +88,6 @@ impl VixenBuffer {
 pub(crate) struct ControllerState {
     pub(crate) controller: FlutterBrowserController,
     next_event_sequence: u64,
-    pub(crate) next_frame_id: u64,
 }
 
 #[derive(Default)]
@@ -214,7 +208,6 @@ pub unsafe extern "C" fn vixen_open(
                 state: Mutex::new(ControllerState {
                     controller,
                     next_event_sequence: 1,
-                    next_frame_id: 1,
                 }),
                 renderer,
                 renderer_state,
@@ -1254,7 +1247,7 @@ fn required_viewport(object: &Map<String, Value>) -> Result<(u32, u32), AbiError
     let rgba_bytes = u64::from(width)
         .checked_mul(u64::from(height))
         .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or_else(|| AbiError::invalid_command("viewport RGBA size overflows"))?;
+        .ok_or_else(|| AbiError::invalid_command("viewport area overflows"))?;
     if width == 0
         || height == 0
         || width > MAX_INPUT_VIEWPORT_DIMENSION
@@ -1262,7 +1255,7 @@ fn required_viewport(object: &Map<String, Value>) -> Result<(u32, u32), AbiError
         || rgba_bytes > MAX_INPUT_VIEWPORT_BYTES
     {
         return Err(AbiError::invalid_command(
-            "viewport must have positive dimensions no larger than 4096 and 67108864 RGBA bytes",
+            "viewport must have positive dimensions no larger than 4096 and bounded area",
         ));
     }
     Ok((width, height))
@@ -1997,7 +1990,6 @@ mod tests {
         fn drop(&mut self) {
             assert!(controllers().lock().unwrap().is_empty());
             assert!(buffers().lock().unwrap().is_empty());
-            assert!(crate::c_frame::frame_registry_is_empty());
         }
     }
 
@@ -2033,10 +2025,6 @@ mod tests {
         }
     }
 
-    mod frame_tests {
-        include!("c_abi/frame_tests.rs");
-    }
-
     #[test]
     fn version_and_c_layout_are_stable() {
         let _scope = test_scope();
@@ -2047,34 +2035,6 @@ mod tests {
         assert_eq!(offset_of!(VixenBuffer, len), 8 + size_of::<*const u8>());
         assert!(size_of::<VixenBuffer>() >= 8 + size_of::<*const u8>() + size_of::<usize>());
         assert!(align_of::<VixenBuffer>() >= align_of::<u64>());
-        assert_eq!(offset_of!(VixenFrame, token), 0);
-        assert_eq!(offset_of!(VixenFrame, ptr), 8);
-        assert_eq!(offset_of!(VixenFrame, len), 8 + size_of::<*const u8>());
-        assert_eq!(
-            offset_of!(VixenFrame, width),
-            offset_of!(VixenFrame, len) + size_of::<usize>()
-        );
-        assert_eq!(
-            offset_of!(VixenFrame, height),
-            offset_of!(VixenFrame, width) + 4
-        );
-        assert_eq!(
-            offset_of!(VixenFrame, row_stride),
-            offset_of!(VixenFrame, height) + 4
-        );
-        assert_eq!(
-            offset_of!(VixenFrame, frame_id),
-            offset_of!(VixenFrame, row_stride) + size_of::<usize>()
-        );
-        assert_eq!(
-            offset_of!(VixenFrame, context_id),
-            offset_of!(VixenFrame, frame_id) + 8
-        );
-        assert_eq!(
-            offset_of!(VixenFrame, document_id),
-            offset_of!(VixenFrame, context_id) + 8
-        );
-        assert!(size_of::<VixenFrame>() >= offset_of!(VixenFrame, document_id) + 8);
     }
 
     #[test]
@@ -2089,15 +2049,10 @@ mod tests {
             "#define VIXEN_MAX_OUTSTANDING_BUFFERS 64u",
             "#define VIXEN_MAX_WAIT_MILLISECONDS 60000u",
             "#define VIXEN_MAX_RENDER_UPDATE_SOURCE_BYTES 524288u",
-            "#define VIXEN_MAX_FRAME_DIMENSION 4096u",
-            "#define VIXEN_MAX_FRAME_BYTES 67108864u",
-            "#define VIXEN_MAX_OUTSTANDING_FRAMES 3u",
-            "#define VIXEN_STATUS_FRAME_LIMIT 13u",
             "uint32_t vixen_abi_version(void);",
             "uint32_t vixen_destroy(VixenHandle handle);",
             "uint32_t vixen_poll_event(VixenHandle handle, VixenBuffer *out_json);",
             "uint32_t vixen_buffer_release(uint64_t token);",
-            "uint32_t vixen_frame_release(uint64_t token);",
         ] {
             assert!(header.contains(declaration), "missing {declaration}");
         }
@@ -2108,16 +2063,12 @@ mod tests {
         assert!(header.contains("uint32_t vixen_renderer_respond(VixenHandle handle,"));
         assert!(header.contains("uint32_t vixen_renderer_submit(VixenHandle handle,"));
         assert!(header.contains("uint32_t vixen_renderer_shutdown(VixenHandle handle,"));
-        assert!(header.contains("uint32_t vixen_capture_frame(VixenHandle handle,"));
         assert_eq!(VIXEN_MAX_PROFILE_PATH_BYTES, 4096);
         assert_eq!(VIXEN_MAX_MESSAGE_BYTES, 65_536);
         assert_eq!(VIXEN_MAX_OUTPUT_BYTES, 1_048_576);
         assert_eq!(VIXEN_MAX_OUTSTANDING_BUFFERS, 64);
         assert_eq!(VIXEN_MAX_WAIT_MILLISECONDS, 60_000);
         assert_eq!(crate::RENDER_BROKER_MAX_UPDATE_SOURCE_BYTES, 512 * 1024);
-        assert_eq!(VIXEN_MAX_FRAME_DIMENSION, 4096);
-        assert_eq!(VIXEN_MAX_FRAME_BYTES, 64 * 1024 * 1024);
-        assert_eq!(VIXEN_MAX_OUTSTANDING_FRAMES, 3);
     }
 
     #[test]

@@ -91,9 +91,9 @@ final class AutomationConfig {
     final height = match == null ? null : int.tryParse(match.group(2)!);
     if (width == null ||
         height == null ||
-        width > browserMaxFrameDimension ||
-        height > browserMaxFrameDimension ||
-        width * height * 4 > browserMaxFrameBytes) {
+        width > browserMaxViewportDimension ||
+        height > browserMaxViewportDimension ||
+        width * height * 4 > browserMaxViewportBytes) {
       _invalid(
         '--vixen-viewport must be WIDTHxHEIGHT within the renderer bounds',
       );

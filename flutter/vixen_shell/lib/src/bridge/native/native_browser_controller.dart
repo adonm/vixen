@@ -147,39 +147,6 @@ final class NativeBrowserController extends BrowserController
   }
 
   @override
-  Future<BrowserFrame?> captureFrame({
-    required int contextId,
-    required int documentId,
-    required int width,
-    required int height,
-  }) async {
-    final worker = _worker;
-    if (worker == null || _shutdown) {
-      throw const BrowserFailure(
-        'browser.closed',
-        'Browser controller is not running',
-      );
-    }
-    try {
-      final wire = await worker.captureFrame(
-        contextId: contextId,
-        documentId: documentId,
-        width: width,
-        height: height,
-      );
-      return decodeWorkerFrameTransfer(
-        wire,
-        expectedContextId: contextId,
-        expectedDocumentId: documentId,
-        expectedWidth: width,
-        expectedHeight: height,
-      );
-    } catch (error) {
-      throw _browserFailure(error);
-    }
-  }
-
-  @override
   Future<void> shutdown() async {
     if (_shutdown) {
       return;

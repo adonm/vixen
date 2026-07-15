@@ -34,39 +34,19 @@ X11 or XWayland. Use `just run-flutter` in a native Wayland session or `just
 run-flutter-cage` for a local isolated compositor; release and AT-SPI smokes use
 the same Cage headless-wlroots shape.
 
-## Transitional Linux frame texture contract
+## Linux commit presentation contract
 
-This implemented contract is frozen except for critical correctness. ADR-022
-replaces it with exact revision/mutation/full-resync, atomic-commit/presented,
-and renderer-query channels, then deletes frame ABI/pools and the Linux
-pixel-buffer texture plugin/presenter.
+The normal GUI and both automation entrypoints use the same Flutter formatter
+and `RenderCommitPainter`. The old RGBA frame ABI, Dart worker transfer, Linux
+pixel-buffer texture plugin/presenter, retry pool, and FFI EGL owner have been
+deleted. A missing, stale, retired, or hidden commit shows the
+renderer-unavailable placeholder; it never falls back to native renderer pixels.
 
-The native worker captures only the selected, settled BrowserCore
-context/document generation. Each successful ABI frame is exact packed RGBA8,
-is copied before its native token is released, and crosses to the UI isolate as
-`TransferableTypedData`. Capture dimensions are physical pixels and are bounded
-to 4096 per axis, 64 MiB, and one in-flight request plus one newest replacement.
-
-The Linux runner exposes `dev.adonm.vixen/texture` using Flutter's standard
-method codec:
-
-- `create` takes no arguments and returns the registered texture ID.
-- `publish` takes `{width: int, height: int, rgba: Uint8List}`. Dimensions must
-  be positive and at most 4096, and `rgba.length` must equal
-  `width * height * 4` without exceeding 64 MiB.
-- `dispose` takes no arguments and unregisters the texture before releasing it.
-
-There is one `FlPixelBufferTexture` per window. It owns a mutex-protected,
-bounded three-buffer pool so the render-thread pointer most recently returned
-to Flutter is not overwritten before a later render tick. Unsupported platforms
-and channel failures show the renderer-unavailable placeholder; they never
-synthesize a frame.
-
-Current-generation BrowserCore frame and Semantics captures each retry at most
-twice. The presenter likewise disposes and recreates the texture after at most
-two failed create/publish attempts; exhaustion shows `Surface recovery failed`
-and a newer frame gets a fresh bounded attempt. Tests use deterministic failures;
-native compositor/surface-loss evidence and full app-lifecycle recovery remain.
+Physical viewport dimensions remain bounded to 4096 per axis and a 64 MiB area
+budget before BrowserCore source, input, accessibility metadata, or Flutter
+formatting work is requested. Accessibility metadata is refreshed independently
+of presentation so commit-bound semantic actions and platform text input remain
+available without a legacy frame pairing.
 
 ## Target renderer contract
 
@@ -91,12 +71,13 @@ geometry, while BrowserCore owns script intent, event effects, history, and
 persistence. BrowserCore semantic descriptors combine with commit bounds only for
 the displayed commit.
 
-## Transitional input contract
+## Input contract
 
 The content surface maps Flutter logical pointer/wheel coordinates into the exact
-physical frame viewport. Commands carry current context, document, and runtime
-ids; BrowserCore performs hit testing and the wire has no caller-selected node
-id. Pointer and key events use a serialized, bounded 64-event queue. A stale
+physical renderer viewport. Commands carry current context, document, and runtime
+ids; displayed-commit pointer input carries a Flutter hit-test query and
+BrowserCore validates the returned target. Pointer and key events use a
+serialized, bounded 64-event queue. A stale
 generation is discarded, input effects/navigation outcomes are retained, and an
 accepted event requests a new frame. Pointer cancellation clears only the
 matching pending primary press and cannot synthesize a click. A monotonic

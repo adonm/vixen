@@ -62,17 +62,19 @@ answers element, Range, and caret geometry from the matching Flutter commit.
 Navigation/stop/deadline cancellation, malformed-commit and full-resync
 recovery, late-reply rejection, and repeated-read commit reuse are covered by
 `just test-r6`; `just gate-r6` preserves all R5 rendered evidence. WebRender/RGBA
-remains the explicit fallback only until the one-time R7 cutover.
+has now been removed from the production GUI/FFI presentation path; removing the
+remaining native-headless WebRender owner is the next R7 deletion slice.
 
-The checked-in transitional Linux Flutter alpha shell uses handwritten Dart FFI over the
-one-owner `vixen-ffi` controller and presents real BrowserCore/WebRender output
-through a bounded RGBA pixel-buffer texture. Its chrome uses the locked Yaru
+The checked-in Linux Flutter alpha shell uses handwritten Dart FFI over the
+one-owner `vixen-ffi` controller and presents exact Flutter renderer commits.
+The old RGBA frame ABI, worker transfer, FFI EGL renderer, and Linux pixel-buffer
+texture plugin are deleted. Its chrome uses the locked Yaru
 widget suite with the Adwaita-blue variant, Yaru icons/controls, and a
 Flutter-rendered titlebar containing the BrowserCore-backed tab strip. The
 native GTK headerbar remains only as a startup fallback and is hidden after the
 Yaru window plugin initializes. The Linux GUI is native-Wayland-only; X11 and
 XWayland startup fail explicitly. Its fake-controller, worker,
-coordinator, texture, input, and live native smoke tests run with
+coordinator, commit surface, input, and live native smoke tests run with
 `just gate-flutter-shell`; a relocatable debug bundle has also compiled. Physical
 viewport plus pointer/wheel/keyboard input are routed through BrowserCore;
 uncanceled wheel input and uncanceled navigation-key defaults now update a

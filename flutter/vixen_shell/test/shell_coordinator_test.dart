@@ -1,6 +1,3 @@
-import 'dart:async';
-import 'dart:typed_data';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vixen_shell/src/bridge/browser_models.dart';
 import 'package:vixen_shell/src/bridge/fake/scripted_browser_controller.dart';
@@ -32,10 +29,7 @@ void main() {
       rendererUpdatesEnabled: true,
       snapshot: BrowserSnapshot(activeContextId: 1, contexts: [state]),
     );
-    final coordinator = ShellCoordinator(
-      controller,
-      captureLegacyPresentation: false,
-    );
+    final coordinator = ShellCoordinator(controller);
     await coordinator.start();
     final snapshot = r3Snapshot();
     controller.enqueueRendererRequest(NativeFullSnapshotUpdate(snapshot));
@@ -89,13 +83,6 @@ void main() {
       final controller = ScriptedBrowserController(
         rendererUpdatesEnabled: true,
         snapshot: BrowserSnapshot(activeContextId: 1, contexts: [state]),
-        onCaptureFrame: (contextId, documentId, width, height) => browserFrame(
-          width: width,
-          height: height,
-          frameId: 1,
-          contextId: contextId,
-          documentId: documentId,
-        ),
         onAccessibilitySnapshot: (contextId, documentId, width, height) =>
             BrowserAccessibilitySnapshot(
               contextId: contextId,
@@ -559,184 +546,17 @@ void main() {
     expect(controller.shutdownCount, 1);
   });
 
-  test(
-    'frame capture coalesces to one in flight and one replacement',
-    () async {
-      final first = Completer<BrowserFrame?>();
-      final second = Completer<BrowserFrame?>();
-      var captureCount = 0;
-      final controller = ScriptedBrowserController(
-        snapshot: BrowserSnapshot(
-          activeContextId: 1,
-          contexts: [contextState(id: 1, url: 'https://frame.test')],
-        ),
-        onCaptureFrame: (contextId, documentId, width, height) {
-          captureCount++;
-          return captureCount == 1 ? first.future : second.future;
-        },
-      );
-      final coordinator = ShellCoordinator(controller);
-      await coordinator.start();
-
-      coordinator.updatePhysicalViewport(100, 50);
-      coordinator.updatePhysicalViewport(200, 100);
-      coordinator.updatePhysicalViewport(300, 150);
-      expect(controller.frameRequests, hasLength(1));
-
-      first.complete(
-        browserFrame(
-          width: 100,
-          height: 50,
-          frameId: 1,
-          contextId: 1,
-          documentId: 100,
-        ),
-      );
-      await flushEvents();
-      expect(coordinator.frame, isNull);
-      expect(controller.frameRequests, hasLength(2));
-      expect(controller.frameRequests.last.width, 300);
-
-      second.complete(
-        browserFrame(
-          width: 300,
-          height: 150,
-          frameId: 2,
-          contextId: 1,
-          documentId: 100,
-        ),
-      );
-      await flushEvents();
-      expect(coordinator.frame?.frameId, 2);
-      await coordinator.close();
-    },
-  );
-
-  test('stale document capture is rejected and replaced', () async {
-    final oldCapture = Completer<BrowserFrame?>();
-    final newCapture = Completer<BrowserFrame?>();
-    var captureCount = 0;
-    final initial = contextState(id: 2, url: 'https://generation.test');
-    final controller = ScriptedBrowserController(
-      snapshot: BrowserSnapshot(activeContextId: 2, contexts: [initial]),
-      onCaptureFrame: (contextId, documentId, width, height) {
-        captureCount++;
-        return captureCount == 1 ? oldCapture.future : newCapture.future;
-      },
-    );
-    final coordinator = ShellCoordinator(controller);
-    await coordinator.start();
-    coordinator.updatePhysicalViewport(4, 3);
-
-    controller.replaceContext(initial.copyWith(documentId: 201));
-    await flushEvents();
-    oldCapture.complete(
-      browserFrame(
-        width: 4,
-        height: 3,
-        frameId: 1,
-        contextId: 2,
-        documentId: 200,
-      ),
-    );
-    await flushEvents();
-    expect(coordinator.frame, isNull);
-    expect(controller.frameRequests.last.documentId, 201);
-
-    newCapture.complete(
-      browserFrame(
-        width: 4,
-        height: 3,
-        frameId: 2,
-        contextId: 2,
-        documentId: 201,
-      ),
-    );
-    await flushEvents();
-    expect(coordinator.frame?.documentId, 201);
-    await coordinator.close();
-  });
-
-  test(
-    'current frame capture retries twice and recovers without an error',
-    () async {
-      var attempts = 0;
-      final controller = ScriptedBrowserController(
-        snapshot: BrowserSnapshot(
-          activeContextId: 6,
-          contexts: [contextState(id: 6, url: 'https://recovery.test')],
-        ),
-        onCaptureFrame: (contextId, documentId, width, height) {
-          attempts++;
-          if (attempts <= ShellCoordinator.maxCaptureRetries) {
-            throw const BrowserFailure('renderer.surface', 'surface lost');
-          }
-          return browserFrame(
-            width: width,
-            height: height,
-            frameId: 1,
-            contextId: contextId,
-            documentId: documentId,
-          );
-        },
-      );
-      final coordinator = ShellCoordinator(controller);
-      await coordinator.start();
-
-      coordinator.updatePhysicalViewport(320, 180);
-      await flushEvents();
-      await flushEvents();
-
-      expect(controller.frameRequests, hasLength(3));
-      expect(coordinator.frame?.frameId, 1);
-      expect(coordinator.errorMessage, isNull);
-      await coordinator.close();
-    },
-  );
-
-  test('current frame capture stops after the bounded retry budget', () async {
-    final controller = ScriptedBrowserController(
-      snapshot: BrowserSnapshot(
-        activeContextId: 7,
-        contexts: [contextState(id: 7, url: 'https://failed-recovery.test')],
-      ),
-      onCaptureFrame: (_, _, _, _) =>
-          throw const BrowserFailure('renderer.surface', 'surface lost'),
-    );
-    final coordinator = ShellCoordinator(controller);
-    await coordinator.start();
-
-    coordinator.updatePhysicalViewport(320, 180);
-    await flushEvents();
-    await flushEvents();
-
-    expect(
-      controller.frameRequests,
-      hasLength(ShellCoordinator.maxCaptureRetries + 1),
-    );
-    expect(coordinator.frame, isNull);
-    expect(coordinator.errorMessage, contains('after recovery'));
-    await coordinator.close();
-  });
-
-  test('paired accessibility capture retries twice and recovers', () async {
+  test('accessibility capture retries twice and recovers', () async {
     var accessibilityAttempts = 0;
-    var frameId = 0;
     final controller = ScriptedBrowserController(
       snapshot: BrowserSnapshot(
         activeContextId: 8,
         contexts: [contextState(id: 8, url: 'https://a11y-recovery.test')],
       ),
-      onCaptureFrame: (contextId, documentId, width, height) => browserFrame(
-        width: width,
-        height: height,
-        frameId: ++frameId,
-        contextId: contextId,
-        documentId: documentId,
-      ),
       onAccessibilitySnapshot: (contextId, documentId, width, height) {
         accessibilityAttempts++;
-        if (accessibilityAttempts <= ShellCoordinator.maxCaptureRetries) {
+        if (accessibilityAttempts <=
+            ShellCoordinator.maxAccessibilityCaptureRetries) {
           throw const BrowserFailure(
             'renderer.accessibility',
             'projection unavailable',
@@ -762,13 +582,12 @@ void main() {
     await flushEvents();
 
     expect(accessibilityAttempts, 3);
-    expect(coordinator.frame?.frameId, 1);
     expect(coordinator.accessibility, isNotNull);
     expect(coordinator.errorMessage, isNull);
     await coordinator.close();
   });
 
-  test('physical viewport is bounded before capture', () async {
+  test('physical viewport is bounded before renderer projection', () async {
     final controller = ScriptedBrowserController(
       snapshot: BrowserSnapshot(
         activeContextId: 3,
@@ -781,13 +600,15 @@ void main() {
     coordinator.updatePhysicalViewport(100000, 100000);
     await flushEvents();
 
-    expect(controller.frameRequests.single.width, browserMaxFrameDimension);
-    expect(controller.frameRequests.single.height, browserMaxFrameDimension);
+    final request = controller.commands
+        .singleWhere((command) => command.type == 'accessibility_snapshot')
+        .toWire();
+    final viewport = (request['viewport']! as Map).cast<String, int>();
+    expect(viewport['width'], browserMaxViewportDimension);
+    expect(viewport['height'], browserMaxViewportDimension);
     expect(
-      controller.frameRequests.single.width *
-          controller.frameRequests.single.height *
-          4,
-      lessThanOrEqualTo(browserMaxFrameBytes),
+      viewport['width']! * viewport['height']! * 4,
+      lessThanOrEqualTo(browserMaxViewportBytes),
     );
     await coordinator.close();
   });
@@ -894,7 +715,6 @@ void main() {
   });
 
   test('accessibility snapshot is generation and viewport matched', () async {
-    var nextFrameId = 0;
     final controller = ScriptedBrowserController(
       snapshot: BrowserSnapshot(
         activeContextId: 5,
@@ -915,13 +735,6 @@ void main() {
             ],
             truncated: false,
           ),
-      onCaptureFrame: (contextId, documentId, width, height) => browserFrame(
-        width: width,
-        height: height,
-        frameId: ++nextFrameId,
-        contextId: contextId,
-        documentId: documentId,
-      ),
     );
     final coordinator = ShellCoordinator(controller);
     await coordinator.start();
@@ -997,131 +810,60 @@ void main() {
     await coordinator.close();
   });
 
-  test(
-    'accessibility is withheld until its exact frame generation arrives',
-    () async {
-      final frame = Completer<BrowserFrame?>();
-      final controller = ScriptedBrowserController(
-        snapshot: BrowserSnapshot(
-          activeContextId: 6,
-          contexts: [contextState(id: 6, url: 'https://paired.test')],
-        ),
-        onAccessibilitySnapshot: (contextId, documentId, width, height) =>
-            BrowserAccessibilitySnapshot(
-              sourceGeneration: 2,
-              generation: 2,
-              contextId: contextId,
-              documentId: documentId,
-              viewportWidth: width,
-              viewportHeight: height,
-              nodes: [semanticButton(id: 12)],
-              truncated: false,
-            ),
-        onCaptureFrame: (contextId, documentId, width, height) => frame.future,
-      );
-      final coordinator = ShellCoordinator(controller);
-      await coordinator.start();
-      coordinator.updatePhysicalViewport(200, 100);
-      await flushEvents();
-
-      expect(coordinator.accessibility, isNull);
-      frame.complete(
-        browserFrame(
-          width: 200,
-          height: 100,
-          frameId: 1,
-          contextId: 6,
-          documentId: 600,
-        ),
-      );
-      await flushEvents();
-
-      expect(coordinator.accessibility?.generation, 2);
-      expect(coordinator.frame?.frameId, 1);
-      await coordinator.close();
-    },
-  );
-
-  test(
-    'runtime effects refresh the current frame and semantic projection',
-    () async {
-      var nextFrameId = 0;
-      var sourceGeneration = 0;
-      final replacementFrame = Completer<BrowserFrame?>();
-      final controller = ScriptedBrowserController(
-        snapshot: BrowserSnapshot(
-          activeContextId: 8,
-          contexts: [contextState(id: 8, url: 'https://live.test')],
-        ),
-        onAccessibilitySnapshot: (contextId, documentId, width, height) =>
-            BrowserAccessibilitySnapshot(
-              sourceGeneration: ++sourceGeneration,
-              generation: sourceGeneration,
-              contextId: contextId,
-              documentId: documentId,
-              viewportWidth: width,
-              viewportHeight: height,
-              nodes: [semanticButton(id: 1)],
-              truncated: false,
-            ),
-        onCaptureFrame: (contextId, documentId, width, height) {
-          final frameId = ++nextFrameId;
-          if (frameId > 1) return replacementFrame.future;
-          return browserFrame(
-            width: width,
-            height: height,
-            frameId: frameId,
+  test('runtime effects refresh renderer and semantic projections', () async {
+    var sourceGeneration = 0;
+    final controller = ScriptedBrowserController(
+      snapshot: BrowserSnapshot(
+        activeContextId: 8,
+        contexts: [contextState(id: 8, url: 'https://live.test')],
+      ),
+      onAccessibilitySnapshot: (contextId, documentId, width, height) =>
+          BrowserAccessibilitySnapshot(
+            sourceGeneration: ++sourceGeneration,
+            generation: sourceGeneration,
             contextId: contextId,
             documentId: documentId,
-          );
+            viewportWidth: width,
+            viewportHeight: height,
+            nodes: [semanticButton(id: 1)],
+            truncated: false,
+          ),
+    );
+    final coordinator = ShellCoordinator(controller);
+    await coordinator.start();
+    coordinator.updatePhysicalViewport(320, 180);
+    await flushEvents();
+    final firstGeneration = coordinator.accessibility!.sourceGeneration;
+
+    controller.emitEvent(
+      BrowserEvent.fromWire({
+        'type': 'runtime_effects',
+        'context_id': 8,
+        'document_id': 800,
+        'runtime_context_id': 8000,
+        'effects': {
+          'console': <Object?>[],
+          'dialogs': <Object?>[],
+          'bindings': <Object?>[],
+          'network': <Object?>[],
+          'exceptions': <Object?>[],
         },
-      );
-      final coordinator = ShellCoordinator(controller);
-      await coordinator.start();
-      coordinator.updatePhysicalViewport(320, 180);
-      await flushEvents();
-      expect(controller.frameRequests, hasLength(1));
-      final firstGeneration = coordinator.accessibility!.sourceGeneration;
+      }),
+    );
+    await flushEvents();
 
-      controller.emitEvent(
-        BrowserEvent.fromWire({
-          'type': 'runtime_effects',
-          'context_id': 8,
-          'document_id': 800,
-          'runtime_context_id': 8000,
-          'effects': {
-            'console': <Object?>[],
-            'dialogs': <Object?>[],
-            'bindings': <Object?>[],
-            'network': <Object?>[],
-            'exceptions': <Object?>[],
-          },
-        }),
-      );
-      await flushEvents();
-
-      expect(controller.frameRequests, hasLength(2));
-      expect(coordinator.frame?.frameId, 1);
-      expect(coordinator.accessibility!.sourceGeneration, firstGeneration);
-
-      replacementFrame.complete(
-        browserFrame(
-          width: 320,
-          height: 180,
-          frameId: 2,
-          contextId: 8,
-          documentId: 800,
-        ),
-      );
-      await flushEvents();
-      expect(coordinator.frame?.frameId, 2);
-      expect(
-        coordinator.accessibility!.sourceGeneration,
-        greaterThan(firstGeneration),
-      );
-      await coordinator.close();
-    },
-  );
+    expect(
+      coordinator.accessibility!.sourceGeneration,
+      greaterThan(firstGeneration),
+    );
+    expect(
+      controller.commands.where(
+        (command) => command.type == 'accessibility_snapshot',
+      ),
+      hasLength(2),
+    );
+    await coordinator.close();
+  });
 }
 
 BrowserAccessibilityNode semanticButton({required int id}) =>
@@ -1188,21 +930,6 @@ BrowserAccessibilityNode semanticRange({required int id}) =>
       focusable: true,
       actions: const ['focus', 'increase', 'decrease'],
     );
-
-BrowserFrame browserFrame({
-  required int width,
-  required int height,
-  required int frameId,
-  required int contextId,
-  required int documentId,
-}) => BrowserFrame(
-  rgba: Uint8List(width * height * 4),
-  width: width,
-  height: height,
-  frameId: frameId,
-  contextId: contextId,
-  documentId: documentId,
-);
 
 Future<void> flushEvents() async {
   await Future<void>.delayed(Duration.zero);

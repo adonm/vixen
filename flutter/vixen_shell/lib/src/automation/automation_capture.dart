@@ -3,7 +3,7 @@ import 'dart:typed_data';
 
 import '../bridge/browser_models.dart';
 
-const int vixenAutomationMaxPngBytes = browserMaxFrameBytes + 1024 * 1024;
+const int vixenAutomationMaxPngBytes = browserMaxViewportBytes + 1024 * 1024;
 const List<int> _pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
 
 final class AutomationCaptureWriter {

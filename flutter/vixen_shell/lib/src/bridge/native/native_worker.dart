@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:isolate';
 import 'dart:typed_data';
 
-import '../browser_models.dart';
 import 'native_bindings.dart';
 import 'native_paths.dart';
 import 'native_protocol.dart';
@@ -128,31 +127,6 @@ class NativeWorkerClient {
     }
     final normalized = normalizeNativeCommand(command);
     return _request('command', command: normalized);
-  }
-
-  Future<Map<String, Object?>> captureFrame({
-    required int contextId,
-    required int documentId,
-    required int width,
-    required int height,
-  }) {
-    if (_closing || _finished) {
-      return Future<Map<String, Object?>>.error(
-        const NativeBridgeException(
-          'native worker is closed',
-          code: 'ffi.worker-closed',
-        ),
-      );
-    }
-    return _request(
-      'capture_frame',
-      fields: <String, Object?>{
-        'context_id': contextId,
-        'document_id': documentId,
-        'width': width,
-        'height': height,
-      },
-    );
   }
 
   Future<void> close() => _closeOperation ??= _close();
@@ -457,25 +431,6 @@ class _NativeWorkerRuntime {
           _sendError(id, _asBridgeError(error));
         }
         return;
-      case 'capture_frame':
-        try {
-          final frame = _api.captureFrame(
-            handle: _handle,
-            contextId: _requestInt(message, 'context_id'),
-            documentId: _requestInt(message, 'document_id'),
-            width: _requestInt(message, 'width'),
-            height: _requestInt(message, 'height'),
-          );
-          _replyTo.send(<String, Object?>{
-            'kind': 'response',
-            'id': id,
-            'result': encodeWorkerFrameTransfer(frame),
-          });
-          _drainEvents();
-        } catch (error) {
-          _sendError(id, _asBridgeError(error));
-        }
-        return;
       case 'shutdown':
         _shutdown(id);
         return;
@@ -560,74 +515,6 @@ class _NativeWorkerRuntime {
       'error': error.toMessage(),
     });
   }
-}
-
-int _requestInt(Map<Object?, Object?> request, String key) {
-  final value = request[key];
-  if (value is! int) {
-    throw NativeProtocolException('worker frame request $key is invalid');
-  }
-  return value;
-}
-
-Map<String, Object?> encodeWorkerFrameTransfer(NativeCapturedFrame frame) =>
-    <String, Object?>{
-      'type': 'frame',
-      'width': frame.width,
-      'height': frame.height,
-      'frame_id': frame.frameId,
-      'context_id': frame.contextId,
-      'document_id': frame.documentId,
-      'rgba': TransferableTypedData.fromList(<Uint8List>[frame.rgba]),
-    };
-
-BrowserFrame decodeWorkerFrameTransfer(
-  Map<Object?, Object?> wire, {
-  required int expectedContextId,
-  required int expectedDocumentId,
-  required int expectedWidth,
-  required int expectedHeight,
-}) {
-  const expectedKeys = <String>{
-    'type',
-    'width',
-    'height',
-    'frame_id',
-    'context_id',
-    'document_id',
-    'rgba',
-  };
-  if (wire.length != expectedKeys.length ||
-      !wire.keys.every(expectedKeys.contains) ||
-      wire['type'] != 'frame' ||
-      wire['width'] is! int ||
-      wire['height'] is! int ||
-      wire['frame_id'] is! int ||
-      wire['context_id'] is! int ||
-      wire['document_id'] is! int ||
-      wire['rgba'] is! TransferableTypedData) {
-    throw const NativeProtocolException('worker frame response is invalid');
-  }
-  final width = wire['width']! as int;
-  final height = wire['height']! as int;
-  final contextId = wire['context_id']! as int;
-  final documentId = wire['document_id']! as int;
-  if (width != expectedWidth ||
-      height != expectedHeight ||
-      contextId != expectedContextId ||
-      documentId != expectedDocumentId) {
-    throw const NativeProtocolException(
-      'worker frame response does not match its request',
-    );
-  }
-  return BrowserFrame.fromTransfer(
-    rgba: wire['rgba']! as TransferableTypedData,
-    width: width,
-    height: height,
-    frameId: wire['frame_id']! as int,
-    contextId: contextId,
-    documentId: documentId,
-  );
 }
 
 NativeBridgeException _asBridgeError(Object error) =>

@@ -10,13 +10,6 @@ abstract class BrowserController {
 
   Future<BrowserResponse> dispatch(BrowserCommand command);
 
-  Future<BrowserFrame?> captureFrame({
-    required int contextId,
-    required int documentId,
-    required int width,
-    required int height,
-  }) async => null;
-
   Future<void> shutdown();
 
   Future<ProfileSessionState> loadProfileSession() async {

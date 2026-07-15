@@ -1,13 +1,11 @@
 import 'dart:collection';
-import 'dart:isolate';
-import 'dart:typed_data';
 
 import 'render_models.dart';
 
 const int browserAbiVersion = 1;
 const String vixenStartUrl = 'about:vixen';
-const int browserMaxFrameDimension = 4096;
-const int browserMaxFrameBytes = 64 * 1024 * 1024;
+const int browserMaxViewportDimension = 4096;
+const int browserMaxViewportBytes = 64 * 1024 * 1024;
 const int browserMaxAccessibilityNodes = 192;
 const int browserMaxTextInputBytes = 16 * 1024;
 
@@ -20,102 +18,6 @@ enum BrowserHostLifecycle {
 
   const BrowserHostLifecycle(this.wireName);
   final String wireName;
-}
-
-final class BrowserFrame {
-  factory BrowserFrame({
-    required Uint8List rgba,
-    required int width,
-    required int height,
-    required int frameId,
-    required int contextId,
-    required int documentId,
-  }) {
-    validateBrowserFrameMetadata(
-      byteLength: rgba.length,
-      width: width,
-      height: height,
-      frameId: frameId,
-      contextId: contextId,
-      documentId: documentId,
-    );
-    return BrowserFrame._(
-      rgba: Uint8List.fromList(rgba).asUnmodifiableView(),
-      width: width,
-      height: height,
-      frameId: frameId,
-      contextId: contextId,
-      documentId: documentId,
-    );
-  }
-
-  factory BrowserFrame.fromTransfer({
-    required TransferableTypedData rgba,
-    required int width,
-    required int height,
-    required int frameId,
-    required int contextId,
-    required int documentId,
-  }) {
-    final pixels = rgba.materialize().asUint8List();
-    validateBrowserFrameMetadata(
-      byteLength: pixels.length,
-      width: width,
-      height: height,
-      frameId: frameId,
-      contextId: contextId,
-      documentId: documentId,
-    );
-    return BrowserFrame._(
-      rgba: pixels.asUnmodifiableView(),
-      width: width,
-      height: height,
-      frameId: frameId,
-      contextId: contextId,
-      documentId: documentId,
-    );
-  }
-
-  const BrowserFrame._({
-    required this.rgba,
-    required this.width,
-    required this.height,
-    required this.frameId,
-    required this.contextId,
-    required this.documentId,
-  });
-
-  final Uint8List rgba;
-  final int width;
-  final int height;
-  final int frameId;
-  final int contextId;
-  final int documentId;
-
-  int get rowStride => width * 4;
-}
-
-void validateBrowserFrameMetadata({
-  required int byteLength,
-  required int width,
-  required int height,
-  required int frameId,
-  required int contextId,
-  required int documentId,
-}) {
-  if (width <= 0 ||
-      height <= 0 ||
-      width > browserMaxFrameDimension ||
-      height > browserMaxFrameDimension) {
-    throw const FormatException('frame dimensions are outside ABI bounds');
-  }
-  final expectedLength = width * height * 4;
-  if (expectedLength > browserMaxFrameBytes || byteLength != expectedLength) {
-    throw const FormatException('frame byte length is not packed RGBA8');
-  }
-  if (frameId <= 0 || contextId <= 0 || documentId <= 0) {
-    throw const FormatException('frame generation metadata must be nonzero');
-  }
 }
 
 final class BrowserFailure implements Exception {

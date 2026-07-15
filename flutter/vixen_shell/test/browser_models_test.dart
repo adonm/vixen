@@ -1,24 +1,7 @@
-import 'dart:typed_data';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vixen_shell/src/bridge/browser_models.dart';
 
 void main() {
-  test('BrowserFrame copies input and exposes immutable packed pixels', () {
-    final source = Uint8List.fromList([1, 2, 3, 4]);
-    final frame = BrowserFrame(
-      rgba: source,
-      width: 1,
-      height: 1,
-      frameId: 1,
-      contextId: 2,
-      documentId: 3,
-    );
-    source[0] = 9;
-    expect(frame.rgba, [1, 2, 3, 4]);
-    expect(() => frame.rgba[0] = 8, throwsUnsupportedError);
-  });
-
   test('commands use exact ABI v1 command fields', () {
     expect(BrowserCommand.loadProfileSession().toWire(), {
       'v': 1,

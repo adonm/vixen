@@ -529,20 +529,6 @@ void main() {
           ),
           isTrue,
         );
-        try {
-          final frame = await controller.captureFrame(
-            contextId: contextId,
-            documentId: state.documentId,
-            width: 64,
-            height: 48,
-          );
-          expect(frame, isNotNull);
-          expect(frame?.rgba, hasLength(64 * 48 * 4));
-          expect(frame?.contextId, contextId);
-          expect(frame?.documentId, state.documentId);
-        } on BrowserFailure catch (error) {
-          if (error.code != 'unsupported.screenshot') rethrow;
-        }
       } finally {
         formatter.dispose();
         await controller.shutdown();

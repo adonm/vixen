@@ -6,9 +6,9 @@ import 'package:yaru/yaru.dart';
 
 import '../bridge/browser_models.dart';
 import 'shell_coordinator.dart';
-import 'texture_presenter.dart';
+import 'content_surface.dart';
 
-export 'texture_presenter.dart' show BrowserContentSurface;
+export 'content_surface.dart' show BrowserContentSurface;
 
 final class BrowserShell extends StatefulWidget {
   const BrowserShell({required this.coordinator, super.key});
@@ -165,7 +165,6 @@ final class _BrowserShellState extends State<BrowserShell>
                 Expanded(
                   child: BrowserContentSurface(
                     contextState: coordinator.selectedContext,
-                    frame: coordinator.frame,
                     rendererView: coordinator.rendererView,
                     rendererFindResult: coordinator.rendererFindResult,
                     onRendererPresented: (view) {
@@ -197,34 +196,6 @@ final class _BrowserShellState extends State<BrowserShell>
                     },
                     onTextInput: (state) {
                       unawaited(coordinator.dispatchTextInput(state));
-                    },
-                    onSemanticTap: (snapshot, node) {
-                      unawaited(
-                        coordinator.dispatchSemanticTap(snapshot, node),
-                      );
-                    },
-                    onSemanticFocus: (snapshot, node) {
-                      unawaited(
-                        coordinator.dispatchSemanticFocus(snapshot, node),
-                      );
-                    },
-                    onSemanticSetValue: (snapshot, node, value) {
-                      unawaited(
-                        coordinator.dispatchSemanticSetValue(
-                          snapshot,
-                          node,
-                          value,
-                        ),
-                      );
-                    },
-                    onSemanticAdjustment: (snapshot, node, increase) {
-                      unawaited(
-                        coordinator.dispatchSemanticAdjustment(
-                          snapshot,
-                          node,
-                          increase: increase,
-                        ),
-                      );
                     },
                   ),
                 ),
