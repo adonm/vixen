@@ -53,6 +53,7 @@
       focused = name;
       publishStatus();
     });
+    target.addEventListener('click', () => target.focus());
   }
   nestedScroll.addEventListener('focus', () => {
     focused = 'scroll';
@@ -71,6 +72,7 @@
   nestedScroll.addEventListener('keydown', (event) => {
     events.scroll.push(`key:${event.key}:${event.shiftKey}`);
     if (event.key === 'c') cancelWheel = !cancelWheel;
+    if (event.key === 's') scrollBy(0, 25);
     if (event.key === 'PageDown' && event.shiftKey) event.preventDefault();
     publishStatus();
   });

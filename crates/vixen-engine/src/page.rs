@@ -1050,6 +1050,8 @@ impl Page {
             viewport,
             text_content: self.document.body_text_content(),
             element_count: self.document.element_count(),
+            root_scroll: self.root_scroll,
+            root_scroll_max: self.root_scroll_max(),
         }
     }
 

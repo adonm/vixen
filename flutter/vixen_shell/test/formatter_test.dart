@@ -47,6 +47,65 @@ void main() {
     expect(article.contentBox.y, article.borderBox.y + 12);
   });
 
+  test('root scroll intent clamps and shifts one whole commit', () async {
+    final formatter = VixenFormatter();
+    addTearDown(formatter.dispose);
+    final unscrolled = (await formatter.acceptFullSnapshot(
+      r3Snapshot(),
+    ) as RenderApplied).view;
+    final originalHeading = unscrolled.commit.semantics
+        .singleWhere((entry) => entry.semanticNodeId == 1)
+        .rects
+        .first;
+    final originalText = unscrolled.rangeBoxes(
+      handle: unscrolled.commit.textQueryHandle,
+      nodeId: 6,
+      start: 0,
+      end: 4,
+    );
+    final maxScrollY = unscrolled.commit.scroll.single.maxOffsetY;
+
+    final scrolled = (await formatter.acceptFullSnapshot(
+      r3Snapshot(generation: 2, scrollY: 30),
+    ) as RenderApplied).view;
+    expect(scrolled.commit.scroll.single.offsetY, 30);
+    expect(scrolled.commit.scroll.single.maxOffsetY, maxScrollY);
+    final rootClip = scrolled.commit.geometry
+        .singleWhere((entry) => entry.nodeId == 1)
+        .clip!;
+    expect(rootClip.toWire(), const {
+      'x': 0.0,
+      'y': 0.0,
+      'width': 240.0,
+      'height': 160.0,
+    });
+    expect(
+      scrolled.commit.semantics
+          .singleWhere((entry) => entry.semanticNodeId == 1)
+          .rects
+          .first
+          .y,
+      originalHeading.y - 30,
+    );
+    expect(
+      scrolled
+          .rangeBoxes(
+            handle: scrolled.commit.textQueryHandle,
+            nodeId: 6,
+            start: 0,
+            end: 4,
+          )
+          .first
+          .y,
+      originalText.first.y - 30,
+    );
+
+    final clamped = (await formatter.acceptFullSnapshot(
+      r3Snapshot(generation: 3, scrollY: 500),
+    ) as RenderApplied).view;
+    expect(clamped.commit.scroll.single.offsetY, maxScrollY);
+  });
+
   test('Paragraph owns wrapping, UTF-16 ranges, and point offsets', () async {
     final formatter = VixenFormatter();
     addTearDown(formatter.dispose);

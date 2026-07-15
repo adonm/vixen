@@ -27,9 +27,9 @@ pub use vixen_engine::paint::RgbaFrame;
 
 use vixen_api::{
     BrowserCommand, BrowserCommandResult, FullRenderSnapshot, RenderHitTestQuery,
-    RenderInputTarget, RenderNode, RenderNodeId, RenderNodeKind, RenderRevision,
-    RenderSemanticActionKind, RenderSemanticNode, RenderStyleProperty, RenderViewport,
-    SemanticNodeId, browser_error_codes,
+    RenderInputTarget, RenderNode, RenderNodeId, RenderNodeKind, RenderPoint, RenderRevision,
+    RenderScrollIntent, RenderScrollIntentKind, RenderScrollNodeId, RenderSemanticActionKind,
+    RenderSemanticNode, RenderStyleProperty, RenderViewport, SemanticNodeId, browser_error_codes,
 };
 use vixen_engine::browser::{EngineBrowserHandle, spawn_browser};
 
@@ -724,7 +724,8 @@ impl FlutterBrowserController {
         );
         let body = truncate_utf8(&page.text_content, 8 * 1024);
         let action_generation = accessibility.generation;
-        let viewport_height = viewport.1.to_string();
+        let viewport_height =
+            (f64::from(viewport.1) + f64::from(page.root_scroll_max.1) * page_zoom).to_string();
         let article_margin = (12.0 * page_zoom).to_string();
         let article_padding = (16.0 * page_zoom).to_string();
         let element_spacing = (4.0 * page_zoom).to_string();
@@ -868,7 +869,14 @@ impl FlutterBrowserController {
             },
             nodes,
             resources: Vec::new(),
-            scroll_intents: Vec::new(),
+            scroll_intents: vec![RenderScrollIntent {
+                scroll_node_id: RenderScrollNodeId::new(1).expect("constant root scroll node id"),
+                node_id: RenderNodeId::new(root_id).expect("renderer root id is nonzero"),
+                kind: RenderScrollIntentKind::To(RenderPoint {
+                    x: f64::from(page.root_scroll.0) * page_zoom,
+                    y: f64::from(page.root_scroll.1) * page_zoom,
+                }),
+            }],
         }))
     }
 

@@ -409,6 +409,9 @@ final class ShellCoordinator extends ChangeNotifier {
       _enqueueInput((generation) async {
         final rendererView = _rendererView;
         if (rendererView != null) {
+          if (_rendererSnapshotScheduled || _pendingRendererSnapshot != null) {
+            return;
+          }
           final displayed = _formatter.displayedView;
           if (!identical(rendererView, displayed) ||
               rendererView.isRetired ||
@@ -426,6 +429,15 @@ final class ShellCoordinator extends ChangeNotifier {
             handle: rendererView.commit.hitTestHandle,
             point: RenderPoint(event.x, event.y),
           );
+          final target = rendererView.answerHitTest(query);
+          if (eventType != 'mousemove') {
+            debugPrint(
+              'Vixen renderer input event=$eventType '
+              'commit=${rendererView.commit.commitId} '
+              'x=${event.x.toStringAsFixed(3)} y=${event.y.toStringAsFixed(3)} '
+              'target=${target?.nodeId ?? "none"}',
+            );
+          }
           _lastInputResult = await controller.dispatchRendererMouseEvent(
             contextId: generation.contextId,
             documentId: generation.documentId,
@@ -435,7 +447,7 @@ final class ShellCoordinator extends ChangeNotifier {
             eventType: eventType,
             event: event,
             query: query,
-            target: rendererView.answerHitTest(query),
+            target: target,
           );
           return;
         }
@@ -448,7 +460,7 @@ final class ShellCoordinator extends ChangeNotifier {
           eventType: eventType,
           event: event,
         );
-      });
+      }, scheduleCapture: eventType != 'mousedown');
 
   int _takeRendererQueryId() {
     if (_nextRendererQueryId > 0x7fffffffffffffff) {
@@ -740,8 +752,9 @@ final class ShellCoordinator extends ChangeNotifier {
   }
 
   Future<void> _enqueueInput(
-    Future<void> Function(_InputGeneration generation) operation,
-  ) {
+    Future<void> Function(_InputGeneration generation) operation, {
+    bool scheduleCapture = true,
+  }) {
     final selected = selectedContext;
     final runtimeContextId = selected?.runtimeContextId;
     if (_closeFuture != null ||
@@ -777,12 +790,13 @@ final class ShellCoordinator extends ChangeNotifier {
         if (_isCurrentInputGeneration(generation)) {
           await operation(generation);
           if (_isCurrentInputGeneration(generation)) {
-            _scheduleFrameCapture(force: true);
+            if (scheduleCapture) _scheduleFrameCapture(force: true);
             _notify();
           }
         }
       } catch (error) {
         if (_isCurrentInputGeneration(generation)) {
+          debugPrint('Vixen renderer input failed: $error');
           _showError('Unable to dispatch browser input', error);
         }
       } finally {
@@ -1168,6 +1182,14 @@ final class ShellCoordinator extends ChangeNotifier {
         await _drainRenderer(service);
         if (!identical(view, _rendererView) || view.isRetired) return;
         _formatter.present(presented);
+        final rootScroll = view.commit.scroll.isEmpty
+            ? null
+            : view.commit.scroll.first;
+        debugPrint(
+          'Vixen renderer presented context=${presented.contextId} '
+          'document=${presented.documentId} commit=${presented.commitId} '
+          'scroll_y=${rootScroll?.offsetY.toStringAsFixed(3) ?? "none"}',
+        );
         _refreshRendererFindGeometry();
         _rendererPresentationFailures = 0;
       } catch (error) {

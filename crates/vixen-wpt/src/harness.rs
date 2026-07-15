@@ -355,6 +355,8 @@ mod tests {
             viewport: (800, 600),
             text_content: "body text".into(),
             element_count: 4,
+            root_scroll: (0.0, 0.0),
+            root_scroll_max: (0.0, 0.0),
         }
     }
 

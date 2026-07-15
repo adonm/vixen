@@ -133,9 +133,8 @@ runtime dependencies disappear from Linux packages.
 
 The existing WebRender/EGL/RGBA texture remains the implemented comparison and
 fallback path only. Do not add renderer breadth there. R1 protocol validation,
-the R2 C/Dart broker, the R3 formatter, and five of six production R4 behavior
-slices over the bounded title/semantic-text vertical are implemented. The
-remaining delivery sequence is:
+the R2 C/Dart broker, the R3 formatter, and the bounded production R4 interactive
+title/semantic-text vertical are implemented. The remaining delivery sequence is:
 
 R2 uses plain bounded messages: asynchronous snapshot/mutation/release updates,
 asynchronous commit/presented/resync submissions, and correlated broker traffic
@@ -144,12 +143,10 @@ never calls BrowserCore. The production shell now consumes it for one bounded
 selected-document projection; that projection is not general CSS-rendering
 evidence.
 
-1. Route Linux input, scrolling, zoom, and accessibility through accepted
-   geometry; prove lifecycle recovery without pixel-buffer texture ownership.
-2. Add a chrome-less Flutter host under Cage for visual fixtures and CDP capture.
-3. Solve bounded synchronous layout flush for same-task DOM mutation plus
+1. Add a chrome-less Flutter host under Cage for visual fixtures and CDP capture.
+2. Solve bounded synchronous layout flush for same-task DOM mutation plus
    geometry reads.
-4. Cut over once and apply the full R7 deletion inventory: native renderer/image
+3. Cut over once and apply the full R7 deletion inventory: native renderer/image
    upload, EGL/frame transport, Dart frame worker, texture plugin/presenter/tests,
    superseded Rust layout/paint, duplicate projections, obsolete fixtures/gates/
    docs/dependencies, and renderer-internal CLI flags. Two production renderers
@@ -272,10 +269,15 @@ Under ADR-022 Flutter becomes authoritative for commit-bound hit testing and
 mechanical scroll geometry; BrowserCore validates targets and retains selection
 meaning, DOM event/default-action semantics, history, and navigation effects.
 The production Flutter vertical now proves exact-commit DOM click, Paragraph
-find/range/caret geometry, newer zoom/viewport commits, BrowserCore semantic actions
-over Flutter bounds, and lifecycle-generation stale suppression. The complete
-renderer-owned scroll/default-action round trip and Cage interaction smoke remain
-open before R4 can be marked landed.
+find/range/caret geometry, newer zoom/viewport commits, BrowserCore semantic
+actions over Flutter bounds, lifecycle-generation stale suppression, and the
+root scroll/default-action round trip. BrowserCore publishes accepted script,
+wheel, and key intent after cancellation policy; Flutter clamps and translates
+the scene, geometry, text queries, hit testing, and semantic bounds into one newer
+commit. The native ABI smoke proves script, canceled/accepted wheel, and key
+offsets; the Cage interaction smoke correlates DOM effects with exact presented
+commit ids. Nested Flutter scroll nodes remain R5/R6-era breadth rather than an
+R4 controlled-vertical claim.
 
 The first platform text-input vertical is implemented for focused writable
 native text inputs/textareas and direct contenteditable editing hosts.

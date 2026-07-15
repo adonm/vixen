@@ -984,6 +984,10 @@ final class _BrowserContentSurfaceState extends State<BrowserContentSurface> {
   }
 
   Widget _withAccessibility(Widget visual) {
+    final rendererView = widget.rendererView;
+    if (rendererView != null && !rendererView.isRetired) {
+      return visual;
+    }
     final snapshot = widget.accessibility;
     final contextState = widget.contextState;
     final transform = _viewportTransform;

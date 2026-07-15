@@ -789,25 +789,57 @@ final class VixenFormatter {
         images: decodedImages,
         viewport: viewport,
       ).build();
-      final semanticRectCount = layout.semanticBounds.fold(
+      final maxScrollY = (layout.contentHeight - viewport.height)
+          .clamp(0, double.infinity)
+          .toDouble();
+      final scrollOffset = _resolveScrollOffset(
+        source,
+        rootNodeId: layout.rootNodeId,
+        maxScrollY: maxScrollY,
+      );
+      final geometry = layout.geometry
+          .map((entry) => _translateGeometry(entry, scrollOffset))
+          .toList(growable: false);
+      final paragraphs = layout.paragraphs
+          .map(
+            (paragraph) => _ParagraphState(
+              paragraph: paragraph.paragraph,
+              origin: paragraph.origin - scrollOffset,
+              ranges: paragraph.ranges,
+              textByNode: paragraph.textByNode,
+            ),
+          )
+          .toList(growable: false);
+      final semanticBounds = layout.semanticBounds
+          .map((bounds) => _translateSemanticBounds(bounds, scrollOffset))
+          .toList(growable: false);
+      final semanticRegions = layout.semanticRegions
+          .map(
+            (region) => FormatterSemanticRegion(
+              descriptor: region.descriptor,
+              rect: region.rect.shift(-scrollOffset),
+            ),
+          )
+          .toList(growable: false);
+      final semanticRectCount = semanticBounds.fold(
         0,
         (count, bounds) => count + bounds.rects.length,
       );
-      if (layout.geometry.length > renderMaxGeometryEntries ||
-          layout.semanticBounds.length > renderMaxSemanticBounds ||
+      if (geometry.length > renderMaxGeometryEntries ||
+          semanticBounds.length > renderMaxSemanticBounds ||
           semanticRectCount > renderMaxGeometryEntries) {
         throw const RenderProtocolException(
           'render.limit',
           'formatter output exceeds a commit geometry limit',
         );
       }
-      for (final geometry in layout.geometry) {
-        _validateCommitRect(geometry.borderBox);
-        _validateCommitRect(geometry.paddingBox);
-        _validateCommitRect(geometry.contentBox);
-        if (geometry.clip case final clip?) _validateCommitRect(clip);
+      for (final entry in geometry) {
+        _validateCommitRect(entry.borderBox);
+        _validateCommitRect(entry.paddingBox);
+        _validateCommitRect(entry.contentBox);
+        if (entry.clip case final clip?) _validateCommitRect(clip);
       }
-      for (final bounds in layout.semanticBounds) {
+      for (final bounds in semanticBounds) {
         for (final rect in bounds.rects) {
           _validateCommitRect(rect);
         }
@@ -831,27 +863,25 @@ final class VixenFormatter {
           viewport.height.toDouble(),
         ),
       );
+      canvas.translate(-scrollOffset.dx, -scrollOffset.dy);
       layout.paint(canvas);
       canvas.restore();
       picture = recorder.endRecording();
       final commitId = _nextCommitId++;
-      final maxScrollY = (layout.contentHeight - viewport.height)
-          .clamp(0, double.infinity)
-          .toDouble();
       final view = FormatterCommitView._(
         commit: RenderCommit(
           commitId: commitId,
           revision: revision,
           viewport: viewport,
-          geometry: layout.geometry,
+          geometry: geometry,
           hitTestHandle: _nextHandle++,
           textQueryHandle: _nextHandle++,
           scroll: [
             RenderScrollState(
               scrollNodeId: 1,
               nodeId: layout.rootNodeId,
-              offsetX: 0,
-              offsetY: 0,
+              offsetX: scrollOffset.dx,
+              offsetY: scrollOffset.dy,
               maxOffsetX: 0,
               maxOffsetY: maxScrollY,
               viewport: RenderRect(
@@ -864,12 +894,12 @@ final class VixenFormatter {
               contentHeight: layout.contentHeight,
             ),
           ],
-          semantics: layout.semanticBounds,
+          semantics: semanticBounds,
         ),
         picture: picture,
-        paragraphs: layout.paragraphs,
+        paragraphs: paragraphs,
         images: decodedImages.values.toList(growable: false),
-        semanticRegions: layout.semanticRegions,
+        semanticRegions: semanticRegions,
       );
       return view;
     } catch (_) {
@@ -904,12 +934,6 @@ final class VixenFormatter {
 
   void _validateSource(_FormatterSource source) {
     source.revision.validate();
-    if (source.scrollIntents.isNotEmpty) {
-      throw const RenderProtocolException(
-        'render.unsupported',
-        'R3 formatter defers scroll intents to the R4 interaction vertical',
-      );
-    }
     final viewport = source.viewport;
     if (viewport.width <= 0 ||
         viewport.height <= 0 ||
@@ -1021,6 +1045,45 @@ final class VixenFormatter {
         );
       }
     }
+  }
+
+  ui.Offset _resolveScrollOffset(
+    _FormatterSource source, {
+    required int rootNodeId,
+    required double maxScrollY,
+  }) {
+    if (source.scrollIntents.isEmpty) return ui.Offset.zero;
+    if (source.scrollIntents.length != 1) {
+      throw const RenderProtocolException(
+        'render.unsupported',
+        'R4 formatter supports exactly one root scroll intent',
+      );
+    }
+    final intent = source.scrollIntents.values.single;
+    if (intent.scrollNodeId != 1 || intent.nodeId != rootNodeId) {
+      throw const RenderProtocolException(
+        'render.unsupported',
+        'R4 formatter scroll intent must name the root scroll node',
+      );
+    }
+    var previous = ui.Offset.zero;
+    final staged = _staged;
+    if (staged != null &&
+        staged.commit.revision.contextId == source.revision.contextId &&
+        staged.commit.revision.documentId == source.revision.documentId &&
+        staged.commit.scroll.length == 1) {
+      final scroll = staged.commit.scroll.single;
+      previous = ui.Offset(scroll.offsetX, scroll.offsetY);
+    }
+    final requested = switch (intent.kind) {
+      RenderScrollIntentKind.by =>
+        previous + ui.Offset(intent.point.x, intent.point.y),
+      RenderScrollIntentKind.to || RenderScrollIntentKind.restore => ui.Offset(
+        intent.point.x,
+        intent.point.y,
+      ),
+    };
+    return ui.Offset(0, requested.dy.clamp(0, maxScrollY).toDouble());
   }
 
   void _validateNodeGraph(Iterable<RenderNode> nodes, Set<int> resourceIds) {
@@ -1589,6 +1652,31 @@ bool _scrollIntentsEqual(
   });
 }
 
+RenderGeometryEntry _translateGeometry(
+  RenderGeometryEntry entry,
+  ui.Offset offset,
+) => RenderGeometryEntry(
+  nodeId: entry.nodeId,
+  fragmentId: entry.fragmentId,
+  borderBox: entry.borderBox.shift(-offset),
+  paddingBox: entry.paddingBox.shift(-offset),
+  contentBox: entry.contentBox.shift(-offset),
+  clip: entry.clip,
+  scrollNodeId: entry.scrollNodeId,
+  paintOrder: entry.paintOrder,
+);
+
+RenderSemanticBounds _translateSemanticBounds(
+  RenderSemanticBounds bounds,
+  ui.Offset offset,
+) => RenderSemanticBounds(
+  semanticNodeId: bounds.semanticNodeId,
+  nodeId: bounds.nodeId,
+  rects: bounds.rects
+      .map((rect) => rect.shift(-offset))
+      .toList(growable: false),
+);
+
 void _validateCommitRect(RenderRect rect) {
   if (!rect.x.isFinite ||
       !rect.y.isFinite ||
@@ -1609,6 +1697,9 @@ void _validateCommitRect(RenderRect rect) {
 
 extension on RenderRect {
   ui.Rect get uiRect => ui.Rect.fromLTWH(x, y, width, height);
+
+  RenderRect shift(ui.Offset offset) =>
+      RenderRect(x + offset.dx, y + offset.dy, width, height);
 }
 
 extension on ui.Rect {

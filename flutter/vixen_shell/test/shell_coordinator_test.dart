@@ -123,6 +123,9 @@ void main() {
       final targetRect = view.commit.geometry
           .singleWhere((entry) => entry.nodeId == 9)
           .borderBox;
+      final snapshotsBeforePress = controller.commands
+          .where((command) => command.type == 'publish_renderer_snapshot')
+          .length;
       await coordinator.dispatchMouseEvent(
         'mousedown',
         BrowserMouseEvent(
@@ -132,6 +135,41 @@ void main() {
           buttons: 1,
           detail: 1,
         ),
+      );
+      expect(
+        controller.commands
+            .where((command) => command.type == 'publish_renderer_snapshot')
+            .length,
+        snapshotsBeforePress,
+      );
+      await coordinator.dispatchMouseEvent(
+        'mouseup',
+        BrowserMouseEvent(
+          x: targetRect.x + targetRect.width / 2,
+          y: targetRect.y + targetRect.height / 2,
+          button: 0,
+          buttons: 0,
+          detail: 1,
+        ),
+      );
+      for (
+        var attempt = 0;
+        attempt < 50 &&
+            controller.commands
+                    .where(
+                      (command) => command.type == 'publish_renderer_snapshot',
+                    )
+                    .length ==
+                snapshotsBeforePress;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(
+        controller.commands
+            .where((command) => command.type == 'publish_renderer_snapshot')
+            .length,
+        greaterThan(snapshotsBeforePress),
       );
       expect(
         controller.commands.map((command) => command.type),

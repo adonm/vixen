@@ -144,6 +144,8 @@ pub struct PageSnapshot {
     pub viewport: (u32, u32),
     pub text_content: String,
     pub element_count: usize,
+    pub root_scroll: (f32, f32),
+    pub root_scroll_max: (f32, f32),
 }
 
 #[cfg(test)]

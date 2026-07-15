@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import os
 from pathlib import Path
 import re
@@ -22,6 +23,10 @@ from gi.repository import Atspi  # noqa: E402
 MAX_NODES = 4096
 STATUS_PREFIX = "Interaction status|"
 BROWSER_STATUS_PREFIX = "Browser status|"
+RENDER_COMMIT_RE = re.compile(
+    r"Vixen renderer presented context=(\d+) document=(\d+) "
+    r"commit=(\d+) scroll_y=(none|-?(?:\d+(?:\.\d*)?|\.\d+))"
+)
 # A recreated document can lose up to one line when its root extent is clamped
 # against the freshly reported Flutter viewport.
 ROOT_RESTORE_CLAMP_TOLERANCE = 16.0
@@ -66,6 +71,23 @@ def named_accessible(process_id: int, name: str) -> Atspi.Accessible | None:
         except Exception:
             continue
     return None
+
+
+def accessible_centers(process_id: int, name: str) -> list[tuple[int, int]]:
+    centers: list[tuple[int, int]] = []
+    for node in app_accessibles(process_id):
+        try:
+            if node.get_name() != name:
+                continue
+            rect = node.get_component_iface().get_extents(Atspi.CoordType.SCREEN)
+            if rect.width <= 0 or rect.height <= 0:
+                continue
+            center = (round(rect.x + rect.width / 2), round(rect.y + rect.height / 2))
+            if center not in centers:
+                centers.append(center)
+        except Exception:
+            continue
+    return centers
 
 
 def current_status(process_id: int) -> str | None:
@@ -128,7 +150,7 @@ def wait_for(
     last = None
     while time.monotonic() < deadline:
         if process.poll() is not None:
-            output = process.stdout.read() if process.stdout else ""
+            output = process_output(process)
             raise SystemExit(
                 f"Flutter shell exited before {description} ({process.returncode})\n{output}"
             )
@@ -140,6 +162,47 @@ def wait_for(
         f"timed out waiting for {description}; last observation: {last!r}; "
         f"accessible names: {accessible_name_sample(process.pid)!r}"
     )
+
+
+def process_output(process: subprocess.Popen[str]) -> str:
+    lines = getattr(process, "_vixen_output_lines", [])
+    lock = getattr(process, "_vixen_output_lock", None)
+    if lock is None:
+        return "".join(lines)
+    with lock:
+        return "".join(lines)
+
+
+def renderer_commits(
+    process: subprocess.Popen[str],
+) -> list[tuple[int, int, int, float | None]]:
+    commits: list[tuple[int, int, int, float | None]] = []
+    for match in RENDER_COMMIT_RE.finditer(process_output(process)):
+        scroll = None if match[4] == "none" else float(match[4])
+        commits.append((int(match[1]), int(match[2]), int(match[3]), scroll))
+    return commits
+
+
+def wait_for_renderer_commit(
+    process: subprocess.Popen[str],
+    timeout: float,
+    description: str,
+    *,
+    after_commit: int = 0,
+    scroll_y: float | None = None,
+) -> tuple[int, int, int, float | None]:
+    def probe():
+        for commit in reversed(renderer_commits(process)):
+            if commit[2] <= after_commit:
+                continue
+            if scroll_y is not None and (
+                commit[3] is None or abs(commit[3] - scroll_y) > 0.01
+            ):
+                continue
+            return commit
+        return None
+
+    return wait_for(process, timeout, description, probe)
 
 
 def status_fields(status: str) -> dict[str, str]:
@@ -181,7 +244,9 @@ def navigate_via_chrome(
     address: str,
 ) -> None:
     for x, y in [(500, 75)] * 3 + [
-        (x, y) for y in (60, 75, 90) for x in (300, 500, 700, 900)
+        (x, y)
+        for y in (60, 75, 90, 105, 120, 135, 150, 165)
+        for x in (300, 500, 700, 900)
     ]:
         run_pointer(args, "click", str(x), str(y))
         deadline = time.monotonic() + 0.4
@@ -193,7 +258,11 @@ def navigate_via_chrome(
             continue
         break
     else:
-        raise SystemExit("native pointer scan did not focus the address field")
+        raise SystemExit(
+            "native pointer scan did not focus the address field; "
+            f"accessible names: {accessible_name_sample(process.pid)!r}; "
+            f"process output: {process_output(process)[-4000:]}"
+        )
     run_wtype(args, "-M", "ctrl", "-k", "l", "-m", "ctrl")
     time.sleep(0.2)
     run_wtype(args, "-M", "ctrl", "-k", "a", "-m", "ctrl")
@@ -253,10 +322,14 @@ def focus_with_pointer(
     process: subprocess.Popen[str],
     target: str,
     candidates: list[tuple[int, int]] | None = None,
+    accessible_name: str | None = None,
 ) -> tuple[int, int]:
-    points = candidates or [
-        (x, y) for x in (80, 160, 240) for y in range(120, 501, 15)
-    ]
+    points = [] if accessible_name is None else accessible_centers(
+        process.pid, accessible_name
+    )
+    points.extend(candidates or [
+        (x, y) for x in (80, 160, 240) for y in range(105, 701, 15)
+    ])
     for x, y in points:
         run_pointer(args, "click", str(x), str(y))
         deadline = time.monotonic() + 0.25
@@ -268,7 +341,10 @@ def focus_with_pointer(
                     return (x, y)
             time.sleep(0.03)
     raise SystemExit(
-        f"native pointer scan did not focus {target}; status={current_status(process.pid)!r}"
+        f"native pointer scan did not focus {target}; "
+        f"accessible_name={accessible_name!r}; points={points!r}; "
+        f"status={current_status(process.pid)!r}; "
+        f"process output: {process_output(process)[-8000:]}"
     )
 
 
@@ -324,6 +400,20 @@ def main() -> int:
         stderr=subprocess.STDOUT,
         text=True,
     )
+    output_lines: deque[str] = deque(maxlen=2048)
+    output_lock = threading.Lock()
+
+    def collect_output() -> None:
+        if process.stdout is None:
+            return
+        for line in process.stdout:
+            with output_lock:
+                output_lines.append(line[-4096:])
+
+    output_thread = threading.Thread(target=collect_output, daemon=True)
+    setattr(process, "_vixen_output_lines", output_lines)
+    setattr(process, "_vixen_output_lock", output_lock)
+    output_thread.start()
     try:
         wait_for(
             process,
@@ -356,9 +446,14 @@ def main() -> int:
             "nested scroll semantics",
             lambda: named_accessible(process.pid, "Nested scroll area"),
         )
+        initial_commit = wait_for_renderer_commit(
+            process, 10, "initial zero-offset Flutter renderer commit", scroll_y=0
+        )
 
         activate_ibus_engine(args, args.ibus_engine)
-        input_x, input_y = focus_with_pointer(args, process, "input")
+        input_x, input_y = focus_with_pointer(
+            args, process, "input", accessible_name="Native input"
+        )
         time.sleep(1)
         ime_input(args, "306b")
         time.sleep(0.5)
@@ -388,7 +483,13 @@ def main() -> int:
             for offset in range(40, 81, 5)
             for x in (input_x, max(1, input_x - 80), input_x + 80)
         ]
-        focus_with_pointer(args, process, "editor", editor_candidates)
+        focus_with_pointer(
+            args,
+            process,
+            "editor",
+            editor_candidates,
+            accessible_name="Native editor",
+        )
         time.sleep(1)
         ime_input(args, "1f98a")
         editor_status = wait_for(
@@ -414,7 +515,11 @@ def main() -> int:
             for x in (input_x, max(1, input_x - 80), input_x + 80)
         ]
         scroll_x, scroll_y = focus_with_pointer(
-            args, process, "scroll", scroll_candidates
+            args,
+            process,
+            "scroll",
+            scroll_candidates,
+            accessible_name="Nested scroll area",
         )
         initial = status_fields(editor_status)
         initial_inner = status_number(initial, "inner")
@@ -437,6 +542,13 @@ def main() -> int:
         first_fields = status_fields(first_scroll)
         if status_number(first_fields, "root") != initial_root:
             raise SystemExit(f"first nested wheel unexpectedly moved the root: {first_scroll}")
+        first_commit = wait_for_renderer_commit(
+            process,
+            10,
+            "nested-wheel Flutter renderer commit",
+            after_commit=initial_commit[2],
+            scroll_y=initial_root,
+        )
 
         before_cancel_inner = status_number(first_fields, "inner")
         before_cancel_root = status_number(first_fields, "root")
@@ -473,7 +585,37 @@ def main() -> int:
             or status_number(canceled_fields, "root") != before_cancel_root
         ):
             raise SystemExit(f"cancelled native wheel changed scroll offsets: {canceled}")
+        canceled_commit = wait_for_renderer_commit(
+            process,
+            10,
+            "cancelled-wheel Flutter renderer commit",
+            after_commit=first_commit[2],
+            scroll_y=before_cancel_root,
+        )
         run_wtype(args, "c")
+
+        run_wtype(args, "s")
+        script_scroll = wait_for(
+            process,
+            5,
+            "script root scroll effect",
+            lambda: (
+                status
+                if (status := current_status(process.pid))
+                and status_fields(status).get("cancelWheel") == "false"
+                and status_number(status_fields(status), "root") > before_cancel_root
+                else None
+            ),
+        )
+        script_fields = status_fields(script_scroll)
+        script_root = status_number(script_fields, "root")
+        script_commit = wait_for_renderer_commit(
+            process,
+            10,
+            "script-scroll Flutter renderer commit",
+            after_commit=canceled_commit[2],
+            scroll_y=script_root,
+        )
 
         run_pointer(args, "wheel", str(scroll_x), str(scroll_y), "1000")
         chained = wait_for(
@@ -490,6 +632,14 @@ def main() -> int:
             ),
         )
         chained_fields = status_fields(chained)
+        chained_root = status_number(chained_fields, "root")
+        chained_commit = wait_for_renderer_commit(
+            process,
+            10,
+            "root-wheel Flutter renderer commit",
+            after_commit=script_commit[2],
+            scroll_y=chained_root,
+        )
         if (
             chained_fields.get("input") != input_value
             or chained_fields.get("editor") != editor_value
@@ -617,6 +767,8 @@ def main() -> int:
             f"stop={stopped_browser_status!r}",
             f"wheels={chained_fields['wheelCount']}",
             f"canceled={chained_fields['canceledWheelCount']}",
+            f"commits={initial_commit[2]}>{first_commit[2]}>{canceled_commit[2]}"
+            f">{script_commit[2]}>{chained_commit[2]}",
         )
         return 0
     finally:
@@ -631,6 +783,7 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+        output_thread.join(timeout=5)
         subprocess.run(
             [args.ibus, "engine", previous_engine or direct_engine],
             check=False,

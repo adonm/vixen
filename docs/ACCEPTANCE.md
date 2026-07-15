@@ -80,6 +80,10 @@ key/script scrolling and returned scroll state, find/text/caret ranges, viewport
 zoom revision, native Semantics bounds/actions, lifecycle hide/resume, and stale
 scene suppression through widget/core/ABI tests plus Cage smoke.
 
+Implemented: `just gate-flutter-shell` covers the formatter/coordinator/native
+ABI identities and `just linux-interaction-smoke` correlates accepted and canceled
+DOM scroll effects with exact presented Flutter commit ids in the release process.
+
 ### Synchronous geometry
 
 Done when tests cover:

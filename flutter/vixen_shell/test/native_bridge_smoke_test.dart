@@ -47,6 +47,12 @@ void main() {
         final rendererUpdate = controller.pollRenderer();
         expect(rendererUpdate, isA<NativeFullSnapshotUpdate>());
         final fullSnapshot = rendererUpdate! as NativeFullSnapshotUpdate;
+        expect(fullSnapshot.snapshot.scrollIntents, hasLength(1));
+        expect(
+          fullSnapshot.snapshot.scrollIntents.single.kind,
+          RenderScrollIntentKind.to,
+        );
+        expect(fullSnapshot.snapshot.scrollIntents.single.point.y, 0);
         expect(
           fullSnapshot.snapshot.nodes
               .where((node) => node.kind == RenderNodeKind.text)
@@ -152,6 +158,7 @@ void main() {
             controller.pollRenderer()! as NativeFullSnapshotUpdate;
         expect(zoomedUpdate.snapshot.revision.viewportGeneration, 2);
         expect(zoomedUpdate.snapshot.viewport.pageZoom, 1.25);
+        expect(zoomedUpdate.snapshot.scrollIntents.single.point.y, 75);
         expect(
           zoomedUpdate.snapshot.nodes
               .firstWhere((node) => node.kind == RenderNodeKind.text)
@@ -178,18 +185,130 @@ void main() {
             controller.pollRenderer()! as NativeHandleReleaseUpdate;
         formatter.releaseHandles(firstRelease.release);
         expect(zoomedView.commit.commitId, greaterThan(view.commit.commitId));
+        expect(zoomedView.commit.scroll.single.offsetY, 75);
         expect(view.isRetired, isTrue);
+
+        for (final (queryId, shiftKey) in [(3, true), (4, false)]) {
+          final query = RenderHitTestQuery(
+            queryId: queryId,
+            contextId: contextId,
+            documentId: state.documentId,
+            displayedCommitId: zoomedView.commit.commitId,
+            revision: zoomedView.commit.revision,
+            handle: zoomedView.commit.hitTestHandle,
+            point: const RenderPoint(200, 140),
+          );
+          await controller.dispatchRendererMouseEvent(
+            contextId: contextId,
+            documentId: state.documentId,
+            runtimeContextId: state.runtimeContextId!,
+            viewportWidth: 240,
+            viewportHeight: 160,
+            eventType: 'wheel',
+            event: BrowserMouseEvent(
+              x: 200,
+              y: 140,
+              button: 0,
+              buttons: 0,
+              shiftKey: shiftKey,
+              deltaY: 40,
+            ),
+            query: query,
+            target: zoomedView.answerHitTest(query),
+          );
+        }
+        await controller.publishRendererSnapshot(
+          contextId: contextId,
+          documentId: state.documentId,
+          viewportWidth: 240,
+          viewportHeight: 160,
+          viewportGeneration: 3,
+          pageZoom: zoomedState.pageZoom,
+        );
+        final wheelUpdate =
+            controller.pollRenderer()! as NativeFullSnapshotUpdate;
+        expect(wheelUpdate.snapshot.scrollIntents.single.point.y, 115);
+        final wheelView = (await formatter.acceptFullSnapshot(
+          wheelUpdate.snapshot,
+          beforePublish: (commit) {
+            controller.submitRenderer(rendererCommitSubmission(commit));
+          },
+        ) as RenderApplied).view;
+        await controller.flushRendererSubmissions();
+        final wheelPresented = RenderPresented(
+          contextId: contextId,
+          documentId: state.documentId,
+          commitId: wheelView.commit.commitId,
+          revision: wheelView.commit.revision,
+        );
+        controller.submitRenderer(rendererPresentedSubmission(wheelPresented));
+        await controller.flushRendererSubmissions();
+        formatter.present(wheelPresented);
+        final zoomRelease =
+            controller.pollRenderer()! as NativeHandleReleaseUpdate;
+        formatter.releaseHandles(zoomRelease.release);
+        expect(wheelView.commit.scroll.single.offsetY, 115);
+        expect(zoomedView.isRetired, isTrue);
+
+        await controller.dispatchKeyEvent(
+          contextId: contextId,
+          documentId: state.documentId,
+          runtimeContextId: state.runtimeContextId!,
+          viewportWidth: 240,
+          viewportHeight: 160,
+          eventType: 'keydown',
+          event: const BrowserKeyEvent(key: 'PageDown', code: 'PageDown'),
+        );
+        await controller.publishRendererSnapshot(
+          contextId: contextId,
+          documentId: state.documentId,
+          viewportWidth: 240,
+          viewportHeight: 160,
+          viewportGeneration: 4,
+          pageZoom: zoomedState.pageZoom,
+        );
+        final keyUpdate =
+            controller.pollRenderer()! as NativeFullSnapshotUpdate;
+        expect(
+          keyUpdate.snapshot.scrollIntents.single.point.y,
+          greaterThan(wheelView.commit.scroll.single.offsetY),
+        );
+        final keyView = (await formatter.acceptFullSnapshot(
+          keyUpdate.snapshot,
+          beforePublish: (commit) {
+            controller.submitRenderer(rendererCommitSubmission(commit));
+          },
+        ) as RenderApplied).view;
+        await controller.flushRendererSubmissions();
+        final keyPresented = RenderPresented(
+          contextId: contextId,
+          documentId: state.documentId,
+          commitId: keyView.commit.commitId,
+          revision: keyView.commit.revision,
+        );
+        controller.submitRenderer(rendererPresentedSubmission(keyPresented));
+        await controller.flushRendererSubmissions();
+        formatter.present(keyPresented);
+        final wheelRelease =
+            controller.pollRenderer()! as NativeHandleReleaseUpdate;
+        formatter.releaseHandles(wheelRelease.release);
+        expect(
+          keyView.commit.scroll.single.offsetY,
+          keyUpdate.snapshot.scrollIntents.single.point.y,
+        );
+        expect(wheelView.isRetired, isTrue);
+
         await controller.publishRendererSnapshot(
           contextId: contextId,
           documentId: state.documentId,
           viewportWidth: 300,
           viewportHeight: 180,
-          viewportGeneration: 3,
+          viewportGeneration: 5,
           pageZoom: zoomedState.pageZoom,
         );
         final resizedUpdate =
             controller.pollRenderer()! as NativeFullSnapshotUpdate;
-        expect(resizedUpdate.snapshot.revision.viewportGeneration, 3);
+        expect(resizedUpdate.snapshot.revision.viewportGeneration, 5);
         expect(resizedUpdate.snapshot.viewport.width, 300);
         expect(resizedUpdate.snapshot.viewport.height, 180);
         final resizedView = (await formatter.acceptFullSnapshot(
@@ -210,16 +329,16 @@ void main() {
         );
         await controller.flushRendererSubmissions();
         formatter.present(resizedPresented);
-        final zoomRelease =
+        final keyRelease =
             controller.pollRenderer()! as NativeHandleReleaseUpdate;
-        formatter.releaseHandles(zoomRelease.release);
+        formatter.releaseHandles(keyRelease.release);
         expect(
           resizedView.commit.commitId,
           greaterThan(zoomedView.commit.commitId),
         );
         expect(resizedView.commit.viewport.width, 300);
         expect(resizedView.commit.viewport.height, 180);
-        expect(zoomedView.isRetired, isTrue);
+        expect(keyView.isRetired, isTrue);
 
         expect(contextId, greaterThan(0));
         expect(

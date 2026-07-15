@@ -235,7 +235,7 @@ Software and Impeller-requested captures have separate exact raw-RGBA hashes.
 The formatter remained test-only through R3; the bounded production vertical
 below now reuses it without claiming the rest of R4.
 
-### R4. One interactive commit vertical
+### R4. One interactive commit vertical — landed
 
 Route one controlled Linux document through the new renderer for:
 
@@ -251,7 +251,7 @@ Route one controlled Linux document through the new renderer for:
 names one commit id. The old texture path remains production-only comparison and
 is not widened.
 
-**Majority production vertical implemented:** the native Linux shell now requests
+**Implemented evidence:** the native Linux shell now requests
 one bounded BrowserCore projection for the selected document, carries it over the
 dedicated renderer update queue, formats it with the R3 service, validates the
 returned commit in Rust, and paints the accepted `RenderCommitPainter` view.
@@ -269,7 +269,7 @@ queues stay bounded; consuming a submission and publishing all resulting handle
 releases is atomic. The WebRender/RGBA texture remains the explicit fallback
 when no current Flutter commit is available.
 
-Five of the six R4 behavior slices now cross the production seam:
+All six R4 behavior slices now cross the production seam:
 
 - renderer-targeted down/up input synthesizes a real DOM `click` on the exact
   displayed commit in the native ABI smoke;
@@ -282,12 +282,20 @@ Five of the six R4 behavior slices now cross the production seam:
   accessibility generation are still displayed; and
 - lifecycle generations clear hidden presentation, reject late hidden work, and
   require a newer commit before resume while bounding acknowledgement retries.
+- BrowserCore snapshots carry the accepted root offset and extent only after its
+  cancelable wheel/key/script policy runs. The formatter independently clamps
+  that intent, translates pixels, geometry, Paragraph queries, hit testing, and
+  semantic bounds together, and returns the offset in a newer atomic commit.
+  Canceled wheel input leaves the offset unchanged; the native ABI smoke covers
+  script, wheel cancellation/default, and key commits while the release-process
+  Cage interaction smoke correlates DOM effects with exact presented commit ids.
+  `mousedown` no longer publishes a replacement source before its matching
+  `mouseup`, and input is suppressed during source/commit transition windows, so
+  strict stale validation remains enabled without breaking click synthesis.
 
-R4's remaining behavior slice is the complete wheel/key/script scroll-intent,
-`preventDefault()`, renderer-clamp, returned-scroll-commit, and DOM `scroll`
-effect round trip. The final R4 proof also still needs its Cage interaction smoke.
-Computed styled nodes/resources and DOM/script mutation batches remain broader
-renderer-transition work; deletion of the fallback remains R7.
+Computed styled nodes/resources, nested Flutter scroll nodes, and DOM/script
+mutation batches remain broader renderer-transition work; deletion of the
+fallback remains R7.
 
 ### R5. Chrome-less Flutter automation host
 
@@ -541,12 +549,12 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **R4 interactive commit:** route displayed-commit input, scrolling, text
-   queries, zoom, Semantics, and lifecycle suppression through that vertical.
-2. **R5 automation host:** add the chrome-less Flutter host and migrate coherent
+1. **R5 automation host:** add the chrome-less Flutter host and migrate coherent
    fixture/screenshot/CDP groups to exact presented commits.
-3. **R6 synchronous layout:** connect BrowserCore mutation flushes to the landed
+2. **R6 synchronous layout:** connect BrowserCore mutation flushes to the landed
    broker with cancellation, deadlines, loss, and full-resync recovery.
+3. **R7 cutover/deletion:** switch once after R5/R6 and remove every transitional
+   renderer, frame-transport, and superseded layout/paint owner in the inventory.
 
 Do not start another native interaction, font, Rust layout, paint, texture, or
 packaging slice before these are complete unless it fixes a security/data-loss or

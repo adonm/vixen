@@ -230,8 +230,11 @@ its BrowserCore controller, tabs, input, texture, and Semantics seams;
 Wayland. `just linux-interaction-smoke` separately drives that release bundle
 through Cage's virtual-keyboard and wlr virtual-pointer protocols, with GTK/IBus
 preedit/commit, physical chrome navigation controls, history/reload scroll
-restoration, active stop/recovery, and native nested-wheel evidence. These are
-integration gates rather than WPT surfaces.
+restoration, active stop/recovery, and native nested-wheel evidence. The same
+gate now observes the production Flutter vertical's presented commit diagnostics:
+accepted script/root-wheel offsets advance exact commit ids, canceled wheel keeps
+the offset unchanged, and DOM `scroll` status agrees with the returned commit.
+These are integration gates rather than WPT surfaces.
 
 The Flutter semantics projection additionally carries bounded `aria-controls`,
 `aria-describedby`, and `aria-details` relationships to retained semantic nodes.

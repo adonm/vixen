@@ -20,6 +20,7 @@ FullRenderSnapshot r3Snapshot({
   int generation = 1,
   int viewportGeneration = 1,
   bool updated = false,
+  double? scrollY,
 }) {
   final nodes = <RenderNode>[
     RenderNode(
@@ -168,6 +169,16 @@ FullRenderSnapshot r3Snapshot({
     resources: [
       RenderResource(id: 1, mime: 'image/png', bytes: base64Decode(_png)),
     ],
+    scrollIntents: scrollY == null
+        ? const []
+        : [
+            RenderScrollIntent(
+              scrollNodeId: 1,
+              nodeId: 1,
+              kind: RenderScrollIntentKind.to,
+              point: RenderPoint(0, scrollY),
+            ),
+          ],
   );
 }
 

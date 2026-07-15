@@ -127,8 +127,9 @@ Rules:
   `vixen-api`; R2's dedicated C/Dart broker and R3's formatter are implemented.
   The production R4 vertical presents a bounded title/semantic-text projection
   with post-frame acknowledgement, commit-bound pointer/semantic targets,
-  Paragraph find geometry, zoom/viewport revisions, and lifecycle generations;
-  the old frame remains its explicit fallback. R4–R6 must complete parity before
+  Paragraph find geometry, zoom/viewport revisions, lifecycle generations, and
+  renderer-clamped root scroll commits after BrowserCore cancellation policy;
+  the old frame remains its explicit fallback. R5–R6 must complete parity before
   frame transport can be deleted. Single-touch root
   dragging reuses the bounded cancelable wheel path. Complete renderer cutover,
   semantics/native AT, richer gesture/lifecycle, and non-Linux runners remain
@@ -536,9 +537,9 @@ presented scene without compositor chrome.
 ### Migration rule
 
 The bounded Flutter vertical may run in production with the old frame as an
-explicit fallback, but it is not the renderer cutover. R4–R6 must still prove the
-complete interactive controlled vertical, chrome-less fixture/CDP/Playwright
-capture, synchronous layout, cancellation, resync, and renderer loss. Production
+explicit fallback, but it is not the renderer cutover. R4's interactive
+controlled vertical is complete; R5–R6 must still prove chrome-less fixture/CDP/
+Playwright capture, synchronous layout, cancellation, resync, and renderer loss. Production
 then cuts over once. Apply the complete R7 deletion inventory:
 WebRender/gleam, `GlContext`, both EGL paths, image upload, RGBA frame ABI/pools,
 the Dart frame worker, pixel-buffer plugin/presenter and recovery tests,
