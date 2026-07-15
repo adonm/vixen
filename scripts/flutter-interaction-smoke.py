@@ -40,7 +40,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--wtype", default="wtype")
     parser.add_argument("--pointer", required=True)
     parser.add_argument("--ibus", default="ibus")
-    parser.add_argument("--ibus-engine", default="anthy")
+    parser.add_argument("--ibus-engine", default="mozc-jp")
     parser.add_argument("--timeout", type=float, default=45.0)
     return parser.parse_args()
 
@@ -298,7 +298,7 @@ def activate_ibus_engine(args: argparse.Namespace, engine: str) -> None:
 
 
 def ime_input(args: argparse.Namespace, codepoint: str) -> None:
-    # Anthy preedit enters through IBus/GTK's real Wayland FlView IM context;
+    # Mozc preedit enters through IBus/GTK's real Wayland FlView IM context;
     # no AT-SPI setText or Vixen DispatchTextInput shortcut is used.
     romaji = {"306b": "ni", "1f98a": "kitsune"}[codepoint]
     run_wtype(args, "-d", "150", romaji)

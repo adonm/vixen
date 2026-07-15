@@ -140,7 +140,7 @@ jobs:
             cmake \
             gir1.2-atspi-2.0 \
             ibus \
-            ibus-anthy \
+            ibus-mozc \
             libegl-dev \
             libgl-dev \
             libgtk-3-dev \
