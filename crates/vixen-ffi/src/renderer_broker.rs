@@ -98,6 +98,15 @@ impl RenderBroker {
         kind: RenderBrokerRequestKind,
         timeout: Duration,
     ) -> Result<RenderBrokerResponse, RenderBrokerError> {
+        self.request_cancellable(kind, timeout, || None)
+    }
+
+    pub fn request_cancellable(
+        &self,
+        kind: RenderBrokerRequestKind,
+        timeout: Duration,
+        cancellation: impl Fn() -> Option<RenderBrokerCancellation>,
+    ) -> Result<RenderBrokerResponse, RenderBrokerError> {
         let raw_id = self
             .inner
             .next_request_id
@@ -144,18 +153,31 @@ impl RenderBroker {
             self.inner.request_ready.notify_one();
         }
 
-        match receive_response.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
-            Ok(response) => Ok(response),
-            Err(mpsc::RecvTimeoutError::Timeout) => {
+        const CANCELLATION_POLL_INTERVAL: Duration = Duration::from_millis(5);
+        loop {
+            if let Some(reason) = cancellation() {
                 self.remove_pending(request_id)?;
-                Err(RenderBrokerError::new(
+                return Ok(RenderBrokerResponse {
+                    version: RENDER_PROTOCOL_VERSION,
+                    request_id,
+                    kind: RenderBrokerResponseKind::Cancelled(reason),
+                });
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                self.remove_pending(request_id)?;
+                return Err(RenderBrokerError::new(
                     "render.timeout",
                     "renderer request deadline expired",
-                ))
+                ));
             }
-            Err(mpsc::RecvTimeoutError::Disconnected) => {
-                self.remove_pending(request_id)?;
-                Err(closed_error())
+            match receive_response.recv_timeout(remaining.min(CANCELLATION_POLL_INTERVAL)) {
+                Ok(response) => return Ok(response),
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.remove_pending(request_id)?;
+                    return Err(closed_error());
+                }
             }
         }
     }
@@ -649,6 +671,47 @@ mod tests {
             broker.poll_request(Duration::ZERO).unwrap_err().code,
             "render.closed"
         );
+    }
+
+    #[test]
+    fn lifecycle_cancellation_removes_a_polled_request_and_rejects_its_late_reply() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let broker = RenderBroker::new();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let requester = broker.clone();
+        let requester_cancelled = Arc::clone(&cancelled);
+        let join = thread::spawn(move || {
+            requester.request_cancellable(request_kind(), Duration::from_secs(5), || {
+                requester_cancelled
+                    .load(Ordering::Acquire)
+                    .then_some(RenderBrokerCancellation::Navigation)
+            })
+        });
+        let request = broker
+            .poll_request(Duration::from_secs(1))
+            .unwrap()
+            .unwrap();
+        cancelled.store(true, Ordering::Release);
+
+        assert!(matches!(
+            join.join().unwrap().unwrap().kind,
+            RenderBrokerResponseKind::Cancelled(RenderBrokerCancellation::Navigation)
+        ));
+        assert_eq!(
+            broker
+                .respond(RenderBrokerResponse {
+                    version: RENDER_PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    kind: RenderBrokerResponseKind::Cancelled(
+                        RenderBrokerCancellation::Navigation,
+                    ),
+                })
+                .unwrap_err()
+                .code,
+            "render.unknown-request"
+        );
+        assert!(broker.poll_message(Duration::ZERO).unwrap().is_none());
     }
 
     #[test]
