@@ -1217,6 +1217,38 @@ impl BrowserCore {
                     context.page.snapshot(viewport),
                 ))
             }
+            BrowserCommand::RenderSnapshot {
+                context_id,
+                document_id,
+                viewport,
+                viewport_generation,
+                page_zoom,
+            } => {
+                validate_viewport(viewport)?;
+                if viewport_generation == 0
+                    || !page_zoom.is_finite()
+                    || !(0.25..=5.0).contains(&page_zoom)
+                {
+                    return Err(BrowserError::new(
+                        browser_error_codes::INVALID_ARGUMENT,
+                        "renderer viewport generation or page zoom is invalid",
+                    ));
+                }
+                let context = self.context_for_document(context_id, document_id)?;
+                let snapshot = context
+                    .page
+                    .render_snapshot(
+                        context_id,
+                        document_id,
+                        viewport,
+                        viewport_generation,
+                        page_zoom,
+                    )
+                    .map_err(|message| {
+                        BrowserError::new(browser_error_codes::INVALID_ARGUMENT, message)
+                    })?;
+                Ok(BrowserCommandResult::RenderSnapshot(snapshot))
+            }
             BrowserCommand::AccessibilitySnapshot {
                 context_id,
                 document_id,

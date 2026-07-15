@@ -1329,8 +1329,12 @@ final class _FixtureLayout {
       );
     }
     final root = roots.single;
-    final rootBackground = _color(root.styles['background'], 0xffffffff);
-    final contentHeight = _number(root.styles['height'], 208);
+    final rootBackground = _color(
+      root.styles['background-color'] ?? root.styles['background'],
+      0xffffffff,
+    );
+    final contentHeight =
+        _scaledLength(root.styles['height']) ?? viewport.height.toDouble();
     _items.add(
       _RectPaint(
         ui.Rect.fromLTWH(0, 0, viewport.width.toDouble(), contentHeight),
@@ -1348,7 +1352,9 @@ final class _FixtureLayout {
       ),
     );
     var y = 0.0;
-    for (final child in _children(root.id)) {
+    for (final child in _children(
+      root.id,
+    ).where((child) => !_isHidden(child))) {
       y = _layoutElement(child, 0, y, viewport.width.toDouble());
     }
     return _LayoutResult(
@@ -1363,12 +1369,37 @@ final class _FixtureLayout {
   }
 
   double _layoutElement(RenderNode node, double x, double y, double width) {
+    if (_isHidden(node)) return y;
     final paintStart = _items.length;
-    final margin = _number(node.styles['margin'], 0);
-    final padding = _number(node.styles['padding'], 0);
-    final left = x + margin;
-    final top = y + margin;
-    final innerWidth = width - margin * 2 - padding * 2;
+    final defaultMargin = node.name == 'body' ? 8.0 : 0.0;
+    final marginTop =
+        _edge(node.styles, 'margin', 'top', defaultMargin) * viewport.pageZoom;
+    final marginRight =
+        _edge(node.styles, 'margin', 'right', defaultMargin) *
+        viewport.pageZoom;
+    final marginBottom =
+        _edge(node.styles, 'margin', 'bottom', defaultMargin) *
+        viewport.pageZoom;
+    final marginLeft =
+        _edge(node.styles, 'margin', 'left', defaultMargin) * viewport.pageZoom;
+    final paddingTop =
+        _edge(node.styles, 'padding', 'top', 0) * viewport.pageZoom;
+    final paddingRight =
+        _edge(node.styles, 'padding', 'right', 0) * viewport.pageZoom;
+    final paddingBottom =
+        _edge(node.styles, 'padding', 'bottom', 0) * viewport.pageZoom;
+    final paddingLeft =
+        _edge(node.styles, 'padding', 'left', 0) * viewport.pageZoom;
+    final left = x + marginLeft;
+    final top = y + marginTop;
+    final availableWidth = (width - marginLeft - marginRight)
+        .clamp(0, double.infinity)
+        .toDouble();
+    final authoredWidth = _scaledLength(node.styles['width']);
+    final boxWidth = authoredWidth ?? availableWidth;
+    final innerWidth = (boxWidth - paddingLeft - paddingRight)
+        .clamp(0, double.infinity)
+        .toDouble();
     if (node.name == 'img') {
       final image = images[node.resourceIds.single];
       if (image == null) {
@@ -1377,13 +1408,15 @@ final class _FixtureLayout {
           'image is missing',
         );
       }
-      final imageWidth = _number(node.styles['width'], image.width.toDouble());
-      final imageHeight = imageWidth * image.height / image.width;
+      final imageWidth = authoredWidth ?? image.width.toDouble();
+      final imageHeight =
+          _scaledLength(node.styles['height']) ??
+          imageWidth * image.height / image.width;
       final rect = ui.Rect.fromLTWH(left, top, imageWidth, imageHeight);
       _items.add(_ImagePaint(image, rect));
       _addGeometry(node, rect);
       _addSemantic(node, [rect]);
-      return rect.bottom + margin;
+      return rect.bottom + marginBottom;
     }
 
     final elementPaintOrder = _paintOrder++;
@@ -1392,13 +1425,13 @@ final class _FixtureLayout {
         .where((child) => child.kind == RenderNodeKind.text)
         .toList();
     var semanticRects = <ui.Rect>[];
-    var cursor = top + padding;
+    var cursor = top + paddingTop;
     if (textChildren.isNotEmpty) {
       final (paragraph, ranges, textByNode) = _paragraph(
         textChildren,
         innerWidth,
       );
-      final origin = ui.Offset(left + padding, cursor);
+      final origin = ui.Offset(left + paddingLeft, cursor);
       _items.add(_ParagraphPaint(paragraph, origin));
       final rect = ui.Rect.fromLTWH(
         origin.dx,
@@ -1457,16 +1490,19 @@ final class _FixtureLayout {
       cursor = rect.bottom;
     }
     for (final child in children.where(
-      (child) => child.kind != RenderNodeKind.text,
+      (child) => child.kind != RenderNodeKind.text && !_isHidden(child),
     )) {
-      cursor = _layoutElement(child, left + padding, cursor, innerWidth);
+      cursor = _layoutElement(child, left + paddingLeft, cursor, innerWidth);
     }
-    final explicitHeight = _number(node.styles['height'], 0);
-    final height = explicitHeight > 0
-        ? explicitHeight
-        : (cursor - top + padding).clamp(padding * 2, double.infinity);
-    final rect = ui.Rect.fromLTWH(left, top, width - margin * 2, height);
-    final background = node.styles['background'];
+    final explicitHeight = _scaledLength(node.styles['height']);
+    final height =
+        explicitHeight ??
+        (cursor - top + paddingBottom)
+            .clamp(paddingTop + paddingBottom, double.infinity)
+            .toDouble();
+    final rect = ui.Rect.fromLTWH(left, top, boxWidth, height);
+    final background =
+        node.styles['background-color'] ?? node.styles['background'];
     if (background != null) {
       _items.insert(
         paintStart,
@@ -1475,10 +1511,14 @@ final class _FixtureLayout {
     }
     final paddingRect = rect;
     final contentRect = ui.Rect.fromLTWH(
-      rect.left + padding,
-      rect.top + padding,
-      (rect.width - padding * 2).clamp(0, double.infinity),
-      (rect.height - padding * 2).clamp(0, double.infinity),
+      rect.left + paddingLeft,
+      rect.top + paddingTop,
+      (rect.width - paddingLeft - paddingRight)
+          .clamp(0, double.infinity)
+          .toDouble(),
+      (rect.height - paddingTop - paddingBottom)
+          .clamp(0, double.infinity)
+          .toDouble(),
     );
     _addGeometry(
       node,
@@ -1488,7 +1528,7 @@ final class _FixtureLayout {
       paintOrder: elementPaintOrder,
     );
     _addSemantic(node, semanticRects.isEmpty ? [rect] : semanticRects);
-    return rect.bottom + margin;
+    return rect.bottom + marginBottom;
   }
 
   (ui.Paragraph, Map<int, _TextRange>, Map<int, String>) _paragraph(
@@ -1508,7 +1548,7 @@ final class _FixtureLayout {
       builder.pushStyle(
         ui.TextStyle(
           color: _color(node.styles['color'], 0xff111111),
-          fontSize: _number(node.styles['font-size'], 16),
+          fontSize: _number(node.styles['font-size'], 16) * viewport.pageZoom,
           fontWeight: node.styles['font-weight'] == 'bold'
               ? ui.FontWeight.bold
               : ui.FontWeight.normal,
@@ -1578,16 +1618,108 @@ final class _FixtureLayout {
     children.sort((a, b) => a.siblingIndex.compareTo(b.siblingIndex));
     return children;
   }
+
+  double? _scaledLength(String? value) {
+    final parsed = _length(value);
+    return parsed == null ? null : parsed * viewport.pageZoom;
+  }
 }
 
 ui.Color _color(String? value, int fallback) {
   if (value == null) return ui.Color(fallback);
-  final normalized = value.startsWith('#') ? value.substring(1) : value;
+  final keyword = value.trim().toLowerCase();
+  if (keyword == 'transparent') return const ui.Color(0x00000000);
+  const named = <String, int>{
+    'black': 0xff000000,
+    'white': 0xffffffff,
+    'red': 0xffff0000,
+    'green': 0xff008000,
+    'blue': 0xff0000ff,
+    'yellow': 0xffffff00,
+    'gray': 0xff808080,
+    'grey': 0xff808080,
+    'purple': 0xff800080,
+  };
+  if (named[keyword] case final color?) return ui.Color(color);
+  var normalized = keyword.startsWith('#') ? keyword.substring(1) : keyword;
+  if (normalized.length == 3 || normalized.length == 4) {
+    normalized = normalized.split('').map((digit) => '$digit$digit').join();
+  }
   final parsed = int.tryParse(normalized, radix: 16);
   if (parsed == null || (normalized.length != 6 && normalized.length != 8)) {
     throw RenderProtocolException('render.style', 'invalid color $value');
   }
   return ui.Color(normalized.length == 6 ? 0xff000000 | parsed : parsed);
+}
+
+bool _isHidden(RenderNode node) =>
+    const {
+      'head',
+      'title',
+      'meta',
+      'link',
+      'style',
+      'script',
+      'template',
+      'source',
+    }.contains(node.name) ||
+    node.styles['display'] == 'none' ||
+    node.styles['visibility'] == 'hidden';
+
+double _edge(
+  Map<String, String> styles,
+  String property,
+  String side,
+  double fallback,
+) {
+  final explicit = _length(styles['$property-$side']);
+  if (explicit != null) return explicit;
+  final shorthand = styles[property];
+  if (shorthand == null) return fallback;
+  final values = shorthand
+      .trim()
+      .split(RegExp(r'\s+'))
+      .map(_length)
+      .toList(growable: false);
+  if (values.any((value) => value == null) ||
+      values.isEmpty ||
+      values.length > 4) {
+    return fallback;
+  }
+  final top = values[0]!;
+  final right = values.length == 1 ? top : values[1]!;
+  final bottom = values.length <= 2 ? top : values[2]!;
+  final left = switch (values.length) {
+    1 => top,
+    2 || 3 => right,
+    _ => values[3]!,
+  };
+  return switch (side) {
+    'top' => top,
+    'right' => right,
+    'bottom' => bottom,
+    'left' => left,
+    _ => fallback,
+  };
+}
+
+double? _length(String? value) {
+  if (value == null) return null;
+  final normalized = value.trim().toLowerCase();
+  if (normalized == 'auto' ||
+      normalized.endsWith('%') ||
+      normalized.endsWith('em') ||
+      normalized.endsWith('rem') ||
+      normalized.startsWith('calc(')) {
+    return null;
+  }
+  final parsed = double.tryParse(normalized.replaceAll('px', ''));
+  if (parsed == null ||
+      !parsed.isFinite ||
+      parsed.abs() > renderMaxCoordinate) {
+    return null;
+  }
+  return parsed;
 }
 
 double _number(String? value, double fallback) {

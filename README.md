@@ -43,12 +43,15 @@ layout/paint rather than carry two renderers.
 
 The R1 protocol core, R2 dedicated C/Dart broker, R3 Canvas/Paragraph/PNG
 formatter vertical, and R4 displayed-commit interaction/scroll/Cage proof are
-implemented. R5 now has a first release-process chrome-less host checkpoint: the
-same Linux bundle accepts one bounded explicit URL/viewport/output invocation,
+implemented. R5 now has release-process chrome-less capture and full-DOM source
+checkpoints: the same Linux bundle accepts one bounded explicit
+URL/viewport/output invocation, projects renderable DOM topology, resolved
+styles, accepted images, stable element ids, semantics, and scroll intent,
 omits Flutter and native browser chrome, disables the legacy frame capture, and
-writes the exact acknowledged Flutter scene as PNG. `just linux-automation-smoke`
-checks two viewport sizes under Cage. Fixture-manifest, CDP/input, multi-target,
-and renderer-loss migration remain the next R5 work; WebRender/RGBA remains the
+writes the exact acknowledged Flutter scene as PNG. `just
+linux-automation-smoke` checks real document content at two viewport sizes under
+Cage. Fixture-manifest, CDP/input, multi-target, and renderer-loss migration
+remain the next R5 work; WebRender/RGBA remains the
 explicit fallback until the one-time R7 cutover.
 
 The checked-in transitional Linux Flutter alpha shell uses handwritten Dart FFI over the

@@ -255,10 +255,10 @@ is not widened.
 one bounded BrowserCore projection for the selected document, carries it over the
 dedicated renderer update queue, formats it with the R3 service, validates the
 returned commit in Rust, and paints the accepted `RenderCommitPainter` view.
-The source is deliberately a basic title plus at most 64 non-hidden semantic
-elements (or bounded body-text fallback), not a claim of computed-style or
-general CSS rendering. Synthetic wrapper/text ids cannot become DOM targets;
-semantic element ids remain BrowserCore-authored.
+At R4 completion the source was deliberately a basic title plus at most 64
+non-hidden semantic elements (or bounded body-text fallback), not a claim of
+computed-style or general CSS rendering. The R5 source checkpoint below has now
+replaced that temporary projection.
 
 Presentation is acknowledged only from a Flutter post-frame callback. Pointer
 input uses the formatter's displayed commit, opaque hit-test handle, exact
@@ -335,6 +335,20 @@ PNG encoding, and output bounds. This does not yet satisfy full R5: fixture
 manifest, layout evidence, CDP/Playwright screenshot and input routing,
 independent simultaneous targets, before/after mutation capture, and renderer
 loss remain to migrate.
+
+**Renderer-source checkpoint:** BrowserCore now publishes the bounded renderable
+DOM tree rather than synthetic title/semantic wrappers. Element ids are the
+stable BrowserCore node ids; renderer-only text ids occupy a disjoint range;
+parent/sibling/depth topology, viewport-resolved Stylo properties, accepted PNG
+resources, semantic descriptors, and root scroll intent travel in one validated
+`FullRenderSnapshot`. Metadata/script/style subtrees are counted for stable DOM
+ids but excluded from renderer payload and paint. The Dart formatter consumes
+authored dimensions, per-side margin/padding, background colors, visibility,
+image sizing, and page zoom while preserving exact commit input validation. The
+release Cage hashes now cover actual `fixtures/dom/basic.html` DOM text rather
+than the former synthetic document card. This establishes the source needed by
+the remaining manifest/CDP migration; it does not by itself satisfy the proof
+paragraph above.
 
 ### R6. Synchronous layout and recovery gate
 

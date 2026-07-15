@@ -475,6 +475,16 @@ linux-automation-smoke` proves 320×240 and 480×300 release-process captures un
 Cage. It is a scene-capture checkpoint, not yet the full rendered fixture/CDP/
 input/multi-target host.
 
+The renderer source used by that host is no longer the R4 synthetic document
+card. BrowserCore emits renderable DOM topology with stable element ids,
+viewport-resolved style properties, BrowserCore-accepted PNG resources, semantic
+descriptors, and scroll intent. Metadata/script/style descendants retain their
+place in BrowserCore's id allocation but are not sent as paintable nodes. Dart
+applies page zoom and the supported box/background/image properties while
+building one atomic commit. The controlled release hashes therefore name the
+real DOM fixture scene. General manifest formatting, rendered CDP ownership, and
+incremental synchronous mutation layout remain later R5/R6 acceptance work.
+
 The direct release-bundle interface is intentionally small (the output directory
 must already exist):
 

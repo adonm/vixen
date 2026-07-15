@@ -23,6 +23,20 @@ pub struct Document {
     pub(crate) dom: RcDom,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DocumentRenderNodeKind {
+    Element { node_id: usize, local_name: String },
+    Text { text: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DocumentRenderNode {
+    pub parent_element_node_id: Option<usize>,
+    pub sibling_index: u32,
+    pub depth: u16,
+    pub kind: DocumentRenderNodeKind,
+}
+
 /// Incremental owner-thread HTML parser used by BrowserCore navigation work.
 pub(crate) struct DocumentParser {
     parser: html5ever::Parser<RcDom>,
@@ -165,6 +179,20 @@ impl Document {
         });
         body.map(|node| text_content_of(&node))
             .unwrap_or_else(|| self.text_content())
+    }
+
+    pub(crate) fn render_nodes(&self) -> Vec<DocumentRenderNode> {
+        let mut nodes = Vec::new();
+        let mut next_element_node_id = 1usize;
+        project_render_children(
+            &self.dom.document,
+            None,
+            0,
+            true,
+            &mut next_element_node_id,
+            &mut nodes,
+        );
+        nodes
     }
 
     /// Raw text contents of author `<style>` blocks, in document order.
@@ -793,6 +821,74 @@ fn walk<F: FnMut(&Handle)>(root: &Handle, f: &mut F) {
     for child in &children {
         walk(child, f);
     }
+}
+
+fn project_render_children(
+    parent: &Handle,
+    parent_element_node_id: Option<usize>,
+    depth: u16,
+    renderable_ancestor: bool,
+    next_element_node_id: &mut usize,
+    output: &mut Vec<DocumentRenderNode>,
+) {
+    let children = parent.children.borrow().clone();
+    let mut sibling_index = 0u32;
+    for child in children {
+        match &child.data {
+            NodeData::Element { name, .. } => {
+                let node_id = *next_element_node_id;
+                *next_element_node_id = next_element_node_id.saturating_add(1);
+                let local_name = name.local.to_string();
+                let renderable = renderable_ancestor && !is_render_metadata(&local_name);
+                if renderable {
+                    output.push(DocumentRenderNode {
+                        parent_element_node_id,
+                        sibling_index,
+                        depth,
+                        kind: DocumentRenderNodeKind::Element {
+                            node_id,
+                            local_name,
+                        },
+                    });
+                    sibling_index = sibling_index.saturating_add(1);
+                }
+                project_render_children(
+                    &child,
+                    renderable.then_some(node_id),
+                    if renderable {
+                        depth.saturating_add(1)
+                    } else {
+                        depth
+                    },
+                    renderable,
+                    next_element_node_id,
+                    output,
+                );
+            }
+            NodeData::Text { contents }
+                if renderable_ancestor && parent_element_node_id.is_some() =>
+            {
+                let text = contents.borrow().to_string();
+                if !text.trim().is_empty() {
+                    output.push(DocumentRenderNode {
+                        parent_element_node_id,
+                        sibling_index,
+                        depth,
+                        kind: DocumentRenderNodeKind::Text { text },
+                    });
+                    sibling_index = sibling_index.saturating_add(1);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn is_render_metadata(local_name: &str) -> bool {
+    matches!(
+        local_name,
+        "head" | "title" | "base" | "meta" | "link" | "style" | "script" | "template"
+    )
 }
 
 fn dump_node(node: &Handle, depth: usize, out: &mut String) {

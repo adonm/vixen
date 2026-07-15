@@ -521,6 +521,13 @@ pub enum BrowserCommand {
         document_id: DocumentId,
         viewport: (u32, u32),
     },
+    RenderSnapshot {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        viewport: (u32, u32),
+        viewport_generation: u64,
+        page_zoom: f64,
+    },
     AccessibilitySnapshot {
         context_id: BrowsingContextId,
         document_id: DocumentId,
@@ -596,6 +603,7 @@ pub enum BrowserCommandResult {
     InputDispatched(InputDispatchResult),
     FindText(FindTextResult),
     Snapshot(crate::PageSnapshot),
+    RenderSnapshot(crate::FullRenderSnapshot),
     AccessibilitySnapshot(AccessibilitySnapshot),
     SelectorMatches(Vec<crate::ElementInfo>),
     ComputedStyle(Vec<(String, String)>),

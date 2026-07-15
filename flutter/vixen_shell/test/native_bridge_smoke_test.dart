@@ -58,7 +58,7 @@ void main() {
               .where((node) => node.kind == RenderNodeKind.text)
               .map((node) => node.text)
               .join(' '),
-          contains('Vixen sample'),
+          'Vixen draft Tail',
         );
         final view = (await formatter.acceptFullSnapshot(
           fullSnapshot.snapshot,
@@ -89,6 +89,10 @@ void main() {
         final targetRect = view.semanticRegions
             .singleWhere((region) => region.descriptor.name == 'Vixen sample')
             .rect;
+        final targetPoint = RenderPoint(
+          targetRect.left + 4,
+          targetRect.top + 4,
+        );
         final query = RenderHitTestQuery(
           queryId: 1,
           contextId: contextId,
@@ -96,7 +100,7 @@ void main() {
           displayedCommitId: view.commit.commitId,
           revision: view.commit.revision,
           handle: view.commit.hitTestHandle,
-          point: RenderPoint(targetRect.center.dx, targetRect.center.dy),
+          point: targetPoint,
         );
         await controller.dispatchRendererMouseEvent(
           contextId: contextId,
@@ -106,8 +110,8 @@ void main() {
           viewportHeight: 160,
           eventType: 'mousedown',
           event: BrowserMouseEvent(
-            x: targetRect.center.dx,
-            y: targetRect.center.dy,
+            x: targetPoint.x,
+            y: targetPoint.y,
             button: 0,
             buttons: 1,
             detail: 1,
@@ -122,7 +126,7 @@ void main() {
           displayedCommitId: view.commit.commitId,
           revision: view.commit.revision,
           handle: view.commit.hitTestHandle,
-          point: RenderPoint(targetRect.center.dx, targetRect.center.dy),
+          point: targetPoint,
         );
         await controller.dispatchRendererMouseEvent(
           contextId: contextId,
@@ -132,8 +136,8 @@ void main() {
           viewportHeight: 160,
           eventType: 'mouseup',
           event: BrowserMouseEvent(
-            x: targetRect.center.dx,
-            y: targetRect.center.dy,
+            x: targetPoint.x,
+            y: targetPoint.y,
             button: 0,
             buttons: 0,
             detail: 1,
@@ -161,9 +165,9 @@ void main() {
         expect(zoomedUpdate.snapshot.scrollIntents.single.point.y, 75);
         expect(
           zoomedUpdate.snapshot.nodes
-              .firstWhere((node) => node.kind == RenderNodeKind.text)
-              .styles['font-size'],
-          '30',
+              .firstWhere((node) => node.semantic?.name == 'Vixen sample')
+              .styles['width'],
+          '32px',
         );
         final zoomedView = (await formatter.acceptFullSnapshot(
           zoomedUpdate.snapshot,

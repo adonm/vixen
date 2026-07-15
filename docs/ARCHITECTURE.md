@@ -469,6 +469,15 @@ BrowserCore fetches and validates image/font bytes under URL/CSP/CORS/integrity/
 cache policy before renderer exposure. Node count/depth, text, mutations,
 resources, decoded bytes, fragments, commits, and queues are bounded.
 
+The current R5 full-snapshot source is the first production implementation of
+that boundary: it projects renderable DOM elements with stable BrowserCore ids,
+renderer-only text ids, resolved style properties, accepted PNG bytes, semantic
+descriptors, and root scroll intent. Non-rendered metadata/script/style subtrees
+still participate in DOM id allocation but are omitted from renderer payload.
+Incremental styled mutation batches and the final CSS formatter breadth remain
+R6 work; the source projection is not permission to consult the transitional
+Rust display list from Flutter.
+
 ### Formatter and commit authority
 
 Vixen implements web formatting semantics in Dart over Flutter primitives.
@@ -538,10 +547,11 @@ presented scene without compositor chrome.
 
 The bounded Flutter vertical may run in production with the old frame as an
 explicit fallback, but it is not the renderer cutover. R4's interactive
-controlled vertical is complete. R5's first page-only release-host checkpoint
-now captures an exact acknowledged Flutter scene at two Cage viewports while
-skipping chrome and the legacy frame path; R5–R6 must still prove fixture/CDP/
-Playwright input and capture groups, independent targets, synchronous layout,
+controlled vertical is complete. R5's page-only release host now captures a
+full-DOM/computed-style source as an exact acknowledged Flutter scene at two
+Cage viewports while skipping chrome and the legacy frame path; R5–R6 must still
+prove fixture/CDP/Playwright input and capture groups, independent targets,
+synchronous layout,
 cancellation, resync, and renderer loss. Production
 then cuts over once. Apply the complete R7 deletion inventory:
 WebRender/gleam, `GlContext`, both EGL paths, image upload, RGBA frame ABI/pools,

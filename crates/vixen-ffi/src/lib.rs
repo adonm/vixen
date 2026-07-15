@@ -27,9 +27,7 @@ pub use vixen_engine::paint::RgbaFrame;
 
 use vixen_api::{
     BrowserCommand, BrowserCommandResult, FullRenderSnapshot, RenderHitTestQuery,
-    RenderInputTarget, RenderNode, RenderNodeId, RenderNodeKind, RenderPoint, RenderRevision,
-    RenderScrollIntent, RenderScrollIntentKind, RenderScrollNodeId, RenderSemanticActionKind,
-    RenderSemanticNode, RenderStyleProperty, RenderViewport, SemanticNodeId, browser_error_codes,
+    RenderInputTarget, browser_error_codes,
 };
 use vixen_engine::browser::{EngineBrowserHandle, spawn_browser};
 
@@ -697,187 +695,18 @@ impl FlutterBrowserController {
                 "renderer page zoom is outside the supported range",
             ));
         }
-        let page = match self.handle.dispatch(BrowserCommand::Snapshot {
+        match self.handle.dispatch(BrowserCommand::RenderSnapshot {
             context_id,
             document_id,
             viewport,
-        })? {
-            BrowserCommandResult::Snapshot(snapshot) => snapshot,
-            result => return Err(unexpected_result(result)),
-        };
-        let accessibility = self.accessibility_snapshot(context_id, document_id, viewport)?;
-        let generation = accessibility.source_generation.max(1);
-        let revision = RenderRevision {
-            context_id,
-            document_id,
-            source_generation: generation,
-            style_generation: generation,
             viewport_generation,
-            resource_generation: 1,
-        };
-        let title = truncate_utf8(
-            page.title
-                .as_deref()
-                .filter(|title| !title.trim().is_empty())
-                .unwrap_or("Vixen document"),
-            8 * 1024,
-        );
-        let body = truncate_utf8(&page.text_content, 8 * 1024);
-        let action_generation = accessibility.generation;
-        let viewport_height =
-            (f64::from(viewport.1) + f64::from(page.root_scroll_max.1) * page_zoom).to_string();
-        let article_margin = (12.0 * page_zoom).to_string();
-        let article_padding = (16.0 * page_zoom).to_string();
-        let element_spacing = (4.0 * page_zoom).to_string();
-        let title_font_size = (24.0 * page_zoom).to_string();
-        let body_font_size = (16.0 * page_zoom).to_string();
-        let semantic_nodes = accessibility
-            .nodes
-            .iter()
-            .filter(|node| !node.hidden && node.id != 0)
-            .take(64)
-            .collect::<Vec<_>>();
-        let mut used_ids = semantic_nodes
-            .iter()
-            .filter_map(|node| u64::try_from(node.id).ok())
-            .collect::<std::collections::BTreeSet<_>>();
-        let mut next_synthetic_id = i64::MAX as u64;
-        let mut allocate_synthetic_id = || loop {
-            let candidate = next_synthetic_id;
-            next_synthetic_id = next_synthetic_id
-                .checked_sub(1)
-                .expect("renderer synthetic id space is bounded");
-            if candidate != 0 && used_ids.insert(candidate) {
-                break candidate;
+            page_zoom,
+        })? {
+            BrowserCommandResult::RenderSnapshot(snapshot) => {
+                Ok(ControllerResponse::RendererUpdate(snapshot))
             }
-        };
-        let root_id = allocate_synthetic_id();
-        let article_id = allocate_synthetic_id();
-        let title_id = allocate_synthetic_id();
-        let title_text_id = allocate_synthetic_id();
-        let mut nodes = vec![
-            render_element(
-                root_id,
-                None,
-                0,
-                0,
-                "html",
-                &[
-                    ("background", "#f8fafc"),
-                    ("height", viewport_height.as_str()),
-                ],
-                None,
-            ),
-            render_element(
-                article_id,
-                Some(root_id),
-                0,
-                1,
-                "article",
-                &[
-                    ("margin", article_margin.as_str()),
-                    ("padding", article_padding.as_str()),
-                    ("background", "#ffffff"),
-                ],
-                None,
-            ),
-            render_element(
-                title_id,
-                Some(article_id),
-                0,
-                2,
-                "h1",
-                &[("margin", element_spacing.as_str())],
-                None,
-            ),
-            render_text(
-                title_text_id,
-                title_id,
-                0,
-                3,
-                title,
-                &[
-                    ("font-size", title_font_size.as_str()),
-                    ("font-weight", "bold"),
-                    ("color", "#172033"),
-                ],
-            ),
-        ];
-        for (index, source) in semantic_nodes.into_iter().enumerate() {
-            let Ok(node_id) = u64::try_from(source.id) else {
-                continue;
-            };
-            let text = renderer_semantic_text(source);
-            let text_id = allocate_synthetic_id();
-            nodes.push(render_element(
-                node_id,
-                Some(article_id),
-                u32::try_from(index + 1).expect("semantic snapshot is bounded"),
-                2,
-                "div",
-                &[
-                    ("margin", element_spacing.as_str()),
-                    ("padding", element_spacing.as_str()),
-                ],
-                Some(RenderSemanticNode {
-                    id: SemanticNodeId::new(node_id).expect("accessibility node id is nonzero"),
-                    role: source.role.clone(),
-                    name: source.label.clone(),
-                    value: source.value.clone(),
-                    action_generation,
-                    actions: renderer_semantic_actions(&source.actions),
-                }),
-            ));
-            nodes.push(render_text(
-                text_id,
-                node_id,
-                0,
-                3,
-                text,
-                &[("font-size", body_font_size.as_str()), ("color", "#27364d")],
-            ));
+            result => Err(unexpected_result(result)),
         }
-        if nodes.len() == 4 {
-            let body_id = allocate_synthetic_id();
-            let body_text_id = allocate_synthetic_id();
-            nodes.push(render_element(
-                body_id,
-                Some(article_id),
-                1,
-                2,
-                "p",
-                &[("margin", element_spacing.as_str())],
-                None,
-            ));
-            nodes.push(render_text(
-                body_text_id,
-                body_id,
-                0,
-                3,
-                body,
-                &[("font-size", body_font_size.as_str()), ("color", "#27364d")],
-            ));
-        }
-        Ok(ControllerResponse::RendererUpdate(FullRenderSnapshot {
-            version: vixen_api::RENDER_PROTOCOL_VERSION,
-            revision,
-            viewport: RenderViewport {
-                width: viewport.0,
-                height: viewport.1,
-                device_scale: 1.0,
-                page_zoom,
-            },
-            nodes,
-            resources: Vec::new(),
-            scroll_intents: vec![RenderScrollIntent {
-                scroll_node_id: RenderScrollNodeId::new(1).expect("constant root scroll node id"),
-                node_id: RenderNodeId::new(root_id).expect("renderer root id is nonzero"),
-                kind: RenderScrollIntentKind::To(RenderPoint {
-                    x: f64::from(page.root_scroll.0) * page_zoom,
-                    y: f64::from(page.root_scroll.1) * page_zoom,
-                }),
-            }],
-        }))
     }
 
     pub fn find_text(
@@ -1014,98 +843,6 @@ fn unexpected_result(result: BrowserCommandResult) -> BrowserError {
         browser_error_codes::CLOSED,
         format!("unsupported browser result at controller boundary: {result:?}"),
     )
-}
-
-fn render_element(
-    id: u64,
-    parent_id: Option<u64>,
-    sibling_index: u32,
-    depth: u16,
-    local_name: &str,
-    styles: &[(&str, &str)],
-    semantic: Option<RenderSemanticNode>,
-) -> RenderNode {
-    RenderNode {
-        id: RenderNodeId::new(id).expect("constant render node id"),
-        parent_id: parent_id.map(|id| RenderNodeId::new(id).expect("constant parent id")),
-        sibling_index,
-        depth,
-        kind: RenderNodeKind::Element {
-            local_name: local_name.to_owned(),
-        },
-        styles: styles
-            .iter()
-            .map(|(name, value)| RenderStyleProperty {
-                name: (*name).to_owned(),
-                value: (*value).to_owned(),
-            })
-            .collect(),
-        resource_ids: Vec::new(),
-        semantic,
-    }
-}
-
-fn render_text(
-    id: u64,
-    parent_id: u64,
-    sibling_index: u32,
-    depth: u16,
-    text: String,
-    styles: &[(&str, &str)],
-) -> RenderNode {
-    RenderNode {
-        id: RenderNodeId::new(id).expect("constant render text id"),
-        parent_id: Some(RenderNodeId::new(parent_id).expect("constant text parent id")),
-        sibling_index,
-        depth,
-        kind: RenderNodeKind::Text { text },
-        styles: styles
-            .iter()
-            .map(|(name, value)| RenderStyleProperty {
-                name: (*name).to_owned(),
-                value: (*value).to_owned(),
-            })
-            .collect(),
-        resource_ids: Vec::new(),
-        semantic: None,
-    }
-}
-
-fn renderer_semantic_text(node: &vixen_api::AccessibilityNode) -> String {
-    let label = node.label.trim();
-    let value = node.value.as_deref().unwrap_or_default().trim();
-    let text = match (label.is_empty(), value.is_empty()) {
-        (false, false) if label != value => format!("{label}: {value}"),
-        (false, _) => label.to_owned(),
-        (_, false) => value.to_owned(),
-        _ => node.role.clone(),
-    };
-    truncate_utf8(&text, 8 * 1024)
-}
-
-fn renderer_semantic_actions(actions: &[String]) -> Vec<RenderSemanticActionKind> {
-    actions
-        .iter()
-        .filter_map(|action| match action.as_str() {
-            "tap" => Some(RenderSemanticActionKind::Activate),
-            "focus" => Some(RenderSemanticActionKind::Focus),
-            "set_value" => Some(RenderSemanticActionKind::SetValue),
-            "increase" => Some(RenderSemanticActionKind::Increase),
-            "decrease" => Some(RenderSemanticActionKind::Decrease),
-            _ => None,
-        })
-        .collect()
-}
-
-fn truncate_utf8(value: &str, maximum: usize) -> String {
-    if value.len() <= maximum {
-        return value.to_owned();
-    }
-    let mut end = maximum;
-    while !value.is_char_boundary(end) {
-        end -= 1;
-    }
-    value[..end].to_owned()
 }
 
 fn empty_input_result() -> InputDispatchResult {

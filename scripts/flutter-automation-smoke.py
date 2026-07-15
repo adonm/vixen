@@ -22,8 +22,8 @@ CAPTURE_RE = re.compile(
 )
 VIEWPORTS = ((320, 240), (480, 300))
 EXPECTED_SHA256 = {
-    (320, 240): "d36574ba40acf96b78270e0ce0ddd10820e15891469b50d392a938fc416a4bc8",
-    (480, 300): "543b0752c1451bb0a1d1d2e3a25b53aa0f28e081b7468bf9576ba0fa5fb26acc",
+    (320, 240): "558c0e7274a64bc79be3a19d78c8e628a91d676cd50c22f2a6c2c64025c817c2",
+    (480, 300): "cbd13ca564d5ed51f6b33c8eda1336c742b6db33c628acfb15f77ef2a22d761e",
 }
 
 
@@ -163,11 +163,13 @@ def capture(args: argparse.Namespace, width: int, height: int) -> tuple[Path, st
         raise SystemExit(f"capture diagnostic named invalid output/commit: {match.group(0)}")
     png = output.read_bytes()
     rgba = decode_rgba(png, width, height)
-    if rgba[:4] != bytes((248, 250, 252, 255)):
+    if rgba[:4] != bytes((255, 255, 255, 255)):
         raise SystemExit(
-            "top-left scene pixel was not the formatter root background; "
+            "top-left scene pixel was not the document canvas background; "
             "capture may contain host/compositor chrome"
         )
+    if not any(pixel != 255 for offset, pixel in enumerate(rgba) if offset % 4 != 3):
+        raise SystemExit("scene did not contain any painted document content")
     digest = hashlib.sha256(png).hexdigest()
     expected_digest = EXPECTED_SHA256[(width, height)]
     if digest != expected_digest:

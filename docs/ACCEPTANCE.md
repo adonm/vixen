@@ -96,6 +96,13 @@ This checkpoint is green; full R5
 acceptance still requires fixture-manifest, layout, CDP/Playwright screenshot and
 input, independent-target, mutation, and renderer-loss evidence.
 
+The follow-up renderer-source checkpoint is also green: the exact scene is built
+from bounded renderable DOM topology, viewport-resolved styles, accepted images,
+stable BrowserCore element ids, disjoint renderer text ids, and semantic/scroll
+metadata. The native bridge smoke proves a Flutter text hit resolves back to the
+BrowserCore semantic element before DOM click dispatch. This source checkpoint
+does not waive any remaining full-R5 evidence above.
+
 ### Synchronous geometry
 
 Done when tests cover:

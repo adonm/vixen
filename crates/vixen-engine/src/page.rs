@@ -18,7 +18,11 @@ use vixen_api::{
     ACCESSIBILITY_MAX_NODES, ACCESSIBILITY_MAX_STRING_BYTES, AccessibilityNode, AccessibilityRange,
     AccessibilityRect, AccessibilitySnapshot, AccessibilityTextInputAction,
     AccessibilityTextInputType, AccessibilityTextSelection, BrowsingContextId, DocumentId,
-    ElementInfo, EngineDiagnostic, FindTextResult, PageSnapshot,
+    ElementInfo, EngineDiagnostic, FindTextResult, FullRenderSnapshot, PageSnapshot, RenderNode,
+    RenderNodeId, RenderNodeKind, RenderPoint, RenderResource, RenderResourceId,
+    RenderResourceKind, RenderRevision, RenderScrollIntent, RenderScrollIntentKind,
+    RenderScrollNodeId, RenderSemanticActionKind, RenderSemanticNode, RenderStyleProperty,
+    RenderViewport, SemanticNodeId,
 };
 use vixen_net::csp::ContentSecurityPolicy;
 
@@ -26,7 +30,7 @@ use crate::display_list::{
     BackgroundAttachment, BackgroundBox, Color, DisplayListBuilder, DrawItem, PaintCommand,
     PaintStats, RasterImage, Rect, TextRun, dump_paint_commands, dump_paint_stats,
 };
-use crate::doc::{Document, DocumentParser, DocumentStyleItem, ParseError};
+use crate::doc::{Document, DocumentParser, DocumentRenderNodeKind, DocumentStyleItem, ParseError};
 use crate::history::{HistoryElementScroll, HistoryEntry, HistoryScrollState, SessionHistory};
 use crate::layout_tree::{
     LayoutFragment, LayoutFragmentKind, LayoutNodeId, LayoutNodeKind, LayoutPosition, LayoutTree,
@@ -1055,6 +1059,170 @@ impl Page {
         }
     }
 
+    pub fn render_snapshot(
+        &self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        viewport: (u32, u32),
+        viewport_generation: u64,
+        page_zoom: f64,
+    ) -> Result<FullRenderSnapshot, String> {
+        let accessibility = self.accessibility_snapshot(context_id, document_id, viewport);
+        let semantics = accessibility
+            .nodes
+            .into_iter()
+            .filter(|node| !node.hidden && node.id != 0)
+            .map(|node| (node.id, node))
+            .collect::<std::collections::HashMap<_, _>>();
+        let action_generation = accessibility.generation;
+        let mut next_text_id = i64::MAX as u64;
+        let mut nodes = Vec::new();
+        for projected in self.document.render_nodes() {
+            let (id, kind, styles, resource_ids, semantic) = match projected.kind {
+                DocumentRenderNodeKind::Element {
+                    node_id,
+                    local_name,
+                } => {
+                    let id = RenderNodeId::new(
+                        u64::try_from(node_id)
+                            .map_err(|_| "DOM node id exceeds the renderer id range".to_owned())?,
+                    )
+                    .ok_or_else(|| "DOM node id must be nonzero".to_owned())?;
+                    let styles = self
+                        .layout_style_for_viewport(node_id, viewport)
+                        .into_iter()
+                        .map(|(name, value)| RenderStyleProperty { name, value })
+                        .collect::<Vec<_>>();
+                    let resource_ids = self
+                        .raster_images
+                        .contains_key(&node_id)
+                        .then_some(
+                            RenderResourceId::new(id.get())
+                                .expect("nonzero render node id is a resource id"),
+                        )
+                        .into_iter()
+                        .collect::<Vec<_>>();
+                    let semantic = semantics.get(&node_id).and_then(|source| {
+                        let semantic_id = SemanticNodeId::new(u64::try_from(source.id).ok()?)?;
+                        Some(RenderSemanticNode {
+                            id: semantic_id,
+                            role: source.role.clone(),
+                            name: source.label.clone(),
+                            value: source.value.clone(),
+                            action_generation,
+                            actions: source
+                                .actions
+                                .iter()
+                                .filter_map(|action| match action.as_str() {
+                                    "tap" => Some(RenderSemanticActionKind::Activate),
+                                    "focus" => Some(RenderSemanticActionKind::Focus),
+                                    "set_value" => Some(RenderSemanticActionKind::SetValue),
+                                    "increase" => Some(RenderSemanticActionKind::Increase),
+                                    "decrease" => Some(RenderSemanticActionKind::Decrease),
+                                    _ => None,
+                                })
+                                .collect(),
+                        })
+                    });
+                    (
+                        id,
+                        RenderNodeKind::Element { local_name },
+                        styles,
+                        resource_ids,
+                        semantic,
+                    )
+                }
+                DocumentRenderNodeKind::Text { text } => {
+                    while RenderNodeId::new(next_text_id).is_none() {
+                        next_text_id = next_text_id
+                            .checked_sub(1)
+                            .ok_or_else(|| "renderer text node ids exhausted".to_owned())?;
+                    }
+                    let id = RenderNodeId::new(next_text_id).expect("text id checked");
+                    next_text_id = next_text_id
+                        .checked_sub(1)
+                        .ok_or_else(|| "renderer text node ids exhausted".to_owned())?;
+                    let styles = projected
+                        .parent_element_node_id
+                        .map(|parent_id| self.layout_style_for_viewport(parent_id, viewport))
+                        .unwrap_or_default()
+                        .into_iter()
+                        .map(|(name, value)| RenderStyleProperty { name, value })
+                        .collect();
+                    (id, RenderNodeKind::Text { text }, styles, Vec::new(), None)
+                }
+            };
+            let parent_id = projected
+                .parent_element_node_id
+                .map(|parent_id| {
+                    u64::try_from(parent_id)
+                        .ok()
+                        .and_then(RenderNodeId::new)
+                        .ok_or_else(|| "renderer parent node id is invalid".to_owned())
+                })
+                .transpose()?;
+            nodes.push(RenderNode {
+                id,
+                parent_id,
+                sibling_index: projected.sibling_index,
+                depth: projected.depth,
+                kind,
+                styles,
+                resource_ids,
+                semantic,
+            });
+        }
+        let mut resources = Vec::new();
+        for (node_id, image) in &self.raster_images {
+            let resource_id =
+                RenderResourceId::new(u64::try_from(*node_id).map_err(|_| {
+                    "image node id exceeds the renderer resource id range".to_owned()
+                })?)
+                .ok_or_else(|| "image resource id must be nonzero".to_owned())?;
+            resources.push(RenderResource {
+                id: resource_id,
+                kind: RenderResourceKind::Image,
+                mime: "image/png".to_owned(),
+                bytes: encode_render_png(image)?,
+            });
+        }
+        let root_id = nodes
+            .iter()
+            .find(|node| node.parent_id.is_none())
+            .map(|node| node.id)
+            .ok_or_else(|| "renderer document has no root element".to_owned())?;
+        let generation = self.accessibility_mutation_epoch.max(1);
+        let snapshot = FullRenderSnapshot {
+            version: vixen_api::RENDER_PROTOCOL_VERSION,
+            revision: RenderRevision {
+                context_id,
+                document_id,
+                source_generation: generation,
+                style_generation: generation,
+                viewport_generation,
+                resource_generation: generation,
+            },
+            viewport: RenderViewport {
+                width: viewport.0,
+                height: viewport.1,
+                device_scale: 1.0,
+                page_zoom,
+            },
+            nodes,
+            resources,
+            scroll_intents: vec![RenderScrollIntent {
+                scroll_node_id: RenderScrollNodeId::new(1).expect("constant scroll id"),
+                node_id: root_id,
+                kind: RenderScrollIntentKind::To(RenderPoint {
+                    x: f64::from(self.root_scroll.0) * page_zoom,
+                    y: f64::from(self.root_scroll.1) * page_zoom,
+                }),
+            }],
+        };
+        snapshot.validate().map_err(|error| error.to_string())?;
+        Ok(snapshot)
+    }
+
     /// Build the authoritative, bounded semantic projection from this Page's
     /// current DOM, focus state, and viewport-specific layout.
     pub fn accessibility_snapshot(
@@ -1286,12 +1454,30 @@ impl Page {
 
     pub(crate) fn apply_raster_image(&mut self, node_id: usize, image: RasterImage) {
         self.raster_images.insert(node_id, image);
+        self.bump_accessibility_mutation_epoch();
     }
 
     /// Diagnostics accumulated by pipeline stages.
     pub fn diagnostics(&self) -> Vec<EngineDiagnostic> {
         self.diagnostics.clone()
     }
+}
+
+fn encode_render_png(image: &RasterImage) -> Result<Vec<u8>, String> {
+    let mut bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut bytes, image.width, image.height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder
+        .write_header()
+        .map_err(|error| format!("renderer PNG header failed: {error}"))?;
+    writer
+        .write_image_data(image.rgba.as_slice())
+        .map_err(|error| format!("renderer PNG encoding failed: {error}"))?;
+    writer
+        .finish()
+        .map_err(|error| format!("renderer PNG finish failed: {error}"))?;
+    Ok(bytes)
 }
 
 impl PageParser {
@@ -2000,6 +2186,52 @@ mod tests {
         assert!(snap.text_content.contains("Hi"));
         assert!(!snap.text_content.contains('T'));
         assert_eq!(snap.element_count, 5);
+    }
+
+    #[test]
+    fn render_snapshot_projects_full_styled_dom_with_stable_element_ids() {
+        let page = Page::from_html(
+            "file:///render.html",
+            r#"<!doctype html><style>
+                body { margin: 0; }
+                #hit { display:block; width:120px; height:40px; background:#22bb66; }
+            </style><button id="hit">Hit me</button><p>After</p>"#,
+        )
+        .unwrap();
+        let button_id = page.query_selector_all("#hit").unwrap()[0].node_id;
+        let snapshot = page
+            .render_snapshot(
+                BrowsingContextId::new(1).unwrap(),
+                DocumentId::new(2).unwrap(),
+                (320, 240),
+                3,
+                1.0,
+            )
+            .unwrap();
+        snapshot.validate().unwrap();
+
+        let button = snapshot
+            .nodes
+            .iter()
+            .find(|node| node.id.get() == button_id as u64)
+            .unwrap();
+        assert!(matches!(
+            &button.kind,
+            RenderNodeKind::Element { local_name } if local_name == "button"
+        ));
+        assert!(
+            button
+                .styles
+                .iter()
+                .any(|style| style.name == "width" && style.value == "120px")
+        );
+        assert!(button.semantic.is_some());
+        assert!(snapshot.nodes.iter().any(|node| {
+            node.parent_id == Some(button.id)
+                && matches!(&node.kind, RenderNodeKind::Text { text } if text == "Hit me")
+        }));
+        assert_eq!(snapshot.revision.viewport_generation, 3);
+        assert_eq!(snapshot.viewport.width, 320);
     }
 
     #[test]
