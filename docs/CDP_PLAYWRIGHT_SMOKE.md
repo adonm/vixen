@@ -5,6 +5,7 @@ Run the committed smoke with:
 ```sh
 mise install
 just cdp-playwright-smoke
+just flutter-cdp-playwright-smoke
 ```
 
 The script starts `vixen-headless --cdp`, connects with `playwright-core`, and
@@ -89,9 +90,15 @@ work after cancellation, and unrelated command handling during target creation.
 Configured initial-URL loading intentionally settles before socket acceptance.
 Add methods only when this smoke shows a real automation gap.
 
-The screenshot assertions above still exercise the transitional native-headless
-renderer. R5's first `just linux-automation-smoke` checkpoint now proves direct
-exact-commit Flutter scene PNGs from the same release bundle, but does not yet
-route CDP sessions or input through that host. Migrate the screenshot/input groups
-coherently rather than weakening their existing before/after and target-isolation
-checks or fabricating geometry in the native adapter.
+The broad `cdp-playwright-smoke` above remains the native text/runtime and
+transitional-comparison suite. R5 adds a separate focused rendered product gate,
+`flutter-cdp-playwright-smoke`: Cage launches the release Flutter executable in
+long-lived CDP mode, and the listener uses a non-owning BrowserCore command/event
+subscription inside that same host. Playwright obtains bounding boxes from
+Flutter commit geometry, sends pointer input through exact Flutter hit tests,
+and receives direct `Scene.toImage` PNGs. The gate proves distinct 320×240 and
+480×300 simultaneous targets, target/input isolation, exact before/after DOM
+mutation captures, document pixels at the top-left (not compositor chrome),
+target switching without state loss, and a forced renderer reset followed by a
+full snapshot and byte-identical recovered scene. CDP, Flutter, and the shell
+share one BrowserCore; no native launcher or second runtime graph exists.

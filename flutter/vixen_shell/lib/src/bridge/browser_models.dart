@@ -784,6 +784,8 @@ final class BrowserCommand {
 
   factory BrowserCommand.loadProfileSession() =>
       BrowserCommand._('load_profile_session', const {});
+  factory BrowserCommand.startCdp(int port) =>
+      BrowserCommand._('start_cdp', {'port': port});
   factory BrowserCommand.saveCurrentProfileSession() =>
       BrowserCommand._('save_current_profile_session', const {});
   factory BrowserCommand.browserSnapshot() =>

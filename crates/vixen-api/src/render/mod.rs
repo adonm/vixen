@@ -27,6 +27,7 @@ pub const RENDER_MAX_MUTATIONS: usize = 4_096;
 pub const RENDER_MAX_RESOURCES: usize = 512;
 pub const RENDER_MAX_RESOURCE_BYTES: usize = 16 * 1024 * 1024;
 pub const RENDER_MAX_TOTAL_RESOURCE_BYTES: usize = 64 * 1024 * 1024;
+pub const RENDER_MAX_CAPTURE_BYTES: usize = 65 * 1024 * 1024;
 pub const RENDER_MAX_STRING_BYTES: usize = 64 * 1024;
 pub const RENDER_MAX_TOTAL_STRING_BYTES: usize = 4 * 1024 * 1024;
 pub const RENDER_MAX_STYLES_PER_NODE: usize = 512;

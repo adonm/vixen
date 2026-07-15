@@ -181,7 +181,6 @@ transitional.
 | `computed-style`        | Per-element computed style value matches expected        |
 | `element-attribute`     | Element attribute value matches expected                 |
 | `layout-box`            | Element border-box `(x, y, w, h)` matches expected       |
-| `display-list-contains` | **Transitional:** old Rust display-list substring; removed during R5 manifest migration |
 | `dom-nodes-range`       | DOM node count is within [min, max]                      |
 | `ref-equivalent`        | Rendered page matches a reference HTML fixture           |
 
@@ -189,9 +188,13 @@ WPT target profile lives in [`COMPAT.md`](COMPAT.md). End-to-end CSS/DOM/layout
 behavior should move into fixtures when practical. Target Rust tests cover pure
 logic such as URL/cookie/CSP parsing and redb round trips; a CSS algorithm remains
 in Rust only through ADR-022's explicit stable formatter contract and
-cross-language tests. R5 migrates the three current `display-list-contains`
-assertions in two fixtures to commit-bound layout/pixel checks before proving the
-full manifest.
+cross-language tests. R5 removed the transitional `display-list-contains` check;
+the former overflow/fragments assertions now use computed-style plus the
+existing layout-box and visual-hash evidence. The committed manifest's
+document/runtime assertions and rendered assertions execute in order against the
+same fixture target in the chrome-less Flutter host. Native `wpt_runner` retains
+the 1,887 text/runtime checks only; Flutter commits are authoritative for the 104
+layout boxes, 25 visual hashes, and 11 reference comparisons.
 
 ---
 

@@ -92,8 +92,8 @@ impl VixenBuffer {
 
 pub(crate) struct ControllerState {
     pub(crate) controller: FlutterBrowserController,
-    render_replica: RenderReplica,
-    render_commits: RenderCommitState,
+    pub(crate) render_replica: RenderReplica,
+    pub(crate) render_commits: RenderCommitState,
     next_event_sequence: u64,
     pub(crate) next_frame_id: u64,
 }
@@ -101,6 +101,7 @@ pub(crate) struct ControllerState {
 pub(crate) struct ControllerEntry {
     pub(crate) state: Mutex<ControllerState>,
     pub(crate) renderer: crate::RenderBroker,
+    pub(crate) cdp: Mutex<Option<crate::cdp_host::CdpHost>>,
 }
 
 pub(crate) type SharedControllerEntry = Arc<ControllerEntry>;
@@ -201,6 +202,7 @@ pub unsafe extern "C" fn vixen_open(
                     next_frame_id: 1,
                 }),
                 renderer: crate::RenderBroker::new(),
+                cdp: Mutex::new(None),
             });
             controllers()
                 .lock()
@@ -232,6 +234,11 @@ pub extern "C" fn vixen_destroy(handle: u64) -> u32 {
             Err(_) => return VIXEN_STATUS_INTERNAL_ERROR,
         };
         if let Some(entry) = removed {
+            if let Ok(mut cdp) = entry.cdp.lock()
+                && let Some(mut cdp) = cdp.take()
+            {
+                cdp.shutdown();
+            }
             let _ = entry.renderer.shutdown();
             VIXEN_STATUS_OK
         } else {
@@ -266,6 +273,27 @@ pub unsafe extern "C" fn vixen_command(
             )?;
             let command = parse_command(&message)?;
             let entry = controller_entry(handle)?;
+            if let ControllerCommand::StartCdp { port } = &command {
+                let mut cdp = entry
+                    .cdp
+                    .lock()
+                    .map_err(|_| AbiError::internal("CDP host is unavailable"))?;
+                if cdp.is_some() {
+                    return Err(AbiError::invalid_command("CDP host is already running"));
+                }
+                *cdp = Some(
+                    crate::cdp_host::CdpHost::start(&entry, *port)
+                        .map_err(AbiError::invalid_command)?,
+                );
+                return write_json(
+                    out_json,
+                    &json!({
+                        "v": ABI_VERSION,
+                        "type": "response",
+                        "response": {"type": "accepted"},
+                    }),
+                );
+            }
             let mut state = entry
                 .state
                 .lock()
@@ -353,7 +381,7 @@ pub unsafe extern "C" fn vixen_command(
     })
 }
 
-fn drain_renderer_submissions(
+pub(crate) fn drain_renderer_submissions(
     renderer: &crate::RenderBroker,
     state: &mut ControllerState,
 ) -> Result<(), AbiError> {
@@ -700,6 +728,15 @@ fn parse_command(message: &str) -> Result<ControllerCommand, AbiError> {
         "load_profile_session" => {
             exact_keys(object, &["type", "v"])?;
             ControllerCommand::LoadProfileSession
+        }
+        "start_cdp" => {
+            exact_keys(object, &["port", "type", "v"])?;
+            let port = u16::try_from(required_u64(object, "port")?)
+                .map_err(|_| AbiError::invalid_command("CDP port must fit unsigned 16 bits"))?;
+            if port == 0 {
+                return Err(AbiError::invalid_command("CDP port must be nonzero"));
+            }
+            ControllerCommand::StartCdp { port }
         }
         "save_current_profile_session" => {
             exact_keys(object, &["type", "v"])?;

@@ -223,6 +223,13 @@ uint32_t vixen_renderer_respond(VixenHandle handle,
                                 size_t message_len,
                                 VixenBuffer *out_json);
 
+/* Submits bounded raw PNG bytes for one correlated capture_scene request. */
+uint32_t vixen_renderer_capture_respond(VixenHandle handle,
+                                        uint64_t request_id,
+                                        const uint8_t *png,
+                                        size_t png_len,
+                                        VixenBuffer *out_json);
+
 /* Submits an ordinary asynchronous commit, presentation, or resync envelope. */
 uint32_t vixen_renderer_submit(VixenHandle handle,
                                const uint8_t *message,

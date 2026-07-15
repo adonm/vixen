@@ -6,6 +6,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::time::Duration;
 
 use serde_json::json;
+use vixen_api::{
+    RENDER_MAX_CAPTURE_BYTES, RENDER_PROTOCOL_VERSION, RenderBrokerResponse,
+    RenderBrokerResponseKind, RenderRequestId,
+};
 
 use crate::ABI_VERSION;
 use crate::c_abi::{
@@ -87,6 +91,53 @@ pub unsafe extern "C" fn vixen_renderer_respond(
             let reservation = reserve_buffer()?;
             let entry = controller_entry(handle)?;
             entry.renderer.respond(response).map_err(broker_error)?;
+            write_reserved_json(
+                out_json,
+                reservation,
+                &json!({"v": ABI_VERSION, "type": "renderer_accepted"}),
+            )
+        })();
+        finish(result, out_json)
+    }))
+    .unwrap_or(VIXEN_STATUS_PANIC)
+}
+
+/// Submit one bounded raw PNG response for a correlated scene-capture request.
+///
+/// # Safety
+/// `png` must address `png_len` readable bytes and `out_json` one writable
+/// [`VixenBuffer`] for the call.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn vixen_renderer_capture_respond(
+    handle: u64,
+    request_id: u64,
+    png: *const u8,
+    png_len: usize,
+    out_json: *mut VixenBuffer,
+) -> u32 {
+    catch_unwind(AssertUnwindSafe(|| {
+        if !initialize_output(out_json) {
+            return VIXEN_STATUS_INVALID_ARGUMENT;
+        }
+        let result = (|| {
+            let request_id = RenderRequestId::new(request_id)
+                .ok_or_else(|| AbiError::invalid_argument("capture request id must be nonzero"))?;
+            if png.is_null() || !(24..=RENDER_MAX_CAPTURE_BYTES).contains(&png_len) {
+                return Err(AbiError::invalid_argument(
+                    "capture response must be a bounded nonempty PNG",
+                ));
+            }
+            let png = unsafe { std::slice::from_raw_parts(png, png_len) }.to_vec();
+            let reservation = reserve_buffer()?;
+            let entry = controller_entry(handle)?;
+            entry
+                .renderer
+                .respond(RenderBrokerResponse {
+                    version: RENDER_PROTOCOL_VERSION,
+                    request_id,
+                    kind: RenderBrokerResponseKind::CapturePng(png),
+                })
+                .map_err(broker_error)?;
             write_reserved_json(
                 out_json,
                 reservation,

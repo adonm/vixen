@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import '../browser_controller.dart';
 import '../browser_models.dart';
@@ -125,6 +126,15 @@ final class NativeBrowserController extends BrowserController
       throw const BrowserFailure('render.closed', 'Renderer broker is closed');
     }
     worker.respondRenderer(response);
+  }
+
+  @override
+  void respondRendererCapture(int requestId, Uint8List png) {
+    final worker = _worker;
+    if (worker == null || _shutdown) {
+      throw const BrowserFailure('render.closed', 'Renderer broker is closed');
+    }
+    worker.respondRendererCapture(requestId, png);
   }
 
   @override

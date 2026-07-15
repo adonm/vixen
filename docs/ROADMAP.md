@@ -47,7 +47,7 @@ profile, platform, renderer host, command, and measured result.
 
 As of 2026-07-15 the repository has:
 
-- one seven-crate Rust workspace with hk/`just` gates, stable diagnostics, fuzz
+- one eight-crate Rust workspace with hk/`just` gates, stable diagnostics, fuzz
   targets, a fixture/WPT harness, and a committed **270 fixture / 2,027 check**
   100% baseline;
 - dependency-free renderer protocol v1 DTOs and reference validation in
@@ -331,7 +331,8 @@ RGBA scene pixels, and pinned full-scene hashes. Because capture serializes the
 formatter scene rather than the Flutter or compositor surface, browser,
 runner, and compositor chrome cannot enter the PNG. Dart tests cover
 configuration rejection, legacy-capture suppression, exact presentation identity,
-PNG encoding, and output bounds. This does not yet satisfy full R5: fixture
+PNG encoding, and output bounds. At that checkpoint this did not yet satisfy
+full R5: fixture
 manifest, layout evidence, CDP/Playwright screenshot and input routing,
 independent simultaneous targets, before/after mutation capture, and renderer
 loss remain to migrate.
@@ -349,6 +350,37 @@ release Cage hashes now cover actual `fixtures/dom/basic.html` DOM text rather
 than the former synthetic document card. This establishes the source needed by
 the remaining manifest/CDP migration; it does not by itself satisfy the proof
 paragraph above.
+
+**Shared-core CDP checkpoint:** CDP protocol ownership now lives in the reusable
+`vixen-cdp` adapter. BrowserCore can create independent bounded event
+subscriptions without cloning lifecycle ownership, so the long-lived release
+Flutter host runs the listener against its sole BrowserCore. Rendered CDP
+screenshots publish a target-specific full snapshot, wait for its exact Flutter
+commit and `Presented` acknowledgement, then return bounded raw PNG bytes from
+the displayed scene. `DOM.getContentQuads`/`DOM.getBoxModel` and mouse input use
+Flutter commit geometry/hit testing in this mode; the native CDP mode retains its
+transitional comparison backend. `just flutter-cdp-playwright-smoke` proves
+320×240 and 480×300 targets alive together, target isolation, Flutter-routed
+input, before/after mutation pixels, target switching, no chrome pixels, and a
+forced renderer reset followed by byte-identical full-resync capture. The old
+`display-list-contains` manifest check is removed; its three assertions now use
+computed-style together with existing layout/pixel evidence. At that checkpoint,
+full fixture-manifest routing was the last R5 migration item.
+
+**R5 complete:** the Dart formatter now implements the bounded fixture slice of
+content-box/border-box block and inline flow, relative/absolute positioning,
+row/column/reverse flex sizing, fixed/fractional/minmax grid tracks, gaps,
+deterministic text line geometry, backgrounds, borders, and images. `just
+flutter-fixture-manifest` starts one release/AOT Flutter host under Cage and runs
+all **270 fixtures / 2,027 checks** in manifest order. Every fixture uses a fresh
+target in the host's sole BrowserCore, so script/style mutations and rendered
+assertions share one document/runtime lifecycle. The 1,887 document/runtime
+checks use typed BrowserCore inspection; all 104 `layout-box`, 25 `visual-hash`,
+and 11 `ref-equivalent` checks use exact presented Flutter commits. Reference
+checks compare direct RGBA scene pixels, visual baselines now name Flutter
+scenes, and the native runner is text/runtime-only. `just gate-r5` composes this
+manifest with the one-shot and external Playwright gates. R6 is now the next
+renderer-transition stage; R7 remains blocked on R6.
 
 ### R6. Synchronous layout and recovery gate
 
@@ -584,11 +616,9 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **R5 automation host:** add the chrome-less Flutter host and migrate coherent
-   fixture/screenshot/CDP groups to exact presented commits.
-2. **R6 synchronous layout:** connect BrowserCore mutation flushes to the landed
+1. **R6 synchronous layout:** connect BrowserCore mutation flushes to the landed
    broker with cancellation, deadlines, loss, and full-resync recovery.
-3. **R7 cutover/deletion:** switch once after R5/R6 and remove every transitional
+2. **R7 cutover/deletion:** switch once after R6 and remove every transitional
    renderer, frame-transport, and superseded layout/paint owner in the inventory.
 
 Do not start another native interaction, font, Rust layout, paint, texture, or

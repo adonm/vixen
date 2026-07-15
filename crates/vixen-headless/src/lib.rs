@@ -13,15 +13,17 @@
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 
 use clap::Parser;
 
-use vixen_api::DocumentTextKind;
+use vixen_api::{BrowsingContextState, DocumentTextKind};
+use vixen_engine::browser::EngineBrowserClient;
 use vixen_engine::engine_error::codes;
 use vixen_engine::paint::{self, RgbaFrame};
 
 mod browser_adapter;
-pub mod cdp;
+pub use vixen_cdp as cdp;
 mod interactions;
 pub mod surface;
 
@@ -241,7 +243,12 @@ fn run_cdp_server(initial_url: &str, port: u16, profile_dir: Option<PathBuf>) ->
     let local = tokio::task::LocalSet::new();
     let result = local.block_on(
         &rt,
-        cdp::serve_with_initial_url_and_profile(port, Some(initial_url.to_owned()), profile_dir),
+        cdp::serve_with_initial_url_profile_and_renderer(
+            port,
+            Some(initial_url.to_owned()),
+            profile_dir,
+            Arc::new(LegacyCdpRenderBackend),
+        ),
     );
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -250,6 +257,28 @@ fn run_cdp_server(initial_url: &str, port: u16, profile_dir: Option<PathBuf>) ->
             ExitCode::FAILURE
         }
     }
+}
+
+struct LegacyCdpRenderBackend;
+
+impl cdp::CdpRenderBackend for LegacyCdpRenderBackend {
+    fn capture_png(
+        &self,
+        browser: &mut EngineBrowserClient,
+        state: &BrowsingContextState,
+        viewport: (u32, u32),
+    ) -> Result<Vec<u8>, String> {
+        let paint = browser
+            .capture_paint_snapshot(state.context_id, state.document_id, viewport)
+            .map_err(|error| error.to_string())?;
+        capture_commands_png(&paint.commands, viewport)
+    }
+}
+
+/// Test adapter retaining the transitional native screenshot backend while CDP
+/// protocol ownership lives in `vixen-cdp`.
+pub fn cdp_state_with_runtime(runtime: vixen_engine::script::JsRuntime) -> cdp::CdpState {
+    cdp::CdpState::with_runtime_and_renderer(runtime, Arc::new(LegacyCdpRenderBackend))
 }
 
 fn run_screenshot(

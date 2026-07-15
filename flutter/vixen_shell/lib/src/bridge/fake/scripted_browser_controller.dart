@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:typed_data';
 
 import '../browser_controller.dart';
 import '../browser_models.dart';
@@ -109,6 +110,26 @@ final class ScriptedBrowserController extends BrowserController
     encodeRendererResponse(response);
     _retainRendererResponse();
     rendererResponses.add(Map.unmodifiable(response));
+  }
+
+  @override
+  void respondRendererCapture(int requestId, Uint8List png) {
+    if (requestId <= 0 ||
+        png.length < 24 ||
+        png.length > renderMaxCaptureBytes) {
+      throw const RenderProtocolException(
+        'render.capture',
+        'invalid renderer capture response',
+      );
+    }
+    _retainRendererResponse();
+    rendererResponses.add(
+      Map.unmodifiable({
+        'type': 'capture_png',
+        'request_id': requestId,
+        'length': png.length,
+      }),
+    );
   }
 
   @override

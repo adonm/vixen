@@ -11,15 +11,16 @@
 #                           ▲
 #                  ┌────────┼─────────────────────────┐
 #                  │        │                         │
-#             vixen-engine  │            vixen-wpt / vixen-ffi
+#             vixen-engine  │       vixen-wpt / vixen-cdp / vixen-ffi
 #                           │
 #                     ┌─────┴─────┐
 #                     ▼           ▼
 #                 vixen-net   vixen-store
 #
-# `vixen-headless` is a CLI/CDP composition root over vixen-api + vixen-engine
-# (and a dev-dependency on vixen-wpt). Shell and headless route through
-# BrowserCore; `just gate-architecture` enforces both stable leaf boundaries and
+# `vixen-cdp` is a protocol adapter over vixen-api + vixen-engine;
+# `vixen-headless` and `vixen-ffi` select its native or Flutter render backend.
+# The headless CLI also has a dev-dependency on vixen-wpt. All frontends route
+# through BrowserCore; `just gate-architecture` enforces stable leaf boundaries and
 # the frontend ban on direct leaf-crate composition.
 
 [workspace]
@@ -30,6 +31,7 @@ members = [
     "crates/vixen-store",
     "crates/vixen-engine",
     "crates/vixen-wpt",
+    "crates/vixen-cdp",
     "crates/vixen-headless",
     "crates/vixen-ffi",
 ]

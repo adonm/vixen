@@ -11,7 +11,7 @@ use std::marker::PhantomData;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Condvar, Mutex, mpsc};
+use std::sync::{Arc, Condvar, Mutex, Weak, mpsc};
 use std::time::Duration;
 
 use vixen_api::{
@@ -111,6 +111,17 @@ pub struct EngineBrowserHandle {
     join: Option<std::thread::JoinHandle<()>>,
 }
 
+/// A non-owning command/event subscription to one [`EngineBrowserHandle`].
+///
+/// Each client receives its own bounded copy of BrowserCore's ordered event
+/// stream. Dropping a client never shuts down the core; only the owning handle
+/// controls that lifecycle.
+pub struct EngineBrowserClient {
+    commands: mpsc::SyncSender<CoreMessage>,
+    events: Arc<EventChannel>,
+    control: Arc<CoreControl>,
+}
+
 /// Immutable, generation-tagged renderer input. Host surfaces own GL/EGL;
 /// BrowserCore owns the Page/display-list generation.
 #[derive(Debug, Clone)]
@@ -122,6 +133,14 @@ pub struct PaintSnapshot {
 }
 
 impl EngineBrowserHandle {
+    pub fn subscribe(&self) -> EngineBrowserClient {
+        EngineBrowserClient {
+            commands: self.commands.clone(),
+            events: self.events.subscribe(),
+            control: Arc::clone(&self.control),
+        }
+    }
+
     pub fn dispatch(
         &mut self,
         command: BrowserCommand,
@@ -198,33 +217,92 @@ impl EngineBrowserHandle {
     }
 }
 
+impl EngineBrowserClient {
+    pub fn dispatch(
+        &mut self,
+        command: BrowserCommand,
+    ) -> Result<BrowserCommandResult, BrowserError> {
+        dispatch_command(&self.commands, &self.control, command)
+    }
+
+    pub fn try_next_event(&mut self) -> Result<Option<BrowserEvent>, BrowserError> {
+        self.events.pop(None)
+    }
+
+    pub fn wait_next_event(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<BrowserEvent>, BrowserError> {
+        self.events.pop(Some(timeout))
+    }
+
+    pub fn capture_paint_snapshot(
+        &mut self,
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+        viewport: (u32, u32),
+    ) -> Result<PaintSnapshot, BrowserError> {
+        capture_paint_snapshot(&self.commands, context_id, document_id, viewport)
+    }
+}
+
 impl BrowserHandle for EngineBrowserHandle {
     fn dispatch(&mut self, command: BrowserCommand) -> Result<BrowserCommandResult, BrowserError> {
-        let interrupt = command_interrupt(&command).and_then(|(context_id, require_navigation)| {
-            self.control
-                .interrupt_target(context_id, require_navigation)
-        });
-        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
-        self.commands
-            .try_send(CoreMessage::Dispatch {
-                command,
-                reply: reply_tx,
-            })
-            .map_err(command_send_error)?;
-        if let Some(interrupt) = interrupt {
-            let _ = interrupt.interrupt();
-        }
-        reply_rx.recv().map_err(|_| {
-            BrowserError::new(
-                browser_error_codes::CLOSED,
-                "browser core closed before acknowledging the command",
-            )
-        })?
+        dispatch_command(&self.commands, &self.control, command)
     }
 
     fn try_next_event(&mut self) -> Result<Option<BrowserEvent>, BrowserError> {
         self.events.pop(None)
     }
+}
+
+fn dispatch_command(
+    commands: &mpsc::SyncSender<CoreMessage>,
+    control: &CoreControl,
+    command: BrowserCommand,
+) -> Result<BrowserCommandResult, BrowserError> {
+    let interrupt = command_interrupt(&command).and_then(|(context_id, require_navigation)| {
+        control.interrupt_target(context_id, require_navigation)
+    });
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    commands
+        .try_send(CoreMessage::Dispatch {
+            command,
+            reply: reply_tx,
+        })
+        .map_err(command_send_error)?;
+    if let Some(interrupt) = interrupt {
+        let _ = interrupt.interrupt();
+    }
+    reply_rx.recv().map_err(|_| {
+        BrowserError::new(
+            browser_error_codes::CLOSED,
+            "browser core closed before acknowledging the command",
+        )
+    })?
+}
+
+fn capture_paint_snapshot(
+    commands: &mpsc::SyncSender<CoreMessage>,
+    context_id: BrowsingContextId,
+    document_id: DocumentId,
+    viewport: (u32, u32),
+) -> Result<PaintSnapshot, BrowserError> {
+    let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+    commands
+        .try_send(CoreMessage::CapturePaint {
+            context_id,
+            document_id,
+            viewport,
+            reply: reply_tx,
+        })
+        .map_err(command_send_error)?;
+    reply_rx.recv().map_err(|_| {
+        BrowserError::new(
+            browser_error_codes::CLOSED,
+            "browser core closed before capturing paint",
+        )
+    })?
 }
 
 impl Drop for EngineBrowserHandle {
@@ -398,6 +476,7 @@ fn handle_core_message(core: &mut BrowserCore, message: CoreMessage) -> bool {
 struct EventChannel {
     queue: Mutex<EventQueue>,
     ready: Condvar,
+    subscribers: Mutex<Vec<Weak<EventChannel>>>,
 }
 
 #[derive(Default)]
@@ -490,14 +569,41 @@ impl EventChannel {
         Self {
             queue: Mutex::new(EventQueue::new(capacity)),
             ready: Condvar::new(),
+            subscribers: Mutex::new(Vec::new()),
         }
     }
 
     fn push(&self, event: BrowserEvent) {
+        self.push_local(event.clone());
+        if let Ok(mut subscribers) = self.subscribers.lock() {
+            subscribers.retain(|subscriber| {
+                let Some(subscriber) = subscriber.upgrade() else {
+                    return false;
+                };
+                subscriber.push_local(event.clone());
+                true
+            });
+        }
+    }
+
+    fn push_local(&self, event: BrowserEvent) {
         if let Ok(mut queue) = self.queue.lock() {
             queue.push(event);
             self.ready.notify_all();
         }
+    }
+
+    fn subscribe(&self) -> Arc<EventChannel> {
+        let capacity = self
+            .queue
+            .lock()
+            .map(|queue| queue.capacity)
+            .unwrap_or(DEFAULT_EVENT_CAPACITY);
+        let subscriber = Arc::new(EventChannel::new(capacity));
+        if let Ok(mut subscribers) = self.subscribers.lock() {
+            subscribers.push(Arc::downgrade(&subscriber));
+        }
+        subscriber
     }
 
     fn pop(&self, timeout: Option<Duration>) -> Result<Option<BrowserEvent>, BrowserError> {
@@ -8017,6 +8123,39 @@ mod tests {
         assert_eq!(error.code, browser_error_codes::EVENT_LAGGED);
         assert!(handle.try_next_event().unwrap().is_some());
         drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn subscribed_client_has_an_independent_bounded_event_stream() {
+        let config = test_config();
+        let profile_path = config.profile_path.clone();
+        let mut owner = spawn_browser(config).unwrap();
+        let mut client = owner.subscribe();
+
+        let context_id = create(&mut owner);
+        let mut owner_events = Vec::new();
+        while let Some(event) = owner.try_next_event().unwrap() {
+            owner_events.push(event);
+        }
+        let mut client_events = Vec::new();
+        while let Some(event) = client.try_next_event().unwrap() {
+            client_events.push(event);
+        }
+        assert_eq!(client_events, owner_events);
+        assert_eq!(
+            client
+                .dispatch(BrowserCommand::GetBrowsingContextState { context_id })
+                .unwrap(),
+            BrowserCommandResult::BrowsingContextState(state(&mut owner, context_id))
+        );
+
+        drop(client);
+        assert!(matches!(
+            owner.dispatch(BrowserCommand::GetBrowserSnapshot).unwrap(),
+            BrowserCommandResult::BrowserSnapshot(_)
+        ));
+        drop(owner);
         let _ = std::fs::remove_file(profile_path);
     }
 

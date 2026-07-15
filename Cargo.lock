@@ -3566,6 +3566,23 @@ name = "vixen-api"
 version = "0.1.6"
 
 [[package]]
+name = "vixen-cdp"
+version = "0.1.6"
+dependencies = [
+ "base64",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite",
+ "url",
+ "vixen-api",
+ "vixen-engine",
+ "vixen-net",
+]
+
+[[package]]
 name = "vixen-engine"
 version = "0.1.6"
 dependencies = [
@@ -3598,7 +3615,9 @@ version = "0.1.6"
 dependencies = [
  "khronos-egl",
  "serde_json",
+ "tokio",
  "vixen-api",
+ "vixen-cdp",
  "vixen-engine",
 ]
 
@@ -3618,6 +3637,7 @@ dependencies = [
  "tokio-tungstenite",
  "url",
  "vixen-api",
+ "vixen-cdp",
  "vixen-engine",
  "vixen-net",
  "vixen-wpt",

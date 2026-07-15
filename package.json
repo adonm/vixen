@@ -4,7 +4,9 @@
   "type": "module",
   "scripts": {
     "test": "node --test scripts/*.test.mjs",
-    "cdp:playwright-smoke": "node scripts/playwright-cdp-smoke.mjs"
+    "cdp:playwright-smoke": "node scripts/playwright-cdp-smoke.mjs",
+    "cdp:flutter-smoke": "node scripts/playwright-flutter-cdp-smoke.mjs",
+    "fixtures:flutter-manifest": "node scripts/flutter-fixture-manifest.mjs"
   },
   "devDependencies": {
     "playwright-core": "1.61.1"

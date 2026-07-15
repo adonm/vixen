@@ -92,6 +92,28 @@ void main() {
       expect(_responseType(transport.rendererResponses.last), 'hit_test');
 
       transport.enqueueRendererRequest(
+        NativeCaptureSceneRequest(
+          requestId: 14,
+          contextId: 1,
+          documentId: 2,
+          displayedCommitId: view.commit.commitId,
+          revision: view.commit.revision,
+          viewport: view.commit.viewport,
+        ),
+      );
+      await service.serviceNext();
+      expect(transport.rendererResponses.last['type'], 'capture_png');
+      expect(transport.rendererResponses.last['request_id'], 14);
+      expect(transport.rendererResponses.last['length'], greaterThan(24));
+
+      transport.enqueueRendererRequest(
+        const NativeResetRendererRequest(15, 1, 2),
+      );
+      await service.serviceNext();
+      expect(_responseType(transport.rendererResponses.last), 'reset');
+      expect(formatter.acceptedView, isNull);
+
+      transport.enqueueRendererRequest(
         NativeEnsureLayoutRequest(13, r3Revision(2)),
       );
       await service.serviceNext();

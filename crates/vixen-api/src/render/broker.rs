@@ -2,16 +2,45 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::RenderRequestId;
+use crate::{BrowsingContextId, DocumentId, RenderRequestId};
 
 use super::{
-    FullRenderSnapshot, RENDER_MAX_GEOMETRY_ENTRIES, RENDER_MAX_SCROLL_ENTRIES,
-    RENDER_MAX_SEMANTIC_BOUNDS, RENDER_MAX_TEXT_BOXES, RENDER_MAX_TEXT_QUERIES,
-    RENDER_MAX_TRUNCATION_DIAGNOSTICS, RenderCommit, RenderHandleRelease, RenderHitTestQuery,
-    RenderInputTarget, RenderMutationBatch, RenderPresented, RenderProtocolError,
-    RenderResyncRequest, RenderRevision, RenderTextQueryBatch, RenderTextQueryBatchResult,
-    RenderTextQueryKind, RenderTextQueryValue, render_error_codes, validate_version,
+    FullRenderSnapshot, RENDER_MAX_CAPTURE_BYTES, RENDER_MAX_GEOMETRY_ENTRIES,
+    RENDER_MAX_SCROLL_ENTRIES, RENDER_MAX_SEMANTIC_BOUNDS, RENDER_MAX_TEXT_BOXES,
+    RENDER_MAX_TEXT_QUERIES, RENDER_MAX_TRUNCATION_DIAGNOSTICS, RenderCommit, RenderHandleRelease,
+    RenderHitTestQuery, RenderInputTarget, RenderMutationBatch, RenderPresented,
+    RenderProtocolError, RenderResyncRequest, RenderRevision, RenderTextQueryBatch,
+    RenderTextQueryBatchResult, RenderTextQueryKind, RenderTextQueryValue, RenderViewport,
+    render_error_codes, validate_version,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RenderCaptureRequest {
+    pub context_id: BrowsingContextId,
+    pub document_id: DocumentId,
+    pub displayed_commit_id: u64,
+    pub revision: RenderRevision,
+    pub viewport: RenderViewport,
+}
+
+impl RenderCaptureRequest {
+    fn validate(&self) -> Result<(), RenderProtocolError> {
+        self.revision.validate()?;
+        validate_revision_identity(
+            self.context_id.get(),
+            self.document_id.get(),
+            self.revision,
+            "capture request",
+        )?;
+        if self.displayed_commit_id == 0 {
+            return Err(RenderProtocolError::new(
+                render_error_codes::UNKNOWN_ID,
+                "capture request commit id must be nonzero",
+            ));
+        }
+        self.viewport.validate()
+    }
+}
 
 /// Ordinary asynchronous BrowserCore-to-renderer traffic. Synchronous layout
 /// and bounded queries remain [`RenderBrokerRequestKind`] requests.
@@ -83,9 +112,16 @@ impl RenderBridgeSubmission {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum RenderBrokerRequestKind {
-    EnsureLayout { required_revision: RenderRevision },
+    EnsureLayout {
+        required_revision: RenderRevision,
+    },
     HitTest(RenderHitTestQuery),
     TextQuery(RenderTextQueryBatch),
+    CaptureScene(RenderCaptureRequest),
+    Reset {
+        context_id: BrowsingContextId,
+        document_id: DocumentId,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -156,6 +192,14 @@ impl RenderBrokerRequest {
                 }
                 Ok(())
             }
+            RenderBrokerRequestKind::CaptureScene(capture) => capture.validate(),
+            RenderBrokerRequestKind::Reset {
+                context_id,
+                document_id,
+            } => {
+                let _ = (context_id, document_id);
+                Ok(())
+            }
         }
     }
 }
@@ -174,6 +218,8 @@ pub enum RenderBrokerResponseKind {
     Commit(RenderCommit),
     HitTest(Option<RenderInputTarget>),
     TextQuery(RenderTextQueryBatchResult),
+    CapturePng(Vec<u8>),
+    Reset,
     Cancelled(RenderBrokerCancellation),
     Failed { code: String, message: String },
 }
@@ -205,6 +251,12 @@ impl RenderBrokerResponse {
             ) | (
                 RenderBrokerRequestKind::TextQuery(_),
                 RenderBrokerResponseKind::TextQuery(_)
+            ) | (
+                RenderBrokerRequestKind::CaptureScene(_),
+                RenderBrokerResponseKind::CapturePng(_)
+            ) | (
+                RenderBrokerRequestKind::Reset { .. },
+                RenderBrokerResponseKind::Reset
             ) | (_, RenderBrokerResponseKind::Cancelled(_))
                 | (_, RenderBrokerResponseKind::Failed { .. })
         );
@@ -235,6 +287,11 @@ impl RenderBrokerResponse {
                 RenderBrokerRequestKind::TextQuery(batch),
                 RenderBrokerResponseKind::TextQuery(result),
             ) => validate_text_query_response(batch, result),
+            (
+                RenderBrokerRequestKind::CaptureScene(capture),
+                RenderBrokerResponseKind::CapturePng(png),
+            ) => validate_capture_response(capture, png),
+            (RenderBrokerRequestKind::Reset { .. }, RenderBrokerResponseKind::Reset) => Ok(()),
             (_, RenderBrokerResponseKind::Cancelled(_))
             | (_, RenderBrokerResponseKind::Failed { .. })
             | (RenderBrokerRequestKind::HitTest(_), RenderBrokerResponseKind::HitTest(None)) => {
@@ -243,6 +300,26 @@ impl RenderBrokerResponse {
             _ => unreachable!("response kind was checked above"),
         }
     }
+}
+
+fn validate_capture_response(
+    _capture: &RenderCaptureRequest,
+    png: &[u8],
+) -> Result<(), RenderProtocolError> {
+    const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
+    if png.len() < 24 || png.len() > RENDER_MAX_CAPTURE_BYTES {
+        return Err(RenderProtocolError::new(
+            render_error_codes::LIMIT,
+            "renderer capture PNG size is outside its bounded range",
+        ));
+    }
+    if !png.starts_with(PNG_SIGNATURE) {
+        return Err(RenderProtocolError::new(
+            render_error_codes::INVALID_GRAPH,
+            "renderer capture response is not a PNG",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_commit_for_revision(

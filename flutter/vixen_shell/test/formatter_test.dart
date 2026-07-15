@@ -47,6 +47,28 @@ void main() {
     expect(article.contentBox.y, article.borderBox.y + 12);
   });
 
+  test('CSS flex sizing produces commit-bound fixture geometry', () async {
+    final formatter = VixenFormatter();
+    addTearDown(formatter.dispose);
+    final result = await formatter.acceptFullSnapshot(_flexLayoutSnapshot());
+    final geometry = (result as RenderApplied).view.commit.geometry;
+
+    RenderRect rect(int nodeId) =>
+        geometry.singleWhere((entry) => entry.nodeId == nodeId).borderBox;
+    expect(
+      [rect(3).x, rect(3).y, rect(3).width, rect(3).height],
+      [0, 0, 300, 40],
+    );
+    expect(
+      [rect(4).x, rect(4).y, rect(4).width, rect(4).height],
+      [0, 0, 50, 20],
+    );
+    expect(rect(5).x, closeTo(60, 0.001));
+    expect(rect(5).width, closeTo(76.666, 0.001));
+    expect(rect(6).x, closeTo(146.666, 0.001));
+    expect(rect(6).width, closeTo(153.333, 0.001));
+  });
+
   test('root scroll intent clamps and shifts one whole commit', () async {
     final formatter = VixenFormatter();
     addTearDown(formatter.dispose);
@@ -245,7 +267,7 @@ void main() {
       expect(_pixel(rgba, 240, left + 27, top + 27).take(3), [255, 255, 0]);
       expect(
         _fnv1a64(rgba),
-        requireImpeller ? 757077222971174478 : 6568249825582439392,
+        requireImpeller ? 6343923539349059701 : 2396591437128008632,
       );
     },
   );
@@ -542,6 +564,72 @@ void main() {
     expect(secondSemantics.first.properties.label, 'Updated Vixen');
   });
 }
+
+FullRenderSnapshot _flexLayoutSnapshot() => FullRenderSnapshot(
+  revision: r3Revision(1),
+  viewport: const RenderViewport(width: 800, height: 600),
+  nodes: [
+    RenderNode(
+      id: 1,
+      parentId: null,
+      siblingIndex: 0,
+      depth: 0,
+      kind: RenderNodeKind.element,
+      name: 'html',
+    ),
+    RenderNode(
+      id: 2,
+      parentId: 1,
+      siblingIndex: 0,
+      depth: 1,
+      kind: RenderNodeKind.element,
+      name: 'body',
+      styles: {'margin': '0'},
+    ),
+    RenderNode(
+      id: 3,
+      parentId: 2,
+      siblingIndex: 0,
+      depth: 2,
+      kind: RenderNodeKind.element,
+      name: 'section',
+      styles: {
+        'display': 'flex',
+        'width': '300px',
+        'height': '40px',
+        'gap': '10px',
+      },
+    ),
+    RenderNode(
+      id: 4,
+      parentId: 3,
+      siblingIndex: 0,
+      depth: 3,
+      kind: RenderNodeKind.element,
+      name: 'div',
+      styles: {'width': '50px', 'height': '20px'},
+    ),
+    RenderNode(
+      id: 5,
+      parentId: 3,
+      siblingIndex: 1,
+      depth: 3,
+      kind: RenderNodeKind.element,
+      name: 'div',
+      styles: {'flex-grow': '1', 'flex-basis': '0px', 'height': '20px'},
+    ),
+    RenderNode(
+      id: 6,
+      parentId: 3,
+      siblingIndex: 2,
+      depth: 3,
+      kind: RenderNodeKind.element,
+      name: 'div',
+      styles: {'flex-grow': '2', 'flex-basis': '0px', 'height': '20px'},
+    ),
+  ],
+  resources: const [],
+);
 
 List<int> _pixel(Uint8List rgba, int width, int x, int y) {
   final offset = (y * width + x) * 4;

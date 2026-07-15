@@ -44,14 +44,13 @@ Current check mix:
 | `selectors-exact` | 223 |
 | `title` | 269 |
 | `js-eval` | 597 |
-| `computed-style` | 170 |
+| `computed-style` | 173 |
 | `element-attribute` | 132 |
 | `layout-box` | 104 |
 | `body-contains` | 68 |
 | `visual-hash` | 25 |
 | `no-critical-diagnostics` | 22 |
 | `ref-equivalent` | 11 |
-| `display-list-contains` | 3 |
 | `dom-nodes-range` | 1 |
 | `min-nodes` | 1 |
 | `selector-match` | 3 |
@@ -59,9 +58,9 @@ Current check mix:
 This local fixture set is release-blocking and must remain **100 % green**.
 The layout category currently includes normal-flow, inline-flow, positioned,
 flex row/column, grid, overflow coordinate/paint, and fragment-backed text paint
-fixtures with `layout-box` and `display-list-contains` assertions. The paint
-category includes three local `ref-equivalent` smoke fixtures against the stable
-display-list render projection. The harness now reports overall, per-category,
+fixtures with Flutter-commit `layout-box` and visual assertions. The paint
+category includes 11 `ref-equivalent` checks against exact Flutter scene pixels.
+The harness now reports overall, per-category,
 and local/imported source×category pass rates. Its adapter now creates production
 BrowserCore contexts, so fixture snapshots/selectors/styles/evaluation/reference
 rendering/pixel capture share typed document/runtime generations and persistent
@@ -236,15 +235,20 @@ accepted script/root-wheel offsets advance exact commit ids, canceled wheel keep
 the offset unchanged, and DOM `scroll` status agrees with the returned commit.
 These are integration gates rather than WPT surfaces.
 
-`just linux-automation-smoke` adds the first R5 chrome-less integration gate.
+`just linux-automation-smoke` proves the bounded one-shot R5 chrome-less path.
 The same release executable runs a page-only Flutter composition under Cage,
 suppresses the transitional frame/accessibility captures, acknowledges one exact
 formatter commit, and writes direct scene PNGs at 320×240 and 480×300. The gate
 checks Impeller, strict PNG structure/dimensions, root scene pixels, pinned
 full-scene hashes, and bounded process exit; direct formatter-scene serialization
-excludes browser/runner/compositor chrome by construction. It does not change
-the compatibility manifest or yet move CDP/Playwright,
-layout-fixture, input, multi-target, mutation, or renderer-loss claims.
+excludes browser/runner/compositor chrome by construction. `just
+flutter-cdp-playwright-smoke` additionally proves in-host CDP screenshots,
+Flutter geometry/hit-tested input, two independent target viewports,
+before/after mutation, and forced renderer reset/full resync. `just
+flutter-fixture-manifest` runs all 270 fixtures and 2,027 checks in manifest order
+through one long-lived Flutter-owned BrowserCore: 1,887 document/runtime checks
+use typed BrowserCore inspection and all 104 layout boxes, 25 visual hashes, and
+11 reference comparisons use exact Flutter commits. Together these complete R5.
 
 The Flutter semantics projection additionally carries bounded `aria-controls`,
 `aria-describedby`, and `aria-details` relationships to retained semantic nodes.

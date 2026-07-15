@@ -161,6 +161,13 @@ Map<String, Object?> normalizeNativeCommand(Map<Object?, Object?> command) {
   }
 
   switch (type) {
+    case 'start_cdp':
+      _expectKeys(normalized, const <String>{'v', 'type', 'port'});
+      final port = normalized['port'];
+      if (port is! int || port <= 0 || port > 65535) {
+        _invalidCommand('CDP port must be in 1..65535');
+      }
+      break;
     case 'load_profile_session':
     case 'save_current_profile_session':
     case 'browser_snapshot':

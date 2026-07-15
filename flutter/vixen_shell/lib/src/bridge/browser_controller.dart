@@ -30,6 +30,10 @@ abstract class BrowserController {
     );
   }
 
+  Future<void> startCdp(int port) async {
+    _expect<AcceptedResponse>(await dispatch(BrowserCommand.startCdp(port)));
+  }
+
   Future<BrowserSnapshot> browserSnapshot() async {
     final response = await dispatch(BrowserCommand.browserSnapshot());
     return _expect<BrowserSnapshotResponse>(response).snapshot;

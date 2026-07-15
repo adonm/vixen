@@ -28,6 +28,34 @@ final class NativeTextQueryRequest extends NativeRendererRequest {
   final RenderTextQueryBatch batch;
 }
 
+final class NativeCaptureSceneRequest extends NativeRendererRequest {
+  const NativeCaptureSceneRequest({
+    required int requestId,
+    required this.contextId,
+    required this.documentId,
+    required this.displayedCommitId,
+    required this.revision,
+    required this.viewport,
+  }) : super(requestId);
+
+  final int contextId;
+  final int documentId;
+  final int displayedCommitId;
+  final RenderRevision revision;
+  final RenderViewport viewport;
+}
+
+final class NativeResetRendererRequest extends NativeRendererRequest {
+  const NativeResetRendererRequest(
+    super.requestId,
+    this.contextId,
+    this.documentId,
+  );
+
+  final int contextId;
+  final int documentId;
+}
+
 sealed class NativeRendererUpdate extends NativeRendererMessage {
   const NativeRendererUpdate();
 }
@@ -439,11 +467,54 @@ NativeRendererRequest decodeRendererRequest(Map<String, Object?> envelope) {
     'ensure_layout' => _decodeEnsureLayout(requestId, request),
     'hit_test' => _decodeHitTest(requestId, request),
     'text_query' => _decodeTextQuery(requestId, request),
+    'capture_scene' => _decodeCaptureScene(requestId, request),
+    'reset' => _decodeReset(requestId, request),
     _ => throw RenderProtocolException(
       'render.invalid-wire',
       'unsupported renderer request ${request['type']}',
     ),
   };
+}
+
+NativeResetRendererRequest _decodeReset(
+  int requestId,
+  Map<String, Object?> request,
+) {
+  renderKeys(request, const {'type', 'context_id', 'document_id'});
+  return NativeResetRendererRequest(
+    requestId,
+    renderPositiveInt(request['context_id'], 'context_id'),
+    renderPositiveInt(request['document_id'], 'document_id'),
+  );
+}
+
+NativeCaptureSceneRequest _decodeCaptureScene(
+  int requestId,
+  Map<String, Object?> request,
+) {
+  renderKeys(request, const {
+    'type',
+    'context_id',
+    'document_id',
+    'displayed_commit_id',
+    'revision',
+    'viewport',
+  });
+  final contextId = renderPositiveInt(request['context_id'], 'context_id');
+  final documentId = renderPositiveInt(request['document_id'], 'document_id');
+  final revision = RenderRevision.fromWire(request['revision']);
+  _requireRevisionIdentity(revision, contextId, documentId);
+  return NativeCaptureSceneRequest(
+    requestId: requestId,
+    contextId: contextId,
+    documentId: documentId,
+    displayedCommitId: renderPositiveInt(
+      request['displayed_commit_id'],
+      'displayed_commit_id',
+    ),
+    revision: revision,
+    viewport: RenderViewport.fromWire(request['viewport']),
+  );
 }
 
 NativeEnsureLayoutRequest _decodeEnsureLayout(
@@ -615,6 +686,9 @@ Map<String, Object?> rendererTextQueryResponse(
   int requestId,
   RenderTextQueryBatchResult result,
 ) => _response(requestId, result.toWire());
+
+Map<String, Object?> rendererResetResponse(int requestId) =>
+    _response(requestId, const {'type': 'reset'});
 
 Map<String, Object?> rendererCancelledResponse(int requestId, String reason) {
   if (!const {

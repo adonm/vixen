@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import '../bridge/native/native_renderer_protocol.dart';
 import '../bridge/render_models.dart';
 import '../bridge/renderer_transport.dart';
@@ -81,6 +83,14 @@ final class RendererBrokerService {
               view.answerTextQueries(message.batch),
             );
           });
+        case NativeCaptureSceneRequest():
+          await _answerCaptureRequest(message);
+        case NativeResetRendererRequest():
+          formatter.reset(
+            contextId: message.contextId,
+            documentId: message.documentId,
+          );
+          transport.respondRenderer(rendererResetResponse(message.requestId));
       }
       return true;
     } finally {
@@ -103,6 +113,69 @@ final class RendererBrokerService {
           request.requestId,
           code: error.code,
           message: error.message,
+        ),
+      );
+    }
+  }
+
+  Future<void> _answerCaptureRequest(NativeCaptureSceneRequest request) async {
+    try {
+      final view = formatter.displayedView;
+      if (view == null ||
+          view.isRetired ||
+          view.commit.revision.contextId != request.contextId ||
+          view.commit.revision.documentId != request.documentId ||
+          view.commit.commitId != request.displayedCommitId ||
+          view.commit.revision != request.revision ||
+          view.commit.viewport != request.viewport) {
+        throw const RenderProtocolException(
+          'render.stale',
+          'capture requires the exact displayed formatter commit',
+        );
+      }
+      final image = await view.capture();
+      try {
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        if (data == null) {
+          throw const RenderProtocolException(
+            'render.capture',
+            'Flutter did not encode the displayed scene as PNG',
+          );
+        }
+        if (!identical(view, formatter.displayedView) || view.isRetired) {
+          throw const RenderProtocolException(
+            'render.stale',
+            'displayed formatter commit changed during capture',
+          );
+        }
+        final png = data.buffer.asUint8List(
+          data.offsetInBytes,
+          data.lengthInBytes,
+        );
+        if (png.length < 24 || png.length > renderMaxCaptureBytes) {
+          throw const RenderProtocolException(
+            'render.limit',
+            'captured PNG exceeds the renderer capture bound',
+          );
+        }
+        transport.respondRendererCapture(request.requestId, png);
+      } finally {
+        image.dispose();
+      }
+    } on RenderProtocolException catch (error) {
+      transport.respondRenderer(
+        rendererFailedResponse(
+          request.requestId,
+          code: error.code,
+          message: error.message,
+        ),
+      );
+    } catch (error) {
+      transport.respondRenderer(
+        rendererFailedResponse(
+          request.requestId,
+          code: 'render.capture',
+          message: '$error',
         ),
       );
     }

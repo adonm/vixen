@@ -3,6 +3,7 @@ import 'dart:convert';
 import '../bridge/browser_models.dart';
 
 const String vixenAutomationFlag = '--vixen-automation';
+const String vixenCdpAutomationFlag = '--vixen-cdp-automation';
 const int vixenAutomationMaxUrlBytes = 16 * 1024;
 const int vixenAutomationMaxOutputPathBytes = 4096;
 
@@ -119,5 +120,65 @@ final class AutomationConfig {
       throw FormatException('invalid Vixen automation configuration: $message');
 }
 
+final class CdpAutomationConfig {
+  const CdpAutomationConfig({
+    required this.url,
+    required this.width,
+    required this.height,
+    required this.port,
+  });
+
+  final String url;
+  final int width;
+  final int height;
+  final int port;
+
+  static CdpAutomationConfig parse(List<String> arguments) {
+    String? url;
+    String? viewport;
+    int? port;
+    var flags = 0;
+    for (final argument in arguments) {
+      if (argument == vixenCdpAutomationFlag) {
+        flags++;
+      } else if (argument.startsWith('--vixen-url=')) {
+        if (url != null) AutomationConfig._invalid('duplicate --vixen-url');
+        url = argument.substring('--vixen-url='.length);
+      } else if (argument.startsWith('--vixen-viewport=')) {
+        if (viewport != null) {
+          AutomationConfig._invalid('duplicate --vixen-viewport');
+        }
+        viewport = argument.substring('--vixen-viewport='.length);
+      } else if (argument.startsWith('--vixen-cdp-port=')) {
+        if (port != null) {
+          AutomationConfig._invalid('duplicate --vixen-cdp-port');
+        }
+        port = int.tryParse(argument.substring('--vixen-cdp-port='.length));
+      } else {
+        AutomationConfig._invalid('unknown argument $argument');
+      }
+    }
+    if (flags != 1) {
+      AutomationConfig._invalid(
+        'exactly one $vixenCdpAutomationFlag is required',
+      );
+    }
+    if (port == null || port <= 0 || port > 65535) {
+      AutomationConfig._invalid('--vixen-cdp-port must be in 1..65535');
+    }
+    final dimensions = AutomationConfig._parseViewport(viewport);
+    return CdpAutomationConfig(
+      url: AutomationConfig._parseUrl(url),
+      width: dimensions.width,
+      height: dimensions.height,
+      port: port,
+    );
+  }
+}
+
 bool isAutomationInvocation(List<String> arguments) =>
-    arguments.contains(vixenAutomationFlag);
+    arguments.contains(vixenAutomationFlag) ||
+    arguments.contains(vixenCdpAutomationFlag);
+
+bool isCdpAutomationInvocation(List<String> arguments) =>
+    arguments.contains(vixenCdpAutomationFlag);

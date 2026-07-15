@@ -7,7 +7,7 @@ use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use serde_json::{Value, json};
 use vixen_engine::engine_error::codes;
 use vixen_engine::script::JsRuntime;
-use vixen_headless::cdp::CdpState;
+use vixen_headless::{cdp::CdpState, cdp_state_with_runtime};
 
 fn dispatch_one(state: &mut CdpState, method: &str, params: Value) -> Value {
     // Round-trip through JSON so the test exercises the actual wire path
@@ -207,7 +207,7 @@ fn runtime_evaluate_surface() {
     let (fetch_url, fetch_config, fetch_server) =
         spawn_fetch_server("vixen-cdp-fetch.com", "cdp fetch");
     let rt = JsRuntime::with_network_config(fetch_config).expect("JS init");
-    let mut s = CdpState::with_runtime(rt);
+    let mut s = cdp_state_with_runtime(rt);
 
     // Scalar result.
     let v = dispatch_one(&mut s, "Runtime.evaluate", json!({ "expression": "1 + 2" }));

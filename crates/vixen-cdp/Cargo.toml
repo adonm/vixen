@@ -1,0 +1,26 @@
+[package]
+name = "vixen-cdp"
+version = "0.1.6"
+edition = "2024"
+rust-version = "1.88"
+description = "CDP protocol adapter for one Vixen BrowserCore"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["std", "sink"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tempfile = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time"] }
+tokio-tungstenite = "0.27"
+url = "2"
+vixen-api = { path = "../vixen-api" }
+vixen-engine = { path = "../vixen-engine" }
+
+[dev-dependencies]
+vixen-net = { path = "../vixen-net" }
+
+[lib]
+path = "src/lib.rs"

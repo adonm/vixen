@@ -11,8 +11,9 @@ ALLOWED = {
     "vixen-net": set(),
     "vixen-store": set(),
     "vixen-wpt": {"vixen-api"},
-    "vixen-headless": {"vixen-api", "vixen-engine"},
-    "vixen-ffi": {"vixen-api", "vixen-engine"},
+    "vixen-cdp": {"vixen-api", "vixen-engine"},
+    "vixen-headless": {"vixen-api", "vixen-cdp", "vixen-engine"},
+    "vixen-ffi": {"vixen-api", "vixen-cdp", "vixen-engine"},
 }
 
 

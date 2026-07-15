@@ -360,6 +360,23 @@ impl RenderReplica {
         None
     }
 
+    /// Resolve a renderer fragment to its nearest source element. Full DOM
+    /// snapshots use BrowserCore element ids directly while text nodes remain
+    /// renderer-only, so automation can route a Flutter hit without exposing a
+    /// renderer text id to DOM dispatch.
+    pub fn nearest_element_node_id(&self, node_id: RenderNodeId) -> Option<RenderNodeId> {
+        let mut current = Some(node_id);
+        for _ in 0..=RENDER_MAX_TREE_DEPTH {
+            let id = current?;
+            let node = self.nodes.get(&id)?;
+            if matches!(node.kind, RenderNodeKind::Element { .. }) {
+                return Some(id);
+            }
+            current = node.parent_id;
+        }
+        None
+    }
+
     pub fn accept_full_snapshot(
         &mut self,
         snapshot: FullRenderSnapshot,

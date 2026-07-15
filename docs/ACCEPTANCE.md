@@ -92,9 +92,9 @@ widgets, native decorations, legacy frame capture, or compositor pixels in the
 PNG. Capture must occur only after exact `Presented` acceptance, fail if that
 commit changes, use bounded explicit URL/viewport/output configuration, and close
 the sole BrowserCore on success or fail the process after bounded shutdown grace.
-This checkpoint is green; full R5
-acceptance still requires fixture-manifest, layout, CDP/Playwright screenshot and
-input, independent-target, mutation, and renderer-loss evidence.
+This checkpoint is green; at the time it landed, full R5 still required the
+fixture-manifest, layout, CDP/Playwright screenshot/input, independent-target,
+mutation, and renderer-loss evidence now covered below.
 
 The follow-up renderer-source checkpoint is also green: the exact scene is built
 from bounded renderable DOM topology, viewport-resolved styles, accepted images,
@@ -102,6 +102,23 @@ stable BrowserCore element ids, disjoint renderer text ids, and semantic/scroll
 metadata. The native bridge smoke proves a Flutter text hit resolves back to the
 BrowserCore semantic element before DOM click dispatch. This source checkpoint
 does not waive any remaining full-R5 evidence above.
+
+The shared-core rendered CDP checkpoint is green through `just
+flutter-cdp-playwright-smoke`. The release host owns one BrowserCore and a
+non-owning CDP subscriber; Playwright screenshot, commit geometry, and pointer
+input all cross the Flutter renderer. Two live targets retain separate viewports
+and DOM state, before/after mutation scenes differ, direct scene pixels exclude
+chrome, and forced renderer reset recovers through a full snapshot to the exact
+prior scene.
+
+Full R5 acceptance is green through `just gate-r5`. `just
+flutter-fixture-manifest` keeps every fixture's ordered document/runtime/style
+and rendered assertions on one target in the release Flutter host's sole
+BrowserCore. The result is 270/270 fixtures and 2,027/2,027 checks: 1,887 typed
+BrowserCore document/runtime checks plus 104 exact Flutter layout boxes, 25
+Flutter visual hashes, and 11 exact-pixel Flutter references. The transitional
+`display-list-contains` check no longer exists, and the native fixture runner no
+longer claims rendered evidence. R6 synchronous geometry is the next open gate.
 
 ### Synchronous geometry
 

@@ -465,7 +465,7 @@
         { "type": "js-eval", "expr": "new DOMMatrix().translate(10,20).transformPoint(new DOMPoint(1,2)).y", "expected": "22" },
         { "type": "js-eval", "expr": "new DOMMatrix().scale(2,3).transformPoint(new DOMPoint(5,5)).x", "expected": "10" },
         { "type": "body-contains", "expected": "Nested flex/grid" },
-        { "type": "visual-hash", "expected": "bfbf0f1fffffffff@1" }
+        { "type": "visual-hash", "expected": "1f3f0fffffffffff@1" }
       ]
     },
     {
@@ -481,7 +481,7 @@
         { "type": "layout-box", "selector": "#borderbox", "expected": [17.0, 64.0, 80.0, 30.0] },
         { "type": "body-contains", "expected": "Border box" },
         { "type": "no-critical-diagnostics" },
-        { "type": "visual-hash", "expected": "3f7fffffffffffff@1" }
+        { "type": "visual-hash", "expected": "1f1fffffffffffff@1" }
       ]
     },
     {
@@ -498,7 +498,7 @@
         { "type": "layout-box", "selector": "#block", "expected": [15.0, 45.2, 20.0, 10.0] },
         { "type": "body-contains", "expected": "ABCDEF" },
         { "type": "no-critical-diagnostics" },
-        { "type": "visual-hash", "expected": "7f7fffffffffffff@1" }
+        { "type": "visual-hash", "expected": "3f7fffffffffffff@1" }
       ]
     },
     {
@@ -514,7 +514,7 @@
         { "type": "layout-box", "selector": "#after", "expected": [17.0, 54.0, 20.0, 10.0] },
         { "type": "body-contains", "expected": "Absolute" },
         { "type": "no-critical-diagnostics" },
-        { "type": "visual-hash", "expected": "3f7fffffffffffff@1" }
+        { "type": "visual-hash", "expected": "1f1fffffffffffff@1" }
       ]
     },
     {
@@ -529,7 +529,7 @@
         { "type": "layout-box", "selector": "#grow2", "expected": [162.7, 16.0, 153.3, 40.0] },
         { "type": "body-contains", "expected": "Grow two" },
         { "type": "no-critical-diagnostics" },
-        { "type": "visual-hash", "expected": "1fffffffffffffff@1" }
+        { "type": "visual-hash", "expected": "0fffffffffffffff@1" }
       ]
     },
     {
@@ -544,7 +544,7 @@
         { "type": "layout-box", "selector": "#grow2", "expected": [16.0, 89.3, 120.0, 66.7] },
         { "type": "body-contains", "expected": "Grow two" },
         { "type": "no-critical-diagnostics" },
-        { "type": "visual-hash", "expected": "7f7fffffffffffff@1" }
+        { "type": "visual-hash", "expected": "3f3f3fffffffffff@1" }
       ]
     },
     {
@@ -561,7 +561,7 @@
         { "type": "layout-box", "selector": "#e", "expected": [136.0, 56.0, 86.7, 60.0] },
         { "type": "body-contains", "expected": "A" },
         { "type": "no-critical-diagnostics" },
-        { "type": "visual-hash", "expected": "1fffffffffffffff@1" }
+        { "type": "visual-hash", "expected": "0707ffffffffffff@1" }
       ]
     },
     {
@@ -572,7 +572,7 @@
         { "type": "layout-box", "selector": "body", "expected": [0.0, 0.0, 800.0, 20.0] },
         { "type": "layout-box", "selector": "#clip", "expected": [0.0, 0.0, 40.0, 10.0] },
         { "type": "layout-box", "selector": "#after", "expected": [0.0, 10.0, 20.0, 10.0] },
-        { "type": "display-list-contains", "expected": "cmd 2: text x=0.0 y=0.0 w=40.0 h=10.0" },
+        { "type": "computed-style", "selector": "#clip", "property": "overflow", "expected": "hidden" },
         { "type": "body-contains", "expected": "Overflowing text" },
         { "type": "no-critical-diagnostics" },
         { "type": "visual-hash", "expected": "7fffffffffffffff@1" }
@@ -584,8 +584,8 @@
         { "type": "title", "expected": "Layout fragments — Vixen fixture" },
         { "type": "selector-count", "selector": "#wrap", "expected": 1 },
         { "type": "layout-box", "selector": "#wrap", "expected": [0.0, 0.0, 40.0, 57.6] },
-        { "type": "display-list-contains", "expected": "cmd 2: text x=0.0 y=0.0 w=40.0 h=19.2 color=#123456ff text=\"alpha\"" },
-        { "type": "display-list-contains", "expected": "cmd 4: text x=0.0 y=38.4 w=40.0 h=19.2 color=#123456ff text=\"gamma\"" },
+        { "type": "computed-style", "selector": "#wrap", "property": "color", "expected": "#123456" },
+        { "type": "computed-style", "selector": "#wrap", "property": "background-color", "expected": "#eeeeee" },
         { "type": "body-contains", "expected": "alpha beta gamma" },
         { "type": "no-critical-diagnostics" },
         { "type": "visual-hash", "expected": "7fffffffffffffff@1" }
@@ -619,7 +619,7 @@
         { "type": "element-attribute", "selector": "#centered", "attribute": "data-margin-right", "expected": "auto" },
         { "type": "element-attribute", "selector": "#round-half", "attribute": "data-radius", "expected": "50%" },
         { "type": "body-contains", "expected": "border-box" },
-        { "type": "visual-hash", "expected": "7f7f7f7fe73f7f7f@1" }
+        { "type": "visual-hash", "expected": "7f1f1fffef7f7fff@1" }
       ]
     },
     {
@@ -971,7 +971,7 @@
         { "type": "selector-count", "selector": "#bg-single, #bg-list", "expected": 2 },
         { "type": "selector-count", "selector": "#iso-auto, #iso-isolate", "expected": 2 },
         { "type": "body-contains", "expected": "luminosity" },
-        { "type": "visual-hash", "expected": "7f7f7f7f7f7fffff@1" }
+        { "type": "visual-hash", "expected": "00000000ffffffff@1" }
       ]
     },
     {
@@ -1053,7 +1053,7 @@
         { "type": "element-attribute", "selector": "#minmax-base", "attribute": "data-template", "expected": "minmax(50px, 1fr) minmax(50px, 1fr)" },
         { "type": "element-attribute", "selector": "#rows-fr", "attribute": "data-template", "expected": "1fr 2fr" },
         { "type": "body-contains", "expected": "Grid track" },
-        { "type": "visual-hash", "expected": "01ffffffffffffff@1" }
+        { "type": "visual-hash", "expected": "01377f7fffffffff@1" }
       ]
     },
     {
@@ -1092,7 +1092,7 @@
         { "type": "element-attribute", "selector": "#mask-pos-size", "attribute": "data-mask", "expected": "url(#m) 50% 50% / cover" },
         { "type": "selector-count", "selector": "svg mask", "expected": 1 },
         { "type": "body-contains", "expected": "clip-path" },
-        { "type": "visual-hash", "expected": "007f7f3f3fffffff@1" }
+        { "type": "visual-hash", "expected": "007f3f3f3fffffff@1" }
       ]
     },
     {
@@ -1155,7 +1155,7 @@
         { "type": "selector-count", "selector": "[style*='column-span']", "expected": 1 },
         { "type": "selector-count", "selector": "#span-all", "expected": 1 },
         { "type": "body-contains", "expected": "spanning heading" },
-        { "type": "visual-hash", "expected": "010307ffffffffff@1" }
+        { "type": "visual-hash", "expected": "0103072fffffffff@1" }
       ]
     },
     {

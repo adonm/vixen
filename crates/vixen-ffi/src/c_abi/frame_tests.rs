@@ -327,6 +327,7 @@ fn open_controller(controller: FlutterBrowserController) -> Handle {
                 next_frame_id: 1,
             }),
             renderer: crate::RenderBroker::new(),
+            cdp: Mutex::new(None),
         }),
     );
     Handle(handle)

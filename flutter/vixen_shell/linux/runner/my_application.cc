@@ -210,7 +210,9 @@ static void my_application_activate(GApplication* application) {
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
 
   const bool automation =
-      HasDartArgument(self->dart_entrypoint_arguments, "--vixen-automation");
+      HasDartArgument(self->dart_entrypoint_arguments, "--vixen-automation") ||
+      HasDartArgument(self->dart_entrypoint_arguments,
+                      "--vixen-cdp-automation");
 
   if (automation) {
     gtk_window_set_decorated(window, FALSE);

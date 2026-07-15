@@ -23,6 +23,7 @@ final class ShellCoordinator extends ChangeNotifier {
     this.initialUrl = vixenStartUrl,
     this.captureLegacyPresentation = true,
     this.useProfileSession = true,
+    this.externalRendererUpdates = false,
   }) {
     if (controller case final RendererTransport transport
         when transport.rendererUpdatesEnabled) {
@@ -37,6 +38,7 @@ final class ShellCoordinator extends ChangeNotifier {
   final String initialUrl;
   final bool captureLegacyPresentation;
   final bool useProfileSession;
+  final bool externalRendererUpdates;
   final VixenFormatter _formatter = VixenFormatter();
   RendererBrokerService? _rendererService;
   final List<BrowsingContextState> _contexts = [];
@@ -99,6 +101,7 @@ final class ShellCoordinator extends ChangeNotifier {
   int? _pendingRendererPresentationId;
   _RendererSnapshotRequest? _pendingRendererSnapshot;
   bool _rendererSnapshotScheduled = false;
+  bool _externalRendererServiceScheduled = false;
 
   UnmodifiableListView<BrowsingContextState> get contexts =>
       UnmodifiableListView(_contexts);
@@ -1073,6 +1076,7 @@ final class ShellCoordinator extends ChangeNotifier {
   }
 
   void _scheduleRendererSnapshot(_FrameCaptureKey key, {required bool force}) {
+    if (externalRendererUpdates) return;
     if (_rendererService == null || controller is! RendererTransport) return;
     if (!force && key == _lastRendererKey) return;
     if (force || key != _lastRendererKey) {
@@ -1086,6 +1090,41 @@ final class ShellCoordinator extends ChangeNotifier {
       lifecycleGeneration: _rendererLifecycleGeneration,
     );
     _scheduleRendererSnapshotDrain();
+  }
+
+  Future<void> serviceExternalRendererUpdates() async {
+    final service = _rendererService;
+    if (!externalRendererUpdates ||
+        service == null ||
+        _closeFuture != null ||
+        _externalRendererServiceScheduled) {
+      return;
+    }
+    _externalRendererServiceScheduled = true;
+    final operation = _rendererTail.then((_) async {
+      if (!await service.serviceNext()) return;
+      await _drainRenderer(service);
+      await controller.flushRendererSubmissions();
+      await _drainRenderer(service);
+      final view = _formatter.acceptedView;
+      if (view == null && _rendererView?.isRetired == true) {
+        _rendererView = null;
+        _notify();
+        return;
+      }
+      if (_closeFuture == null &&
+          _hostViewVisible &&
+          view != null &&
+          !view.isRetired &&
+          !identical(view, _rendererView)) {
+        _rendererView = view;
+        _notify();
+      }
+    });
+    _rendererTail = operation.whenComplete(() {
+      _externalRendererServiceScheduled = false;
+    });
+    await operation;
   }
 
   void _scheduleRendererSnapshotDrain() {
@@ -1191,9 +1230,10 @@ final class ShellCoordinator extends ChangeNotifier {
       try {
         transport.submitRenderer(rendererPresentedSubmission(presented));
         await controller.flushRendererSubmissions();
-        await _drainRenderer(service);
         if (!identical(view, _rendererView) || view.isRetired) return;
         _formatter.present(presented);
+        await _drainRenderer(service);
+        if (!identical(view, _rendererView) || view.isRetired) return;
         final rootScroll = view.commit.scroll.isEmpty
             ? null
             : view.commit.scroll.first;

@@ -297,6 +297,36 @@ _node-deps:
 cdp-playwright-smoke: _node-deps
     mise x node@24 -- npm run cdp:playwright-smoke
 
+# R5 rendered CDP gate: the release Flutter host owns the sole BrowserCore and
+# CDP listener under Cage; Playwright drives commit geometry/input, two target
+# viewports, before/after scene capture, and renderer-reset full resync.
+flutter-cdp-playwright-smoke: build-flutter-release-linux _node-deps
+    command -v cage >/dev/null || { printf '%s\n' "cage is required for rendered CDP smoke" >&2; exit 1; }
+    rm -rf .tmp/flutter-cdp-wayland .tmp/flutter-cdp-profile && mkdir -m 700 -p .tmp/flutter-cdp-wayland .tmp/flutter-cdp-profile
+    XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/flutter-cdp-wayland" \
+        GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+        WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 \
+        VIXEN_CDP_APP="{{justfile_directory()}}/{{LINUX_RELEASE_BUNDLE}}/vixen_shell" \
+        VIXEN_FFI_LIBRARY="{{justfile_directory()}}/{{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so" \
+        VIXEN_PROFILE_PATH="{{justfile_directory()}}/.tmp/flutter-cdp-profile/profile.redb" \
+        timeout 180s cage -- mise x node@24 -- npm run cdp:flutter-smoke
+
+# Full R5 product gate: execute all manifest checks in order through one
+# long-lived Flutter-owned BrowserCore. Text/runtime checks use BrowserCore's
+# typed inspection seam; layout, hashes, and reftests use exact Flutter commits.
+flutter-fixture-manifest: build-flutter-release-linux _node-deps
+    command -v cage >/dev/null || { printf '%s\n' "cage is required for the Flutter fixture manifest" >&2; exit 1; }
+    rm -rf .tmp/flutter-manifest-wayland .tmp/flutter-manifest-profile && mkdir -m 700 -p .tmp/flutter-manifest-wayland .tmp/flutter-manifest-profile
+    XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/flutter-manifest-wayland" \
+        GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+        WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 \
+        VIXEN_CDP_APP="{{justfile_directory()}}/{{LINUX_RELEASE_BUNDLE}}/vixen_shell" \
+        VIXEN_FFI_LIBRARY="{{justfile_directory()}}/{{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so" \
+        VIXEN_PROFILE_PATH="{{justfile_directory()}}/.tmp/flutter-manifest-profile/profile.redb" \
+        timeout 420s cage -- mise x node@24 -- npm run fixtures:flutter-manifest
+
+gate-r5: linux-automation-smoke flutter-cdp-playwright-smoke flutter-fixture-manifest
+
 # Focused Alpha 6 automation product gate: dispatcher/runtime integration plus
 # the real external Playwright client over CDP WebSocket.
 gate-alpha6-cdp: cdp-playwright-smoke

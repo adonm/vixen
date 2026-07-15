@@ -113,6 +113,32 @@ void main() {
     }
   });
 
+  test('parses and bounds the long-lived CDP automation invocation', () {
+    final config = CdpAutomationConfig.parse(const [
+      '--vixen-cdp-automation',
+      '--vixen-url=file:///fixture.html',
+      '--vixen-viewport=800x600',
+      '--vixen-cdp-port=9323',
+    ]);
+    expect(config.url, 'file:///fixture.html');
+    expect(config.width, 800);
+    expect(config.height, 600);
+    expect(config.port, 9323);
+    expect(isAutomationInvocation(const ['--vixen-cdp-automation']), isTrue);
+    expect(isCdpAutomationInvocation(const ['--vixen-cdp-automation']), isTrue);
+    for (final port in ['0', '65536', 'bad']) {
+      expect(
+        () => CdpAutomationConfig.parse([
+          '--vixen-cdp-automation',
+          '--vixen-url=file:///fixture.html',
+          '--vixen-viewport=800x600',
+          '--vixen-cdp-port=$port',
+        ]),
+        throwsA(isA<FormatException>()),
+      );
+    }
+  });
+
   test('writes bounded PNG output only into an existing directory', () async {
     final directory = await Directory.systemTemp.createTemp(
       'vixen-automation-writer-',

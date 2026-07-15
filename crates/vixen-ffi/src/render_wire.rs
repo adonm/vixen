@@ -69,6 +69,22 @@ pub(crate) fn request_json(request: &RenderBrokerRequest) -> Value {
                 json!({"query_id": query.query_id.get(), "node_id": query.node_id.get(), "kind": kind})
             }).collect::<Vec<_>>(),
         }),
+        RenderBrokerRequestKind::CaptureScene(capture) => json!({
+            "type": "capture_scene",
+            "context_id": capture.context_id.get(),
+            "document_id": capture.document_id.get(),
+            "displayed_commit_id": capture.displayed_commit_id,
+            "revision": revision_json(capture.revision),
+            "viewport": viewport_json(capture.viewport),
+        }),
+        RenderBrokerRequestKind::Reset {
+            context_id,
+            document_id,
+        } => json!({
+            "type": "reset",
+            "context_id": context_id.get(),
+            "document_id": document_id.get(),
+        }),
     };
     json!({
         "v": RENDER_PROTOCOL_VERSION,
@@ -264,6 +280,10 @@ pub(crate) fn parse_response(input: &str) -> Result<RenderBrokerResponse, AbiErr
         }
         "text_query" => RenderBrokerResponseKind::TextQuery(parse_text_result(response)?),
         "commit" => RenderBrokerResponseKind::Commit(parse_commit(response)?),
+        "reset" => {
+            keys(response, &["type"])?;
+            RenderBrokerResponseKind::Reset
+        }
         _ => return Err(invalid("unknown renderer response type")),
     };
     Ok(RenderBrokerResponse {
@@ -993,6 +1013,55 @@ mod tests {
             r#"{"v":1,"type":"renderer_response","request_id":7,"response":{"type":"cancelled","reason":"stop","extra":true}}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn capture_and_reset_requests_have_strict_golden_shapes() {
+        let capture = RenderBrokerRequest {
+            version: RENDER_PROTOCOL_VERSION,
+            request_id: RenderRequestId::new(8).unwrap(),
+            kind: RenderBrokerRequestKind::CaptureScene(vixen_api::RenderCaptureRequest {
+                context_id: BrowsingContextId::new(1).unwrap(),
+                document_id: DocumentId::new(2).unwrap(),
+                displayed_commit_id: 9,
+                revision: revision(),
+                viewport: RenderViewport {
+                    width: 320,
+                    height: 240,
+                    device_scale: 1.0,
+                    page_zoom: 1.0,
+                },
+            }),
+        };
+        let wire = request_json(&capture);
+        assert_eq!(wire["request"]["type"], "capture_scene");
+        assert_eq!(wire["request"]["displayed_commit_id"], 9);
+        assert_eq!(wire["request"]["viewport"]["width"], 320);
+
+        let reset = RenderBrokerRequest {
+            version: RENDER_PROTOCOL_VERSION,
+            request_id: RenderRequestId::new(10).unwrap(),
+            kind: RenderBrokerRequestKind::Reset {
+                context_id: BrowsingContextId::new(1).unwrap(),
+                document_id: DocumentId::new(2).unwrap(),
+            },
+        };
+        assert_eq!(
+            request_json(&reset)["request"],
+            json!({
+                "type": "reset",
+                "context_id": 1,
+                "document_id": 2,
+            })
+        );
+        assert!(matches!(
+            parse_response(
+                r#"{"v":1,"type":"renderer_response","request_id":10,"response":{"type":"reset"}}"#,
+            )
+            .unwrap()
+            .kind,
+            RenderBrokerResponseKind::Reset
+        ));
     }
 
     #[test]

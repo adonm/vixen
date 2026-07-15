@@ -133,8 +133,9 @@ runtime dependencies disappear from Linux packages.
 
 The existing WebRender/EGL/RGBA texture remains the implemented comparison and
 fallback path only. Do not add renderer breadth there. R1 protocol validation,
-the R2 C/Dart broker, the R3 formatter, and the bounded production R4 interactive
-title/semantic-text vertical are implemented. The remaining delivery sequence is:
+the R2 C/Dart broker, the R3 formatter, the bounded production R4 interactive
+vertical, and the complete R5 chrome-less automation host are implemented. The
+remaining delivery sequence is:
 
 R2 uses plain bounded messages: asynchronous snapshot/mutation/release updates,
 asynchronous commit/presented/resync submissions, and correlated broker traffic
@@ -143,14 +144,9 @@ never calls BrowserCore. The production shell now consumes it for one bounded
 selected-document projection; that projection is not general CSS-rendering
 evidence.
 
-1. Continue the landed first chrome-less-host checkpoint by moving visual/layout
-   fixtures and CDP screenshot/input groups to exact presented commits; add
-   independent targets and renderer-loss recovery. The same release bundle
-   already produces bounded exact scene PNGs at two Cage viewports without
-   browser/compositor chrome or legacy frame capture.
-2. Solve bounded synchronous layout flush for same-task DOM mutation plus
+1. Solve bounded synchronous layout flush for same-task DOM mutation plus
    geometry reads.
-3. Cut over once and apply the full R7 deletion inventory: native renderer/image
+2. Cut over once and apply the full R7 deletion inventory: native renderer/image
    upload, EGL/frame transport, Dart frame worker, texture plugin/presenter/tests,
    superseded Rust layout/paint, duplicate projections, obsolete fixtures/gates/
    docs/dependencies, and renderer-internal CLI flags. Two production renderers
@@ -472,8 +468,7 @@ profile-session tabs and transitional frame/accessibility capture, waits for the
 Flutter frame, submits the exact `Presented`, then serializes that unchanged
 scene under the renderer queue before bounded shutdown. `just
 linux-automation-smoke` proves 320×240 and 480×300 release-process captures under
-Cage. It is a scene-capture checkpoint, not yet the full rendered fixture/CDP/
-input/multi-target host.
+Cage.
 
 The renderer source used by that host is no longer the R4 synthetic document
 card. BrowserCore emits renderable DOM topology with stable element ids,
@@ -482,8 +477,25 @@ descriptors, and scroll intent. Metadata/script/style descendants retain their
 place in BrowserCore's id allocation but are not sent as paintable nodes. Dart
 applies page zoom and the supported box/background/image properties while
 building one atomic commit. The controlled release hashes therefore name the
-real DOM fixture scene. General manifest formatting, rendered CDP ownership, and
-incremental synchronous mutation layout remain later R5/R6 acceptance work.
+real DOM fixture scene.
+
+The same executable accepts `--vixen-cdp-automation` with an explicit URL,
+viewport, and port. Its in-process `vixen-cdp` adapter uses an independent
+bounded subscription to the host-owned BrowserCore event stream without owning
+or cloning core lifecycle. Rendered screenshots publish a target snapshot, wait
+for the exact presented Flutter commit, and return direct scene PNG bytes;
+geometry and pointer input use that commit's immutable geometry/hit-test state.
+`just flutter-cdp-playwright-smoke` proves simultaneous target viewports,
+before/after mutation, input isolation, and renderer reset/full resync.
+
+`just flutter-fixture-manifest` completes R5 by executing all 270 fixtures and
+2,027 checks in order through one long-lived release host. Each fixture gets a
+fresh target in the same BrowserCore; text/runtime/style checks use typed core
+inspection and all layout boxes, visual hashes, and references use exact Flutter
+commits. The formatter's bounded compatibility slice includes block/inline box
+flow, content/border sizing, positioning, flex, grid tracks/gaps, deterministic
+text line geometry, backgrounds, borders, and accepted images. Incremental
+synchronous mutation-to-geometry remains R6.
 
 The direct release-bundle interface is intentionally small (the output directory
 must already exist):
@@ -494,6 +506,16 @@ vixen_shell \
   --vixen-url=file:///absolute/fixture.html \
   --vixen-viewport=320x240 \
   --vixen-output=/absolute/output.png
+```
+
+The long-lived rendered-CDP form is:
+
+```sh
+vixen_shell \
+  --vixen-cdp-automation \
+  --vixen-url=file:///absolute/fixture.html \
+  --vixen-viewport=800x600 \
+  --vixen-cdp-port=9323
 ```
 
 ### 5. Desktop expansion

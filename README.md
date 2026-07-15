@@ -36,9 +36,9 @@ release evidence. See
 
 **Renderer migration is the immediate priority.** The currently implemented
 WebRender/EGL/RGBA texture and native-headless path is a frozen transitional
-baseline. After the Flutter vertical, chrome-less fixture/CDP/Playwright host,
-synchronous layout, cancellation, resync, and renderer-loss gates pass, Vixen
-will cut over once and delete WebRender/EGL/frame transport and superseded Rust
+baseline. The Flutter vertical and chrome-less fixture/CDP/Playwright host are
+green. After R6 synchronous layout/cancellation/recovery passes, Vixen will cut
+over once and delete WebRender/EGL/frame transport and superseded Rust
 layout/paint rather than carry two renderers.
 
 The R1 protocol core, R2 dedicated C/Dart broker, R3 Canvas/Paragraph/PNG
@@ -50,9 +50,14 @@ styles, accepted images, stable element ids, semantics, and scroll intent,
 omits Flutter and native browser chrome, disables the legacy frame capture, and
 writes the exact acknowledged Flutter scene as PNG. `just
 linux-automation-smoke` checks real document content at two viewport sizes under
-Cage. Fixture-manifest, CDP/input, multi-target, and renderer-loss migration
-remain the next R5 work; WebRender/RGBA remains the
-explicit fallback until the one-time R7 cutover.
+Cage. The long-lived mode now hosts CDP against that same sole BrowserCore;
+`just flutter-cdp-playwright-smoke` proves Flutter commit geometry/input,
+before/after scene capture, independent target viewports, and renderer-reset
+full resync. `just flutter-fixture-manifest` completes R5 with all 270 fixtures /
+2,027 ordered checks through one Flutter-owned BrowserCore, including 104 layout
+boxes, 25 Flutter visual hashes, and 11 exact-pixel references. `just gate-r5`
+composes the release evidence. WebRender/RGBA remains the explicit fallback
+until the one-time R7 cutover after R6.
 
 The checked-in transitional Linux Flutter alpha shell uses handwritten Dart FFI over the
 one-owner `vixen-ffi` controller and presents real BrowserCore/WebRender output
@@ -448,7 +453,8 @@ and reference material, plus:
   value ⇒ Allow, a string at a TT-requiring sink ⇒ `default`-policy or
   Block) — ready for the DOM injection-sink host hooks to consult before
   accepting a string.
-- **Phase 8 (partial)** — the CDP WebSocket server (`vixen-headless::cdp`)
+- **Phase 8 (partial)** — the reusable CDP WebSocket adapter (`vixen-cdp`),
+  composed by native comparison and the Flutter automation host,
   covers the growing Playwright-facing surface: browser/target attach, page
   navigation/load/history/lifecycle events, resource tree/content snapshots,
   runtime evaluation/object properties and `Runtime.awaitPromise`,
@@ -463,8 +469,9 @@ and reference material, plus:
 - **Flutter renderer/shell target** — ADR-022 commits one Flutter web renderer,
   chrome, and chrome-less automation host to Linux, macOS, Windows, Android, and
   the Apple Silicon iOS Simulator over BrowserCore. The exported C/Dart ABI and
-  Linux shell/input/Semantics baseline exist; revision/mutation/commit/query
-  protocols, Flutter formatting/Canvas paint, automation-host cutover, aggressive
+  Linux shell/input/Semantics baseline, revision/mutation/commit/query protocol,
+  bounded Flutter block/inline/flex/grid formatting, Canvas paint, and complete
+  R5 automation host exist. R6 synchronous mutation-to-geometry, R7
   native-renderer deletion, and broader platform evidence remain open.
 
 Future delivery order lives in [`docs/ROADMAP.md`](docs/ROADMAP.md); `PLAN.md`

@@ -73,9 +73,6 @@ pub enum Check {
         #[serde(default = "default_layout_tolerance")]
         tolerance: f64,
     },
-    DisplayListContains {
-        expected: String,
-    },
     DomNodesRange {
         min: usize,
         max: usize,
@@ -244,11 +241,6 @@ impl Check {
                 Ok(got) if got == *expected => Outcome::Pass,
                 Ok(got) => Outcome::Fail(format!("js-eval: expected {expected:?}, got {got:?}")),
                 Err(e) => Outcome::Fail(format!("js-eval: {e}")),
-            },
-            Check::DisplayListContains { expected } => match engine.display_list(VW, VH) {
-                Ok(dump) if dump.contains(expected) => Outcome::Pass,
-                Ok(_) => Outcome::Fail("display-list does not contain expected substring".into()),
-                Err(e) => Outcome::Fail(format!("display-list: {e}")),
             },
             Check::VisualHash { expected } => match engine.screenshot_rgba(VW, VH) {
                 Err(_) => Outcome::Skipped("needs offscreen renderer (Phase 5)".into()),
@@ -518,13 +510,6 @@ mod tests {
             Outcome::Pass
         );
         assert_eq!(
-            Check::DisplayListContains {
-                expected: "w=40.0 h=10.0".into()
-            }
-            .run(&e),
-            Outcome::Pass
-        );
-        assert_eq!(
             Check::RefEquivalent {
                 reference: "same.html".into()
             }
@@ -604,7 +589,6 @@ mod tests {
             r##"{"type":"computed-style","selector":"#x","property":"color","expected":"red"}"##,
             r##"{"type":"element-attribute","selector":"#x","attribute":"data-k","expected":"v"}"##,
             r##"{"type":"layout-box","selector":"#x","expected":[1.0,2.0,3.0,4.0]}"##,
-            r#"{"type":"display-list-contains","expected":"cmd 1"}"#,
             r#"{"type":"dom-nodes-range","min":1,"max":5}"#,
             r#"{"type":"ref-equivalent","reference":"r.html"}"#,
         ];

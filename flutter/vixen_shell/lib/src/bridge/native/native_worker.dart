@@ -91,6 +91,19 @@ class NativeWorkerClient {
     _rendererApi!.respondRenderer(_rendererHandle!, response);
   }
 
+  void respondRendererCapture(int requestId, Uint8List png) {
+    if (_closing ||
+        _finished ||
+        _rendererApi == null ||
+        _rendererHandle == null) {
+      throw const NativeBridgeException(
+        'native renderer broker is closed',
+        code: 'render.closed',
+      );
+    }
+    _rendererApi!.respondRendererCapture(_rendererHandle!, requestId, png);
+  }
+
   void submitRenderer(Map<String, Object?> submission) {
     if (_closing ||
         _finished ||

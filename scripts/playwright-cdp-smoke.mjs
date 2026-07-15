@@ -126,12 +126,24 @@ async function typeText(session, text) {
 }
 
 async function main() {
-  const child = spawn('cargo', [
-    'run', '-q', '-p', 'vixen-headless', '--',
-    '--url', fixtureUrl,
-    '--cdp',
-    '--cdp-port', String(port),
-  ], {
+  const automationApp = process.env.VIXEN_CDP_APP;
+  const child = automationApp
+    ? spawn(automationApp, [
+      '--vixen-cdp-automation',
+      `--vixen-url=${fixtureUrl}`,
+      '--vixen-viewport=800x600',
+      `--vixen-cdp-port=${port}`,
+    ], {
+      cwd: root,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: process.env,
+    })
+    : spawn('cargo', [
+      'run', '-q', '-p', 'vixen-headless', '--',
+      '--url', fixtureUrl,
+      '--cdp',
+      '--cdp-port', String(port),
+    ], {
     cwd: root,
     stdio: ['ignore', 'pipe', 'pipe'],
   });

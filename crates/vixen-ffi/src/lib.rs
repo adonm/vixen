@@ -5,6 +5,7 @@
 pub mod c_abi;
 pub mod c_frame;
 pub mod c_renderer;
+mod cdp_host;
 mod frame;
 mod render_wire;
 mod renderer_broker;
@@ -29,7 +30,7 @@ use vixen_api::{
     BrowserCommand, BrowserCommandResult, FullRenderSnapshot, RenderHitTestQuery,
     RenderInputTarget, browser_error_codes,
 };
-use vixen_engine::browser::{EngineBrowserHandle, spawn_browser};
+use vixen_engine::browser::{EngineBrowserClient, EngineBrowserHandle, spawn_browser};
 
 /// Version of the exported C ABI and its JSON wire projections.
 pub const ABI_VERSION: u32 = 1;
@@ -60,6 +61,9 @@ pub struct RendererMouseEventDispatch {
 /// The frontend operations intentionally supported by this migration seam.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ControllerCommand {
+    StartCdp {
+        port: u16,
+    },
     LoadProfileSession,
     SaveCurrentProfileSession,
     BrowserSnapshot,
@@ -201,6 +205,10 @@ impl FlutterBrowserController {
         })
     }
 
+    pub(crate) fn subscribe_browser(&self) -> EngineBrowserClient {
+        self.handle.subscribe()
+    }
+
     /// Validate and enqueue a high-level command, returning only its immediate
     /// acknowledgement. Navigation settlement is delivered through events.
     pub fn dispatch(
@@ -208,6 +216,12 @@ impl FlutterBrowserController {
         command: ControllerCommand,
     ) -> Result<ControllerResponse, BrowserError> {
         let command = match command {
+            ControllerCommand::StartCdp { .. } => {
+                return Err(BrowserError::new(
+                    browser_error_codes::INVALID_ARGUMENT,
+                    "CDP startup is owned by the embedding boundary",
+                ));
+            }
             ControllerCommand::LoadProfileSession => BrowserCommand::LoadProfileSession,
             ControllerCommand::SaveCurrentProfileSession => {
                 BrowserCommand::SaveCurrentProfileSession

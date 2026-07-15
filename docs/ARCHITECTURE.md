@@ -48,8 +48,9 @@ Linux runtime is not GTK-free even though Vixen owns no second GTK widget tree.
 | `vixen-net` | HTTP client primitives and URL/cookie/CSP/CORS/referrer/mixed-content/permissions/security policy | Pure network and policy leaf; no DOM, runtime, GTK, or profile orchestration |
 | `vixen-store` | Bounded redb profile tables and clear-data operations | Persistence leaf using opaque partition/id keys; no network or UI policy |
 | `vixen-engine` | Initial production BrowserCore/thread/profile/context lifecycle, HTML, DOM/Page, Stylo integration, V8 host runtime, forms/history, plus transitional Rust layout/display-list/WebRender integration | Sole owner of browser/profile/context/document/navigation/resource lifecycle; produces revisions/mutations and validates returned commits, but owns no paint backend after cutover |
-| `vixen-ffi` | Non-clone safe GUI controller over one `EngineBrowserHandle` and sole ordered event consumer; handwritten C ABI v1 with process-registry browser/buffer/frame tokens, bounded copied JSON commands, stable tagged projections, polling/timeout events, retained RGBA frames, and panic containment | Safe, inspectable mutation/commit/query/command/event transport behind Dart; frame tokens disappear after cutover |
-| `vixen-headless` | BrowserCore-backed CLI, CDP target/session adapter, interaction adapter, EGL surfaceless surface | Text-only launcher/client plus protocol code that routes rendered work through the chrome-less Flutter host; no renderer |
+| `vixen-cdp` | Bounded CDP target/session/runtime adapter over a non-owning BrowserCore command/event subscription with an injected rendered-evidence backend | Reusable protocol adapter; creates no second BrowserCore and owns no renderer or profile when embedded |
+| `vixen-ffi` | Non-clone safe GUI controller over one `EngineBrowserHandle`, independent bounded event subscriptions for embedded automation, handwritten C ABI v1, renderer broker, in-host CDP composition, retained transitional frames, and panic containment | Safe mutation/commit/query/command/event transport behind Dart; embeds `vixen-cdp` with the Flutter exact-commit backend; frame tokens disappear after cutover |
+| `vixen-headless` | BrowserCore-backed text CLI plus native-comparison `vixen-cdp` composition and transitional EGL surfaceless surface | Text-only launcher/client and frozen native rendered comparison; product rendered evidence runs through the chrome-less Flutter host |
 | `vixen-wpt` | Fixture/profile manifest, runner, reports, checks, visual evidence | Engine-consumer test adapter; no engine internals or alternate semantics |
 
 The packaged Linux GUI composition root is the Flutter runner plus the narrow
@@ -71,7 +72,7 @@ Flutter/Dart web renderer + chrome ─► native mutation/commit bridge ──�
                                                                                 ├─► vixen-net
                                                                                 └─► vixen-store
 
-rendered CLI/CDP/WPT ─► chrome-less Flutter host ─► same bridge/core
+rendered CLI/CDP/WPT ─► chrome-less Flutter host + vixen-cdp ─► same bridge/core
 text-only utilities ──► vixen-api + vixen-engine where no geometry is invented
 
 vixen-wpt ────────────► vixen-api
@@ -105,8 +106,9 @@ Rules:
 
 ### Current adapter status
 
-- `vixen-headless` depends only on `vixen-api` and `vixen-engine` in production.
-  CLI and CDP targets route through BrowserCore and do not own `Page`,
+- `vixen-cdp` depends only on `vixen-api` and `vixen-engine`; `vixen-headless`
+  and `vixen-ffi` inject the frozen native-comparison or exact Flutter render
+  backend. CLI and CDP targets route through BrowserCore and do not own `Page`,
   `JsRuntime`, cookies, network, or session history. Its EGL screenshot path is
   transitional under ADR-022.
 - `vixen-api::Engine` remains a transitional tab-shaped trait with only a test
@@ -125,12 +127,14 @@ Rules:
   second DOM. ADR-022's bounded R1 mutation/full-resync, atomic-commit, query,
   target, replay, and explicit handle-retirement model is implemented in
   `vixen-api`; R2's dedicated C/Dart broker and R3's formatter are implemented.
-  The production R4 vertical presents a bounded title/semantic-text projection
-  with post-frame acknowledgement, commit-bound pointer/semantic targets,
-  Paragraph find geometry, zoom/viewport revisions, lifecycle generations, and
-  renderer-clamped root scroll commits after BrowserCore cancellation policy;
-  the old frame remains its explicit fallback. R5–R6 must complete parity before
-  frame transport can be deleted. Single-touch root
+  The production R4 vertical presents post-frame acknowledgements,
+  commit-bound pointer/semantic targets, Paragraph find geometry,
+  zoom/viewport revisions, lifecycle generations, and renderer-clamped root
+  scroll commits after BrowserCore cancellation policy. R5 now adds full-DOM
+  block/inline/flex/grid fixture formatting, exact scene capture, embedded CDP,
+  independent targets, input, mutation capture, reset/resync, and the complete
+  270-fixture manifest. The old frame remains the normal-GUI fallback until R6
+  synchronous layout permits R7 deletion. Single-touch root
   dragging reuses the bounded cancelable wheel path. Complete renderer cutover,
   semantics/native AT, richer gesture/lifecycle, and non-Linux runners remain
   open.
@@ -140,11 +144,11 @@ the stable leaf-crate rules. Remaining migration debt is inside the document
 implementation: compatibility projections and synchronous runtime/resource work
 must converge on the live document lifecycle.
 
-The committed/external WPT adapter is no longer an exception: it creates
-BrowserCore contexts and uses generation-checked snapshot, selector, style,
-diagnostic, evaluation, display-list, reference-render, and paint-snapshot
-queries. The 270-fixture/2,027-check manifest therefore exercises the production owner while
-`vixen-wpt` itself remains engine-independent.
+The committed/external WPT adapter is no longer an exception. The native test
+runner keeps 1,887 text/runtime checks over generation-checked BrowserCore
+inspection. The R5 release Flutter host executes the complete 270-fixture /
+2,027-check manifest in order and owns all 104 layout, 25 visual, and 11
+reference assertions. `vixen-wpt` itself remains engine-independent.
 
 The headless CLI `--eval`, screenshot, selector, textual DOM/layout/paint
 projections, interaction summaries, and URL-only paths also create one

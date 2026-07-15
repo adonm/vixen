@@ -50,6 +50,50 @@ void main() {
     );
   });
 
+  test('capture and reset requests preserve exact host identity', () {
+    final revision = const RenderRevision(
+      contextId: 1,
+      documentId: 2,
+      sourceGeneration: 3,
+      styleGeneration: 4,
+      viewportGeneration: 5,
+      resourceGeneration: 6,
+    );
+    final capture = decodeRendererRequest({
+      'v': 1,
+      'type': 'renderer_request',
+      'request_id': 15,
+      'request': {
+        'type': 'capture_scene',
+        'context_id': 1,
+        'document_id': 2,
+        'displayed_commit_id': 9,
+        'revision': revision.toWire(),
+        'viewport': const RenderViewport(
+          width: 320,
+          height: 240,
+          deviceScale: 1,
+          pageZoom: 1,
+        ).toWire(),
+      },
+    }) as NativeCaptureSceneRequest;
+    expect(capture.requestId, 15);
+    expect(capture.displayedCommitId, 9);
+    expect(capture.viewport.width, 320);
+
+    final reset = decodeRendererRequest({
+      'v': 1,
+      'type': 'renderer_request',
+      'request_id': 16,
+      'request': {'type': 'reset', 'context_id': 1, 'document_id': 2},
+    }) as NativeResetRendererRequest;
+    expect(reset.contextId, 1);
+    expect(reset.documentId, 2);
+    expect(rendererResetResponse(reset.requestId)['response'], {
+      'type': 'reset',
+    });
+  });
+
   test('Rust hit-test request and Dart target response preserve identity', () {
     final request = decodeRendererRequest(
       decodeNativeJson(

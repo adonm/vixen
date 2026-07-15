@@ -9,6 +9,7 @@ const int renderMaxMutations = 4096;
 const int renderMaxResources = 512;
 const int renderMaxResourceBytes = 16 * 1024 * 1024;
 const int renderMaxTotalResourceBytes = 64 * 1024 * 1024;
+const int renderMaxCaptureBytes = 65 * 1024 * 1024;
 const int renderMaxStringBytes = 64 * 1024;
 const int renderMaxTotalStringBytes = 4 * 1024 * 1024;
 const int renderMaxStylesPerNode = 512;

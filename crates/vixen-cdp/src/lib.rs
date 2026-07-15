@@ -23,9 +23,11 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
@@ -42,12 +44,12 @@ use vixen_api::{
     RuntimeConsoleValue, RuntimeContextId, RuntimeDialogEvent, RuntimeEffects, RuntimeNetworkEvent,
     RuntimePermissionGrant, ScriptValue,
 };
-use vixen_engine::browser::{BrowserConfig, EngineBrowserHandle, spawn_browser};
+use vixen_engine::browser::{
+    BrowserConfig, EngineBrowserClient, EngineBrowserHandle, spawn_browser,
+};
 use vixen_engine::engine_error::codes;
 use vixen_engine::headers::{validate_header_name, validate_header_value};
 use vixen_engine::script::JsRuntime;
-
-use crate::browser_adapter::BrowserProfile;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -58,6 +60,98 @@ const MAX_PENDING_CORE_NAVIGATIONS: usize = 1_024;
 const MAX_PENDING_SOCKET_NAVIGATIONS: usize = 64;
 const NAVIGATION_WAIT_TIMEOUT: Duration = Duration::from_secs(35);
 const CORE_EVENT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Renderer-owned evidence needed by rendered CDP methods. Composition roots
+/// provide either the transitional native renderer or the Flutter exact-commit
+/// host without moving browser state out of BrowserCore.
+pub trait CdpRenderBackend: Send + Sync {
+    fn uses_commit_geometry(&self) -> bool {
+        false
+    }
+
+    fn capture_png(
+        &self,
+        browser: &mut EngineBrowserClient,
+        state: &BrowsingContextState,
+        viewport: (u32, u32),
+    ) -> Result<Vec<u8>, String>;
+
+    fn layout_box(
+        &self,
+        _browser: &mut EngineBrowserClient,
+        _state: &BrowsingContextState,
+        _viewport: (u32, u32),
+        _node_id: usize,
+    ) -> Result<Option<[f64; 4]>, String> {
+        Err("commit geometry is unavailable".to_owned())
+    }
+
+    fn hit_test(
+        &self,
+        _browser: &mut EngineBrowserClient,
+        _state: &BrowsingContextState,
+        _viewport: (u32, u32),
+        _x: f64,
+        _y: f64,
+    ) -> Result<Option<usize>, String> {
+        Err("commit hit testing is unavailable".to_owned())
+    }
+
+    fn reset_renderer(&self, _state: &BrowsingContextState) -> Result<(), String> {
+        Err("renderer reset is unavailable".to_owned())
+    }
+}
+
+struct UnavailableRenderBackend;
+
+impl CdpRenderBackend for UnavailableRenderBackend {
+    fn capture_png(
+        &self,
+        _browser: &mut EngineBrowserClient,
+        _state: &BrowsingContextState,
+        _viewport: (u32, u32),
+    ) -> Result<Vec<u8>, String> {
+        Err("rendered CDP backend is unavailable".to_owned())
+    }
+}
+
+/// Owns an ephemeral profile or names a persistent profile without owning it.
+enum BrowserProfile {
+    Ephemeral(tempfile::TempDir),
+    Persistent(PathBuf),
+}
+
+impl BrowserProfile {
+    fn open(
+        profile_dir: Option<&Path>,
+        temporary_prefix: &str,
+        description: &str,
+    ) -> Result<Self, String> {
+        match profile_dir {
+            Some(root) => {
+                std::fs::create_dir_all(root).map_err(|error| {
+                    format!(
+                        "create {description} profile directory {}: {error}",
+                        root.display()
+                    )
+                })?;
+                Ok(Self::Persistent(root.to_path_buf()))
+            }
+            None => tempfile::Builder::new()
+                .prefix(temporary_prefix)
+                .tempdir()
+                .map(Self::Ephemeral)
+                .map_err(|error| format!("create temporary {description} profile: {error}")),
+        }
+    }
+
+    fn database_path(&self) -> PathBuf {
+        match self {
+            Self::Ephemeral(root) => root.path().join("profile.redb"),
+            Self::Persistent(root) => root.join("profile.redb"),
+        }
+    }
+}
 
 /// CDP server entry point. Binds `127.0.0.1:{port}` and serves the
 /// WebSocket CDP protocol until the process is killed.
@@ -81,29 +175,87 @@ pub async fn serve_with_initial_url_and_profile(
     initial_url: Option<String>,
     profile_dir: Option<PathBuf>,
 ) -> std::io::Result<()> {
-    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
-    let listener = TcpListener::bind(addr).await?;
+    serve_with_initial_url_profile_and_renderer(
+        port,
+        initial_url,
+        profile_dir,
+        Arc::new(UnavailableRenderBackend),
+    )
+    .await
+}
+
+pub async fn serve_with_initial_url_profile_and_renderer(
+    port: u16,
+    initial_url: Option<String>,
+    profile_dir: Option<PathBuf>,
+    renderer: Arc<dyn CdpRenderBackend>,
+) -> std::io::Result<()> {
     let mut initial_state =
-        CdpState::new_with_profile(profile_dir.as_deref()).map_err(std::io::Error::other)?;
+        CdpState::new_with_profile_and_renderer(profile_dir.as_deref(), renderer)
+            .map_err(std::io::Error::other)?;
     if let Some(url) = initial_url
         && let Err(e) = initial_state.seed_initial_target(url)
     {
         eprintln!("vixen-headless: initial CDP load failed: {e}");
     }
+    serve_state(port, initial_state).await
+}
+
+/// Serve CDP over a non-owning subscription to an embedded host's sole
+/// BrowserCore. Existing contexts become independent page targets; no second
+/// profile, BrowserCore, or event consumer is created.
+pub async fn serve_with_browser_client(
+    port: u16,
+    browser: EngineBrowserClient,
+    renderer: Arc<dyn CdpRenderBackend>,
+) -> std::io::Result<()> {
+    let state = CdpState::with_browser_client(browser, renderer).map_err(std::io::Error::other)?;
+    serve_state(port, state).await
+}
+
+pub async fn serve_with_browser_client_until<F>(
+    port: u16,
+    browser: EngineBrowserClient,
+    renderer: Arc<dyn CdpRenderBackend>,
+    shutdown: F,
+) -> std::io::Result<()>
+where
+    F: Future<Output = ()>,
+{
+    let state = CdpState::with_browser_client(browser, renderer).map_err(std::io::Error::other)?;
+    serve_state_until(port, state, shutdown).await
+}
+
+async fn serve_state(port: u16, initial_state: CdpState) -> std::io::Result<()> {
+    serve_state_until(port, initial_state, std::future::pending()).await
+}
+
+async fn serve_state_until<F>(
+    port: u16,
+    initial_state: CdpState,
+    shutdown: F,
+) -> std::io::Result<()>
+where
+    F: Future<Output = ()>,
+{
+    let addr: SocketAddr = ([127, 0, 0, 1], port).into();
+    let listener = TcpListener::bind(addr).await?;
     let state: Rc<RefCell<CdpState>> = Rc::new(RefCell::new(initial_state));
-    eprintln!("vixen-headless: CDP listening on ws://127.0.0.1:{port}");
+    eprintln!("Vixen automation CDP listening on ws://127.0.0.1:{port}");
+    tokio::pin!(shutdown);
 
     loop {
-        let (stream, _) = listener.accept().await?;
+        let stream = tokio::select! {
+            accepted = listener.accept() => accepted?.0,
+            _ = &mut shutdown => return Ok(()),
+        };
         let state = Rc::clone(&state);
         // `spawn_local` because `state` is `!Send`.
         tokio::task::spawn_local(async move {
             if let Err(e) = handle_connection(stream, state).await {
                 eprintln!("vixen-headless: CDP connection error: {e}");
             }
-        })
-        .await
-        .ok();
+        });
     }
 }
 
@@ -199,8 +351,10 @@ async fn handle_connection(
 /// Protocol presentation state. BrowserCore exclusively owns pages, runtimes,
 /// histories, loading, and typed document/runtime generations.
 pub struct CdpState {
-    browser: EngineBrowserHandle,
-    _profile: BrowserProfile,
+    browser: EngineBrowserClient,
+    _browser_owner: Option<EngineBrowserHandle>,
+    _profile: Option<BrowserProfile>,
+    renderer: Arc<dyn CdpRenderBackend>,
     next_session_id: u64,
     targets: Vec<Target>,
     attached_sessions: Vec<TargetSession>,
@@ -414,14 +568,6 @@ struct EmulatedMedia {
 }
 
 #[derive(Deserialize)]
-struct CdpDomRect {
-    x: f64,
-    y: f64,
-    width: f64,
-    height: f64,
-}
-
-#[derive(Deserialize)]
 struct CdpRuntimeHit {
     node_id: usize,
     id: Option<String>,
@@ -446,19 +592,30 @@ impl CdpState {
     }
 
     fn new_with_profile(profile_dir: Option<&Path>) -> Result<Self, String> {
-        let profile = BrowserProfile::open(profile_dir, "vixen-cdp-", "CDP")?;
-        let config = BrowserConfig::new(profile.database_path());
-        Self::with_config_and_profile(config, profile)
+        Self::new_with_profile_and_renderer(profile_dir, Arc::new(UnavailableRenderBackend))
     }
 
-    fn with_config_and_profile(
+    fn new_with_profile_and_renderer(
+        profile_dir: Option<&Path>,
+        renderer: Arc<dyn CdpRenderBackend>,
+    ) -> Result<Self, String> {
+        let profile = BrowserProfile::open(profile_dir, "vixen-cdp-", "CDP")?;
+        let config = BrowserConfig::new(profile.database_path());
+        Self::with_config_profile_and_renderer(config, profile, renderer)
+    }
+
+    fn with_config_profile_and_renderer(
         config: BrowserConfig,
         profile: BrowserProfile,
+        renderer: Arc<dyn CdpRenderBackend>,
     ) -> Result<Self, String> {
-        let browser = spawn_browser(config).map_err(|error| error.to_string())?;
+        let browser_owner = spawn_browser(config).map_err(|error| error.to_string())?;
+        let browser = browser_owner.subscribe();
         let mut state = Self {
             browser,
-            _profile: profile,
+            _browser_owner: Some(browser_owner),
+            _profile: Some(profile),
+            renderer,
             next_session_id: 0,
             targets: Vec::new(),
             attached_sessions: Vec::new(),
@@ -495,6 +652,84 @@ impl CdpState {
             next_io_stream_id: 0,
         };
         state.push_loaded_target("about:blank".to_owned())?;
+        Ok(state)
+    }
+
+    pub fn with_browser_client(
+        mut browser: EngineBrowserClient,
+        renderer: Arc<dyn CdpRenderBackend>,
+    ) -> Result<Self, String> {
+        let snapshot = match browser
+            .dispatch(BrowserCommand::GetBrowserSnapshot)
+            .map_err(|error| error.to_string())?
+        {
+            BrowserCommandResult::BrowserSnapshot(snapshot) => snapshot,
+            result => return Err(format!("unexpected browser snapshot result: {result:?}")),
+        };
+        let mut state = Self {
+            browser,
+            _browser_owner: None,
+            _profile: None,
+            renderer,
+            next_session_id: 0,
+            targets: Vec::new(),
+            attached_sessions: Vec::new(),
+            dispatch_context: None,
+            active_presentation_context: None,
+            context_presentations: HashMap::new(),
+            pending_core_navigations: HashMap::new(),
+            command_navigation_actions: Vec::new(),
+            defer_navigation_notifications: false,
+            pending_effects: VecDeque::new(),
+            runtime_enabled: false,
+            network_enabled: false,
+            page_enabled: false,
+            lifecycle_events_enabled: false,
+            bypass_csp: false,
+            extra_http_headers: Vec::new(),
+            cache_disabled: false,
+            log_enabled: false,
+            last_mouse_down: None,
+            last_mouse_over_node_id: None,
+            last_key_down_text: None,
+            next_object_id: 0,
+            remote_handles: VecDeque::new(),
+            emulated_viewport: None,
+            emulated_media: EmulatedMedia::default(),
+            next_new_document_script_id: 0,
+            new_document_scripts: Vec::new(),
+            runtime_bindings: Vec::new(),
+            isolated_world_name: None,
+            download_behavior: DownloadBehavior::default(),
+            permission_grants: Vec::new(),
+            tracing: TraceState::default(),
+            io_streams: HashMap::new(),
+            next_io_stream_id: 0,
+        };
+        for context in snapshot.contexts {
+            state.next_session_id = state
+                .next_session_id
+                .checked_add(1)
+                .ok_or_else(|| "CDP target session id exhausted".to_owned())?;
+            state.targets.push(Target {
+                context_id: context.context_id,
+                session_id: state.next_session_id,
+            });
+            state
+                .context_presentations
+                .insert(context.context_id, ContextPresentation::default());
+        }
+        if state.targets.is_empty() {
+            state.push_loaded_target("about:blank".to_owned())?;
+        } else {
+            state.dispatch_context = snapshot
+                .active_context_id
+                .or_else(|| state.targets.first().map(|target| target.context_id));
+            if let Some(context_id) = state.dispatch_context {
+                state.load_presentation(context_id);
+                state.configure_context(context_id)?;
+            }
+        }
         Ok(state)
     }
 
@@ -669,10 +904,204 @@ impl CdpState {
             "Input.dispatchMouseEvent" => self.input_dispatch_mouse_event(req),
             "Input.dispatchKeyEvent" => self.input_dispatch_key_event(req),
             "Input.insertText" => self.input_insert_text(req),
+            "Vixen.evaluate" => self.vixen_evaluate(req),
+            "Vixen.getDiagnostics" => self.vixen_get_diagnostics(req),
+            "Vixen.getSnapshot" => self.vixen_get_snapshot(req),
+            "Vixen.getComputedStyle" => self.vixen_get_computed_style(req),
+            "Vixen.querySelectorAll" => self.vixen_query_selector_all(req),
+            "Vixen.resetRenderer" => self.vixen_reset_renderer(req),
             _ => CdpDispatch::error(-32601, format!("method not found: {}", req.method)),
         };
         self.store_active_presentation();
         outcome
+    }
+
+    fn vixen_evaluate(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(expression) = req.params.get("expression").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "Vixen.evaluate requires expression");
+        };
+        let expression = format!(
+            "globalThis.eval({})",
+            serde_json::to_string(expression).unwrap_or_else(|_| "\"undefined\"".to_owned())
+        );
+        let value = match self.evaluate_serialized_value(&expression) {
+            Ok(value) => value,
+            Err(error) => return self.runtime_exception_result(error, req),
+        };
+        let display = serialized_value_display(&value);
+        let mut notifications = self.drain_side_effect_notifications(req);
+        match self.drain_navigation_notifications(req) {
+            Ok(mut navigation_notifications) => notifications.append(&mut navigation_notifications),
+            Err(error) => return CdpDispatch::error(-32603, error),
+        }
+        CdpDispatch::ok_with_notifications(json!({ "value": display }), notifications)
+    }
+
+    fn vixen_get_snapshot(&mut self, req: &CdpRequest) -> CdpDispatch {
+        if !empty_params(&req.params) {
+            return CdpDispatch::error(-32602, "Vixen.getSnapshot takes no parameters");
+        }
+        let state = match self.current_state() {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32000, error),
+        };
+        match self.browser.dispatch(BrowserCommand::Snapshot {
+            context_id: state.context_id,
+            document_id: state.document_id,
+            viewport: self.current_viewport(),
+        }) {
+            Ok(BrowserCommandResult::Snapshot(snapshot)) => CdpDispatch::ok(json!({
+                "url": snapshot.url,
+                "title": snapshot.title,
+                "textContent": snapshot.text_content,
+                "elementCount": snapshot.element_count,
+            })),
+            Ok(result) => {
+                CdpDispatch::error(-32603, format!("unexpected snapshot result: {result:?}"))
+            }
+            Err(error) => CdpDispatch::error(-32603, error.to_string()),
+        }
+    }
+
+    fn vixen_query_selector_all(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(selector) = req.params.get("selector").and_then(Value::as_str) else {
+            return CdpDispatch::error(-32602, "Vixen.querySelectorAll requires selector");
+        };
+        let include_layout = req
+            .params
+            .get("includeLayout")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        if req.params.as_object().is_none_or(|params| {
+            params
+                .keys()
+                .any(|key| key != "selector" && key != "includeLayout")
+        }) {
+            return CdpDispatch::error(-32602, "Vixen.querySelectorAll has unknown parameters");
+        }
+        let state = match self.current_state() {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32000, error),
+        };
+        let viewport = self.current_viewport();
+        let elements = match self.browser.dispatch(BrowserCommand::QuerySelectorAll {
+            context_id: state.context_id,
+            document_id: state.document_id,
+            selector: selector.to_owned(),
+            viewport,
+        }) {
+            Ok(BrowserCommandResult::SelectorMatches(elements)) => elements,
+            Ok(result) => {
+                return CdpDispatch::error(
+                    -32603,
+                    format!("unexpected selector result: {result:?}"),
+                );
+            }
+            Err(error) => return CdpDispatch::error(-32603, error.to_string()),
+        };
+        let mut output = Vec::with_capacity(elements.len());
+        for element in elements {
+            let layout = if include_layout {
+                match self
+                    .renderer
+                    .layout_box(&mut self.browser, &state, viewport, element.node_id)
+                {
+                    Ok(layout) => layout,
+                    Err(error) => return CdpDispatch::error(-32603, error),
+                }
+            } else {
+                None
+            };
+            output.push(json!({
+                "nodeId": element.node_id,
+                "tag": element.tag,
+                "id": element.id,
+                "classes": element.classes,
+                "attributes": element.attributes,
+                "text": element.text,
+                "layout": layout,
+            }));
+        }
+        CdpDispatch::ok(json!({ "elements": output }))
+    }
+
+    fn vixen_get_computed_style(&mut self, req: &CdpRequest) -> CdpDispatch {
+        let Some(node_id) = req.params.get("nodeId").and_then(Value::as_u64) else {
+            return CdpDispatch::error(-32602, "Vixen.getComputedStyle requires nodeId");
+        };
+        if req
+            .params
+            .as_object()
+            .is_none_or(|params| params.keys().any(|key| key != "nodeId"))
+        {
+            return CdpDispatch::error(-32602, "Vixen.getComputedStyle has unknown parameters");
+        }
+        let node_id = match usize::try_from(node_id) {
+            Ok(node_id) if node_id != 0 => node_id,
+            _ => return CdpDispatch::error(-32602, "Vixen.getComputedStyle nodeId is invalid"),
+        };
+        let state = match self.current_state() {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32000, error),
+        };
+        match self.browser.dispatch(BrowserCommand::ComputedStyle {
+            context_id: state.context_id,
+            document_id: state.document_id,
+            node_id,
+            viewport: self.current_viewport(),
+        }) {
+            Ok(BrowserCommandResult::ComputedStyle(styles)) => {
+                CdpDispatch::ok(json!({ "styles": styles }))
+            }
+            Ok(result) => CdpDispatch::error(
+                -32603,
+                format!("unexpected computed-style result: {result:?}"),
+            ),
+            Err(error) => CdpDispatch::error(-32603, error.to_string()),
+        }
+    }
+
+    fn vixen_get_diagnostics(&mut self, req: &CdpRequest) -> CdpDispatch {
+        if !empty_params(&req.params) {
+            return CdpDispatch::error(-32602, "Vixen.getDiagnostics takes no parameters");
+        }
+        let state = match self.current_state() {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32000, error),
+        };
+        match self.browser.dispatch(BrowserCommand::Diagnostics {
+            context_id: state.context_id,
+            document_id: state.document_id,
+        }) {
+            Ok(BrowserCommandResult::Diagnostics(diagnostics)) => CdpDispatch::ok(json!({
+                "diagnostics": diagnostics.into_iter().map(|diagnostic| json!({
+                    "category": format!("{:?}", diagnostic.category),
+                    "code": diagnostic.code,
+                    "message": diagnostic.message,
+                })).collect::<Vec<_>>(),
+            })),
+            Ok(result) => {
+                CdpDispatch::error(-32603, format!("unexpected diagnostics result: {result:?}"))
+            }
+            Err(error) => CdpDispatch::error(-32603, error.to_string()),
+        }
+    }
+
+    fn vixen_reset_renderer(&mut self, req: &CdpRequest) -> CdpDispatch {
+        if !empty_params(&req.params) {
+            return CdpDispatch::error(-32602, "Vixen.resetRenderer takes no parameters");
+        }
+        if !self.renderer.uses_commit_geometry() {
+            return CdpDispatch::error(-32601, "Vixen.resetRenderer is unavailable");
+        }
+        let state = match self.current_state() {
+            Ok(state) => state,
+            Err(error) => return CdpDispatch::error(-32000, error),
+        };
+        match self.renderer.reset_renderer(&state) {
+            Ok(()) => CdpDispatch::ok(json!({})),
+            Err(error) => CdpDispatch::error(-32603, error),
+        }
     }
 
     fn prepare_dispatch(&mut self, req: &CdpRequest) -> Result<(), CdpDispatch> {
@@ -2343,15 +2772,10 @@ impl CdpState {
                 return CdpDispatch::error(-32000, format!("Page.captureScreenshot: {error}"));
             }
         };
-        let paint =
-            match self
-                .browser
-                .capture_paint_snapshot(state.context_id, state.document_id, viewport)
-            {
-                Ok(paint) => paint,
-                Err(error) => return CdpDispatch::error(-32603, error.to_string()),
-            };
-        match crate::capture_commands_png(&paint.commands, viewport) {
+        match self
+            .renderer
+            .capture_png(&mut self.browser, &state, viewport)
+        {
             Ok(png) => CdpDispatch::ok(json!({ "data": BASE64_STANDARD.encode(png) })),
             Err(err) => {
                 CdpDispatch::error(-32603, format!("{}: {err}", codes::UNSUPPORTED_SCREENSHOT))
@@ -3104,23 +3528,11 @@ impl CdpState {
     }
 
     fn dom_get_content_quads(&mut self, req: &CdpRequest) -> CdpDispatch {
-        if let Some(object_id) = req.params.get("objectId").and_then(Value::as_str) {
-            match self.dom_bbox_from_object(object_id, "DOM.getContentQuads") {
-                Ok(Some(bbox)) => {
-                    return CdpDispatch::ok(json!({ "quads": [quad_from_bbox(bbox)] }));
-                }
-                Ok(None) => {}
-                Err(err) => return CdpDispatch::error(-32602, err),
-            }
-        }
         let node_id = match self.dom_node_id_from_params(&req.params, "DOM.getContentQuads") {
             Ok(node_id) => node_id,
             Err(err) => return CdpDispatch::error(-32602, err),
         };
-        let bbox = match self
-            .element_for_node_id(node_id)
-            .map(|element| element.and_then(element_cdp_bbox))
-        {
+        let bbox = match self.layout_box_for_node(node_id) {
             Ok(Some(bbox)) => bbox,
             Ok(None) => return CdpDispatch::ok(json!({ "quads": [] })),
             Err(err) => return CdpDispatch::error(-32603, err),
@@ -3129,26 +3541,32 @@ impl CdpState {
     }
 
     fn dom_get_box_model(&mut self, req: &CdpRequest) -> CdpDispatch {
-        if let Some(object_id) = req.params.get("objectId").and_then(Value::as_str) {
-            match self.dom_bbox_from_object(object_id, "DOM.getBoxModel") {
-                Ok(Some(bbox)) => return CdpDispatch::ok(box_model_from_bbox(bbox)),
-                Ok(None) => {}
-                Err(err) => return CdpDispatch::error(-32602, err),
-            }
-        }
         let node_id = match self.dom_node_id_from_params(&req.params, "DOM.getBoxModel") {
             Ok(node_id) => node_id,
             Err(err) => return CdpDispatch::error(-32602, err),
         };
-        let bbox = match self
-            .element_for_node_id(node_id)
-            .map(|element| element.and_then(element_cdp_bbox))
-        {
+        let bbox = match self.layout_box_for_node(node_id) {
             Ok(Some(bbox)) => bbox,
             Ok(None) => return CdpDispatch::error(-32000, "DOM.getBoxModel: node has no box"),
             Err(err) => return CdpDispatch::error(-32603, err),
         };
         CdpDispatch::ok(box_model_from_bbox(bbox))
+    }
+
+    fn layout_box_for_node(
+        &mut self,
+        node_id: usize,
+    ) -> Result<Option<(f64, f64, f64, f64)>, String> {
+        if self.renderer.uses_commit_geometry() {
+            let viewport = self.current_viewport();
+            let state = self.current_state()?;
+            return self
+                .renderer
+                .layout_box(&mut self.browser, &state, viewport, node_id)
+                .map(|bbox| bbox.map(|[x, y, width, height]| (x, y, width, height)));
+        }
+        self.element_for_node_id(node_id)
+            .map(|element| element.and_then(element_cdp_bbox))
     }
 
     fn dom_object_expr_from_params(
@@ -3218,44 +3636,6 @@ impl CdpState {
             _ => Err(format!(
                 "{method}: objectId does not reference a Vixen Element"
             )),
-        }
-    }
-
-    fn dom_bbox_from_object(
-        &mut self,
-        object_id: &str,
-        method: &str,
-    ) -> Result<Option<(f64, f64, f64, f64)>, String> {
-        self.validate_remote_object_id(object_id, method)?;
-        let object_expr = cdp_object_expr(object_id);
-        let probe = format!(
-            r#"(() => {{
-                const __o = {object_expr};
-                if (!__o || typeof __o.getBoundingClientRect !== 'function') return null;
-                const __r = __o.getBoundingClientRect();
-                const __number = (value) => {{
-                    const n = Number(value);
-                    return Number.isFinite(n) ? n : 0;
-                }};
-                return JSON.stringify({{
-                    x: __number(__r.x ?? __r.left),
-                    y: __number(__r.y ?? __r.top),
-                    width: Math.max(0, __number(__r.width)),
-                    height: Math.max(0, __number(__r.height)),
-                }});
-            }})()"#
-        );
-        match self
-            .evaluate_js(&probe)
-            .map_err(|err| format!("{method}: {err}"))?
-        {
-            ScriptValue::String(json) => {
-                let rect: CdpDomRect = serde_json::from_str(&json)
-                    .map_err(|err| format!("{method}: invalid object rect: {err}"))?;
-                Ok(Some((rect.x, rect.y, rect.width, rect.height)))
-            }
-            ScriptValue::Null | ScriptValue::Undefined => Ok(None),
-            _ => Err(format!("{method}: object rect probe returned a non-string")),
         }
     }
 
@@ -3351,59 +3731,69 @@ impl CdpState {
             Ok(state) => state,
             Err(error) => return CdpDispatch::error(-32000, error),
         };
-        let page_hit = match self.browser.dispatch(BrowserCommand::HitTest {
-            context_id: state.context_id,
-            document_id: state.document_id,
-            viewport,
-            x,
-            y,
-        }) {
-            Ok(BrowserCommandResult::HitTest(target)) => target,
-            _ => None,
+        let target_node_id = if self.renderer.uses_commit_geometry() {
+            match self
+                .renderer
+                .hit_test(&mut self.browser, &state, viewport, x, y)
+            {
+                Ok(target) => target,
+                Err(error) => return CdpDispatch::error(-32603, error),
+            }
+        } else {
+            let page_hit = match self.browser.dispatch(BrowserCommand::HitTest {
+                context_id: state.context_id,
+                document_id: state.document_id,
+                viewport,
+                x,
+                y,
+            }) {
+                Ok(BrowserCommandResult::HitTest(target)) => target,
+                _ => None,
+            };
+            let runtime_hit = self.dom_node_at_point_from_runtime(x, y).ok().flatten();
+            runtime_hit
+                .as_ref()
+                .and_then(|runtime_hit| {
+                    page_hit
+                        .as_ref()
+                        .filter(|page_hit| {
+                            page_hit.tag == runtime_hit.tag
+                                && runtime_hit
+                                    .id
+                                    .as_deref()
+                                    .is_none_or(|id| page_hit.id.as_deref() == Some(id))
+                        })
+                        .map(|page_hit| page_hit.node_id)
+                })
+                .or_else(|| {
+                    let runtime_hit = runtime_hit.as_ref()?;
+                    let result = self
+                        .browser
+                        .dispatch(BrowserCommand::QuerySelectorAll {
+                            context_id: state.context_id,
+                            document_id: state.document_id,
+                            selector: "*".to_owned(),
+                            viewport,
+                        })
+                        .ok()?;
+                    let BrowserCommandResult::SelectorMatches(elements) = result else {
+                        return None;
+                    };
+                    elements
+                        .into_iter()
+                        .find(|element| {
+                            element.tag == runtime_hit.tag
+                                && runtime_hit
+                                    .id
+                                    .as_deref()
+                                    .map_or(element.node_id == runtime_hit.node_id, |id| {
+                                        element.id.as_deref() == Some(id)
+                                    })
+                        })
+                        .map(|element| element.node_id)
+                })
+                .or_else(|| page_hit.map(|page_hit| page_hit.node_id))
         };
-        let runtime_hit = self.dom_node_at_point_from_runtime(x, y).ok().flatten();
-        let target_node_id = runtime_hit
-            .as_ref()
-            .and_then(|runtime_hit| {
-                page_hit
-                    .as_ref()
-                    .filter(|page_hit| {
-                        page_hit.tag == runtime_hit.tag
-                            && runtime_hit
-                                .id
-                                .as_deref()
-                                .is_none_or(|id| page_hit.id.as_deref() == Some(id))
-                    })
-                    .map(|page_hit| page_hit.node_id)
-            })
-            .or_else(|| {
-                let runtime_hit = runtime_hit.as_ref()?;
-                let result = self
-                    .browser
-                    .dispatch(BrowserCommand::QuerySelectorAll {
-                        context_id: state.context_id,
-                        document_id: state.document_id,
-                        selector: "*".to_owned(),
-                        viewport,
-                    })
-                    .ok()?;
-                let BrowserCommandResult::SelectorMatches(elements) = result else {
-                    return None;
-                };
-                elements
-                    .into_iter()
-                    .find(|element| {
-                        element.tag == runtime_hit.tag
-                            && runtime_hit
-                                .id
-                                .as_deref()
-                                .map_or(element.node_id == runtime_hit.node_id, |id| {
-                                    element.id.as_deref() == Some(id)
-                                })
-                    })
-                    .map(|element| element.node_id)
-            })
-            .or_else(|| page_hit.map(|page_hit| page_hit.node_id));
         let mut dom_events = Vec::new();
         let mut next_mouse_down = self.last_mouse_down.clone();
         let mut next_mouse_over_node_id = self.last_mouse_over_node_id;
@@ -4922,13 +5312,18 @@ impl CdpState {
     /// behind BrowserCore. The supplied runtime is consumed only for its
     /// transport policy and never stored by CDP.
     pub fn with_runtime(rt: JsRuntime) -> Self {
+        Self::with_runtime_and_renderer(rt, Arc::new(UnavailableRenderBackend))
+    }
+
+    pub fn with_runtime_and_renderer(rt: JsRuntime, renderer: Arc<dyn CdpRenderBackend>) -> Self {
         let network = rt.network_config();
         drop(rt);
         let profile = BrowserProfile::open(None, "vixen-cdp-test-", "CDP test")
             .expect("create CDP test profile");
         let mut config = BrowserConfig::new(profile.database_path());
         config.network = network;
-        Self::with_config_and_profile(config, profile).expect("start CDP BrowserCore")
+        Self::with_config_profile_and_renderer(config, profile, renderer)
+            .expect("start CDP BrowserCore")
     }
 }
 
@@ -5508,6 +5903,26 @@ fn serialized_remote_object(serialized: &Value) -> Value {
         "object" => json!({ "type": "object", "value": value, "description": "Object" }),
         _ => json!({ "type": kind, "value": value }),
     }
+}
+
+fn serialized_value_display(serialized: &Value) -> String {
+    let kind = serialized
+        .get("t")
+        .and_then(Value::as_str)
+        .unwrap_or("undefined");
+    let value = serialized.get("v").unwrap_or(&Value::Null);
+    match kind {
+        "undefined" => "undefined".to_owned(),
+        "string" => value.as_str().unwrap_or_default().to_owned(),
+        "number" | "boolean" => value.to_string(),
+        "object" if value.is_null() => "null".to_owned(),
+        "object" | "function" => "[object]".to_owned(),
+        _ => value.to_string(),
+    }
+}
+
+fn empty_params(params: &Value) -> bool {
+    params.is_null() || params.as_object().is_some_and(serde_json::Map::is_empty)
 }
 
 fn register_remote_ids(value: &Value, mut register: impl FnMut(&str)) {
@@ -7593,7 +8008,19 @@ mod tests {
 
     #[test]
     fn capture_screenshot_uses_initial_core_target() {
-        let mut s = CdpState::default();
+        struct TestRenderBackend;
+        impl CdpRenderBackend for TestRenderBackend {
+            fn capture_png(
+                &self,
+                _browser: &mut EngineBrowserClient,
+                _state: &BrowsingContextState,
+                _viewport: (u32, u32),
+            ) -> Result<Vec<u8>, String> {
+                Ok(b"\x89PNG\r\n\x1a\n".to_vec())
+            }
+        }
+        let mut s =
+            CdpState::new_with_profile_and_renderer(None, Arc::new(TestRenderBackend)).unwrap();
         let no_page = CdpRequest {
             id: 1,
             session_id: None,
@@ -8220,6 +8647,58 @@ mod tests {
 
         let described = dispatch_one(&mut s, "DOM.describeNode", json!({ "nodeId": hit_node_id }));
         assert_eq!(described["node"]["localName"], "button");
+    }
+
+    #[test]
+    fn vixen_manifest_methods_share_the_current_browsercore_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let html = dir.path().join("manifest.html");
+        std::fs::write(
+            &html,
+            "<style>#hit { color: red; }</style><main><button id='hit'>Go</button><p class='note'>One</p></main>",
+        )
+        .unwrap();
+        let url = format!("file://{}", html.display());
+
+        let mut state = CdpState::default();
+        dispatch_one(&mut state, "Page.navigate", json!({ "url": url }));
+        let snapshot = dispatch_one(&mut state, "Vixen.getSnapshot", json!({}));
+        assert_eq!(snapshot["textContent"], "GoOne");
+        assert!(snapshot["elementCount"].as_u64().unwrap() >= 5);
+
+        let elements = dispatch_one(
+            &mut state,
+            "Vixen.querySelectorAll",
+            json!({ "selector": "#hit, .note", "includeLayout": false }),
+        );
+        let elements = elements["elements"].as_array().unwrap();
+        assert_eq!(elements.len(), 2);
+        assert_eq!(elements[0]["id"], "hit");
+        assert_eq!(elements[1]["tag"], "p");
+
+        let styles = dispatch_one(
+            &mut state,
+            "Vixen.getComputedStyle",
+            json!({ "nodeId": elements[0]["nodeId"] }),
+        );
+        assert!(
+            styles["styles"]
+                .as_array()
+                .unwrap()
+                .contains(&json!(["color", "red"]))
+        );
+        assert_eq!(
+            dispatch_one(
+                &mut state,
+                "Vixen.evaluate",
+                json!({ "expression": "Promise.resolve('settled')" }),
+            )["value"],
+            "settled"
+        );
+        assert_eq!(
+            dispatch_one(&mut state, "Vixen.getDiagnostics", json!({}))["diagnostics"],
+            json!([])
+        );
     }
 
     #[test]

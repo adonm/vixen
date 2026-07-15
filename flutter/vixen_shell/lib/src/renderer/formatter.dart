@@ -1239,6 +1239,51 @@ final class _RectPaint extends _PaintItem {
       canvas.drawRect(rect, ui.Paint()..color = color);
 }
 
+final class _BorderPaint extends _PaintItem {
+  const _BorderPaint(this.rect, this.edges, this.color);
+  final ui.Rect rect;
+  final _Edges edges;
+  final ui.Color color;
+  @override
+  void paint(ui.Canvas canvas) {
+    final paint = ui.Paint()..color = color;
+    if (edges.top > 0) {
+      canvas.drawRect(
+        ui.Rect.fromLTWH(rect.left, rect.top, rect.width, edges.top),
+        paint,
+      );
+    }
+    if (edges.right > 0) {
+      canvas.drawRect(
+        ui.Rect.fromLTWH(
+          rect.right - edges.right,
+          rect.top,
+          edges.right,
+          rect.height,
+        ),
+        paint,
+      );
+    }
+    if (edges.bottom > 0) {
+      canvas.drawRect(
+        ui.Rect.fromLTWH(
+          rect.left,
+          rect.bottom - edges.bottom,
+          rect.width,
+          edges.bottom,
+        ),
+        paint,
+      );
+    }
+    if (edges.left > 0) {
+      canvas.drawRect(
+        ui.Rect.fromLTWH(rect.left, rect.top, edges.left, rect.height),
+        paint,
+      );
+    }
+  }
+}
+
 final class _ParagraphPaint extends _PaintItem {
   const _ParagraphPaint(this.paragraph, this.origin);
   final ui.Paragraph paragraph;
@@ -1330,7 +1375,10 @@ final class _FixtureLayout {
     }
     final root = roots.single;
     final rootBackground = _color(
-      root.styles['background-color'] ?? root.styles['background'],
+      _resolveCurrentColor(
+        root.styles['background-color'] ?? root.styles['background'],
+        root.styles['color'],
+      ),
       0xffffffff,
     );
     final contentHeight =
@@ -1368,38 +1416,36 @@ final class _FixtureLayout {
     );
   }
 
-  double _layoutElement(RenderNode node, double x, double y, double width) {
+  double _layoutElement(
+    RenderNode node,
+    double x,
+    double y,
+    double availableWidth, {
+    double? forcedBorderWidth,
+    double? forcedBorderHeight,
+    bool inlineMode = false,
+    bool positioned = false,
+  }) {
     if (_isHidden(node)) return y;
     final paintStart = _items.length;
-    final defaultMargin = node.name == 'body' ? 8.0 : 0.0;
-    final marginTop =
-        _edge(node.styles, 'margin', 'top', defaultMargin) * viewport.pageZoom;
-    final marginRight =
-        _edge(node.styles, 'margin', 'right', defaultMargin) *
-        viewport.pageZoom;
-    final marginBottom =
-        _edge(node.styles, 'margin', 'bottom', defaultMargin) *
-        viewport.pageZoom;
-    final marginLeft =
-        _edge(node.styles, 'margin', 'left', defaultMargin) * viewport.pageZoom;
-    final paddingTop =
-        _edge(node.styles, 'padding', 'top', 0) * viewport.pageZoom;
-    final paddingRight =
-        _edge(node.styles, 'padding', 'right', 0) * viewport.pageZoom;
-    final paddingBottom =
-        _edge(node.styles, 'padding', 'bottom', 0) * viewport.pageZoom;
-    final paddingLeft =
-        _edge(node.styles, 'padding', 'left', 0) * viewport.pageZoom;
-    final left = x + marginLeft;
-    final top = y + marginTop;
-    final availableWidth = (width - marginLeft - marginRight)
-        .clamp(0, double.infinity)
-        .toDouble();
-    final authoredWidth = _scaledLength(node.styles['width']);
-    final boxWidth = authoredWidth ?? availableWidth;
-    final innerWidth = (boxWidth - paddingLeft - paddingRight)
-        .clamp(0, double.infinity)
-        .toDouble();
+    final box = _CssBox.resolve(
+      node,
+      availableWidth,
+      viewport.pageZoom,
+      forcedBorderWidth: forcedBorderWidth,
+      forcedBorderHeight: forcedBorderHeight,
+      shrinkToFitWidth: inlineMode ? _intrinsicContentWidth(node) : null,
+    );
+    final normalLeft = x + box.marginLeft;
+    final normalTop = y + box.marginTop;
+    final relative = !positioned && node.styles['position'] == 'relative';
+    final left =
+        normalLeft + (relative ? (_scaledLength(node.styles['left']) ?? 0) : 0);
+    final top =
+        normalTop + (relative ? (_scaledLength(node.styles['top']) ?? 0) : 0);
+    final contentLeft = left + box.border.left + box.padding.left;
+    final contentTop = top + box.border.top + box.padding.top;
+
     if (node.name == 'img') {
       final image = images[node.resourceIds.single];
       if (image == null) {
@@ -1408,127 +1454,457 @@ final class _FixtureLayout {
           'image is missing',
         );
       }
-      final imageWidth = authoredWidth ?? image.width.toDouble();
-      final imageHeight =
-          _scaledLength(node.styles['height']) ??
-          imageWidth * image.height / image.width;
-      final rect = ui.Rect.fromLTWH(left, top, imageWidth, imageHeight);
-      _items.add(_ImagePaint(image, rect));
-      _addGeometry(node, rect);
+      final contentWidth = box.authoredContentWidth ?? image.width.toDouble();
+      final contentHeight =
+          box.authoredContentHeight ??
+          contentWidth * image.height / image.width;
+      final rect = ui.Rect.fromLTWH(
+        left,
+        top,
+        contentWidth + box.padding.horizontal + box.border.horizontal,
+        contentHeight + box.padding.vertical + box.border.vertical,
+      );
+      _items.add(
+        _ImagePaint(
+          image,
+          ui.Rect.fromLTWH(
+            contentLeft,
+            contentTop,
+            contentWidth,
+            contentHeight,
+          ),
+        ),
+      );
+      _addGeometry(
+        node,
+        rect,
+        paddingBox: box.paddingRect(rect),
+        contentBox: ui.Rect.fromLTWH(
+          contentLeft,
+          contentTop,
+          contentWidth,
+          contentHeight,
+        ),
+      );
       _addSemantic(node, [rect]);
-      return rect.bottom + marginBottom;
+      return normalTop + rect.height + box.marginBottom;
     }
 
     final elementPaintOrder = _paintOrder++;
     final children = _children(node.id);
     final textChildren = children
         .where((child) => child.kind == RenderNodeKind.text)
-        .toList();
+        .toList(growable: false);
     var semanticRects = <ui.Rect>[];
-    var cursor = top + paddingTop;
-    if (textChildren.isNotEmpty) {
-      final (paragraph, ranges, textByNode) = _paragraph(
-        textChildren,
-        innerWidth,
+    var naturalContentHeight = 0.0;
+
+    final display = node.styles['display'];
+    if (display == 'flex') {
+      naturalContentHeight = _layoutFlexChildren(
+        node,
+        children,
+        contentLeft,
+        contentTop,
+        box.contentWidth,
+        box.authoredContentHeight,
       );
-      final origin = ui.Offset(left + paddingLeft, cursor);
-      _items.add(_ParagraphPaint(paragraph, origin));
-      final rect = ui.Rect.fromLTWH(
-        origin.dx,
-        origin.dy,
-        innerWidth,
-        paragraph.height,
+    } else if (display == 'grid') {
+      naturalContentHeight = _layoutGridChildren(
+        node,
+        children,
+        contentLeft,
+        contentTop,
+        box.contentWidth,
+        box.authoredContentHeight,
       );
-      _paragraphs.add(
-        _ParagraphState(
-          paragraph: paragraph,
-          origin: origin,
-          ranges: Map.unmodifiable(ranges),
-          textByNode: Map.unmodifiable(textByNode),
-        ),
+    } else {
+      var cursor = contentTop;
+      if (textChildren.isNotEmpty) {
+        final textLayout = _layoutText(
+          textChildren,
+          contentLeft,
+          cursor,
+          box.contentWidth,
+        );
+        semanticRects = textLayout.rects;
+        cursor += textLayout.height;
+      }
+      cursor = _layoutBlockChildren(
+        children.where((child) => child.kind != RenderNodeKind.text).toList(),
+        contentLeft,
+        cursor,
+        box.contentWidth,
+        absoluteX: left + box.border.left,
+        absoluteY: top + box.border.top,
       );
-      final textLength = ranges.values.fold(
-        0,
-        (length, range) => length + range.length,
+      naturalContentHeight = cursor - contentTop;
+    }
+
+    final contentHeight = box.authoredContentHeight ?? naturalContentHeight;
+    final rect = ui.Rect.fromLTWH(
+      left,
+      top,
+      box.contentWidth + box.padding.horizontal + box.border.horizontal,
+      contentHeight + box.padding.vertical + box.border.vertical,
+    );
+    _insertBoxPaint(node, rect, box, paintStart);
+    _addGeometry(
+      node,
+      rect,
+      paddingBox: box.paddingRect(rect),
+      contentBox: ui.Rect.fromLTWH(
+        contentLeft,
+        contentTop,
+        box.contentWidth,
+        contentHeight,
+      ),
+      paintOrder: elementPaintOrder,
+    );
+    _addSemantic(node, semanticRects.isEmpty ? [rect] : semanticRects);
+    return normalTop + rect.height + box.marginBottom;
+  }
+
+  double _layoutBlockChildren(
+    List<RenderNode> children,
+    double x,
+    double y,
+    double width, {
+    double? absoluteX,
+    double? absoluteY,
+  }) {
+    var cursorY = y;
+    var cursorX = x;
+    var lineBottom = y;
+    var hasInline = false;
+    final absolute = <RenderNode>[];
+
+    void flushInline() {
+      if (!hasInline) return;
+      cursorY = lineBottom;
+      cursorX = x;
+      lineBottom = cursorY;
+      hasInline = false;
+    }
+
+    for (final child in children.where((child) => !_isHidden(child))) {
+      if (child.styles['position'] == 'absolute') {
+        absolute.add(child);
+        continue;
+      }
+      if (_isInline(child)) {
+        final borderWidth = _intrinsicBorderWidth(child, width);
+        final marginLeft = _marginValue(child, 'left');
+        final marginRight = _marginValue(child, 'right');
+        if (hasInline &&
+            cursorX + marginLeft + borderWidth + marginRight > x + width) {
+          flushInline();
+        }
+        _layoutElement(
+          child,
+          cursorX,
+          cursorY,
+          width,
+          forcedBorderWidth: borderWidth,
+          inlineMode: true,
+        );
+        final rect = _elementRect(child.id);
+        cursorX = rect.right + marginRight;
+        final childBottom = rect.bottom + _marginValue(child, 'bottom');
+        if (childBottom > lineBottom) lineBottom = childBottom;
+        hasInline = true;
+      } else {
+        flushInline();
+        cursorY = _layoutElement(child, x, cursorY, width);
+        lineBottom = cursorY;
+      }
+    }
+    flushInline();
+
+    for (final child in absolute) {
+      final childX =
+          (absoluteX ?? x) + (_scaledLength(child.styles['left']) ?? 0);
+      final childY =
+          (absoluteY ?? y) + (_scaledLength(child.styles['top']) ?? 0);
+      _layoutElement(child, childX, childY, width, positioned: true);
+    }
+    return cursorY;
+  }
+
+  double _layoutFlexChildren(
+    RenderNode parent,
+    List<RenderNode> allChildren,
+    double x,
+    double y,
+    double width,
+    double? authoredHeight,
+  ) {
+    final children = allChildren
+        .where(
+          (child) => child.kind != RenderNodeKind.text && !_isHidden(child),
+        )
+        .toList(growable: false);
+    if (children.isEmpty) return 0;
+    final direction = parent.styles['flex-direction'] ?? 'row';
+    final column = direction.startsWith('column');
+    final reverse = direction.endsWith('reverse');
+    final gap = _flexGap(parent.styles, column) * viewport.pageZoom;
+    final mainExtent = column ? authoredHeight : width;
+    final bases = <double>[];
+    final grows = <double>[];
+    for (final child in children) {
+      final basis = _scaledLength(child.styles['flex-basis']);
+      final box = _CssBox.resolve(child, width, viewport.pageZoom);
+      bases.add(
+        basis ??
+            (column
+                ? (box.authoredBorderHeight ??
+                      _intrinsicContentHeight(child, box.contentWidth))
+                : (box.authoredBorderWidth ??
+                      _intrinsicBorderWidth(child, width))),
       );
-      semanticRects = paragraph
-          .getBoxesForRange(0, textLength)
-          .map(
-            (box) => ui.Rect.fromLTRB(
+      grows.add(_number(child.styles['flex-grow'], 0));
+    }
+    final gaps = gap * (children.length - 1);
+    final intrinsicMain = bases.fold(0.0, (sum, value) => sum + value) + gaps;
+    final resolvedMain = mainExtent ?? intrinsicMain;
+    final free = (resolvedMain - intrinsicMain)
+        .clamp(0, double.infinity)
+        .toDouble();
+    final totalGrow = grows.fold(0.0, (sum, value) => sum + value);
+    final sizes = List<double>.generate(
+      children.length,
+      (index) =>
+          bases[index] + (totalGrow > 0 ? free * grows[index] / totalGrow : 0),
+    );
+
+    var cursor = reverse ? resolvedMain : 0.0;
+    var crossExtent = 0.0;
+    for (var index = 0; index < children.length; index++) {
+      final child = children[index];
+      final mainSize = sizes[index];
+      if (reverse) cursor -= mainSize;
+      if (column) {
+        _layoutElement(
+          child,
+          x,
+          y + cursor,
+          width,
+          forcedBorderWidth: width,
+          forcedBorderHeight: mainSize,
+          positioned: true,
+        );
+        crossExtent = width;
+      } else {
+        _layoutElement(
+          child,
+          x + cursor,
+          y,
+          mainSize,
+          forcedBorderWidth: mainSize,
+          positioned: true,
+        );
+        final childHeight = _elementRect(child.id).height;
+        if (childHeight > crossExtent) crossExtent = childHeight;
+      }
+      if (reverse) {
+        cursor -= gap;
+      } else {
+        cursor += mainSize + gap;
+      }
+    }
+    return column ? resolvedMain : (authoredHeight ?? crossExtent);
+  }
+
+  double _layoutGridChildren(
+    RenderNode parent,
+    List<RenderNode> allChildren,
+    double x,
+    double y,
+    double width,
+    double? authoredHeight,
+  ) {
+    final children = allChildren
+        .where(
+          (child) => child.kind != RenderNodeKind.text && !_isHidden(child),
+        )
+        .toList(growable: false);
+    if (children.isEmpty) return 0;
+    final columnGap = _gridGap(parent.styles, column: true) * viewport.pageZoom;
+    final rowGap = _gridGap(parent.styles, column: false) * viewport.pageZoom;
+    var columns = _parseTracks(
+      parent.styles['grid-template-columns'],
+      viewport.pageZoom,
+    );
+    var rows = _parseTracks(
+      parent.styles['grid-template-rows'],
+      viewport.pageZoom,
+    );
+    if (columns.isEmpty) columns = [_Track(base: width)];
+    final rowCount = (children.length / columns.length).ceil();
+    if (rows.isEmpty) {
+      rows = List.generate(rowCount, (_) => const _Track(base: 19.2));
+    }
+    while (rows.length < rowCount) {
+      rows.add(const _Track(base: 19.2));
+    }
+    final columnSizes = _resolveTracks(columns, width, columnGap);
+    final intrinsicRows =
+        rows.fold(0.0, (sum, row) => sum + row.base) +
+        rowGap * (rows.length - 1);
+    final rowExtent = authoredHeight ?? intrinsicRows;
+    final rowSizes = _resolveTracks(rows, rowExtent, rowGap);
+    final columnOffsets = _trackOffsets(columnSizes, columnGap);
+    final rowOffsets = _trackOffsets(rowSizes, rowGap);
+    for (var index = 0; index < children.length; index++) {
+      final column = index % columnSizes.length;
+      final row = index ~/ columnSizes.length;
+      _layoutElement(
+        children[index],
+        x + columnOffsets[column],
+        y + rowOffsets[row],
+        columnSizes[column],
+        forcedBorderWidth: columnSizes[column],
+        forcedBorderHeight: rowSizes[row],
+        positioned: true,
+      );
+    }
+    return rowSizes.fold(0.0, (sum, value) => sum + value) +
+        rowGap * (rowSizes.length - 1);
+  }
+
+  _TextLayout _layoutText(
+    List<RenderNode> textNodes,
+    double x,
+    double y,
+    double width,
+  ) {
+    final (paragraph, ranges, textByNode) = _paragraph(textNodes, width);
+    final height = _deterministicTextHeight(
+      textNodes.map((node) => node.text).join(),
+      width,
+      textNodes.first.styles,
+      viewport.pageZoom,
+    );
+    final origin = ui.Offset(x, y);
+    _items.add(_ParagraphPaint(paragraph, origin));
+    _paragraphs.add(
+      _ParagraphState(
+        paragraph: paragraph,
+        origin: origin,
+        ranges: Map.unmodifiable(ranges),
+        textByNode: Map.unmodifiable(textByNode),
+      ),
+    );
+    final textLength = ranges.values.fold(
+      0,
+      (length, range) => length + range.length,
+    );
+    final semanticRects = paragraph
+        .getBoxesForRange(0, textLength)
+        .map(
+          (box) => ui.Rect.fromLTRB(
+            origin.dx + box.left,
+            origin.dy + box.top,
+            origin.dx + box.right,
+            origin.dy + box.bottom,
+          ),
+        )
+        .toList(growable: false);
+    for (final text in textNodes) {
+      final range = ranges[text.id]!;
+      final boxes = paragraph.getBoxesForRange(
+        range.start,
+        range.start + range.length,
+      );
+      if (boxes.isEmpty) {
+        _addGeometry(text, ui.Rect.fromLTWH(origin.dx, origin.dy, 0, height));
+      } else {
+        for (final box in boxes) {
+          _addGeometry(
+            text,
+            ui.Rect.fromLTRB(
               origin.dx + box.left,
               origin.dy + box.top,
               origin.dx + box.right,
               origin.dy + box.bottom,
             ),
-          )
-          .toList(growable: false);
-      for (final text in textChildren) {
-        final range = ranges[text.id]!;
-        final boxes = paragraph.getBoxesForRange(
-          range.start,
-          range.start + range.length,
-        );
-        if (boxes.isEmpty) {
-          _addGeometry(
-            text,
-            ui.Rect.fromLTWH(origin.dx, origin.dy, 0, paragraph.height),
           );
-        } else {
-          for (final box in boxes) {
-            _addGeometry(
-              text,
-              ui.Rect.fromLTRB(
-                origin.dx + box.left,
-                origin.dy + box.top,
-                origin.dx + box.right,
-                origin.dy + box.bottom,
-              ),
-            );
-          }
         }
       }
-      cursor = rect.bottom;
     }
-    for (final child in children.where(
-      (child) => child.kind != RenderNodeKind.text && !_isHidden(child),
-    )) {
-      cursor = _layoutElement(child, left + paddingLeft, cursor, innerWidth);
-    }
-    final explicitHeight = _scaledLength(node.styles['height']);
-    final height =
-        explicitHeight ??
-        (cursor - top + paddingBottom)
-            .clamp(paddingTop + paddingBottom, double.infinity)
-            .toDouble();
-    final rect = ui.Rect.fromLTWH(left, top, boxWidth, height);
+    return _TextLayout(height, semanticRects);
+  }
+
+  void _insertBoxPaint(
+    RenderNode node,
+    ui.Rect rect,
+    _CssBox box,
+    int paintStart,
+  ) {
     final background =
         node.styles['background-color'] ?? node.styles['background'];
     if (background != null) {
       _items.insert(
         paintStart,
-        _RectPaint(rect, _color(background, 0x00000000)),
+        _RectPaint(
+          rect,
+          _color(
+            _resolveCurrentColor(background, node.styles['color']),
+            0x00000000,
+          ),
+        ),
       );
     }
-    final paddingRect = rect;
-    final contentRect = ui.Rect.fromLTWH(
-      rect.left + paddingLeft,
-      rect.top + paddingTop,
-      (rect.width - paddingLeft - paddingRight)
-          .clamp(0, double.infinity)
-          .toDouble(),
-      (rect.height - paddingTop - paddingBottom)
-          .clamp(0, double.infinity)
-          .toDouble(),
-    );
-    _addGeometry(
+    if (box.border.horizontal > 0 || box.border.vertical > 0) {
+      _items.insert(
+        paintStart + (background == null ? 0 : 1),
+        _BorderPaint(
+          rect,
+          box.border,
+          _color(
+            _resolveCurrentColor(
+              _borderColor(node.styles),
+              node.styles['color'],
+            ),
+            0xff000000,
+          ),
+        ),
+      );
+    }
+  }
+
+  ui.Rect _elementRect(int nodeId) =>
+      _geometry.lastWhere((entry) => entry.nodeId == nodeId).borderBox.uiRect;
+
+  double _intrinsicContentWidth(RenderNode node) {
+    final authored = _scaledLength(node.styles['width']);
+    if (authored != null) return authored;
+    final text = _children(node.id)
+        .where((child) => child.kind == RenderNodeKind.text)
+        .map((child) => _collapseWhitespace(child.text))
+        .join();
+    return text.length * 8.0 * viewport.pageZoom;
+  }
+
+  double _intrinsicBorderWidth(RenderNode node, double availableWidth) {
+    final box = _CssBox.resolve(
       node,
-      rect,
-      paddingBox: paddingRect,
-      contentBox: contentRect,
-      paintOrder: elementPaintOrder,
+      availableWidth,
+      viewport.pageZoom,
+      shrinkToFitWidth: _intrinsicContentWidth(node),
     );
-    _addSemantic(node, semanticRects.isEmpty ? [rect] : semanticRects);
-    return rect.bottom + marginBottom;
+    return box.authoredBorderWidth ??
+        box.contentWidth + box.padding.horizontal + box.border.horizontal;
+  }
+
+  double _intrinsicContentHeight(RenderNode node, double width) {
+    final text = _children(node.id)
+        .where((child) => child.kind == RenderNodeKind.text)
+        .map((child) => child.text)
+        .join();
+    return text.isEmpty
+        ? 0
+        : _deterministicTextHeight(text, width, node.styles, viewport.pageZoom);
   }
 
   (ui.Paragraph, Map<int, _TextRange>, Map<int, String>) _paragraph(
@@ -1538,27 +1914,39 @@ final class _FixtureLayout {
     final builder = ui.ParagraphBuilder(
       ui.ParagraphStyle(
         textDirection: ui.TextDirection.ltr,
-        fontFamily: nodes.first.styles['font-family'],
+        fontFamily: nodes.first.styles['font-family'] ?? 'monospace',
       ),
     );
     final ranges = <int, _TextRange>{};
     final textByNode = <int, String>{};
     var offset = 0;
     for (final node in nodes) {
+      final text = _collapseWhitespace(node.text);
+      final fontSize =
+          _number(node.styles['font-size'], 16) * viewport.pageZoom;
+      final lineHeight =
+          (_length(node.styles['line-height']) ??
+              _number(node.styles['font-size'], 16) * 1.2) *
+          viewport.pageZoom;
       builder.pushStyle(
         ui.TextStyle(
-          color: _color(node.styles['color'], 0xff111111),
-          fontSize: _number(node.styles['font-size'], 16) * viewport.pageZoom,
+          color: _color(
+            _resolveCurrentColor(node.styles['color'], null),
+            0xff111111,
+          ),
+          fontSize: fontSize,
+          height: lineHeight / fontSize,
+          letterSpacing: -fontSize * 0.1,
           fontWeight: node.styles['font-weight'] == 'bold'
               ? ui.FontWeight.bold
               : ui.FontWeight.normal,
         ),
       );
-      builder.addText(node.text);
+      builder.addText(text);
       builder.pop();
-      final length = node.text.codeUnits.length;
+      final length = text.codeUnits.length;
       ranges[node.id] = _TextRange(offset, length);
-      textByNode[node.id] = node.text;
+      textByNode[node.id] = text;
       offset += length;
     }
     final paragraph = builder.build();
@@ -1625,6 +2013,367 @@ final class _FixtureLayout {
   }
 }
 
+final class _TextLayout {
+  const _TextLayout(this.height, this.rects);
+  final double height;
+  final List<ui.Rect> rects;
+}
+
+final class _Edges {
+  const _Edges(this.top, this.right, this.bottom, this.left);
+  final double top;
+  final double right;
+  final double bottom;
+  final double left;
+  double get horizontal => left + right;
+  double get vertical => top + bottom;
+}
+
+final class _CssBox {
+  const _CssBox({
+    required this.marginTop,
+    required this.marginRight,
+    required this.marginBottom,
+    required this.marginLeft,
+    required this.padding,
+    required this.border,
+    required this.contentWidth,
+    required this.authoredContentWidth,
+    required this.authoredContentHeight,
+  });
+
+  factory _CssBox.resolve(
+    RenderNode node,
+    double availableWidth,
+    double scale, {
+    double? forcedBorderWidth,
+    double? forcedBorderHeight,
+    double? shrinkToFitWidth,
+  }) {
+    final styles = node.styles;
+    final defaultMargin = node.name == 'body' ? 8.0 : 0.0;
+    final marginTop = _edge(styles, 'margin', 'top', defaultMargin) * scale;
+    final marginRightValue =
+        _edge(styles, 'margin', 'right', defaultMargin) * scale;
+    final marginBottom =
+        _edge(styles, 'margin', 'bottom', defaultMargin) * scale;
+    final marginLeftValue =
+        _edge(styles, 'margin', 'left', defaultMargin) * scale;
+    final autoLeft = _edgeIsAuto(styles, 'margin', 'left');
+    final autoRight = _edgeIsAuto(styles, 'margin', 'right');
+    final padding = _Edges(
+      _edge(styles, 'padding', 'top', 0) * scale,
+      _edge(styles, 'padding', 'right', 0) * scale,
+      _edge(styles, 'padding', 'bottom', 0) * scale,
+      _edge(styles, 'padding', 'left', 0) * scale,
+    );
+    final border = _borderEdges(styles, scale);
+    final extras = padding.horizontal + border.horizontal;
+    final authoredWidth = _length(styles['width']);
+    final authoredHeight = _length(styles['height']);
+    final borderBoxSizing = styles['box-sizing'] == 'border-box';
+    final authoredContentWidth = authoredWidth == null
+        ? null
+        : (authoredWidth * scale - (borderBoxSizing ? extras : 0))
+              .clamp(0, double.infinity)
+              .toDouble();
+    final heightExtras = padding.vertical + border.vertical;
+    final authoredContentHeight = forcedBorderHeight != null
+        ? (forcedBorderHeight - heightExtras)
+              .clamp(0, double.infinity)
+              .toDouble()
+        : authoredHeight == null
+        ? null
+        : (authoredHeight * scale - (borderBoxSizing ? heightExtras : 0))
+              .clamp(0, double.infinity)
+              .toDouble();
+    final contentWidth = forcedBorderWidth != null
+        ? (forcedBorderWidth - extras).clamp(0, double.infinity).toDouble()
+        : authoredContentWidth ??
+              shrinkToFitWidth ??
+              (availableWidth -
+                      (autoLeft ? 0 : marginLeftValue) -
+                      (autoRight ? 0 : marginRightValue) -
+                      extras)
+                  .clamp(0, double.infinity)
+                  .toDouble();
+    final borderWidth = contentWidth + extras;
+    final remaining =
+        (availableWidth -
+                borderWidth -
+                (autoLeft ? 0 : marginLeftValue) -
+                (autoRight ? 0 : marginRightValue))
+            .clamp(0, double.infinity)
+            .toDouble();
+    final marginLeft = autoLeft
+        ? (autoRight ? remaining / 2 : remaining)
+        : marginLeftValue;
+    final marginRight = autoRight
+        ? (autoLeft ? remaining / 2 : remaining)
+        : marginRightValue;
+    return _CssBox(
+      marginTop: marginTop,
+      marginRight: marginRight,
+      marginBottom: marginBottom,
+      marginLeft: marginLeft,
+      padding: padding,
+      border: border,
+      contentWidth: contentWidth,
+      authoredContentWidth: authoredContentWidth,
+      authoredContentHeight: authoredContentHeight,
+    );
+  }
+
+  final double marginTop;
+  final double marginRight;
+  final double marginBottom;
+  final double marginLeft;
+  final _Edges padding;
+  final _Edges border;
+  final double contentWidth;
+  final double? authoredContentWidth;
+  final double? authoredContentHeight;
+  double? get authoredBorderWidth => authoredContentWidth == null
+      ? null
+      : authoredContentWidth! + padding.horizontal + border.horizontal;
+  double? get authoredBorderHeight => authoredContentHeight == null
+      ? null
+      : authoredContentHeight! + padding.vertical + border.vertical;
+
+  ui.Rect paddingRect(ui.Rect borderRect) => ui.Rect.fromLTRB(
+    borderRect.left + border.left,
+    borderRect.top + border.top,
+    borderRect.right - border.right,
+    borderRect.bottom - border.bottom,
+  );
+}
+
+final class _Track {
+  const _Track({required this.base, this.flex = 0});
+  final double base;
+  final double flex;
+}
+
+_Edges _borderEdges(Map<String, String> styles, double scale) => _Edges(
+  _borderWidth(styles, 'top') * scale,
+  _borderWidth(styles, 'right') * scale,
+  _borderWidth(styles, 'bottom') * scale,
+  _borderWidth(styles, 'left') * scale,
+);
+
+double _borderWidth(Map<String, String> styles, String side) {
+  final explicit = _length(styles['border-$side-width']);
+  if (explicit != null) return explicit;
+  final shorthand = styles['border-width'];
+  if (shorthand != null) {
+    final value = _shorthandEdge(shorthand, side);
+    if (value != null) return value;
+  }
+  final border = styles['border'];
+  if (border != null) {
+    for (final token in border.split(RegExp(r'\s+'))) {
+      final width = _length(token);
+      if (width != null) return width;
+    }
+  }
+  return 0;
+}
+
+String? _borderColor(Map<String, String> styles) {
+  final explicit = styles['border-color'];
+  if (explicit != null) return explicit.split(RegExp(r'\s+')).first;
+  final border = styles['border'];
+  if (border != null) {
+    for (final token in border.split(RegExp(r'\s+')).reversed) {
+      if (token.startsWith('#') ||
+          const {
+            'black',
+            'white',
+            'red',
+            'green',
+            'blue',
+            'yellow',
+            'gray',
+            'grey',
+            'purple',
+            'currentcolor',
+          }.contains(token.toLowerCase())) {
+        return token;
+      }
+    }
+  }
+  return styles['color'];
+}
+
+bool _edgeIsAuto(Map<String, String> styles, String property, String side) {
+  final explicit = styles['$property-$side'];
+  if (explicit != null) return explicit.trim().toLowerCase() == 'auto';
+  final shorthand = styles[property];
+  if (shorthand == null) return false;
+  final tokens = shorthand.trim().split(RegExp(r'\s+'));
+  if (tokens.isEmpty || tokens.length > 4) return false;
+  final index = switch (side) {
+    'top' => 0,
+    'right' => tokens.length == 1 ? 0 : 1,
+    'bottom' => tokens.length <= 2 ? 0 : 2,
+    'left' => switch (tokens.length) {
+      1 => 0,
+      2 || 3 => 1,
+      _ => 3,
+    },
+    _ => 0,
+  };
+  return tokens[index].toLowerCase() == 'auto';
+}
+
+double _marginValue(RenderNode node, String side) =>
+    _edge(node.styles, 'margin', side, 0);
+
+bool _isInline(RenderNode node) {
+  final display = node.styles['display'];
+  if (display != null) return display == 'inline' || display == 'inline-block';
+  return const {
+    'a',
+    'abbr',
+    'b',
+    'bdi',
+    'bdo',
+    'cite',
+    'code',
+    'em',
+    'i',
+    'label',
+    'q',
+    's',
+    'small',
+    'span',
+    'strong',
+    'sub',
+    'sup',
+    'time',
+    'u',
+  }.contains(node.name);
+}
+
+double _flexGap(Map<String, String> styles, bool column) {
+  final explicit = _length(styles[column ? 'row-gap' : 'column-gap']);
+  if (explicit != null) return explicit;
+  final values = styles['gap']?.trim().split(RegExp(r'\s+')) ?? const [];
+  if (values.isEmpty) return 0;
+  final selected = column || values.length == 1 ? values[0] : values[1];
+  return _length(selected) ?? 0;
+}
+
+double _gridGap(Map<String, String> styles, {required bool column}) {
+  final explicit = _length(styles[column ? 'column-gap' : 'row-gap']);
+  if (explicit != null) return explicit;
+  final values = styles['gap']?.trim().split(RegExp(r'\s+')) ?? const [];
+  if (values.isEmpty) return 0;
+  final selected = column && values.length > 1 ? values[1] : values[0];
+  return _length(selected) ?? 0;
+}
+
+List<_Track> _parseTracks(String? source, double scale) {
+  if (source == null || source.trim().isEmpty || source == 'none') return [];
+  final tokens = <String>[];
+  var depth = 0;
+  var start = 0;
+  final input = source.trim();
+  for (var index = 0; index < input.length; index++) {
+    final unit = input[index];
+    if (unit == '(') depth++;
+    if (unit == ')') depth--;
+    if (depth == 0 && unit.trim().isEmpty) {
+      if (start < index) tokens.add(input.substring(start, index));
+      start = index + 1;
+    }
+  }
+  if (start < input.length) tokens.add(input.substring(start));
+  final tracks = <_Track>[];
+  for (final token in tokens) {
+    final normalized = token.trim().toLowerCase();
+    if (normalized.endsWith('fr')) {
+      tracks.add(
+        _Track(
+          base: 0,
+          flex:
+              double.tryParse(normalized.substring(0, normalized.length - 2)) ??
+              1.0,
+        ),
+      );
+      continue;
+    }
+    if (normalized.startsWith('minmax(') && normalized.endsWith(')')) {
+      final values = normalized.substring(7, normalized.length - 1).split(',');
+      final base = _length(values.first.trim()) ?? 0.0;
+      final maximum = values.length > 1 ? values[1].trim() : '';
+      final flex = maximum.endsWith('fr')
+          ? double.tryParse(maximum.substring(0, maximum.length - 2)) ?? 1.0
+          : 0.0;
+      tracks.add(_Track(base: base * scale, flex: flex));
+      continue;
+    }
+    tracks.add(_Track(base: (_length(normalized) ?? 0) * scale));
+  }
+  return tracks;
+}
+
+List<double> _resolveTracks(List<_Track> tracks, double extent, double gap) {
+  final gaps = gap * (tracks.length - 1);
+  final bases = tracks.fold(0.0, (sum, track) => sum + track.base);
+  final free = (extent - gaps - bases).clamp(0, double.infinity).toDouble();
+  final flex = tracks.fold(0.0, (sum, track) => sum + track.flex);
+  return tracks
+      .map((track) => track.base + (flex > 0 ? free * track.flex / flex : 0))
+      .toList(growable: false);
+}
+
+List<double> _trackOffsets(List<double> sizes, double gap) {
+  final offsets = <double>[];
+  var cursor = 0.0;
+  for (final size in sizes) {
+    offsets.add(cursor);
+    cursor += size + gap;
+  }
+  return offsets;
+}
+
+String _collapseWhitespace(String value) =>
+    value.trim().replaceAll(RegExp(r'\s+'), ' ');
+
+double _deterministicTextHeight(
+  String source,
+  double width,
+  Map<String, String> styles,
+  double scale,
+) {
+  final fontSize = _number(styles['font-size'], 16);
+  final lineHeight = (_length(styles['line-height']) ?? fontSize * 1.2) * scale;
+  final charWidth = fontSize * scale / 2;
+  final maxCharacters = (width / charWidth).floor().clamp(1, 1 << 20);
+  final text = _collapseWhitespace(source);
+  if (text.isEmpty) return 0;
+  var lines = 1;
+  var used = 0;
+  for (final word in text.split(' ')) {
+    var remaining = word.length;
+    if (used > 0 && used + 1 + remaining <= maxCharacters) {
+      used += 1 + remaining;
+      continue;
+    }
+    if (used > 0) {
+      lines++;
+      used = 0;
+    }
+    while (remaining > maxCharacters) {
+      lines++;
+      remaining -= maxCharacters;
+    }
+    used = remaining;
+  }
+  return lines * lineHeight;
+}
+
 ui.Color _color(String? value, int fallback) {
   if (value == null) return ui.Color(fallback);
   final keyword = value.trim().toLowerCase();
@@ -1650,6 +2399,14 @@ ui.Color _color(String? value, int fallback) {
     throw RenderProtocolException('render.style', 'invalid color $value');
   }
   return ui.Color(normalized.length == 6 ? 0xff000000 | parsed : parsed);
+}
+
+String? _resolveCurrentColor(String? value, String? color) {
+  if (value?.trim().toLowerCase() != 'currentcolor') return value;
+  if (color == null || color.trim().toLowerCase() == 'currentcolor') {
+    return null;
+  }
+  return color;
 }
 
 bool _isHidden(RenderNode node) =>
@@ -1700,6 +2457,34 @@ double _edge(
     'bottom' => bottom,
     'left' => left,
     _ => fallback,
+  };
+}
+
+double? _shorthandEdge(String shorthand, String side) {
+  final values = shorthand
+      .trim()
+      .split(RegExp(r'\s+'))
+      .map(_length)
+      .toList(growable: false);
+  if (values.any((value) => value == null) ||
+      values.isEmpty ||
+      values.length > 4) {
+    return null;
+  }
+  final top = values[0]!;
+  final right = values.length == 1 ? top : values[1]!;
+  final bottom = values.length <= 2 ? top : values[2]!;
+  final left = switch (values.length) {
+    1 => top,
+    2 || 3 => right,
+    _ => values[3]!,
+  };
+  return switch (side) {
+    'top' => top,
+    'right' => right,
+    'bottom' => bottom,
+    'left' => left,
+    _ => null,
   };
 }
 

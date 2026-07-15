@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
+import '../render_models.dart';
 import 'native_protocol.dart';
 import 'native_renderer_protocol.dart';
 
@@ -119,6 +120,20 @@ typedef _RendererRespondDart = int Function(
 );
 typedef _RendererSubmitNative = _RendererRespondNative;
 typedef _RendererSubmitDart = _RendererRespondDart;
+typedef _RendererCaptureRespondNative = Uint32 Function(
+  Uint64,
+  Uint64,
+  Pointer<Uint8>,
+  Size,
+  Pointer<VixenBuffer>,
+);
+typedef _RendererCaptureRespondDart = int Function(
+  int,
+  int,
+  Pointer<Uint8>,
+  int,
+  Pointer<VixenBuffer>,
+);
 typedef _RendererShutdownNative = Uint32 Function(Uint64, Pointer<VixenBuffer>);
 typedef _RendererShutdownDart = int Function(int, Pointer<VixenBuffer>);
 typedef _BufferReleaseNative = Uint32 Function(Uint64);
@@ -170,6 +185,11 @@ class _VixenNativeBindings {
           .lookupFunction<_RendererRespondNative, _RendererRespondDart>(
             'vixen_renderer_respond',
           ),
+      rendererCaptureRespond = library
+          .lookupFunction<
+            _RendererCaptureRespondNative,
+            _RendererCaptureRespondDart
+          >('vixen_renderer_capture_respond'),
       rendererSubmit = library
           .lookupFunction<_RendererSubmitNative, _RendererSubmitDart>(
             'vixen_renderer_submit',
@@ -199,6 +219,7 @@ class _VixenNativeBindings {
   final _WaitEventDart waitEvent;
   final _RendererPollDart rendererPoll;
   final _RendererRespondDart rendererRespond;
+  final _RendererCaptureRespondDart rendererCaptureRespond;
   final _RendererSubmitDart rendererSubmit;
   final _RendererShutdownDart rendererShutdown;
   final _BufferReleaseDart bufferRelease;
@@ -347,6 +368,31 @@ class VixenNativeApi {
         handle,
         input,
         bytes.length,
+        output,
+      );
+      _consumeOutput(status, output, expectedType: 'renderer_accepted');
+    } finally {
+      calloc.free(output);
+      malloc.free(input);
+    }
+  }
+
+  void respondRendererCapture(int handle, int requestId, Uint8List png) {
+    if (requestId <= 0 ||
+        png.length < 24 ||
+        png.length > renderMaxCaptureBytes) {
+      throw const NativeProtocolException(
+        'renderer capture response is outside its bounded range',
+      );
+    }
+    final input = _copyInput(png);
+    final output = calloc<VixenBuffer>();
+    try {
+      final status = _bindings.rendererCaptureRespond(
+        handle,
+        requestId,
+        input,
+        png.length,
         output,
       );
       _consumeOutput(status, output, expectedType: 'renderer_accepted');
