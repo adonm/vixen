@@ -1,10 +1,12 @@
-use std::sync::{Arc, Weak};
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex, Weak};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use vixen_api::{
-    BrowserCommand, BrowserCommandResult, BrowsingContextState, RenderBrokerRequestKind,
-    RenderBrokerResponseKind, RenderCaptureRequest, RenderCommit, RenderNodeId, RenderRect,
+    BrowserCommand, BrowserCommandResult, BrowsingContextId, BrowsingContextState, HostViewState,
+    RenderBrokerRequestKind, RenderBrokerResponseKind, RenderCaptureRequest, RenderCommit,
+    RenderNodeId, RenderRect,
 };
 use vixen_cdp::CdpRenderBackend;
 use vixen_engine::browser::EngineBrowserClient;
@@ -32,6 +34,7 @@ impl CdpHost {
             .subscribe_browser();
         let renderer: Arc<dyn CdpRenderBackend> = Arc::new(FlutterCdpRenderBackend {
             entry: Arc::downgrade(entry),
+            viewports: Mutex::new(HashMap::new()),
         });
         let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel();
         let join = std::thread::Builder::new()
@@ -82,6 +85,13 @@ impl CdpHost {
 
 struct FlutterCdpRenderBackend {
     entry: Weak<ControllerEntry>,
+    viewports: Mutex<HashMap<BrowsingContextId, CdpViewportState>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CdpViewportState {
+    viewport: (u32, u32),
+    generation: u64,
 }
 
 impl FlutterCdpRenderBackend {
@@ -95,12 +105,13 @@ impl FlutterCdpRenderBackend {
             .entry
             .upgrade()
             .ok_or_else(|| "Flutter CDP host is closed".to_owned())?;
+        let viewport_generation = self.prepare_viewport(browser, context, viewport)?;
         let snapshot = match browser
             .dispatch(BrowserCommand::RenderSnapshot {
                 context_id: context.context_id,
                 document_id: context.document_id,
                 viewport,
-                viewport_generation: viewport_generation(viewport),
+                viewport_generation,
                 page_zoom: context.page_zoom,
             })
             .map_err(|error| error.to_string())?
@@ -124,11 +135,12 @@ impl FlutterCdpRenderBackend {
                 })
                 .cloned();
             if current.is_none() {
+                let force_snapshot = state.needs_resync;
                 crate::sync_renderer::publish_renderer_source(
                     &entry.renderer,
                     &mut state,
                     snapshot.clone(),
-                    false,
+                    force_snapshot,
                 )
                 .map_err(|error| format!("{}: {}", error.code, error.message))?;
             }
@@ -169,6 +181,42 @@ impl FlutterCdpRenderBackend {
             std::thread::sleep(CAPTURE_POLL_INTERVAL);
         };
         Ok((entry, presented))
+    }
+
+    fn prepare_viewport(
+        &self,
+        browser: &mut EngineBrowserClient,
+        context: &BrowsingContextState,
+        viewport: (u32, u32),
+    ) -> Result<u64, String> {
+        let current = self
+            .viewports
+            .lock()
+            .map_err(|_| "CDP viewport state is unavailable".to_owned())?
+            .get(&context.context_id)
+            .copied();
+        let (next, changed) = next_viewport_state(current, viewport)?;
+        if changed {
+            match browser
+                .dispatch(BrowserCommand::UpdateHostViewState {
+                    context_id: context.context_id,
+                    state: HostViewState {
+                        generation: next.generation,
+                        viewport: next.viewport,
+                        ..HostViewState::default()
+                    },
+                })
+                .map_err(|error| error.to_string())?
+            {
+                BrowserCommandResult::InputDispatched(_) => {}
+                result => return Err(format!("unexpected host-view result: {result:?}")),
+            }
+            self.viewports
+                .lock()
+                .map_err(|_| "CDP viewport state is unavailable".to_owned())?
+                .insert(context.context_id, next);
+        }
+        Ok(next.generation)
     }
 }
 
@@ -336,4 +384,49 @@ fn union_rect(left: RenderRect, right: RenderRect) -> RenderRect {
 
 fn viewport_generation((width, height): (u32, u32)) -> u64 {
     (u64::from(width) << 32) | u64::from(height)
+}
+
+fn next_viewport_state(
+    current: Option<CdpViewportState>,
+    viewport: (u32, u32),
+) -> Result<(CdpViewportState, bool), String> {
+    match current {
+        Some(current) if current.viewport == viewport => Ok((current, false)),
+        Some(current) => Ok((
+            CdpViewportState {
+                viewport,
+                generation: current
+                    .generation
+                    .checked_add(1)
+                    .ok_or_else(|| "CDP viewport generation exhausted".to_owned())?,
+            },
+            true,
+        )),
+        None => Ok((
+            CdpViewportState {
+                viewport,
+                generation: viewport_generation(viewport),
+            },
+            true,
+        )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cdp_viewport_generation_is_monotonic_when_the_viewport_shrinks() {
+        let (initial, changed) = next_viewport_state(None, (800, 600)).unwrap();
+        assert!(changed);
+
+        let (smaller, changed) = next_viewport_state(Some(initial), (320, 240)).unwrap();
+        assert!(changed);
+        assert!(smaller.generation > initial.generation);
+
+        let (unchanged, changed) = next_viewport_state(Some(smaller), (320, 240)).unwrap();
+        assert!(!changed);
+        assert_eq!(unchanged, smaller);
+    }
 }

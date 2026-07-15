@@ -58,7 +58,7 @@ pub struct Page {
 struct ElementScrollState {
     scroll_node_id: RenderScrollNodeId,
     position: (f32, f32),
-    intent: Option<(f32, f32)>,
+    intent: Option<(f64, f64)>,
     max: (f32, f32),
     user_scrollable: bool,
 }
@@ -650,7 +650,7 @@ impl Page {
             return false;
         }
         state.position = next;
-        state.intent = Some(next);
+        state.intent = Some((position.0.clamp(0.0, limit), position.1.clamp(0.0, limit)));
         self.bump_accessibility_mutation_epoch();
         true
     }
@@ -731,15 +731,16 @@ impl Page {
                 .element_scrolls
                 .get(&node_id)
                 .filter(|state| state.scroll_node_id == scroll.scroll_node_id);
-            let position = (
-                (scroll.offset.x / output_scale) as f32,
-                (scroll.offset.y / output_scale) as f32,
+            let exact_position = (
+                scroll.offset.x / output_scale,
+                scroll.offset.y / output_scale,
             );
+            let position = (exact_position.0 as f32, exact_position.1 as f32);
             let mut intent = previous.and_then(|state| state.intent);
-            if intent.is_some_and(|requested| requested != position)
+            if intent.is_some_and(|requested| requested != exact_position)
                 || (intent.is_none() && position != (0.0, 0.0))
             {
-                intent = Some(position);
+                intent = Some(exact_position);
                 source_changed = true;
             }
             element_scrolls.insert(
@@ -1082,8 +1083,8 @@ impl Page {
                 scroll_node_id: scroll.scroll_node_id,
                 node_id: render_node_id,
                 kind: RenderScrollIntentKind::To(RenderPoint {
-                    x: f64::from(intent.0) * output_scale,
-                    y: f64::from(intent.1) * output_scale,
+                    x: intent.0 * output_scale,
+                    y: intent.1 * output_scale,
                 }),
             });
         }
@@ -1894,6 +1895,32 @@ mod tests {
         assert_eq!(
             intent.kind,
             RenderScrollIntentKind::To(RenderPoint { x: 25.0, y: 45.0 })
+        );
+
+        assert!(page.set_element_scroll(
+            scroller.node_id,
+            scroller.id.as_deref(),
+            &scroller.tag,
+            (0.0, 179.2),
+        ));
+        let fractional = page
+            .render_snapshot(
+                BrowsingContextId::new(1).unwrap(),
+                DocumentId::new(2).unwrap(),
+                (240, 160),
+                1,
+                1.0,
+                1.0,
+            )
+            .unwrap();
+        assert_eq!(
+            fractional
+                .scroll_intents
+                .iter()
+                .find(|intent| intent.scroll_node_id == scroll_node_id)
+                .unwrap()
+                .kind,
+            RenderScrollIntentKind::To(RenderPoint { x: 0.0, y: 179.2 })
         );
     }
 

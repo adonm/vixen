@@ -2842,7 +2842,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
         record.scrollMaxX = Math.max(0, Number(state && state.maxX) || 0);
         record.scrollMaxY = Math.max(0, Number(state && state.maxY) || 0);
         record.userScrollable = Boolean(state && state.userScrollable);
-        record.overflowClips = state !== undefined;
+        record.overflowClips = record.overflowClips === true || state !== undefined;
         if (changed && emitScroll) {
           const element = wrapElementByNodeId(nodeId);
           if (element !== null) dispatchElementScrollEvent(element);

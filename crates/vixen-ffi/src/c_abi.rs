@@ -442,6 +442,12 @@ pub(crate) fn drain_renderer_submissions(
                 let mut commits = state.commits.clone();
                 let releases = match commits.accept_presented(&state.replica, *presented) {
                     Ok(releases) => releases,
+                    Err(error) if error.code == vixen_api::render_error_codes::STALE => {
+                        renderer
+                            .consume_submission_with_updates(&submission, [])
+                            .map_err(renderer_broker_error)?;
+                        continue;
+                    }
                     Err(error) => {
                         renderer
                             .consume_submission_with_updates(&submission, [])

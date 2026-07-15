@@ -256,9 +256,9 @@ mod tests {
     use vixen_api::{
         BrowserCommand, BrowserCommandResult, BrowserEvent, RENDER_PROTOCOL_VERSION,
         RenderBridgeSubmission, RenderBrokerResponse, RenderBrokerResponseKind, RenderCommitId,
-        RenderFragmentId, RenderGeometryEntry, RenderHitTestHandle, RenderRect, RenderTextAffinity,
-        RenderTextBox, RenderTextDirection, RenderTextQueryBatchResult, RenderTextQueryHandle,
-        RenderTextQueryKind, RenderTextQueryResult, RenderTextQueryValue,
+        RenderFragmentId, RenderGeometryEntry, RenderHitTestHandle, RenderPresented, RenderRect,
+        RenderTextAffinity, RenderTextBox, RenderTextDirection, RenderTextQueryBatchResult,
+        RenderTextQueryHandle, RenderTextQueryKind, RenderTextQueryResult, RenderTextQueryValue,
     };
 
     use super::*;
@@ -552,6 +552,41 @@ mod tests {
 
         assert_eq!(accepted, vec![commit]);
         assert!(state.commits.accepted_commit().is_some());
+    }
+
+    #[test]
+    fn stale_presented_acknowledgement_is_consumed_without_poisoning_the_queue() {
+        let broker = RenderBroker::new();
+        let mut state = RendererState::default();
+        let base = source_snapshot(1, "10px");
+        publish_renderer_source(&broker, &mut state, base.clone(), false).unwrap();
+        let _ = broker.poll_message(Duration::ZERO).unwrap();
+        let commit = commit_for_snapshot(&base, 1);
+        broker
+            .submit(RenderBridgeSubmission::Commit(commit.clone()))
+            .unwrap();
+        drain_renderer_submissions(&broker, &mut state).unwrap();
+
+        let target = source_snapshot(2, "64px");
+        publish_renderer_source(&broker, &mut state, target, false).unwrap();
+        let _ = broker.poll_message(Duration::ZERO).unwrap();
+        broker
+            .submit(RenderBridgeSubmission::Presented(RenderPresented {
+                version: vixen_api::RENDER_PROTOCOL_VERSION,
+                context_id: commit.revision.context_id,
+                document_id: commit.revision.document_id,
+                commit_id: commit.commit_id,
+                revision: commit.revision,
+            }))
+            .unwrap();
+
+        assert!(
+            drain_renderer_submissions(&broker, &mut state)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(broker.peek_submission().unwrap().is_none());
+        assert!(state.commits.presented_commit().is_none());
     }
 
     #[test]
