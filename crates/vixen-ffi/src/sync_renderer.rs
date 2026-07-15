@@ -56,16 +56,29 @@ impl SynchronousRenderer for FlutterSynchronousRenderer {
                 )?;
             }
 
-            let response = self
-                .renderer
-                .request_cancellable(
-                    RenderBrokerRequestKind::EnsureLayout {
-                        required_revision: snapshot.revision,
-                    },
-                    ENSURE_LAYOUT_TIMEOUT,
-                    || cancellation.reason(),
-                )
-                .map_err(broker_error)?;
+            let response = match self.renderer.request_cancellable(
+                RenderBrokerRequestKind::EnsureLayout {
+                    required_revision: snapshot.revision,
+                },
+                ENSURE_LAYOUT_TIMEOUT,
+                || cancellation.reason(),
+            ) {
+                Ok(response) => response,
+                Err(_) if cancellation.reason().is_some() => {
+                    return Err(SynchronousRendererError::new(
+                        "render.cancelled",
+                        format!(
+                            "EnsureLayout was cancelled: {:?}",
+                            cancellation.reason().expect("cancellation checked")
+                        ),
+                    ));
+                }
+                Err(error) if error.code == "render.timeout" => {
+                    force_snapshot = true;
+                    continue;
+                }
+                Err(error) => return Err(broker_error(error)),
+            };
             match response.kind {
                 RenderBrokerResponseKind::Commit(response_commit) => {
                     let mut state = self.lock_state()?;
@@ -397,6 +410,85 @@ mod tests {
             controller.context_state(context_id).unwrap().url,
             second_url
         );
+    }
+
+    #[test]
+    fn stop_cancels_layout_and_keeps_the_runtime_reusable() {
+        let broker = RenderBroker::new();
+        let state = Arc::new(Mutex::new(RendererState::default()));
+        let renderer = Arc::new(FlutterSynchronousRenderer::new(
+            broker.clone(),
+            Arc::clone(&state),
+        ));
+        let url = "https://layout-stop.test/";
+        let mut config = vixen_engine::browser::BrowserConfig::new(profile_path());
+        config.document_overrides.insert(
+            url.to_owned(),
+            "<!doctype html><div id='target' style='width:10px'>x</div>".to_owned(),
+        );
+        config.synchronous_renderer = Some(renderer);
+        let mut controller = FlutterBrowserController::from_config(config).unwrap();
+        let context_id = controller.create_context().unwrap();
+        let navigation_id = controller.navigate(context_id, url).unwrap();
+        wait_for_navigation(&mut controller, navigation_id.get());
+        let context = controller.context_state(context_id).unwrap();
+        let mut evaluating_browser = controller.subscribe_browser();
+
+        let service = broker.clone();
+        let (request_tx, request_rx) = std::sync::mpsc::sync_channel(1);
+        let renderer_thread = thread::spawn(move || {
+            assert!(matches!(
+                service
+                    .poll_message(Duration::from_secs(1))
+                    .unwrap()
+                    .expect("renderer source update"),
+                crate::RenderBrokerMessage::Update(RenderBridgeUpdate::FullSnapshot(_))
+            ));
+            request_tx.send(next_broker_request(&service)).unwrap();
+        });
+        let evaluation = thread::spawn(move || {
+            let result = evaluating_browser.dispatch(BrowserCommand::Evaluate {
+                context_id,
+                document_id: context.document_id,
+                runtime_context_id: context.runtime_context_id.unwrap(),
+                source: "document.getElementById('target').getBoundingClientRect().width"
+                    .to_owned(),
+            });
+            (evaluating_browser, result)
+        });
+        let request = request_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        renderer_thread.join().unwrap();
+
+        controller.stop(context_id).unwrap();
+        let (mut browser, result) = evaluation.join().unwrap();
+        assert!(result.is_err());
+        assert_eq!(
+            broker
+                .respond(RenderBrokerResponse {
+                    version: RENDER_PROTOCOL_VERSION,
+                    request_id: request.request_id,
+                    kind: RenderBrokerResponseKind::Cancelled(
+                        vixen_api::RenderBrokerCancellation::Stop,
+                    ),
+                })
+                .unwrap_err()
+                .code,
+            "render.unknown-request"
+        );
+        assert!(matches!(
+            browser
+                .dispatch(BrowserCommand::Evaluate {
+                    context_id,
+                    document_id: context.document_id,
+                    runtime_context_id: context.runtime_context_id.unwrap(),
+                    source: "1 + 1".to_owned(),
+                })
+                .unwrap(),
+            BrowserCommandResult::Evaluation(vixen_api::EvaluationResult {
+                value: vixen_api::ScriptValue::Int32(2),
+                ..
+            })
+        ));
     }
 
     #[test]

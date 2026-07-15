@@ -12,6 +12,62 @@ import 'browser_models_test.dart' show contextState;
 import 'support/r3_fixture.dart';
 
 void main() {
+  test('internal broker pump services EnsureLayout independently', () async {
+    final state = BrowsingContextState(
+      contextId: 1,
+      mainFrameId: 10,
+      documentId: 2,
+      runtimeContextId: 100,
+      activeNavigationId: null,
+      url: 'file:///basic.html',
+      title: 'Basic',
+      historyLength: 1,
+      historyIndex: 0,
+      canGoBack: false,
+      canGoForward: false,
+      isLoading: false,
+      loadProgress: 1,
+    );
+    final controller = ScriptedBrowserController(
+      rendererUpdatesEnabled: true,
+      snapshot: BrowserSnapshot(activeContextId: 1, contexts: [state]),
+    );
+    final coordinator = ShellCoordinator(
+      controller,
+      captureLegacyPresentation: false,
+    );
+    await coordinator.start();
+    final snapshot = r3Snapshot();
+    controller.enqueueRendererRequest(NativeFullSnapshotUpdate(snapshot));
+    controller.enqueueRendererRequest(
+      NativeEnsureLayoutRequest(41, snapshot.revision),
+    );
+
+    for (
+      var attempt = 0;
+      attempt < 50 &&
+          !controller.rendererResponses.any(
+            (response) =>
+                response['type'] == 'renderer_response' &&
+                response['request_id'] == 41,
+          );
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+
+    expect(
+      controller.rendererResponses.any(
+        (response) =>
+            response['type'] == 'renderer_response' &&
+            response['request_id'] == 41,
+      ),
+      isTrue,
+    );
+    expect(controller.rendererRequests, isEmpty);
+    await coordinator.close();
+  });
+
   test(
     'production renderer update becomes the displayed Flutter commit',
     () async {

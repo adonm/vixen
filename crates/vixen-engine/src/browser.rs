@@ -466,7 +466,7 @@ fn command_interrupt(
             Some((*context_id, false, RenderBrokerCancellation::ContextClosed))
         }
         BrowserCommand::Stop { context_id } => {
-            Some((*context_id, true, RenderBrokerCancellation::Stop))
+            Some((*context_id, false, RenderBrokerCancellation::Stop))
         }
         _ => None,
     }

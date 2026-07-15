@@ -17,6 +17,7 @@ final class ShellCoordinator extends ChangeNotifier {
   static const int maxPendingInputEvents = 64;
   static const int maxCaptureRetries = 2;
   static const int maxRendererPresentationRetries = 2;
+  static const Duration rendererBrokerPollInterval = Duration(milliseconds: 4);
 
   ShellCoordinator(
     this.controller, {
@@ -53,6 +54,8 @@ final class ShellCoordinator extends ChangeNotifier {
   Future<void> _inputTail = Future<void>.value();
   Future<void> _hostViewTail = Future<void>.value();
   Future<void> _rendererTail = Future<void>.value();
+  Future<void> _rendererServiceTail = Future<void>.value();
+  Timer? _rendererBrokerPoll;
   _FrameCaptureRequest? _replacementCapture;
   _FrameCaptureKey? _lastCaptureKey;
   _AccessibilityCaptureRequest? _replacementAccessibilityCapture;
@@ -143,6 +146,11 @@ final class ShellCoordinator extends ChangeNotifier {
     _notify();
     try {
       await controller.start();
+      if (!externalRendererUpdates && _rendererService != null) {
+        _rendererBrokerPoll = Timer.periodic(rendererBrokerPollInterval, (_) {
+          unawaited(_serviceRendererBroker());
+        });
+      }
       _eventSubscription = controller.events.listen(
         _queueEvent,
         onError: _queueStreamError,
@@ -1127,6 +1135,28 @@ final class ShellCoordinator extends ChangeNotifier {
     await operation;
   }
 
+  Future<void> _serviceRendererBroker() async {
+    final service = _rendererService;
+    if (service == null || _closeFuture != null) return;
+    final operation = _rendererServiceTail.then((_) async {
+      for (var count = 0; count < renderBrokerQueueCapacity * 2; count++) {
+        if (!await service.serviceNext()) return;
+      }
+      throw const RenderProtocolException(
+        'render.queue-full',
+        'renderer broker pump exceeded its bounded work budget',
+      );
+    });
+    _rendererServiceTail = operation.then<void>((_) {}, onError: (_, _) {});
+    try {
+      await operation;
+    } catch (error) {
+      if (_closeFuture == null) {
+        _showError('Unable to service Flutter renderer broker', error);
+      }
+    }
+  }
+
   void _scheduleRendererSnapshotDrain() {
     if (_rendererSnapshotScheduled) return;
     _rendererSnapshotScheduled = true;
@@ -1310,14 +1340,18 @@ final class ShellCoordinator extends ChangeNotifier {
     return operation;
   }
 
-  Future<void> _drainRenderer(RendererBrokerService service) async {
-    for (var count = 0; count < renderBrokerQueueCapacity * 2; count++) {
-      if (!await service.serviceNext()) return;
-    }
-    throw const RenderProtocolException(
-      'render.queue-full',
-      'renderer message drain exceeded its bounded work budget',
-    );
+  Future<void> _drainRenderer(RendererBrokerService service) {
+    final operation = _rendererServiceTail.then((_) async {
+      for (var count = 0; count < renderBrokerQueueCapacity * 2; count++) {
+        if (!await service.serviceNext()) return;
+      }
+      throw const RenderProtocolException(
+        'render.queue-full',
+        'renderer message drain exceeded its bounded work budget',
+      );
+    });
+    _rendererServiceTail = operation.then<void>((_) {}, onError: (_, _) {});
+    return operation;
   }
 
   void _refreshRendererFindGeometry() {
@@ -1564,6 +1598,7 @@ final class ShellCoordinator extends ChangeNotifier {
   Future<void> close() => _closeFuture ??= _close();
 
   Future<void> _close() async {
+    _rendererBrokerPoll?.cancel();
     _clearFrame();
     _notify();
     await _eventSubscription?.cancel();
@@ -1573,6 +1608,7 @@ final class ShellCoordinator extends ChangeNotifier {
       await _inputTail;
       await _hostViewTail;
       await _rendererTail;
+      await _rendererServiceTail;
       if (useProfileSession) await controller.saveCurrentProfileSession();
     } catch (_) {
       // Shutdown still has to release the sole native browser owner.

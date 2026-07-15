@@ -373,6 +373,7 @@ impl RuntimeDeadline {
             waker: Mutex::new(None),
         });
         let watchdog_state = state.clone();
+        let watchdog_layout_cancellation = interrupt.layout_cancellation();
         let isolate = runtime.v8_isolate().thread_safe_handle();
         interrupt.install(state.clone(), isolate.clone());
         let watchdog = std::thread::spawn(move || {
@@ -388,6 +389,7 @@ impl RuntimeDeadline {
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             if result.timed_out() && !watchdog_state.complete.load(Ordering::Acquire) {
                 watchdog_state.timed_out.store(true, Ordering::Release);
+                watchdog_layout_cancellation.cancel(RenderBrokerCancellation::Deadline);
                 let _ = isolate.terminate_execution();
                 watchdog_state.wake();
             }
