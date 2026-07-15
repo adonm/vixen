@@ -37,9 +37,9 @@ release evidence. See
 **Renderer migration is the immediate priority.** The currently implemented
 WebRender/EGL/RGBA texture and native-headless path is a frozen transitional
 baseline. The Flutter vertical and chrome-less fixture/CDP/Playwright host are
-green. After R6 synchronous layout/cancellation/recovery passes, Vixen will cut
-over once and delete WebRender/EGL/frame transport and superseded Rust
-layout/paint rather than carry two renderers.
+green, as is R6 synchronous layout/cancellation/recovery. R7 now cuts over once
+and deletes WebRender/EGL/frame transport and superseded Rust layout/paint rather
+than carrying two renderers.
 
 The R1 protocol core, R2 dedicated C/Dart broker, R3 Canvas/Paragraph/PNG
 formatter vertical, and R4 displayed-commit interaction/scroll/Cage proof are
@@ -56,8 +56,13 @@ before/after scene capture, independent target viewports, and renderer-reset
 full resync. `just flutter-fixture-manifest` completes R5 with all 270 fixtures /
 2,027 ordered checks through one Flutter-owned BrowserCore, including 104 layout
 boxes, 25 Flutter visual hashes, and 11 exact-pixel references. `just gate-r5`
-composes the release evidence. WebRender/RGBA remains the explicit fallback
-until the one-time R7 cutover after R6.
+composes the release evidence. R6 now flushes same-task DOM/style mutations into
+exact source batches, waits through the dedicated UI-serviceable broker, and
+answers element, Range, and caret geometry from the matching Flutter commit.
+Navigation/stop/deadline cancellation, malformed-commit and full-resync
+recovery, late-reply rejection, and repeated-read commit reuse are covered by
+`just test-r6`; `just gate-r6` preserves all R5 rendered evidence. WebRender/RGBA
+remains the explicit fallback only until the one-time R7 cutover.
 
 The checked-in transitional Linux Flutter alpha shell uses handwritten Dart FFI over the
 one-owner `vixen-ffi` controller and presents real BrowserCore/WebRender output
@@ -470,9 +475,9 @@ and reference material, plus:
   chrome, and chrome-less automation host to Linux, macOS, Windows, Android, and
   the Apple Silicon iOS Simulator over BrowserCore. The exported C/Dart ABI and
   Linux shell/input/Semantics baseline, revision/mutation/commit/query protocol,
-  bounded Flutter block/inline/flex/grid formatting, Canvas paint, and complete
-  R5 automation host exist. R6 synchronous mutation-to-geometry, R7
-  native-renderer deletion, and broader platform evidence remain open.
+  bounded Flutter block/inline/flex/grid formatting, Canvas paint, complete R5
+  automation host, and R6 synchronous mutation-to-geometry/recovery gate exist.
+  R7 native-renderer deletion and broader platform evidence remain open.
 
 Future delivery order lives in [`docs/ROADMAP.md`](docs/ROADMAP.md); `PLAN.md`
 retains the historical phase runbook.

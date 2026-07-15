@@ -379,10 +379,10 @@ checks use typed BrowserCore inspection; all 104 `layout-box`, 25 `visual-hash`,
 and 11 `ref-equivalent` checks use exact presented Flutter commits. Reference
 checks compare direct RGBA scene pixels, visual baselines now name Flutter
 scenes, and the native runner is text/runtime-only. `just gate-r5` composes this
-manifest with the one-shot and external Playwright gates. R6 is now the next
-renderer-transition stage; R7 remains blocked on R6.
+manifest with the one-shot and external Playwright gates. R6 synchronous layout
+is now also complete; R7 is the next renderer-transition stage.
 
-### R6. Synchronous layout and recovery gate
+### R6. Synchronous layout and recovery gate — landed
 
 Implement:
 
@@ -398,6 +398,28 @@ Implement:
 **Proof:** same-task `style`/DOM mutation plus `getBoundingClientRect()`, Range and
 caret queries, forced races/timeouts, isolate reuse, and GUI/CDP agreement on the
 same commit.
+
+**Implemented evidence:** BrowserCore page realms now share the one authoritative
+`Page` with a synchronous geometry host. A geometry read drains the task's
+bounded DOM mutation sink, refreshes the Page cascade, diffs the previous exact
+renderer source into a `RenderMutationBatch` (or publishes a full snapshot for
+first load/resync), and waits on the dedicated broker without holding the C
+controller or renderer-state mutex. The response is accepted only after its
+matching asynchronous commit submission validates against the same replica.
+Repeated element reads reuse that commit; Range boxes and collapsed caret
+rectangles use commit-bound batched Paragraph text queries.
+
+Navigation, stop, close, shutdown, and the V8 deadline carry explicit renderer
+cancellation while the normal GUI keeps a separate bounded UI-isolate broker
+pump alive even when its browser command worker is blocked. Late replies are
+unknown/inert. One bounded retry sends a full snapshot after renderer resync,
+timeout, malformed commit, or missed state; a non-finite malformed submission is
+consumed and retired without poisoning the next request. Focused tests prove
+same-task style mutation plus two reused element reads, Range and caret geometry,
+exact source batches, renderer-reset full resync, navigation/stop races, late
+reply rejection, malformed-commit recovery, and same-isolate reuse. `just
+test-r6` runs the focused Rust/Dart gate; `just gate-r6` composes it with all R5
+rendered fixture/CDP/Cage evidence.
 
 ### R7. Production cutover and aggressive deletion
 
@@ -616,9 +638,7 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **R6 synchronous layout:** connect BrowserCore mutation flushes to the landed
-   broker with cancellation, deadlines, loss, and full-resync recovery.
-2. **R7 cutover/deletion:** switch once after R6 and remove every transitional
+1. **R7 cutover/deletion:** switch now that R6 is green and remove every transitional
    renderer, frame-transport, and superseded layout/paint owner in the inventory.
 
 Do not start another native interaction, font, Rust layout, paint, texture, or

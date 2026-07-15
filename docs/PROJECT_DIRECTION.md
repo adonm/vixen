@@ -167,11 +167,10 @@ bounded mutation/full-snapshot/resync and atomic-commit protocols, a Linux fake
 and real renderer/shell, input and viewport routing, exact-commit scene capture, and
 the accessibility projection shape. The older WebRender/RGBA bridge remains the
 implemented transitional baseline. ADR-022's dependency-free R1 protocol, R2
-C/Dart broker, and R3 test-only Flutter formatter vertical are landed. Native IME
-evidence still uses the old baseline, while interactive production cutover,
-synchronous
-geometry flushing, richer gesture/DOM event input, and complete semantics/native
-AT behavior remain open.
+C/Dart broker, R3 formatter, R4 interaction, R5 automation, and R6 synchronous
+geometry/cancellation/recovery are landed. Native IME evidence still uses the old
+baseline, while R7 production cutover, richer gesture/DOM event input, and
+complete semantics/native AT behavior remain open.
 
 Alpha also requires a production browser core: one profile service, one context
 registry, one generational navigation/document lifecycle, and one command/event

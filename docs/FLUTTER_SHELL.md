@@ -134,8 +134,8 @@ runtime dependencies disappear from Linux packages.
 The existing WebRender/EGL/RGBA texture remains the implemented comparison and
 fallback path only. Do not add renderer breadth there. R1 protocol validation,
 the R2 C/Dart broker, the R3 formatter, the bounded production R4 interactive
-vertical, and the complete R5 chrome-less automation host are implemented. The
-remaining delivery sequence is:
+vertical, the complete R5 chrome-less automation host, and R6 synchronous layout
+and recovery are implemented. The remaining delivery sequence is:
 
 R2 uses plain bounded messages: asynchronous snapshot/mutation/release updates,
 asynchronous commit/presented/resync submissions, and correlated broker traffic
@@ -144,9 +144,7 @@ never calls BrowserCore. The production shell now consumes it for one bounded
 selected-document projection; that projection is not general CSS-rendering
 evidence.
 
-1. Solve bounded synchronous layout flush for same-task DOM mutation plus
-   geometry reads.
-2. Cut over once and apply the full R7 deletion inventory: native renderer/image
+1. Cut over once and apply the full R7 deletion inventory: native renderer/image
    upload, EGL/frame transport, Dart frame worker, texture plugin/presenter/tests,
    superseded Rust layout/paint, duplicate projections, obsolete fixtures/gates/
    docs/dependencies, and renderer-internal CLI flags. Two production renderers
@@ -495,7 +493,8 @@ inspection and all layout boxes, visual hashes, and references use exact Flutter
 commits. The formatter's bounded compatibility slice includes block/inline box
 flow, content/border sizing, positioning, flex, grid tracks/gaps, deterministic
 text line geometry, backgrounds, borders, and accepted images. Incremental
-synchronous mutation-to-geometry remains R6.
+synchronous mutation-to-geometry, commit-bound Range/caret queries, lifecycle
+cancellation, and full-resync recovery are now implemented by R6.
 
 The direct release-bundle interface is intentionally small (the output directory
 must already exist):

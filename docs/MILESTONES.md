@@ -9,9 +9,9 @@ which layer today?”
 **ADR-022 transition status:** R1 protocol validation, the R2 C/Dart dedicated
 broker, R3 Flutter formatter vertical, R4 interactive exact-commit vertical, and
 R5 chrome-less capture, full-DOM formatting, shared-core rendered CDP, and the
-full fixture manifest are checked in. Normal browsing still uses the
-transitional frame/texture fallback; R6 synchronous layout must pass before R7
-cutover/deletion.
+full fixture manifest are checked in. R6 synchronous layout, Paragraph queries,
+cancellation, and bounded recovery are also checked in. Normal browsing still
+uses the transitional frame/texture fallback pending R7 cutover/deletion.
 
 ## Gate index
 
@@ -49,6 +49,8 @@ cutover/deletion.
 | `just flutter-cdp-playwright-smoke` | release/AOT Flutter host under Cage owns the sole BrowserCore and an in-process `vixen-cdp` subscriber; focused external Playwright proof obtains layout from Flutter commits, routes pointer input through Flutter hit testing, captures exact scenes before/after mutation, keeps 320×240 and 480×300 targets independent, switches back without state/pixel drift, and forces renderer reset/full-resync to a byte-identical scene; no browser/compositor chrome in direct PNGs |
 | `just flutter-fixture-manifest` | one release/AOT Flutter host and BrowserCore execute all 270 fixtures / 2,027 checks in manifest order; each fixture gets an isolated target in the same core, all document/runtime/style checks use typed BrowserCore inspection, and 104 layout boxes, 25 Flutter visual hashes, and 11 exact-pixel references use the matching presented Flutter commit |
 | `just gate-r5` | complete R5 product gate: bounded one-shot scene capture, shared-core external Playwright/CDP input/capture/isolation/loss recovery, and the complete Flutter-hosted fixture manifest |
+| `just test-r6` | focused R6 exact source diff, same-task DOM/style mutation → `EnsureLayout` → matching commit geometry, repeated-read reuse, Paragraph Range/caret queries, blocked-command broker progress, cancellation/late-reply races, malformed commit, and full-resync recovery evidence across Rust and Dart |
+| `just gate-r6` | complete R6 gate: every R5 rendered fixture/CDP/Cage proof plus `test-r6` synchronous layout and recovery evidence |
 | `just size-headless` | structured logical/allocated size, file count, and SHA-256 for the headless release binary |
 | `just size-flutter-linux` | controlled release/AOT build and component-attributed raw-bundle comparison against the checked-in hello-Flutter peer; measurement-only and not FlatPark package evidence |
 | `just baseline-headless` / `just baseline-headless-json` | per-scenario latency and Linux process-memory measurements for committed startup, navigation/runtime, layout, paint, and screenshot controls |

@@ -44,9 +44,9 @@ Alpha architecture and delivery order are defined in
 Done when R1/R2 from `ROADMAP.md` prove:
 
 R1's dependency-free DTO validation and R2's strict C/Dart dedicated broker are
-landed. R3 adds a test-only Flutter formatter consumer; R4–R6 still must connect
-production BrowserCore mutations, displayed input, and synchronous layout before
-the combined protocol gate is release-complete.
+landed. R3 adds the formatter consumer, R4/R5 connect displayed input and
+rendered automation, and R6 connects production BrowserCore mutation flushes and
+synchronous layout. R7 deletion is the remaining renderer-transition hard gate.
 
 - compound revisions include context/document/source/style/viewport/resource
   generations;
@@ -118,7 +118,7 @@ BrowserCore. The result is 270/270 fixtures and 2,027/2,027 checks: 1,887 typed
 BrowserCore document/runtime checks plus 104 exact Flutter layout boxes, 25
 Flutter visual hashes, and 11 exact-pixel Flutter references. The transitional
 `display-list-contains` check no longer exists, and the native fixture runner no
-longer claims rendered evidence. R6 synchronous geometry is the next open gate.
+longer claims rendered evidence.
 
 ### Synchronous geometry
 
@@ -136,6 +136,14 @@ DOM/style mutation
 No browser mutex is held while waiting; Flutter cannot re-enter BrowserCore;
 navigate/stop/close/shutdown and deadline cancel the request; late replies are
 inert; repeated geometry reads reuse the accepted commit.
+
+Implemented: `just test-r6` proves exact full-source-to-mutation diffs,
+same-task style mutation followed by two reused element geometry reads, Range
+boxes and collapsed caret geometry through the commit's Paragraph query handle,
+navigation/stop/deadline cancellation, a broker pump independent of blocked
+browser commands, malformed-commit and renderer-resync recovery, inert late
+replies, and same-isolate reuse. `just gate-r6` composes that focused evidence
+with the complete R5 fixture/CDP/Cage gate.
 
 ### Cutover and deletion
 

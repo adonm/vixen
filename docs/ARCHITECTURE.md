@@ -133,9 +133,10 @@ Rules:
   scroll commits after BrowserCore cancellation policy. R5 now adds full-DOM
   block/inline/flex/grid fixture formatting, exact scene capture, embedded CDP,
   independent targets, input, mutation capture, reset/resync, and the complete
-  270-fixture manifest. The old frame remains the normal-GUI fallback until R6
-  synchronous layout permits R7 deletion. Single-touch root
-  dragging reuses the bounded cancelable wheel path. Complete renderer cutover,
+  270-fixture manifest. R6 adds synchronous mutation flush, commit/text geometry,
+  cancellation, and recovery. The old frame remains the normal-GUI fallback
+  only until R7 deletion. Single-touch root dragging reuses the bounded
+  cancelable wheel path. Complete renderer cutover,
   semantics/native AT, richer gesture/lifecycle, and non-Linux runners remain
   open.
 
@@ -478,9 +479,10 @@ that boundary: it projects renderable DOM elements with stable BrowserCore ids,
 renderer-only text ids, resolved style properties, accepted PNG bytes, semantic
 descriptors, and root scroll intent. Non-rendered metadata/script/style subtrees
 still participate in DOM id allocation but are omitted from renderer payload.
-Incremental styled mutation batches and the final CSS formatter breadth remain
-R6 work; the source projection is not permission to consult the transitional
-Rust display list from Flutter.
+R6 now diffs this source deterministically into exact same-document mutation
+batches and falls back to the full snapshot on first load, missed state, or
+resync. The source projection is not permission to consult the transitional Rust
+display list from Flutter.
 
 ### Formatter and commit authority
 
@@ -527,7 +529,16 @@ a dedicated Flutter renderer broker, and waits without holding browser mutexes.
 The Flutter UI/renderer isolate must remain serviceable while the originating
 command/V8 evaluation waits, cannot re-enter BrowserCore, and returns through a
 separate response channel. Navigation, stop, close, shutdown, and deadline cancel
-the wait. Late commits are inert. Cutover is blocked until this is race-tested.
+the wait. Late commits are inert.
+
+R6 implements this with one Page shared by BrowserCore and its page realm. The
+geometry op drains pending DOM mutations into that Page, refreshes cascade/source
+state, publishes the exact batch, and waits through renderer state isolated from
+the C controller lock. The normal Flutter shell runs a bounded broker pump on a
+separate UI-isolate service tail, so a blocked command cannot block its own
+renderer response. Basic geometry is read from the accepted commit; Range/caret
+queries use its Paragraph handle. One full-resync retry handles timeout, reset,
+missed state, and malformed commits without poisoning the next request.
 
 ### Input, scroll, semantics, and automation
 
@@ -551,13 +562,11 @@ presented scene without compositor chrome.
 
 The bounded Flutter vertical may run in production with the old frame as an
 explicit fallback, but it is not the renderer cutover. R4's interactive
-controlled vertical is complete. R5's page-only release host now captures a
+controlled vertical is complete. R5's page-only release host captures a
 full-DOM/computed-style source as an exact acknowledged Flutter scene at two
-Cage viewports while skipping chrome and the legacy frame path; R5–R6 must still
-prove fixture/CDP/Playwright input and capture groups, independent targets,
-synchronous layout,
-cancellation, resync, and renderer loss. Production
-then cuts over once. Apply the complete R7 deletion inventory:
+Cage viewports while skipping chrome and the legacy frame path; R6 adds
+synchronous layout, cancellation, and recovery. Production now cuts over once.
+Apply the complete R7 deletion inventory:
 WebRender/gleam, `GlContext`, both EGL paths, image upload, RGBA frame ABI/pools,
 the Dart frame worker, pixel-buffer plugin/presenter and recovery tests,
 superseded Rust layout/paint, duplicated geometry/input projections, obsolete

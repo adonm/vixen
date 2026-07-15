@@ -327,6 +327,19 @@ flutter-fixture-manifest: build-flutter-release-linux _node-deps
 
 gate-r5: linux-automation-smoke flutter-cdp-playwright-smoke flutter-fixture-manifest
 
+# Focused R6 mutation/EnsureLayout/text-query/cancellation/recovery evidence.
+test-r6: _flutter-sdk-present
+    cargo test -p vixen-api snapshot_diff
+    cargo test -p vixen-ffi sync_renderer::tests
+    cargo test -p vixen-ffi renderer_broker::tests
+    cd flutter/vixen_shell && dart format --output=none --set-exit-if-changed lib test
+    cd flutter/vixen_shell && flutter analyze
+    cd flutter/vixen_shell && flutter test --enable-impeller --dart-define=VIXEN_REQUIRE_IMPELLER=true test/renderer_broker_service_test.dart test/native_renderer_protocol_test.dart test/shell_coordinator_test.dart
+
+# Full R6 preserves every R5 rendered product gate, then adds synchronous
+# mutation-to-geometry and recovery proof.
+gate-r6: gate-r5 test-r6
+
 # Focused Alpha 6 automation product gate: dispatcher/runtime integration plus
 # the real external Playwright client over CDP WebSocket.
 gate-alpha6-cdp: cdp-playwright-smoke

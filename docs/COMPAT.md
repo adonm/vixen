@@ -3,15 +3,15 @@
 This is the honest v1.0 target matrix. It is not a claim of full Firefox or full
 WPT compatibility. Vixen delegates focused parser, cascade, runtime, and native
 rendering primitives where that improves correctness and size. The measured
-baseline currently uses transitional Vixen-owned Rust layout/WebRender; ADR-022
-moves authoritative formatting/geometry/paint to the Flutter renderer while
-keeping every supported CSS semantic WPT-gated.
+fixture baseline now uses Flutter-owned formatting/geometry/scenes; normal GUI
+browsing still retains the transitional Rust layout/WebRender frame fallback
+until R7. Every supported CSS semantic remains fixture/WPT-gated.
 
 ---
 
 ## Current measured committed fixture baseline
 
-As of 2026-07-14, `fixtures/manifest.json` contains 70 local fixtures plus
+As of 2026-07-15, `fixtures/manifest.json` contains 70 local fixtures plus
 200 imported smoke fixtures:
 
 | Category | Fixtures |
@@ -250,6 +250,13 @@ through one long-lived Flutter-owned BrowserCore: 1,887 document/runtime checks
 use typed BrowserCore inspection and all 104 layout boxes, 25 visual hashes, and
 11 reference comparisons use exact Flutter commits. Together these complete R5.
 
+R6 adds synchronous page-script geometry to that same commit authority. A
+same-task DOM/style mutation flushes Page/cascade state, publishes an exact
+mutation batch, and returns `getBoundingClientRect()`, Range boxes, and collapsed
+caret geometry from the matching Flutter commit/Paragraph query handle. Repeated
+basic reads reuse the accepted commit. This is focused renderer-transition
+evidence, not a claim that unsupported layout or Range semantics became complete.
+
 The Flutter semantics projection additionally carries bounded `aria-controls`,
 `aria-describedby`, and `aria-details` relationships to retained semantic nodes.
 Descriptions resolve bounded referenced text (including hidden referenced
@@ -428,11 +435,11 @@ Zoom survives document navigation in the context but is not yet persisted in
 the profile session. Text shaping quality, advanced scroll behavior,
 and native surface-loss evidence remain separate gaps.
 
-All rendering/geometry paragraphs above describe the measured transitional
-WebRender/RGBA baseline. ADR-022 freezes that path. Support transfers to the
-Flutter formatter only when equivalent checks name one atomic renderer commit;
-R7 then removes display-list, deterministic-metric, EGL, frame, and texture
-implementation checks rather than counting both paths.
+Legacy GUI paragraphs above that name display lists, WebRender frames, or RGBA
+textures describe the frozen transitional path. R5 rendered fixture/CDP evidence
+and R6 synchronous geometry already name atomic Flutter commits. R7 removes the
+display-list, deterministic-metric, EGL, frame, and texture implementation checks
+rather than counting both paths.
 
 ---
 
