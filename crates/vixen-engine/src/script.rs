@@ -10,7 +10,9 @@
 
 #![deny(unsafe_code)]
 
+use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(test)]
@@ -30,6 +32,7 @@ mod runtime;
 mod webapi;
 mod webidl;
 
+pub use runtime::RenderLayoutCancellation;
 pub(crate) use runtime::RuntimeInterruptHandle;
 
 /// Vixen's JavaScript runtime seam, backed by `deno_core`/V8.
@@ -47,7 +50,42 @@ pub struct JsRuntime {
     runtime_interrupt: RuntimeInterruptHandle,
     runtime: Option<deno_core::JsRuntime>,
     dom_mutations: Option<dom::DomMutationSink>,
+    synchronous_layout: Option<SynchronousLayoutConfig>,
     realm_key: RealmKey,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct RenderViewState {
+    pub viewport: (u32, u32),
+    pub viewport_generation: u64,
+    pub page_zoom: f64,
+}
+
+#[derive(Clone)]
+pub(crate) struct SynchronousLayoutConfig {
+    page: Rc<RefCell<Page>>,
+    context_id: vixen_api::BrowsingContextId,
+    document_id: vixen_api::DocumentId,
+    view: Rc<Cell<RenderViewState>>,
+    renderer: std::sync::Arc<dyn crate::browser::SynchronousRenderer>,
+}
+
+impl SynchronousLayoutConfig {
+    pub(crate) fn new(
+        page: Rc<RefCell<Page>>,
+        context_id: vixen_api::BrowsingContextId,
+        document_id: vixen_api::DocumentId,
+        view: Rc<Cell<RenderViewState>>,
+        renderer: std::sync::Arc<dyn crate::browser::SynchronousRenderer>,
+    ) -> Self {
+        Self {
+            page,
+            context_id,
+            document_id,
+            view,
+            renderer,
+        }
+    }
 }
 
 /// Persistent parser-discovered script state advanced one item at a time.
@@ -275,6 +313,7 @@ impl JsRuntime {
             None,
             true,
             None,
+            None,
         )
     }
 
@@ -303,7 +342,15 @@ impl JsRuntime {
                     message: format!("Web Storage store initialisation failed: {message}"),
                 }
             })?;
-        Self::with_storage_backend(network_config, storage_backend, None, None, true, None)
+        Self::with_storage_backend(
+            network_config,
+            storage_backend,
+            None,
+            None,
+            true,
+            None,
+            None,
+        )
     }
 
     /// Construct a context runtime over the Store opened once by BrowserCore.
@@ -322,6 +369,26 @@ impl JsRuntime {
             Some(storage_session_id),
             false,
             Some(page),
+            None,
+        )
+    }
+
+    pub(crate) fn with_browser_storage_and_renderer(
+        network_config: vixen_net::NetworkConfig,
+        store: std::sync::Arc<vixen_store::Store>,
+        storage_session_id: String,
+        synchronous_layout: SynchronousLayoutConfig,
+    ) -> Result<Self, EngineError> {
+        let page = Rc::clone(&synchronous_layout.page);
+        let page_ref = page.borrow();
+        Self::with_storage_backend(
+            network_config,
+            webapi::WebStorageBackend::from_store(store),
+            None,
+            Some(storage_session_id),
+            false,
+            Some(&page_ref),
+            Some(synchronous_layout),
         )
     }
 
@@ -332,6 +399,7 @@ impl JsRuntime {
         storage_session_id: Option<String>,
         record_visits_on_realm: bool,
         initial_page: Option<&Page>,
+        synchronous_layout: Option<SynchronousLayoutConfig>,
     ) -> Result<Self, EngineError> {
         let storage_session_id = storage_session_id.unwrap_or_else(next_storage_session_id);
         let storage_opaque_serial = 1;
@@ -355,6 +423,7 @@ impl JsRuntime {
                 cache_disabled: cache_disabled.clone(),
                 permission_overrides: permission_overrides.clone(),
                 interrupt: runtime_interrupt.clone(),
+                synchronous_layout: synchronous_layout.clone(),
             },
         )?;
         let realm_key = initial_page
@@ -375,6 +444,7 @@ impl JsRuntime {
             runtime_interrupt,
             runtime: Some(init.runtime),
             dom_mutations: init.dom_mutations,
+            synchronous_layout,
             realm_key,
         })
     }
@@ -457,6 +527,50 @@ impl JsRuntime {
             if !self.apply_dom_mutations(page)? {
                 return Ok(value);
             }
+        }
+        self.discard_dom_mutations();
+        Err(EngineError::script(
+            codes::SCRIPT_EVAL,
+            "element scroll synchronization exceeded the mutation round limit",
+        ))
+    }
+
+    pub(crate) fn evaluate_with_shared_page_mut(
+        &mut self,
+        src: &str,
+        page: &Rc<RefCell<Page>>,
+    ) -> Result<JsValue, EngineError> {
+        {
+            let page = page.borrow();
+            self.ensure_realm(Some(&page))?;
+        }
+        let value = match self.execute_in_current_realm(src) {
+            Ok(value) => value,
+            Err(error) => {
+                self.discard_dom_mutations();
+                return Err(error);
+            }
+        };
+        {
+            let mut page = page.borrow_mut();
+            self.apply_dom_mutations(&mut page)?;
+            self.realm_key = RealmKey::Page(page_realm_key(&page));
+        }
+
+        const MAX_SCROLL_SYNC_ROUNDS: usize = 8;
+        for _ in 0..MAX_SCROLL_SYNC_ROUNDS {
+            let source = dom::element_scroll_state_source(&page.borrow(), true);
+            let result = self.execute_in_current_realm(&source);
+            if let Err(error) = result {
+                self.discard_dom_mutations();
+                return Err(error);
+            }
+            let mut page = page.borrow_mut();
+            if !self.apply_dom_mutations(&mut page)? {
+                self.realm_key = RealmKey::Page(page_realm_key(&page));
+                return Ok(value);
+            }
+            self.realm_key = RealmKey::Page(page_realm_key(&page));
         }
         self.discard_dom_mutations();
         Err(EngineError::script(
@@ -688,6 +802,10 @@ impl JsRuntime {
     ) -> Result<JsValue, EngineError> {
         self.ensure_realm(page)?;
 
+        self.execute_in_current_realm(src)
+    }
+
+    fn execute_in_current_realm(&mut self, src: &str) -> Result<JsValue, EngineError> {
         let runtime = self.runtime.as_mut().expect("realm initialised");
         let result = runtime::execute_script(
             runtime,
@@ -722,6 +840,7 @@ impl JsRuntime {
                     cache_disabled: self.cache_disabled.clone(),
                     permission_overrides: self.permission_overrides.clone(),
                     interrupt: self.runtime_interrupt.clone(),
+                    synchronous_layout: self.synchronous_layout.clone(),
                 },
             )?;
             self.runtime = Some(init.runtime);
@@ -757,102 +876,7 @@ impl JsRuntime {
         if mutations.is_empty() {
             return Ok(false);
         }
-
-        let mut element_scrolls = std::collections::HashMap::new();
-        for mutation in mutations {
-            match mutation {
-                dom::DomMutation::SetDocumentTitle { value } => page
-                    .set_title(&value)
-                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
-                dom::DomMutation::SetTextContent { node_id, value } => {
-                    page.set_element_text_content(node_id, &value)
-                        .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
-                    element_scrolls.clear();
-                }
-                dom::DomMutation::SetAttribute {
-                    node_id,
-                    name,
-                    value,
-                } => page
-                    .set_element_attribute(node_id, &name, &value)
-                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
-                dom::DomMutation::RemoveAttribute { node_id, name } => page
-                    .remove_element_attribute(node_id, &name)
-                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
-                dom::DomMutation::SetInnerHtml { node_id, html } => {
-                    page.set_element_inner_html(node_id, &html)
-                        .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
-                    element_scrolls.clear();
-                }
-                dom::DomMutation::SetControlValue {
-                    node_id,
-                    element_id,
-                    name,
-                    tag,
-                    value,
-                } => page
-                    .set_form_control_value(
-                        node_id,
-                        element_id.as_deref(),
-                        name.as_deref(),
-                        &tag,
-                        &value,
-                    )
-                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
-                dom::DomMutation::SetControlSelection {
-                    node_id,
-                    element_id,
-                    name,
-                    tag,
-                    base_offset,
-                    extent_offset,
-                } => page
-                    .set_form_control_selection(
-                        node_id,
-                        element_id.as_deref(),
-                        name.as_deref(),
-                        &tag,
-                        base_offset,
-                        extent_offset,
-                    )
-                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
-                dom::DomMutation::SetContenteditableState {
-                    node_id,
-                    value,
-                    base_offset,
-                    extent_offset,
-                } => page
-                    .set_contenteditable_text_state(node_id, &value, base_offset, extent_offset)
-                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
-                dom::DomMutation::SetFocusedElement { node_id } => {
-                    page.set_focused_element_node_id(node_id);
-                }
-                dom::DomMutation::SetSelection { selection } => {
-                    page.set_selection(selection);
-                }
-                dom::DomMutation::SetRootScroll { x, y } => {
-                    page.scroll_root_to((x, y));
-                }
-                dom::DomMutation::SetElementScroll {
-                    node_id,
-                    element_id,
-                    tag,
-                    x,
-                    y,
-                } => {
-                    element_scrolls.insert(
-                        node_id,
-                        ElementScrollRequest {
-                            node_id,
-                            element_id,
-                            tag,
-                            position: (x, y),
-                        },
-                    );
-                }
-            }
-        }
-        page.scroll_elements_to(element_scrolls.into_values());
+        apply_dom_mutation_list(page, mutations)?;
         self.realm_key = RealmKey::Page(page_realm_key(page));
         Ok(true)
     }
@@ -862,6 +886,108 @@ impl JsRuntime {
             sink.take();
         }
     }
+}
+
+fn apply_dom_mutation_list(
+    page: &mut Page,
+    mutations: Vec<dom::DomMutation>,
+) -> Result<(), EngineError> {
+    let mut element_scrolls = std::collections::HashMap::new();
+    for mutation in mutations {
+        match mutation {
+            dom::DomMutation::SetDocumentTitle { value } => page
+                .set_title(&value)
+                .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+            dom::DomMutation::SetTextContent { node_id, value } => {
+                page.set_element_text_content(node_id, &value)
+                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
+                element_scrolls.clear();
+            }
+            dom::DomMutation::SetAttribute {
+                node_id,
+                name,
+                value,
+            } => page
+                .set_element_attribute(node_id, &name, &value)
+                .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+            dom::DomMutation::RemoveAttribute { node_id, name } => page
+                .remove_element_attribute(node_id, &name)
+                .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+            dom::DomMutation::SetInnerHtml { node_id, html } => {
+                page.set_element_inner_html(node_id, &html)
+                    .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
+                element_scrolls.clear();
+            }
+            dom::DomMutation::SetControlValue {
+                node_id,
+                element_id,
+                name,
+                tag,
+                value,
+            } => page
+                .set_form_control_value(
+                    node_id,
+                    element_id.as_deref(),
+                    name.as_deref(),
+                    &tag,
+                    &value,
+                )
+                .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+            dom::DomMutation::SetControlSelection {
+                node_id,
+                element_id,
+                name,
+                tag,
+                base_offset,
+                extent_offset,
+            } => page
+                .set_form_control_selection(
+                    node_id,
+                    element_id.as_deref(),
+                    name.as_deref(),
+                    &tag,
+                    base_offset,
+                    extent_offset,
+                )
+                .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+            dom::DomMutation::SetContenteditableState {
+                node_id,
+                value,
+                base_offset,
+                extent_offset,
+            } => page
+                .set_contenteditable_text_state(node_id, &value, base_offset, extent_offset)
+                .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?,
+            dom::DomMutation::SetFocusedElement { node_id } => {
+                page.set_focused_element_node_id(node_id);
+            }
+            dom::DomMutation::SetSelection { selection } => {
+                page.set_selection(selection);
+            }
+            dom::DomMutation::SetRootScroll { x, y } => {
+                page.scroll_root_to((x, y));
+            }
+            dom::DomMutation::SetElementScroll {
+                node_id,
+                element_id,
+                tag,
+                x,
+                y,
+            } => {
+                element_scrolls.insert(
+                    node_id,
+                    ElementScrollRequest {
+                        node_id,
+                        element_id,
+                        tag,
+                        position: (x, y),
+                    },
+                );
+            }
+        }
+    }
+    page.scroll_elements_to(element_scrolls.into_values());
+    Ok(())
 }
 
 impl PageScriptRunner {

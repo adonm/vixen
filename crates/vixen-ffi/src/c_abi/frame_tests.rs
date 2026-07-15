@@ -321,12 +321,11 @@ fn open_controller(controller: FlutterBrowserController) -> Handle {
         Arc::new(ControllerEntry {
             state: Mutex::new(ControllerState {
                 controller,
-                render_replica: vixen_api::RenderReplica::default(),
-                render_commits: vixen_api::RenderCommitState::default(),
                 next_event_sequence: 1,
                 next_frame_id: 1,
             }),
             renderer: crate::RenderBroker::new(),
+            renderer_state: Arc::new(Mutex::new(super::RendererState::default())),
             cdp: Mutex::new(None),
         }),
     );

@@ -6,6 +6,7 @@
 //! parsing advances cooperatively while DOM/runtime creation and commit remain
 //! on the dedicated owner thread.
 
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::marker::PhantomData;
 use std::path::PathBuf;
@@ -22,10 +23,10 @@ use vixen_api::{
     FormEntryValueInfo, FormSubmissionInfo, FrameId, HostViewState, InputDispatchResult,
     KeyEventData, MouseEventData, NavigationActionOutcome, NavigationCancellationReason,
     NavigationHistoryEntry, NavigationHistorySnapshot, NavigationId, NavigationPhase,
-    ProfileDataSelection, ProfileId, ProfileSessionState, RequestId, RuntimeBindingEvent,
-    RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue, RuntimeContextId,
-    RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent, RuntimeNetworkEvent, ScriptValue,
-    TextInputState, browser_error_codes,
+    ProfileDataSelection, ProfileId, ProfileSessionState, RenderBrokerCancellation, RenderCommit,
+    RequestId, RuntimeBindingEvent, RuntimeConsoleArg, RuntimeConsoleEvent, RuntimeConsoleValue,
+    RuntimeContextId, RuntimeDialogEvent, RuntimeEffects, RuntimeExceptionEvent,
+    RuntimeNetworkEvent, ScriptValue, TextInputState, browser_error_codes,
 };
 use vixen_net::{
     ByteResponse, CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent,
@@ -42,8 +43,8 @@ use crate::raster_image::{
 };
 use crate::script::{
     ExternalPageScript, JsConsoleValue, JsNavigationAction, JsNetworkEvent, JsRuntime, JsValue,
-    PageScriptRunner, PreparedPageScript, RuntimeInterruptHandle, merge_profile_cookies,
-    persist_profile_cookies,
+    PageScriptRunner, PreparedPageScript, RenderViewState, RuntimeInterruptHandle,
+    SynchronousLayoutConfig, merge_profile_cookies, persist_profile_cookies,
 };
 use crate::stylesheet::{ExternalPageStylesheet, PageStylesheetRunner, PreparedPageStylesheet};
 
@@ -77,8 +78,41 @@ const MAX_NAVIGATION_ACTIONS_PER_COMMAND: usize = 64;
 static NEXT_PROFILE_ID: AtomicU64 = AtomicU64::new(1);
 static NEXT_BROWSER_ID: AtomicU64 = AtomicU64::new(1);
 
+/// Flutter-owned synchronous layout service selected by an embedding
+/// composition root. Native/text-only clients leave this unset.
+pub trait SynchronousRenderer: Send + Sync {
+    fn ensure_layout(
+        &self,
+        snapshot: vixen_api::FullRenderSnapshot,
+        cancellation: &crate::script::RenderLayoutCancellation,
+    ) -> Result<RenderCommit, SynchronousRendererError>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SynchronousRendererError {
+    pub code: String,
+    pub message: String,
+}
+
+impl SynchronousRendererError {
+    pub fn new(code: impl Into<String>, message: impl Into<String>) -> Self {
+        Self {
+            code: code.into(),
+            message: message.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for SynchronousRendererError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{}: {}", self.code, self.message)
+    }
+}
+
+impl std::error::Error for SynchronousRendererError {}
+
 /// Browser startup inputs supplied by a composition root.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BrowserConfig {
     pub profile_path: PathBuf,
     pub network: NetworkConfig,
@@ -88,6 +122,25 @@ pub struct BrowserConfig {
     /// Deterministic document sources used by tests/embedded hosts. Exact URL
     /// matches bypass transport but still use the normal commit/runtime path.
     pub document_overrides: BTreeMap<String, String>,
+    pub synchronous_renderer: Option<Arc<dyn SynchronousRenderer>>,
+}
+
+impl std::fmt::Debug for BrowserConfig {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("BrowserConfig")
+            .field("profile_path", &self.profile_path)
+            .field("network", &self.network)
+            .field("max_contexts", &self.max_contexts)
+            .field("command_capacity", &self.command_capacity)
+            .field("event_capacity", &self.event_capacity)
+            .field("document_overrides", &self.document_overrides)
+            .field(
+                "synchronous_renderer",
+                &self.synchronous_renderer.as_ref().map(|_| "configured"),
+            )
+            .finish()
+    }
 }
 
 impl BrowserConfig {
@@ -99,6 +152,7 @@ impl BrowserConfig {
             command_capacity: DEFAULT_COMMAND_CAPACITY,
             event_capacity: DEFAULT_EVENT_CAPACITY,
             document_overrides: BTreeMap::new(),
+            synchronous_renderer: None,
         }
     }
 }
@@ -206,7 +260,7 @@ impl EngineBrowserHandle {
             })
             .map_err(command_send_error)?;
         if let Some(interrupt) = interrupt {
-            let _ = interrupt.interrupt();
+            let _ = interrupt.interrupt_layout(RenderBrokerCancellation::Navigation);
         }
         reply_rx.recv().map_err(|_| {
             BrowserError::new(
@@ -261,9 +315,12 @@ fn dispatch_command(
     control: &CoreControl,
     command: BrowserCommand,
 ) -> Result<BrowserCommandResult, BrowserError> {
-    let interrupt = command_interrupt(&command).and_then(|(context_id, require_navigation)| {
-        control.interrupt_target(context_id, require_navigation)
-    });
+    let interrupt =
+        command_interrupt(&command).and_then(|(context_id, require_navigation, reason)| {
+            control
+                .interrupt_target(context_id, require_navigation)
+                .map(|interrupt| (interrupt, reason))
+        });
     let (reply_tx, reply_rx) = mpsc::sync_channel(1);
     commands
         .try_send(CoreMessage::Dispatch {
@@ -271,8 +328,8 @@ fn dispatch_command(
             reply: reply_tx,
         })
         .map_err(command_send_error)?;
-    if let Some(interrupt) = interrupt {
-        let _ = interrupt.interrupt();
+    if let Some((interrupt, reason)) = interrupt {
+        let _ = interrupt.interrupt_layout(reason);
     }
     reply_rx.recv().map_err(|_| {
         BrowserError::new(
@@ -389,14 +446,22 @@ pub fn spawn_browser(config: BrowserConfig) -> Result<EngineBrowserHandle, Brows
     }
 }
 
-fn command_interrupt(command: &BrowserCommand) -> Option<(BrowsingContextId, bool)> {
+fn command_interrupt(
+    command: &BrowserCommand,
+) -> Option<(BrowsingContextId, bool, RenderBrokerCancellation)> {
     match command {
         BrowserCommand::Navigate { context_id, url } if url.len() <= MAX_URL_BYTES => {
-            Some((*context_id, false))
+            Some((*context_id, false, RenderBrokerCancellation::Navigation))
         }
-        BrowserCommand::Reload { context_id }
-        | BrowserCommand::CloseBrowsingContext { context_id } => Some((*context_id, false)),
-        BrowserCommand::Stop { context_id } => Some((*context_id, true)),
+        BrowserCommand::Reload { context_id } => {
+            Some((*context_id, false, RenderBrokerCancellation::Navigation))
+        }
+        BrowserCommand::CloseBrowsingContext { context_id } => {
+            Some((*context_id, false, RenderBrokerCancellation::ContextClosed))
+        }
+        BrowserCommand::Stop { context_id } => {
+            Some((*context_id, true, RenderBrokerCancellation::Stop))
+        }
         _ => None,
     }
 }
@@ -559,7 +624,7 @@ impl CoreControl {
             .map(|context| context.runtime.clone())
             .collect::<Vec<_>>();
         for runtime in runtimes {
-            let _ = runtime.interrupt();
+            let _ = runtime.interrupt_layout(RenderBrokerCancellation::Shutdown);
         }
     }
 }
@@ -675,6 +740,7 @@ struct BrowserCore {
     pending_load_starts: Vec<tokio::sync::oneshot::Sender<()>>,
     pending_navigation_work: VecDeque<(BrowsingContextId, NavigationId)>,
     document_overrides: BTreeMap<String, String>,
+    synchronous_renderer: Option<Arc<dyn SynchronousRenderer>>,
     // Makes accidental movement of the DOM/V8 owner across threads impossible.
     _local_only: PhantomData<Rc<()>>,
 }
@@ -684,11 +750,22 @@ struct BrowsingContext {
     document_id: DocumentId,
     runtime_context_id: RuntimeContextId,
     active_navigation: Option<ActiveNavigation>,
-    page: Page,
+    page: Rc<RefCell<Page>>,
+    render_view: Rc<Cell<RenderViewState>>,
     runtime_slot: usize,
     config: BrowsingContextConfig,
     host_view: HostViewState,
     page_zoom: f64,
+}
+
+impl BrowsingContext {
+    fn page(&self) -> Ref<'_, Page> {
+        self.page.borrow()
+    }
+
+    fn page_mut(&self) -> RefMut<'_, Page> {
+        self.page.borrow_mut()
+    }
 }
 
 struct RuntimeSlot {
@@ -1093,6 +1170,7 @@ impl BrowserCore {
             pending_load_starts: Vec::new(),
             pending_navigation_work: VecDeque::new(),
             document_overrides: config.document_overrides,
+            synchronous_renderer: config.synchronous_renderer,
             _local_only: PhantomData,
         })
     }
@@ -1120,8 +1198,8 @@ impl BrowserCore {
                 let (url, history) = {
                     let context = self.context(context_id)?;
                     (
-                        context.page.url().to_owned(),
-                        context.page.history_with_current_scroll(),
+                        context.page().url().to_owned(),
+                        context.page().history_with_current_scroll(),
                     )
                 };
                 self.navigate(context_id, url, HistoryUpdate::Preserve(history))
@@ -1129,7 +1207,7 @@ impl BrowserCore {
             BrowserCommand::Stop { context_id } => self.stop(context_id),
             BrowserCommand::TraverseHistory { context_id, delta } => {
                 let context = self.context(context_id)?;
-                let mut history = context.page.history_with_current_scroll();
+                let mut history = context.page().history_with_current_scroll();
                 let Some(entry) = history.go(delta).cloned() else {
                     return Ok(BrowserCommandResult::Accepted);
                 };
@@ -1158,13 +1236,18 @@ impl BrowserCore {
                         context.host_view.scale_factor,
                         zoom,
                     );
-                    context.page.set_layout_viewport(layout_viewport);
+                    context.page_mut().set_layout_viewport(layout_viewport);
+                    context.render_view.set(RenderViewState {
+                        viewport: context.host_view.viewport,
+                        viewport_generation: context.host_view.generation.max(1),
+                        page_zoom: zoom,
+                    });
                     (
                         context.document_id,
                         context.runtime_context_id,
                         context.frame_id,
-                        context.page.url().to_owned(),
-                        host_view_runtime_source(&context.page, context.host_view, true),
+                        context.page().url().to_owned(),
+                        host_view_runtime_source(&context.page(), context.host_view, true),
                     )
                 };
                 let evaluation = self.automation_evaluation(
@@ -1192,7 +1275,8 @@ impl BrowserCore {
             }
             BrowserCommand::GetNavigationHistory { context_id } => {
                 let context = self.context(context_id)?;
-                let history = context.page.session_history();
+                let page = context.page();
+                let history = page.session_history();
                 Ok(BrowserCommandResult::NavigationHistory(
                     NavigationHistorySnapshot {
                         current_index: history.index(),
@@ -1210,8 +1294,10 @@ impl BrowserCore {
             }
             BrowserCommand::ResetNavigationHistory { context_id } => {
                 let context = self.context_mut(context_id)?;
-                let entry = HistoryEntry::navigation(context.page.url().to_owned());
-                context.page.set_session_history(SessionHistory::new(entry));
+                let entry = HistoryEntry::navigation(context.page().url().to_owned());
+                context
+                    .page_mut()
+                    .set_session_history(SessionHistory::new(entry));
                 Ok(BrowserCommandResult::Accepted)
             }
             BrowserCommand::Evaluate {
@@ -1280,18 +1366,20 @@ impl BrowserCore {
                         context.host_view.scale_factor,
                         context.page_zoom,
                     );
-                    let previous_scroll = context.page.root_scroll();
-                    let result = context
-                        .page
-                        .find_text(&query, case_sensitive, forward, viewport);
-                    let scroll_sync = (context.page.root_scroll() != previous_scroll).then(|| {
-                        (
-                            context.runtime_context_id,
-                            context.frame_id,
-                            context.page.url().to_owned(),
-                            host_view_runtime_source(&context.page, context.host_view, true),
-                        )
-                    });
+                    let previous_scroll = context.page().root_scroll();
+                    let result =
+                        context
+                            .page_mut()
+                            .find_text(&query, case_sensitive, forward, viewport);
+                    let scroll_sync =
+                        (context.page().root_scroll() != previous_scroll).then(|| {
+                            (
+                                context.runtime_context_id,
+                                context.frame_id,
+                                context.page().url().to_owned(),
+                                host_view_runtime_source(&context.page(), context.host_view, true),
+                            )
+                        });
                     (result, scroll_sync)
                 };
                 if let Some((runtime_context_id, frame_id, url, source)) = scroll_sync {
@@ -1320,7 +1408,7 @@ impl BrowserCore {
                 validate_viewport(viewport)?;
                 let context = self.context_for_document(context_id, document_id)?;
                 Ok(BrowserCommandResult::Snapshot(
-                    context.page.snapshot(viewport),
+                    context.page().snapshot(viewport),
                 ))
             }
             BrowserCommand::RenderSnapshot {
@@ -1342,7 +1430,7 @@ impl BrowserCore {
                 }
                 let context = self.context_for_document(context_id, document_id)?;
                 let snapshot = context
-                    .page
+                    .page()
                     .render_snapshot(
                         context_id,
                         document_id,
@@ -1397,7 +1485,7 @@ impl BrowserCore {
                 }
                 let context = self.context_for_document(context_id, document_id)?;
                 let matches = context
-                    .page
+                    .page()
                     .query_selector_all_in_viewport(&selector, viewport)
                     .map_err(|message| {
                         BrowserError::new(browser_error_codes::INVALID_ARGUMENT, message)
@@ -1413,7 +1501,9 @@ impl BrowserCore {
                 validate_viewport(viewport)?;
                 let context = self.context_for_document(context_id, document_id)?;
                 Ok(BrowserCommandResult::ComputedStyle(
-                    context.page.computed_style_for_viewport(node_id, viewport),
+                    context
+                        .page()
+                        .computed_style_for_viewport(node_id, viewport),
                 ))
             }
             BrowserCommand::DisplayListText {
@@ -1424,7 +1514,7 @@ impl BrowserCore {
                 validate_viewport(viewport)?;
                 let context = self.context_for_document(context_id, document_id)?;
                 Ok(BrowserCommandResult::DisplayListText(
-                    context.page.dump_display_list(viewport),
+                    context.page().dump_display_list(viewport),
                 ))
             }
             BrowserCommand::Diagnostics {
@@ -1433,7 +1523,7 @@ impl BrowserCore {
             } => {
                 let context = self.context_for_document(context_id, document_id)?;
                 Ok(BrowserCommandResult::Diagnostics(
-                    context.page.diagnostics(),
+                    context.page().diagnostics(),
                 ))
             }
             BrowserCommand::DocumentText {
@@ -1445,11 +1535,11 @@ impl BrowserCore {
                 validate_viewport(viewport)?;
                 let context = self.context_for_document(context_id, document_id)?;
                 let text = match kind {
-                    DocumentTextKind::Dom => context.page.dump_dom(),
-                    DocumentTextKind::TextContent => context.page.text_content(),
-                    DocumentTextKind::LayoutTree => context.page.dump_layout_tree(viewport),
-                    DocumentTextKind::Lines => context.page.dump_lines(viewport),
-                    DocumentTextKind::PaintStats => context.page.dump_paint_stats(viewport),
+                    DocumentTextKind::Dom => context.page().dump_dom(),
+                    DocumentTextKind::TextContent => context.page().text_content(),
+                    DocumentTextKind::LayoutTree => context.page().dump_layout_tree(viewport),
+                    DocumentTextKind::Lines => context.page().dump_lines(viewport),
+                    DocumentTextKind::PaintStats => context.page().dump_paint_stats(viewport),
                 };
                 Ok(BrowserCommandResult::DocumentText(text))
             }
@@ -1474,7 +1564,7 @@ impl BrowserCore {
                     context.host_view.scale_factor,
                     context.page_zoom,
                 );
-                Ok(BrowserCommandResult::HitTest(context.page.element_at(
+                Ok(BrowserCommandResult::HitTest(context.page().element_at(
                     layout_viewport,
                     x / scale,
                     y / scale,
@@ -1487,7 +1577,7 @@ impl BrowserCore {
             } => {
                 validate_lookup_id(&element_id)?;
                 let context = self.context_for_document(context_id, document_id)?;
-                let target = context.page.element_by_id(&element_id).ok_or_else(|| {
+                let target = context.page().element_by_id(&element_id).ok_or_else(|| {
                     BrowserError::new(
                         browser_error_codes::INVALID_ARGUMENT,
                         format!("no element with id '{element_id}'"),
@@ -1513,9 +1603,12 @@ impl BrowserCore {
             } => {
                 validate_lookup_id(&form_id)?;
                 let context = self.context_for_document(context_id, document_id)?;
-                let submission = context.page.form_submission(&form_id).map_err(|message| {
-                    BrowserError::new(browser_error_codes::INVALID_ARGUMENT, message)
-                })?;
+                let submission = context
+                    .page()
+                    .form_submission(&form_id)
+                    .map_err(|message| {
+                        BrowserError::new(browser_error_codes::INVALID_ARGUMENT, message)
+                    })?;
                 Ok(BrowserCommandResult::FormSubmission(form_submission_info(
                     submission,
                 )))
@@ -1550,7 +1643,7 @@ impl BrowserCore {
         let session = ProfileSessionState {
             tabs: contexts
                 .iter()
-                .map(|context_id| self.contexts[context_id].page.url().to_owned())
+                .map(|context_id| self.contexts[context_id].page().url().to_owned())
                 .collect(),
             active_index: self
                 .active_context
@@ -1610,7 +1703,7 @@ impl BrowserCore {
         let scale = page_output_scale(context);
         let layout_viewport =
             page_layout_viewport(viewport, context.host_view.scale_factor, context.page_zoom);
-        let mut commands = context.page.display_list(layout_viewport);
+        let mut commands = context.page().display_list(layout_viewport);
         scale_paint_commands(&mut commands, scale as f32);
         Ok(PaintSnapshot {
             context_id,
@@ -1632,7 +1725,7 @@ impl BrowserCore {
             page_layout_viewport(viewport, context.host_view.scale_factor, context.page_zoom);
         let mut snapshot =
             context
-                .page
+                .page()
                 .accessibility_snapshot(context_id, document_id, layout_viewport);
         snapshot.viewport = viewport;
         for node in &mut snapshot.nodes {
@@ -1694,12 +1787,33 @@ impl BrowserCore {
             Page::from_html("about:blank", "<!doctype html><title></title>").map_err(|error| {
                 BrowserError::new(browser_error_codes::NAVIGATION_LOAD, error.to_string())
             })?;
-        let runtime = JsRuntime::with_browser_storage(
-            self.network_config.clone(),
-            Arc::clone(&self.store),
-            format!("context-{}", context_id.get()),
-            &page,
-        )
+        let page = Rc::new(RefCell::new(page));
+        let render_view = Rc::new(Cell::new(RenderViewState {
+            viewport: HostViewState::default().viewport,
+            viewport_generation: 1,
+            page_zoom: 1.0,
+        }));
+        let runtime = if let Some(renderer) = self.synchronous_renderer.clone() {
+            JsRuntime::with_browser_storage_and_renderer(
+                self.network_config.clone(),
+                Arc::clone(&self.store),
+                format!("context-{}", context_id.get()),
+                SynchronousLayoutConfig::new(
+                    Rc::clone(&page),
+                    context_id,
+                    document_id,
+                    Rc::clone(&render_view),
+                    renderer,
+                ),
+            )
+        } else {
+            JsRuntime::with_browser_storage(
+                self.network_config.clone(),
+                Arc::clone(&self.store),
+                format!("context-{}", context_id.get()),
+                &page.borrow(),
+            )
+        }
         .map_err(engine_error)?;
         let runtime_slot = self.runtime_slots.len();
         self.runtime_slots.push(RuntimeSlot {
@@ -1718,6 +1832,7 @@ impl BrowserCore {
                 runtime_context_id,
                 active_navigation: None,
                 page,
+                render_view,
                 runtime_slot,
                 config: BrowsingContextConfig::default(),
                 host_view: HostViewState::default(),
@@ -2057,7 +2172,7 @@ impl BrowserCore {
                 let history = self
                     .context(context_id)
                     .expect("active navigation context exists")
-                    .page
+                    .page()
                     .history_with_current_scroll();
                 let disposition = if history.length() == 1 && history.url() == Some("about:blank") {
                     HistoryDisposition::Replace
@@ -2069,7 +2184,7 @@ impl BrowserCore {
             HistoryUpdate::Replace => (
                 self.context(context_id)
                     .expect("active navigation context exists")
-                    .page
+                    .page()
                     .history_with_current_scroll(),
                 HistoryDisposition::Replace,
             ),
@@ -2132,6 +2247,12 @@ impl BrowserCore {
             host_view.scale_factor,
             page_zoom,
         ));
+        let page = Rc::new(RefCell::new(page));
+        let render_view = Rc::new(Cell::new(RenderViewState {
+            viewport: host_view.viewport,
+            viewport_generation: host_view.generation.max(1),
+            page_zoom,
+        }));
         if self.runtime_slots.len() >= MAX_RUNTIME_SLOTS {
             self.fail_navigation(
                 context_id,
@@ -2144,12 +2265,28 @@ impl BrowserCore {
             );
             return;
         }
-        let mut runtime = match JsRuntime::with_browser_storage(
-            self.network_config.clone(),
-            Arc::clone(&self.store),
-            format!("context-{}", context_id.get()),
-            &page,
-        ) {
+        let runtime_result = if let Some(renderer) = self.synchronous_renderer.clone() {
+            JsRuntime::with_browser_storage_and_renderer(
+                self.network_config.clone(),
+                Arc::clone(&self.store),
+                format!("context-{}", context_id.get()),
+                SynchronousLayoutConfig::new(
+                    Rc::clone(&page),
+                    context_id,
+                    document_id,
+                    Rc::clone(&render_view),
+                    renderer,
+                ),
+            )
+        } else {
+            JsRuntime::with_browser_storage(
+                self.network_config.clone(),
+                Arc::clone(&self.store),
+                format!("context-{}", context_id.get()),
+                &page.borrow(),
+            )
+        };
+        let mut runtime = match runtime_result {
             Ok(runtime) => runtime,
             Err(error) => {
                 self.fail_navigation(
@@ -2162,9 +2299,9 @@ impl BrowserCore {
             }
         };
         apply_runtime_config(&mut runtime, &context_config);
-        let host_view_source = host_view_runtime_source(&page, host_view, false);
+        let host_view_source = host_view_runtime_source(&page.borrow(), host_view, false);
         if let Err(error) = runtime.with_entered_isolate(|runtime| {
-            runtime.evaluate_with_page_mut(&host_view_source, &mut page)
+            runtime.evaluate_with_shared_page_mut(&host_view_source, &page)
         }) {
             self.fail_navigation(
                 context_id,
@@ -2196,7 +2333,7 @@ impl BrowserCore {
             actions: Vec::new(),
         };
         let stylesheet_work = NavigationStylesheetWork {
-            runner: PageStylesheetRunner::new(&page),
+            runner: PageStylesheetRunner::new(&page.borrow()),
             scripts: script_work,
         };
         self.emit(BrowserEvent::RuntimeContextDestroyed {
@@ -2216,6 +2353,7 @@ impl BrowserCore {
                 .context_mut(context_id)
                 .expect("active navigation context exists");
             context.page = page;
+            context.render_view = render_view;
             context.document_id = document_id;
             context.runtime_context_id = runtime_context_id;
             context.runtime_slot = runtime_slot;
@@ -2269,17 +2407,17 @@ impl BrowserCore {
         let runtime_context_id = context.runtime_context_id;
         let runtime_slot = context.runtime_slot;
         let frame_id = context.frame_id;
-        let document_url = context.page.url().to_owned();
+        let document_url = context.page().url().to_owned();
 
-        let Some(step) = work.runner.prepare_next(&context.page) else {
-            let host_source = host_view_runtime_source(&context.page, context.host_view, false);
+        let Some(step) = work.runner.prepare_next(&context.page()) else {
+            let host_source = host_view_runtime_source(&context.page(), context.host_view, false);
             let result = {
                 let (contexts, runtime_slots) = (&mut self.contexts, &mut self.runtime_slots);
                 let context = contexts.get_mut(&context_id).expect("context checked");
                 let runtime = &mut runtime_slots[runtime_slot].runtime;
                 runtime.with_entered_isolate(|runtime| {
-                    runtime.refresh_page_hosts(&context.page)?;
-                    runtime.evaluate_with_page_mut(&host_source, &mut context.page)
+                    runtime.refresh_page_hosts(&context.page())?;
+                    runtime.evaluate_with_shared_page_mut(&host_source, &context.page)
                 })
             };
             if let Err(error) = result {
@@ -2294,16 +2432,17 @@ impl BrowserCore {
                 );
                 return;
             }
+            let image_runner = {
+                let context = self
+                    .context(context_id)
+                    .expect("external stylesheet context was checked");
+                PageImageRunner::new(&context.page())
+            };
             self.restore_navigation_work(
                 context_id,
                 navigation_id,
                 NavigationWork::Images(NavigationImageWork {
-                    runner: PageImageRunner::new(
-                        &self
-                            .context(context_id)
-                            .expect("external stylesheet context was checked")
-                            .page,
-                    ),
+                    runner: image_runner,
                     scripts: work.scripts,
                 }),
             );
@@ -2463,7 +2602,7 @@ impl BrowserCore {
         }
         let runtime_slot = context.runtime_slot;
         let frame_id = context.frame_id;
-        let document_url = context.page.url().to_owned();
+        let document_url = context.page().url().to_owned();
         let Some(active) = context.active_navigation.as_ref() else {
             return;
         };
@@ -2585,7 +2724,7 @@ impl BrowserCore {
             .and_then(|()| {
                 self.context_mut(key.context_id)
                     .expect("external stylesheet context was checked")
-                    .page
+                    .page_mut()
                     .apply_external_stylesheet(key.stylesheet_index, source)
                     .map_err(|message| {
                         BrowserError::new(browser_error_codes::NAVIGATION_LOAD, message)
@@ -2632,9 +2771,9 @@ impl BrowserCore {
         let runtime_context_id = context.runtime_context_id;
         let runtime_slot = context.runtime_slot;
         let frame_id = context.frame_id;
-        let document_url = context.page.url().to_owned();
+        let document_url = context.page().url().to_owned();
 
-        let Some(step) = work.runner.prepare_next(&context.page) else {
+        let Some(step) = work.runner.prepare_next(&context.page()) else {
             self.restore_navigation_work(
                 context_id,
                 navigation_id,
@@ -2795,7 +2934,7 @@ impl BrowserCore {
         }
         let runtime_slot = context.runtime_slot;
         let frame_id = context.frame_id;
-        let document_url = context.page.url().to_owned();
+        let document_url = context.page().url().to_owned();
         let Some(active) = context.active_navigation.as_ref() else {
             return;
         };
@@ -2911,7 +3050,7 @@ impl BrowserCore {
                 self.cookies.apply_delta(cookie_delta);
                 self.context_mut(key.context_id)
                     .expect("external image context was checked")
-                    .page
+                    .page_mut()
                     .apply_raster_image(key.node_id, image);
             }
         }
@@ -2951,7 +3090,7 @@ impl BrowserCore {
         let runtime_context_id = context.runtime_context_id;
         let runtime_slot = context.runtime_slot;
         let frame_id = context.frame_id;
-        let document_url = context.page.url().to_owned();
+        let document_url = context.page().url().to_owned();
         let host_source = work
             .preload_scripts
             .pop_front()
@@ -2963,8 +3102,8 @@ impl BrowserCore {
             let context = self.context(context_id).expect("context checked");
             let author_scripts = work
                 .author_scripts
-                .get_or_insert_with(|| PageScriptRunner::new(&context.page, work.bypass_csp));
-            match author_scripts.prepare_next(&context.page) {
+                .get_or_insert_with(|| PageScriptRunner::new(&context.page(), work.bypass_csp));
+            match author_scripts.prepare_next(&context.page()) {
                 Some(item) => NavigationScriptStep::Author(item),
                 None => NavigationScriptStep::Complete,
             }
@@ -3051,7 +3190,7 @@ impl BrowserCore {
                         NavigationScriptStep::Host(source)
                         | NavigationScriptStep::Author(PreparedPageScript::Inline(source)) => Some(
                             runtime
-                                .evaluate_with_page_mut(&source, &mut context.page)
+                                .evaluate_with_shared_page_mut(&source, &context.page)
                                 .map(|_| ()),
                         ),
                         NavigationScriptStep::Author(PreparedPageScript::Skip) => Some(Ok(())),
@@ -3208,7 +3347,7 @@ impl BrowserCore {
         }
         let runtime_slot = context.runtime_slot;
         let frame_id = context.frame_id;
-        let document_url = context.page.url().to_owned();
+        let document_url = context.page().url().to_owned();
         let Some(active) = context.active_navigation.as_ref() else {
             return;
         };
@@ -3384,7 +3523,7 @@ impl BrowserCore {
                 .runtime
                 .with_entered_isolate(|runtime| {
                     let item_result = runtime
-                        .evaluate_with_page_mut(&source, &mut context.page)
+                        .evaluate_with_shared_page_mut(&source, &context.page)
                         .map(|_| ());
                     let interrupted = item_result.as_ref().is_err_and(is_script_interrupted);
                     let (effects, actions) = if interrupted {
@@ -3619,7 +3758,7 @@ impl BrowserCore {
                 runtime_slots[runtime_slot]
                     .runtime
                     .with_entered_isolate(|runtime| {
-                        runtime.evaluate_with_page_mut(&source, &mut context.page)
+                        runtime.evaluate_with_shared_page_mut(&source, &context.page)
                     })
                     .map_err(engine_error)?;
             }
@@ -3671,12 +3810,17 @@ impl BrowserCore {
         let source = {
             let context = self.context_mut(context_id)?;
             context.host_view = state;
-            context.page.set_layout_viewport(page_layout_viewport(
+            context.page_mut().set_layout_viewport(page_layout_viewport(
                 state.viewport,
                 state.scale_factor,
                 context.page_zoom,
             ));
-            host_view_runtime_source(&context.page, state, true)
+            context.render_view.set(RenderViewState {
+                viewport: state.viewport,
+                viewport_generation: state.generation.max(1),
+                page_zoom: context.page_zoom,
+            });
+            host_view_runtime_source(&context.page(), state, true)
         };
         let evaluation =
             self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
@@ -3773,7 +3917,7 @@ impl BrowserCore {
         let evaluation = runtime_slots[runtime_slot]
             .runtime
             .with_entered_isolate(|runtime| {
-                let value = match runtime.evaluate_with_page_mut(&source, &mut context.page) {
+                let value = match runtime.evaluate_with_shared_page_mut(&source, &context.page) {
                     Ok(value) => value,
                     Err(error) => {
                         discard_runtime_outputs(runtime);
@@ -3782,10 +3926,12 @@ impl BrowserCore {
                 };
                 if matches!(&value, JsValue::Bool(true))
                     && let Some((viewport, delta)) = root_scroll_default
-                    && context.page.scroll_root_by(viewport, delta)
+                    && context.page_mut().scroll_root_by(viewport, delta)
                 {
-                    let source = host_view_runtime_source(&context.page, context.host_view, true);
-                    if let Err(error) = runtime.evaluate_with_page_mut(&source, &mut context.page) {
+                    let source = host_view_runtime_source(&context.page(), context.host_view, true);
+                    if let Err(error) =
+                        runtime.evaluate_with_shared_page_mut(&source, &context.page)
+                    {
                         discard_runtime_outputs(runtime);
                         return Err(error);
                     }
@@ -3866,7 +4012,7 @@ impl BrowserCore {
         let is_wheel = event_type == "wheel";
         let node_id = if is_wheel && node_id == 0 {
             self.context_for_document(context_id, document_id)?
-                .page
+                .page()
                 .default_pointer_event_target_node_id()
                 .unwrap_or(0)
         } else {
@@ -3880,7 +4026,7 @@ impl BrowserCore {
         }
         let (target_id, target_tag) = self
             .context_for_document(context_id, document_id)?
-            .page
+            .page()
             .document()
             .element_by_node_id(node_id)
             .map(|element| (element.id, element.tag))
@@ -4160,20 +4306,22 @@ impl BrowserCore {
     ) -> Result<(), BrowserError> {
         let (runtime_slot, document_id, runtime_context_id, frame_id, url, source) = {
             let context = self.context_mut(context_id)?;
-            context.page.set_session_history(history);
+            context.page_mut().set_session_history(history);
             (
                 context.runtime_slot,
                 context.document_id,
                 context.runtime_context_id,
                 context.frame_id,
-                context.page.url().to_owned(),
-                host_view_runtime_source(&context.page, context.host_view, true),
+                context.page().url().to_owned(),
+                host_view_runtime_source(&context.page(), context.host_view, true),
             )
         };
         {
             let (contexts, slots) = (&self.contexts, &mut self.runtime_slots);
             let page = &contexts.get(&context_id).expect("context checked").page;
-            slots[runtime_slot].runtime.sync_page_realm_key(page);
+            slots[runtime_slot]
+                .runtime
+                .sync_page_realm_key(&page.borrow());
         }
         let evaluation =
             self.automation_evaluation(context_id, document_id, runtime_context_id, source)?;
@@ -4194,7 +4342,8 @@ impl BrowserCore {
         actions: Vec<JsNavigationAction>,
     ) -> Result<Vec<PreparedNavigationAction>, BrowserError> {
         let context = self.context(context_id)?;
-        let mut simulated_history = context.page.history_with_current_scroll();
+        let page = context.page();
+        let mut simulated_history = page.history_with_current_scroll();
         let mut prepared = Vec::with_capacity(actions.len());
         for action in actions {
             match action {
@@ -4221,7 +4370,7 @@ impl BrowserCore {
                     prepared.push(PreparedNavigationAction::CrossDocument {
                         url: simulated_history
                             .url()
-                            .unwrap_or_else(|| context.page.url())
+                            .unwrap_or_else(|| page.url())
                             .to_owned(),
                         injected_html: Some(html),
                         history_update: HistoryUpdate::Preserve(simulated_history.clone()),
@@ -4239,23 +4388,18 @@ impl BrowserCore {
                     ..
                 } => {
                     let submission = if form_node_id != 0 {
-                        match context
-                            .page
-                            .form_submission_by_node_id(form_node_id, submitter_node_id)
-                        {
+                        match page.form_submission_by_node_id(form_node_id, submitter_node_id) {
                             Ok(submission) => Some(submission),
                             Err(_) if !form_id.is_empty() => {
                                 let mut submission =
-                                    context.page.form_submission(&form_id).map_err(|message| {
+                                    page.form_submission(&form_id).map_err(|message| {
                                         BrowserError::new(
                                             browser_error_codes::INVALID_ARGUMENT,
                                             message,
                                         )
                                     })?;
-                                submission.action = context
-                                    .page
-                                    .resolve_url(&action)
-                                    .unwrap_or_else(|| action.clone());
+                                submission.action =
+                                    page.resolve_url(&action).unwrap_or_else(|| action.clone());
                                 submission.method = method.clone();
                                 Some(submission)
                             }
@@ -4267,7 +4411,7 @@ impl BrowserCore {
                             }
                         }
                     } else if !form_id.is_empty() {
-                        Some(context.page.form_submission(&form_id).map_err(|message| {
+                        Some(page.form_submission(&form_id).map_err(|message| {
                             BrowserError::new(browser_error_codes::INVALID_ARGUMENT, message)
                         })?)
                     } else {
@@ -4277,10 +4421,7 @@ impl BrowserCore {
                         .as_ref()
                         .map(|submission| submission.action.clone())
                         .unwrap_or_else(|| {
-                            context
-                                .page
-                                .resolve_url(&action)
-                                .unwrap_or_else(|| action.clone())
+                            page.resolve_url(&action).unwrap_or_else(|| action.clone())
                         });
                     let method = submission
                         .as_ref()
@@ -4423,7 +4564,7 @@ impl BrowserCore {
                 context.frame_id,
                 context.document_id,
                 context.runtime_context_id,
-                context.page.url().to_owned(),
+                context.page().url().to_owned(),
             )
         };
         self.control.finish_navigation(context_id, navigation_id);
@@ -4661,12 +4802,12 @@ fn context_state(context_id: BrowsingContextId, context: &BrowsingContext) -> Br
         document_id: context.document_id,
         runtime_context_id: Some(context.runtime_context_id),
         active_navigation_id,
-        url: context.page.url().to_owned(),
-        title: context.page.document().title(),
-        history_length: context.page.session_history().length(),
-        history_index: context.page.session_history().index(),
-        can_go_back: context.page.session_history().can_go_back(),
-        can_go_forward: context.page.session_history().can_go_forward(),
+        url: context.page().url().to_owned(),
+        title: context.page().document().title(),
+        history_length: context.page().session_history().length(),
+        history_index: context.page().session_history().index(),
+        can_go_back: context.page().session_history().can_go_back(),
+        can_go_forward: context.page().session_history().can_go_forward(),
         is_loading: active_navigation_id.is_some(),
         load_progress: if active_navigation_id.is_some() {
             0.1
@@ -5220,7 +5361,7 @@ fn keyboard_scroll_delta(
         || event.ctrl_key
         || event.alt_key
         || event.meta_key
-        || context.page.focused_element_consumes_scroll_keys()
+        || context.page().focused_element_consumes_scroll_keys()
     {
         return None;
     }
@@ -8272,7 +8413,7 @@ mod tests {
         let initial_history = core
             .context(context_id)
             .unwrap()
-            .page
+            .page()
             .session_history()
             .clone();
         drain_direct_events(&events);
@@ -8318,7 +8459,7 @@ mod tests {
         assert_eq!(stopped.document_id, initial.document_id);
         assert_eq!(stopped.runtime_context_id, initial.runtime_context_id);
         assert_eq!(
-            core.context(context_id).unwrap().page.session_history(),
+            core.context(context_id).unwrap().page().session_history(),
             &initial_history
         );
 
@@ -8342,7 +8483,7 @@ mod tests {
         let stable_history = core
             .context(context_id)
             .unwrap()
-            .page
+            .page()
             .session_history()
             .clone();
         drain_direct_events(&events);
@@ -8416,7 +8557,7 @@ mod tests {
         assert_eq!(reloaded.url, "https://same.test/a");
         assert_eq!(reloaded.title.as_deref(), Some("A"));
         assert_eq!(
-            core.context(context_id).unwrap().page.session_history(),
+            core.context(context_id).unwrap().page().session_history(),
             &stable_history
         );
 
@@ -8479,7 +8620,12 @@ mod tests {
         direct_drive_navigation(&mut core, context_id, history_navigation);
         let events = drain_direct_events(&events);
         let traversed = core.context_state(context_id).unwrap();
-        let traversed_history = core.context(context_id).unwrap().page.session_history();
+        let traversed_history = core
+            .context(context_id)
+            .unwrap()
+            .page()
+            .session_history()
+            .clone();
 
         assert_eq!(
             phases_for(&events, parser_navigation),

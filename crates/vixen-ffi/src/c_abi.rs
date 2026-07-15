@@ -92,15 +92,22 @@ impl VixenBuffer {
 
 pub(crate) struct ControllerState {
     pub(crate) controller: FlutterBrowserController,
-    pub(crate) render_replica: RenderReplica,
-    pub(crate) render_commits: RenderCommitState,
     next_event_sequence: u64,
     pub(crate) next_frame_id: u64,
+}
+
+#[derive(Default)]
+pub(crate) struct RendererState {
+    pub(crate) replica: RenderReplica,
+    pub(crate) commits: RenderCommitState,
+    pub(crate) source: Option<vixen_api::FullRenderSnapshot>,
+    pub(crate) needs_resync: bool,
 }
 
 pub(crate) struct ControllerEntry {
     pub(crate) state: Mutex<ControllerState>,
     pub(crate) renderer: crate::RenderBroker,
+    pub(crate) renderer_state: Arc<Mutex<RendererState>>,
     pub(crate) cdp: Mutex<Option<crate::cdp_host::CdpHost>>,
 }
 
@@ -191,17 +198,26 @@ pub unsafe extern "C" fn vixen_open(
             if profile_path.is_empty() {
                 return Err(AbiError::invalid_argument("profile path must not be empty"));
             }
-            let controller = FlutterBrowserController::open(profile_path).map_err(browser_error)?;
+            let renderer = crate::RenderBroker::new();
+            let renderer_state = Arc::new(Mutex::new(RendererState::default()));
+            let mut config = crate::BrowserConfig::new(profile_path);
+            config.synchronous_renderer = Some(Arc::new(
+                crate::sync_renderer::FlutterSynchronousRenderer::new(
+                    renderer.clone(),
+                    Arc::clone(&renderer_state),
+                ),
+            ));
+            let controller =
+                FlutterBrowserController::from_config(config).map_err(browser_error)?;
             let handle = next_token(&NEXT_HANDLE, "browser handle")?;
             let entry = Arc::new(ControllerEntry {
                 state: Mutex::new(ControllerState {
                     controller,
-                    render_replica: RenderReplica::default(),
-                    render_commits: RenderCommitState::default(),
                     next_event_sequence: 1,
                     next_frame_id: 1,
                 }),
-                renderer: crate::RenderBroker::new(),
+                renderer,
+                renderer_state,
                 cdp: Mutex::new(None),
             });
             controllers()
@@ -298,7 +314,13 @@ pub unsafe extern "C" fn vixen_command(
                 .state
                 .lock()
                 .map_err(|_| AbiError::internal("browser handle is unavailable"))?;
-            drain_renderer_submissions(&entry.renderer, &mut state)?;
+            {
+                let mut renderer_state = entry
+                    .renderer_state
+                    .lock()
+                    .map_err(|_| AbiError::internal("renderer acceptance state is unavailable"))?;
+                drain_renderer_submissions(&entry.renderer, &mut renderer_state)?;
+            }
             let response = match command {
                 ControllerCommand::DispatchRendererMouseEvent(dispatch) => {
                     let crate::RendererMouseEventDispatch {
@@ -306,46 +328,52 @@ pub unsafe extern "C" fn vixen_command(
                         query,
                         target,
                     } = *dispatch;
-                    state
-                        .render_commits
-                        .validate_hit_test_query(&state.render_replica, query)
-                        .map_err(render_protocol_error)?;
-                    let presented = state.render_commits.presented_commit().ok_or_else(|| {
-                        AbiError::invalid_command(
-                            "renderer mouse input requires a presented commit",
-                        )
-                    })?;
-                    if query.context_id != mouse.context_id
-                        || query.document_id != mouse.document_id
-                        || query.point.x != mouse.event.x
-                        || query.point.y != mouse.event.y
-                        || presented.viewport.width != mouse.viewport.0
-                        || presented.viewport.height != mouse.viewport.1
-                    {
-                        return Err(AbiError::invalid_command(
-                            "renderer mouse input does not match its query and viewport",
-                        ));
-                    }
-                    if let Some(target) = target {
-                        state
-                            .render_commits
-                            .validate_input_target(&state.render_replica, &query, target)
+                    let target_node_id = {
+                        let renderer_state = entry.renderer_state.lock().map_err(|_| {
+                            AbiError::internal("renderer acceptance state is unavailable")
+                        })?;
+                        renderer_state
+                            .commits
+                            .validate_hit_test_query(&renderer_state.replica, query)
                             .map_err(render_protocol_error)?;
-                    }
-                    let target_node_id = target
-                        .and_then(|target| {
-                            state
-                                .render_replica
-                                .nearest_semantic_node_id(target.node_id)
-                        })
-                        .map(|node_id| {
-                            usize::try_from(node_id.get()).map_err(|_| {
+                        let presented =
+                            renderer_state.commits.presented_commit().ok_or_else(|| {
                                 AbiError::invalid_command(
-                                    "renderer input target node_id must fit usize",
+                                    "renderer mouse input requires a presented commit",
                                 )
+                            })?;
+                        if query.context_id != mouse.context_id
+                            || query.document_id != mouse.document_id
+                            || query.point.x != mouse.event.x
+                            || query.point.y != mouse.event.y
+                            || presented.viewport.width != mouse.viewport.0
+                            || presented.viewport.height != mouse.viewport.1
+                        {
+                            return Err(AbiError::invalid_command(
+                                "renderer mouse input does not match its query and viewport",
+                            ));
+                        }
+                        if let Some(target) = target {
+                            renderer_state
+                                .commits
+                                .validate_input_target(&renderer_state.replica, &query, target)
+                                .map_err(render_protocol_error)?;
+                        }
+                        target
+                            .and_then(|target| {
+                                renderer_state
+                                    .replica
+                                    .nearest_semantic_node_id(target.node_id)
                             })
-                        })
-                        .transpose()?;
+                            .map(|node_id| {
+                                usize::try_from(node_id.get()).map_err(|_| {
+                                    AbiError::invalid_command(
+                                        "renderer input target node_id must fit usize",
+                                    )
+                                })
+                            })
+                            .transpose()?
+                    };
                     state
                         .controller
                         .dispatch_renderer_mouse_event(mouse, target_node_id)
@@ -355,15 +383,16 @@ pub unsafe extern "C" fn vixen_command(
             };
             let response = match response {
                 ControllerResponse::RendererUpdate(snapshot) => {
-                    let mut replica = state.render_replica.clone();
-                    replica
-                        .accept_full_snapshot(snapshot.clone())
-                        .map_err(render_protocol_error)?;
-                    entry
-                        .renderer
-                        .publish_update(RenderBridgeUpdate::FullSnapshot(snapshot))
-                        .map_err(renderer_broker_error)?;
-                    state.render_replica = replica;
+                    let mut renderer_state = entry.renderer_state.lock().map_err(|_| {
+                        AbiError::internal("renderer acceptance state is unavailable")
+                    })?;
+                    crate::sync_renderer::publish_renderer_source(
+                        &entry.renderer,
+                        &mut renderer_state,
+                        snapshot,
+                        false,
+                    )
+                    .map_err(synchronous_renderer_error)?;
                     ControllerResponse::Accepted
                 }
                 response => response,
@@ -383,13 +412,13 @@ pub unsafe extern "C" fn vixen_command(
 
 pub(crate) fn drain_renderer_submissions(
     renderer: &crate::RenderBroker,
-    state: &mut ControllerState,
+    state: &mut RendererState,
 ) -> Result<(), AbiError> {
     while let Some(submission) = renderer.peek_submission().map_err(renderer_broker_error)? {
         let (next_commits, releases) = match &submission {
             RenderBridgeSubmission::Commit(commit) => {
-                let mut commits = state.render_commits.clone();
-                let releases = match commits.accept_commit(&state.render_replica, commit.clone()) {
+                let mut commits = state.commits.clone();
+                let releases = match commits.accept_commit(&state.replica, commit.clone()) {
                     Ok(releases) => releases,
                     Err(error) => {
                         renderer
@@ -409,8 +438,8 @@ pub(crate) fn drain_renderer_submissions(
                 (Some(commits), releases)
             }
             RenderBridgeSubmission::Presented(presented) => {
-                let mut commits = state.render_commits.clone();
-                let releases = match commits.accept_presented(&state.render_replica, *presented) {
+                let mut commits = state.commits.clone();
+                let releases = match commits.accept_presented(&state.replica, *presented) {
                     Ok(releases) => releases,
                     Err(error) => {
                         renderer
@@ -421,7 +450,11 @@ pub(crate) fn drain_renderer_submissions(
                 };
                 (Some(commits), releases)
             }
-            RenderBridgeSubmission::Resync(_) => (None, Vec::new()),
+            RenderBridgeSubmission::Resync(_) => {
+                state.needs_resync = true;
+                state.commits = RenderCommitState::default();
+                (None, Vec::new())
+            }
         };
         renderer
             .consume_submission_with_updates(
@@ -430,7 +463,7 @@ pub(crate) fn drain_renderer_submissions(
             )
             .map_err(renderer_broker_error)?;
         if let Some(commits) = next_commits {
-            state.render_commits = commits;
+            state.commits = commits;
         }
     }
     Ok(())
@@ -441,6 +474,10 @@ fn render_protocol_error(error: vixen_api::RenderProtocolError) -> AbiError {
 }
 
 fn renderer_broker_error(error: crate::RenderBrokerError) -> AbiError {
+    AbiError::invalid_command(format!("{}: {}", error.code, error.message))
+}
+
+fn synchronous_renderer_error(error: vixen_engine::browser::SynchronousRendererError) -> AbiError {
     AbiError::invalid_command(format!("{}: {}", error.code, error.message))
 }
 

@@ -9,6 +9,7 @@
 
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use deno_core::serde_json::json;
@@ -25,13 +26,21 @@ use crate::page::{ElementScrollMetrics, Page, PageSelection};
 use crate::responsive_select::select_from as select_responsive_image_source;
 use crate::style_dom::ElementRelation;
 
-struct DomHost(Arc<DomHostState>);
+struct DomHost(Rc<DomHostState>);
 
 struct DomHostState {
     snapshot: deno_core::serde_json::Value,
     elements: Vec<DomElementRecord>,
     text_overrides: Mutex<HashMap<usize, String>>,
     mutations: DomMutationSink,
+    synchronous_layout: Option<SynchronousLayoutHost>,
+}
+
+#[derive(Clone)]
+pub(super) struct SynchronousLayoutHost {
+    pub(super) config: super::SynchronousLayoutConfig,
+    pub(super) mutations: DomMutationSink,
+    pub(super) cancellation: super::RenderLayoutCancellation,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -201,21 +210,25 @@ deno_core::extension!(
         op_vixen_dom_set_element_scroll,
     ],
     options = {
-        host: Arc<DomHostState>,
+        host: Rc<DomHostState>,
     },
     state = |state, options| {
         state.put(DomHost(options.host))
     },
 );
 
-pub(super) fn extension(page: &Page, mutations: DomMutationSink) -> Result<Extension, EngineError> {
-    let host = dom_host_state(page, mutations).map_err(|err| {
+pub(super) fn extension(
+    page: &Page,
+    mutations: DomMutationSink,
+    synchronous_layout: Option<SynchronousLayoutHost>,
+) -> Result<Extension, EngineError> {
+    let host = dom_host_state(page, mutations, synchronous_layout).map_err(|err| {
         EngineError::script(
             codes::SCRIPT_EVAL,
             format!("failed to build DOM host snapshot: {err}"),
         )
     })?;
-    let mut extension = vixen_dom::init(Arc::new(host));
+    let mut extension = vixen_dom::init(Rc::new(host));
     extension.js_files = Cow::Owned(vec![ExtensionFileSource::new_computed(
         "ext:vixen_dom/bootstrap.js",
         Arc::<str>::from(DOM_API_BOOTSTRAP),
@@ -228,13 +241,18 @@ pub(super) fn refresh(
     page: &Page,
     mutations: DomMutationSink,
 ) -> Result<(), EngineError> {
-    let host = dom_host_state(page, mutations).map_err(|err| {
+    let synchronous_layout = runtime
+        .op_state()
+        .borrow()
+        .try_borrow::<DomHost>()
+        .and_then(|host| host.0.synchronous_layout.clone());
+    let host = dom_host_state(page, mutations, synchronous_layout).map_err(|err| {
         EngineError::script(
             codes::SCRIPT_EVAL,
             format!("failed to refresh DOM host snapshot: {err}"),
         )
     })?;
-    runtime.op_state().borrow_mut().put(DomHost(Arc::new(host)));
+    runtime.op_state().borrow_mut().put(DomHost(Rc::new(host)));
     Ok(())
 }
 
@@ -688,11 +706,75 @@ fn op_vixen_dom_element_dataset(state: &mut OpState, node_id: u32) -> deno_core:
 #[deno_core::op2]
 #[serde]
 fn op_vixen_dom_element_rect(state: &mut OpState, node_id: u32) -> deno_core::serde_json::Value {
-    let host = state.borrow::<DomHost>();
-    let Some(record) = element_record_by_node_id(&host.0, node_id as usize) else {
+    let host = state.borrow::<DomHost>().0.clone();
+    if let Some(layout) = &host.synchronous_layout {
+        return synchronous_layout_rect(layout, node_id as usize);
+    }
+    let Some(record) = element_record_by_node_id(&host, node_id as usize) else {
         return missing_element_result(node_id);
     };
     json!({ "ok": true, "rect": record.bbox.map(rect_value) })
+}
+
+fn synchronous_layout_rect(
+    layout: &SynchronousLayoutHost,
+    node_id: usize,
+) -> deno_core::serde_json::Value {
+    let mutations = layout.mutations.take();
+    if !mutations.is_empty()
+        && let Err(error) =
+            super::apply_dom_mutation_list(&mut layout.config.page.borrow_mut(), mutations)
+    {
+        return json!({ "ok": false, "message": error.to_string() });
+    }
+    let view = layout.config.view.get();
+    let snapshot = match layout.config.page.borrow().render_snapshot(
+        layout.config.context_id,
+        layout.config.document_id,
+        view.viewport,
+        view.viewport_generation.max(1),
+        view.page_zoom,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(message) => return json!({ "ok": false, "message": message }),
+    };
+    let commit = match layout
+        .config
+        .renderer
+        .ensure_layout(snapshot, &layout.cancellation)
+    {
+        Ok(commit) => commit,
+        Err(error) => return json!({ "ok": false, "message": error.to_string() }),
+    };
+    let Ok(raw_node_id) = u64::try_from(node_id) else {
+        return json!({ "ok": false, "message": "DOM node id exceeds renderer range" });
+    };
+    let mut rect: Option<vixen_api::RenderRect> = None;
+    for geometry in commit
+        .geometry_index
+        .iter()
+        .filter(|geometry| geometry.node_id.get() == raw_node_id)
+    {
+        rect = Some(match rect {
+            None => geometry.border_box,
+            Some(current) => vixen_api::RenderRect {
+                x: current.x.min(geometry.border_box.x),
+                y: current.y.min(geometry.border_box.y),
+                width: (current.x + current.width)
+                    .max(geometry.border_box.x + geometry.border_box.width)
+                    - current.x.min(geometry.border_box.x),
+                height: (current.y + current.height)
+                    .max(geometry.border_box.y + geometry.border_box.height)
+                    - current.y.min(geometry.border_box.y),
+            },
+        });
+    }
+    json!({ "ok": true, "rendererGeometry": true, "rect": rect.map(|rect| json!({
+        "x": rect.x,
+        "y": rect.y,
+        "width": rect.width,
+        "height": rect.height,
+    })) })
 }
 
 #[deno_core::op2]
@@ -725,7 +807,11 @@ fn op_vixen_dom_form_entries(state: &mut OpState, node_id: u32) -> deno_core::se
     })
 }
 
-fn dom_host_state(page: &Page, mutations: DomMutationSink) -> Result<DomHostState, String> {
+fn dom_host_state(
+    page: &Page,
+    mutations: DomMutationSink,
+    synchronous_layout: Option<SynchronousLayoutHost>,
+) -> Result<DomHostState, String> {
     let elements = page.query_selector_all_in_viewport("*", page.layout_viewport())?;
     let element_scroll_metrics = page.element_scroll_metrics_snapshot();
     let records = elements
@@ -795,6 +881,7 @@ fn dom_host_state(page: &Page, mutations: DomMutationSink) -> Result<DomHostStat
         elements: records,
         text_overrides: Mutex::new(HashMap::new()),
         mutations,
+        synchronous_layout,
     })
 }
 
@@ -1527,9 +1614,11 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   function elementRect(nodeId) {
     const record = recordForElementNodeId(nodeId);
-    if (record && Object.prototype.hasOwnProperty.call(record, 'bbox')) return liveElementRect(record);
     if (record && Number(nodeId) < 0) return normalizedElementRect(record, { x: 0, y: 0, width: 0, height: 0 });
-    return normalizedElementRect(record, unwrapDomOp(op_vixen_dom_element_rect(nodeId)).rect);
+    const result = unwrapDomOp(op_vixen_dom_element_rect(nodeId));
+    if (result.rendererGeometry === true) return normalizedElementRect(record, result.rect);
+    if (record && Object.prototype.hasOwnProperty.call(record, 'bbox')) return liveElementRect(record);
+    return normalizedElementRect(record, result.rect);
   }
 
   function liveElementRect(record) {
@@ -6364,7 +6453,7 @@ mod tests {
             "<html><head><title>é—😀</title></head><body><p id='lead' data-emoji='é'>body é—😀</p></body></html>",
         )
         .unwrap();
-        let host = dom_host_state(&page, DomMutationSink::default()).unwrap();
+        let host = dom_host_state(&page, DomMutationSink::default(), None).unwrap();
         let snapshot = &host.snapshot;
         let body = host
             .elements
@@ -6406,7 +6495,7 @@ mod tests {
             "<style>#box { width: 40px; height: 20px; }</style><main><div id='box'>Box</div></main>",
         )
         .unwrap();
-        let host = dom_host_state(&page, DomMutationSink::default()).unwrap();
+        let host = dom_host_state(&page, DomMutationSink::default(), None).unwrap();
         let box_record = host
             .elements
             .iter()
@@ -6433,7 +6522,7 @@ mod tests {
             "<html><body><p id='lead' class='note callout'>Hello</p><p class='note'>Other</p></body></html>",
         )
         .unwrap();
-        let host = dom_host_state(&page, DomMutationSink::default()).unwrap();
+        let host = dom_host_state(&page, DomMutationSink::default(), None).unwrap();
         let lead_id = host
             .elements
             .iter()

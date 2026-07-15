@@ -9,6 +9,7 @@ mod cdp_host;
 mod frame;
 mod render_wire;
 mod renderer_broker;
+mod sync_renderer;
 
 pub use renderer_broker::{
     RENDER_BROKER_MAX_UPDATE_SOURCE_BYTES, RenderBroker, RenderBrokerError, RenderBrokerMessage,

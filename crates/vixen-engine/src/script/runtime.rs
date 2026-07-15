@@ -13,6 +13,7 @@ use std::time::Duration;
 use deno_core::futures::future::{Either, select};
 use deno_core::v8;
 use deno_core::{JsRuntime as DenoJsRuntime, PollEventLoopOptions, RuntimeOptions};
+use vixen_api::RenderBrokerCancellation;
 use vixen_net::NetworkConfig;
 
 use crate::engine_error::{EngineError, codes};
@@ -38,11 +39,42 @@ pub(super) struct DenoRuntimeConfig {
     pub(super) cache_disabled: webapi::CacheDisabledFlag,
     pub(super) permission_overrides: webapi::PermissionOverrides,
     pub(super) interrupt: RuntimeInterruptHandle,
+    pub(super) synchronous_layout: Option<super::SynchronousLayoutConfig>,
 }
 
 #[derive(Clone, Default)]
 pub(crate) struct RuntimeInterruptHandle {
     active: Arc<Mutex<Option<ActiveExecution>>>,
+    layout_cancellation: RenderLayoutCancellation,
+}
+
+#[derive(Clone, Default)]
+pub struct RenderLayoutCancellation(Arc<Mutex<Option<RenderBrokerCancellation>>>);
+
+impl RenderLayoutCancellation {
+    pub fn reason(&self) -> Option<RenderBrokerCancellation> {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    fn cancel(&self, reason: RenderBrokerCancellation) {
+        let mut current = self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if current.is_none() {
+            *current = Some(reason);
+        }
+    }
+
+    fn clear(&self) {
+        *self
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
 }
 
 struct ActiveExecution {
@@ -66,6 +98,15 @@ impl RuntimeInterruptHandle {
         let interrupted = active.isolate.terminate_execution();
         active.state.wake();
         interrupted
+    }
+
+    pub(crate) fn interrupt_layout(&self, reason: RenderBrokerCancellation) -> bool {
+        self.layout_cancellation.cancel(reason);
+        self.interrupt()
+    }
+
+    pub(crate) fn layout_cancellation(&self) -> RenderLayoutCancellation {
+        self.layout_cancellation.clone()
     }
 
     pub(crate) fn is_terminated(&self) -> bool {
@@ -126,6 +167,7 @@ pub(super) fn new_deno_runtime(
     let fetch_policy = page
         .filter(|page| page.url() != "about:blank")
         .map(webapi::FetchPolicy::from_page);
+    let layout_cancellation = config.interrupt.layout_cancellation();
     let mut extensions = vec![
         webidl::extension(),
         encoding::extension(),
@@ -143,7 +185,17 @@ pub(super) fn new_deno_runtime(
     let mut dom_mutations = None;
     if let Some(page) = page {
         let mutations = dom::DomMutationSink::default();
-        extensions.push(dom::extension(page, mutations.clone())?);
+        extensions.push(dom::extension(
+            page,
+            mutations.clone(),
+            config
+                .synchronous_layout
+                .map(|config| dom::SynchronousLayoutHost {
+                    config,
+                    mutations: mutations.clone(),
+                    cancellation: layout_cancellation,
+                }),
+        )?);
         extensions.push(cssom::extension(page)?);
         dom_mutations = Some(mutations);
     }
@@ -311,6 +363,7 @@ impl RuntimeDeadline {
         timeout: Duration,
         interrupt: RuntimeInterruptHandle,
     ) -> Self {
+        interrupt.layout_cancellation.clear();
         let state = Arc::new(DeadlineState {
             complete: AtomicBool::new(false),
             timed_out: AtomicBool::new(false),

@@ -3,9 +3,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use vixen_api::{
-    BrowserCommand, BrowserCommandResult, BrowsingContextState, RenderBridgeUpdate,
-    RenderBrokerRequestKind, RenderBrokerResponseKind, RenderCaptureRequest, RenderCommit,
-    RenderNodeId, RenderRect,
+    BrowserCommand, BrowserCommandResult, BrowsingContextState, RenderBrokerRequestKind,
+    RenderBrokerResponseKind, RenderCaptureRequest, RenderCommit, RenderNodeId, RenderRect,
 };
 use vixen_cdp::CdpRenderBackend;
 use vixen_engine::browser::EngineBrowserClient;
@@ -112,38 +111,36 @@ impl FlutterCdpRenderBackend {
 
         {
             let mut state = entry
-                .state
+                .renderer_state
                 .lock()
-                .map_err(|_| "browser handle is unavailable".to_owned())?;
+                .map_err(|_| "renderer acceptance state is unavailable".to_owned())?;
             drain_renderer_submissions(&entry.renderer, &mut state)
                 .map_err(|error| format!("{}: {}", error.code, error.message))?;
-            if let Some(commit) = state.render_commits.presented_commit()
+            if let Some(commit) = state.commits.presented_commit()
                 && commit.revision == snapshot.revision
                 && commit.viewport == snapshot.viewport
             {
                 return Ok((entry.clone(), commit.clone()));
             }
-            let mut replica = state.render_replica.clone();
-            replica
-                .accept_full_snapshot(snapshot.clone())
-                .map_err(|error| format!("{}: {}", error.code, error.message))?;
-            entry
-                .renderer
-                .publish_update(RenderBridgeUpdate::FullSnapshot(snapshot.clone()))
-                .map_err(|error| format!("{}: {}", error.code, error.message))?;
-            state.render_replica = replica;
+            crate::sync_renderer::publish_renderer_source(
+                &entry.renderer,
+                &mut state,
+                snapshot.clone(),
+                false,
+            )
+            .map_err(|error| format!("{}: {}", error.code, error.message))?;
         }
 
         let deadline = Instant::now() + CAPTURE_TIMEOUT;
         let presented = loop {
             {
                 let mut state = entry
-                    .state
+                    .renderer_state
                     .lock()
-                    .map_err(|_| "browser handle is unavailable".to_owned())?;
+                    .map_err(|_| "renderer acceptance state is unavailable".to_owned())?;
                 drain_renderer_submissions(&entry.renderer, &mut state)
                     .map_err(|error| format!("{}: {}", error.code, error.message))?;
-                if let Some(commit) = state.render_commits.presented_commit()
+                if let Some(commit) = state.commits.presented_commit()
                     && commit.revision == snapshot.revision
                     && commit.viewport == snapshot.viewport
                 {
@@ -242,13 +239,13 @@ impl CdpRenderBackend for FlutterCdpRenderBackend {
             return Ok(None);
         };
         let state = entry
-            .state
+            .renderer_state
             .lock()
-            .map_err(|_| "browser handle is unavailable".to_owned())?;
+            .map_err(|_| "renderer acceptance state is unavailable".to_owned())?;
         let element = state
-            .render_replica
+            .replica
             .nearest_element_node_id(hit)
-            .or_else(|| state.render_replica.nearest_semantic_node_id(hit));
+            .or_else(|| state.replica.nearest_semantic_node_id(hit));
         element
             .map(RenderNodeId::get)
             .map(|node_id| {
@@ -276,11 +273,12 @@ impl CdpRenderBackend for FlutterCdpRenderBackend {
         match response.kind {
             RenderBrokerResponseKind::Reset => {
                 let mut state = entry
-                    .state
+                    .renderer_state
                     .lock()
-                    .map_err(|_| "browser handle is unavailable".to_owned())?;
-                state.render_replica = vixen_api::RenderReplica::default();
-                state.render_commits = vixen_api::RenderCommitState::default();
+                    .map_err(|_| "renderer acceptance state is unavailable".to_owned())?;
+                state.replica = vixen_api::RenderReplica::default();
+                state.commits = vixen_api::RenderCommitState::default();
+                state.needs_resync = true;
                 Ok(())
             }
             RenderBrokerResponseKind::Failed { code, message } => Err(format!("{code}: {message}")),
