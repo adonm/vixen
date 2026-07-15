@@ -7,9 +7,10 @@ in [`PLAN.md`](PLAN.md); measured compatibility lives in
 which layer today?”
 
 **ADR-022 transition status:** R1 protocol validation, the R2 C/Dart dedicated
-broker, and the R3 test-only Flutter formatter vertical are checked in. Normal
-browsing still uses the transitional frame/texture path; R4–R6 must connect exact
-displayed commits, automation, and synchronous layout before R7 cutover/deletion.
+broker, R3 Flutter formatter vertical, R4 interactive exact-commit vertical, and
+the first R5 chrome-less capture checkpoint are checked in. Normal browsing still
+uses the transitional frame/texture fallback; the remaining R5 automation
+migration and R6 synchronous layout must pass before R7 cutover/deletion.
 
 ## Gate index
 
@@ -43,6 +44,7 @@ displayed commits, automation, and synchronous layout before R7 cutover/deletion
 | `just linux-release-smoke` | pinned x86_64 Flutter 3.47.0-0.1.pre beta release/AOT plus Rust bridge/Yaru window-plugin build; stripped runner/plugin ELFs, deterministic archive creation, clean extraction, and Impeller-aware Cage/headless-Wayland launch smoke |
 | `just linux-at-spi-smoke` | real release/AOT Flutter bundle in Cage's headless Wayland compositor with a fresh BrowserCore profile and local fixture; bounded process-filtered AT-SPI traversal must observe the BrowserCore-derived `DOM Basic` heading; Linux native AT evidence, not a screen-reader matrix |
 | `just linux-interaction-smoke` | real release/AOT Flutter bundle in Cage with AT-SPI observation only; physical address entry visibly navigates to the controlled fixture, native back/forward and reload restore BrowserCore-owned root/nested offsets, a gated FIFO read proves the visible stop control cancels an active navigation and recovers the prior page, wtype drives IBus Anthy/GTK preedit+commit for native/contenteditable hosts, and a wlr virtual pointer proves nested wheel ownership/cancellation/root chaining; script/accepted-wheel DOM offsets correlate with newer exact Flutter commit ids while canceled wheel preserves the returned offset; one controlled Linux interaction proof, not an IME/device matrix |
+| `just linux-automation-smoke` | same release/AOT executable runtime-selects the page-only host under Cage, bypasses profile tabs and legacy frame/Semantics capture, acknowledges one exact Flutter commit, and writes its direct scene PNG at 320×240 and 480×300; validates Impeller, strict PNG structure/dimensions, scene pixels, pinned full-scene hashes, and bounded exit; direct scene serialization excludes browser/runner/compositor chrome; first R5 capture checkpoint, not fixture-manifest, CDP/input, multi-target, mutation, or renderer-loss completion |
 | `just size-headless` | structured logical/allocated size, file count, and SHA-256 for the headless release binary |
 | `just size-flutter-linux` | controlled release/AOT build and component-attributed raw-bundle comparison against the checked-in hello-Flutter peer; measurement-only and not FlatPark package evidence |
 | `just baseline-headless` / `just baseline-headless-json` | per-scenario latency and Linux process-memory measurements for committed startup, navigation/runtime, layout, paint, and screenshot controls |

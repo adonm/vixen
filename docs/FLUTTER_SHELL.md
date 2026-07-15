@@ -143,7 +143,11 @@ never calls BrowserCore. The production shell now consumes it for one bounded
 selected-document projection; that projection is not general CSS-rendering
 evidence.
 
-1. Add a chrome-less Flutter host under Cage for visual fixtures and CDP capture.
+1. Continue the landed first chrome-less-host checkpoint by moving visual/layout
+   fixtures and CDP screenshot/input groups to exact presented commits; add
+   independent targets and renderer-loss recovery. The same release bundle
+   already produces bounded exact scene PNGs at two Cage viewports without
+   browser/compositor chrome or legacy frame capture.
 2. Solve bounded synchronous layout flush for same-task DOM mutation plus
    geometry reads.
 3. Cut over once and apply the full R7 deletion inventory: native renderer/image
@@ -459,6 +463,28 @@ OSTree repository.
 The former Relm4/libadwaita/custom GLArea shell has been removed. Linux still
 carries GTK3 through Flutter's embedder; that native runner boundary must remain
 window/texture integration rather than a second application UI.
+
+The first R5 automation-host checkpoint is selected at runtime from that same
+release executable with `--vixen-automation`, an explicit URL, bounded viewport,
+and absolute PNG output. Dart composes only the formatter `CustomPaint`; the
+Linux runner removes its fallback header and decorations. The coordinator skips
+profile-session tabs and transitional frame/accessibility capture, waits for the
+Flutter frame, submits the exact `Presented`, then serializes that unchanged
+scene under the renderer queue before bounded shutdown. `just
+linux-automation-smoke` proves 320×240 and 480×300 release-process captures under
+Cage. It is a scene-capture checkpoint, not yet the full rendered fixture/CDP/
+input/multi-target host.
+
+The direct release-bundle interface is intentionally small (the output directory
+must already exist):
+
+```sh
+vixen_shell \
+  --vixen-automation \
+  --vixen-url=file:///absolute/fixture.html \
+  --vixen-viewport=320x240 \
+  --vixen-output=/absolute/output.png
+```
 
 ### 5. Desktop expansion
 

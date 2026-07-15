@@ -84,6 +84,18 @@ Implemented: `just gate-flutter-shell` covers the formatter/coordinator/native
 ABI identities and `just linux-interaction-smoke` correlates accepted and canceled
 DOM scroll effects with exact presented Flutter commit ids in the release process.
 
+### Chrome-less renderer checkpoint
+
+The first R5 checkpoint is implemented when `just linux-automation-smoke` runs
+the same release/AOT bundle under Cage at two exact viewports, with no browser
+widgets, native decorations, legacy frame capture, or compositor pixels in the
+PNG. Capture must occur only after exact `Presented` acceptance, fail if that
+commit changes, use bounded explicit URL/viewport/output configuration, and close
+the sole BrowserCore on success or fail the process after bounded shutdown grace.
+This checkpoint is green; full R5
+acceptance still requires fixture-manifest, layout, CDP/Playwright screenshot and
+input, independent-target, mutation, and renderer-loss evidence.
+
 ### Synchronous geometry
 
 Done when tests cover:

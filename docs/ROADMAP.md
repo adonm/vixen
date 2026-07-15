@@ -315,6 +315,27 @@ fallback remains R7.
 multiple target viewports, input, before/after script capture, renderer loss, and
 no compositor/chrome pixels in page screenshots.
 
+**First implemented checkpoint:** the release bundle now runtime-selects a
+page-only Dart host with an undecorated Linux runner window. One strict
+`--vixen-automation` invocation requires an absolute file/HTTP(S) URL, a viewport
+within the existing 4,096-pixel/64-MiB bounds, and an absolute bounded `.png`
+output path. It bypasses profile tab restore/save and all legacy frame/Semantics
+capture, paints the accepted formatter view without browser widgets, then only
+after a Flutter frame acknowledges and captures the exact still-presented commit
+through `Scene.toImage`. Startup/capture is bounded to 60 seconds; successful
+work closes the sole BrowserCore, while shutdown gets a five-second grace before
+the process fails closed. `just linux-automation-smoke` launches that same
+release/AOT bundle under Cage twice at 320×240 and 480×300 with fresh profiles;
+it checks Impeller and exact commit diagnostics, strict PNG structure/dimensions,
+RGBA scene pixels, and pinned full-scene hashes. Because capture serializes the
+formatter scene rather than the Flutter or compositor surface, browser,
+runner, and compositor chrome cannot enter the PNG. Dart tests cover
+configuration rejection, legacy-capture suppression, exact presentation identity,
+PNG encoding, and output bounds. This does not yet satisfy full R5: fixture
+manifest, layout evidence, CDP/Playwright screenshot and input routing,
+independent simultaneous targets, before/after mutation capture, and renderer
+loss remain to migrate.
+
 ### R6. Synchronous layout and recovery gate
 
 Implement:

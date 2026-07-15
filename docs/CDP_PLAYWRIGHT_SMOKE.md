@@ -88,3 +88,10 @@ cancellation for page, history, and multi-action runtime navigations, clean late
 work after cancellation, and unrelated command handling during target creation.
 Configured initial-URL loading intentionally settles before socket acceptance.
 Add methods only when this smoke shows a real automation gap.
+
+The screenshot assertions above still exercise the transitional native-headless
+renderer. R5's first `just linux-automation-smoke` checkpoint now proves direct
+exact-commit Flutter scene PNGs from the same release bundle, but does not yet
+route CDP sessions or input through that host. Migrate the screenshot/input groups
+coherently rather than weakening their existing before/after and target-isolation
+checks or fabricating geometry in the native adapter.

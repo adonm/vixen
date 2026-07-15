@@ -4,11 +4,36 @@ import 'package:flutter/material.dart';
 import 'package:yaru/yaru.dart';
 
 import 'src/app/vixen_app.dart';
+import 'src/automation/automation_app.dart';
+import 'src/automation/automation_config.dart';
 import 'src/bridge/native/native_browser_controller.dart';
 import 'src/bridge/browser_models.dart';
 import 'src/shell/shell_coordinator.dart';
 
-Future<void> main() async {
+Future<void> main(List<String> arguments) async {
+  if (isAutomationInvocation(arguments)) {
+    WidgetsFlutterBinding.ensureInitialized();
+    late final AutomationConfig config;
+    try {
+      config = AutomationConfig.parse(arguments);
+    } on FormatException catch (error) {
+      stderr.writeln(error.message);
+      exit(64);
+    }
+    runApp(
+      VixenAutomationApp(
+        config: config,
+        coordinator: ShellCoordinator(
+          NativeBrowserController(),
+          initialUrl: config.url,
+          captureLegacyPresentation: false,
+          useProfileSession: false,
+        ),
+        onFinished: exit,
+      ),
+    );
+    return;
+  }
   await YaruWindowTitleBar.ensureInitialized();
   runApp(
     VixenApp(

@@ -236,6 +236,16 @@ accepted script/root-wheel offsets advance exact commit ids, canceled wheel keep
 the offset unchanged, and DOM `scroll` status agrees with the returned commit.
 These are integration gates rather than WPT surfaces.
 
+`just linux-automation-smoke` adds the first R5 chrome-less integration gate.
+The same release executable runs a page-only Flutter composition under Cage,
+suppresses the transitional frame/accessibility captures, acknowledges one exact
+formatter commit, and writes direct scene PNGs at 320×240 and 480×300. The gate
+checks Impeller, strict PNG structure/dimensions, root scene pixels, pinned
+full-scene hashes, and bounded process exit; direct formatter-scene serialization
+excludes browser/runner/compositor chrome by construction. It does not change
+the compatibility manifest or yet move CDP/Playwright,
+layout-fixture, input, multi-target, mutation, or renderer-loss claims.
+
 The Flutter semantics projection additionally carries bounded `aria-controls`,
 `aria-describedby`, and `aria-details` relationships to retained semantic nodes.
 Descriptions resolve bounded referenced text (including hidden referenced

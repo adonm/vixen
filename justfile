@@ -236,6 +236,20 @@ linux-interaction-smoke: build-flutter-release-linux _build-wayland-virtual-poin
         --wtype "{{WTYPE}}" \
         --pointer .tmp/wayland-virtual-pointer/wayland-virtual-pointer
 
+# First R5 rendered-automation checkpoint: launch the same release bundle in
+# page-only mode and capture exact presented Flutter scenes at two viewports.
+linux-automation-smoke: build-flutter-release-linux
+    command -v cage >/dev/null || { printf '%s\n' "cage is required for the Wayland automation smoke" >&2; exit 1; }
+    rm -rf .tmp/linux-automation-wayland .tmp/linux-automation && mkdir -m 700 -p .tmp/linux-automation-wayland && mkdir -p .tmp/linux-automation
+    XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/linux-automation-wayland" \
+        GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+        WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 timeout 210s cage -- \
+        python3 scripts/flutter-automation-smoke.py \
+        --app {{LINUX_RELEASE_BUNDLE}}/vixen_shell \
+        --library {{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so \
+        --url file://{{justfile_directory()}}/fixtures/dom/basic.html \
+        --output-dir .tmp/linux-automation
+
 flutter-size-check-inputs: linux-release-check-inputs
 
 # Add the controlled hello peer for the raw release-bundle size comparison.

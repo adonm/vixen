@@ -538,8 +538,11 @@ presented scene without compositor chrome.
 
 The bounded Flutter vertical may run in production with the old frame as an
 explicit fallback, but it is not the renderer cutover. R4's interactive
-controlled vertical is complete; R5–R6 must still prove chrome-less fixture/CDP/
-Playwright capture, synchronous layout, cancellation, resync, and renderer loss. Production
+controlled vertical is complete. R5's first page-only release-host checkpoint
+now captures an exact acknowledged Flutter scene at two Cage viewports while
+skipping chrome and the legacy frame path; R5–R6 must still prove fixture/CDP/
+Playwright input and capture groups, independent targets, synchronous layout,
+cancellation, resync, and renderer loss. Production
 then cuts over once. Apply the complete R7 deletion inventory:
 WebRender/gleam, `GlContext`, both EGL paths, image upload, RGBA frame ABI/pools,
 the Dart frame worker, pixel-buffer plugin/presenter and recovery tests,

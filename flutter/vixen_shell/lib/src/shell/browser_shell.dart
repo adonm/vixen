@@ -168,7 +168,9 @@ final class _BrowserShellState extends State<BrowserShell>
                     frame: coordinator.frame,
                     rendererView: coordinator.rendererView,
                     rendererFindResult: coordinator.rendererFindResult,
-                    onRendererPresented: coordinator.rendererCommitPresented,
+                    onRendererPresented: (view) {
+                      unawaited(coordinator.rendererCommitPresented(view));
+                    },
                     onRendererSemanticAction:
                         (view, descriptor, action, value) {
                           unawaited(

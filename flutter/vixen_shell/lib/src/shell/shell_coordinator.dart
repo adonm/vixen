@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 
@@ -17,7 +18,12 @@ final class ShellCoordinator extends ChangeNotifier {
   static const int maxCaptureRetries = 2;
   static const int maxRendererPresentationRetries = 2;
 
-  ShellCoordinator(this.controller, {this.initialUrl = vixenStartUrl}) {
+  ShellCoordinator(
+    this.controller, {
+    this.initialUrl = vixenStartUrl,
+    this.captureLegacyPresentation = true,
+    this.useProfileSession = true,
+  }) {
     if (controller case final RendererTransport transport
         when transport.rendererUpdatesEnabled) {
       _rendererService = RendererBrokerService(
@@ -29,6 +35,8 @@ final class ShellCoordinator extends ChangeNotifier {
 
   final BrowserController controller;
   final String initialUrl;
+  final bool captureLegacyPresentation;
+  final bool useProfileSession;
   final VixenFormatter _formatter = VixenFormatter();
   RendererBrokerService? _rendererService;
   final List<BrowsingContextState> _contexts = [];
@@ -110,6 +118,7 @@ final class ShellCoordinator extends ChangeNotifier {
   BrowserFrame? get frame => _frame;
   BrowserAccessibilitySnapshot? get accessibility => _accessibility;
   FormatterCommitView? get rendererView => _rendererView;
+  FormatterCommitView? get presentedRendererView => _formatter.displayedView;
   InputDispatchedResponse? get lastInputResult => _lastInputResult;
   int? get lastEventSequence => _lastEventSequence;
   String get findQuery => _findQuery;
@@ -136,7 +145,9 @@ final class ShellCoordinator extends ChangeNotifier {
         onError: _queueStreamError,
       );
 
-      final session = await controller.loadProfileSession();
+      final session = useProfileSession
+          ? await controller.loadProfileSession()
+          : const ProfileSessionState();
       var snapshot = await controller.browserSnapshot();
       _replaceFromSnapshot(snapshot);
       if (snapshot.contexts.isEmpty) {
@@ -1037,6 +1048,7 @@ final class ShellCoordinator extends ChangeNotifier {
       height: _viewportHeight,
     );
     _scheduleRendererSnapshot(key, force: force);
+    if (!captureLegacyPresentation) return;
     if (!force && key == _lastCaptureKey && key == _lastAccessibilityKey) {
       return;
     }
@@ -1146,7 +1158,7 @@ final class ShellCoordinator extends ChangeNotifier {
       request.lifecycleGeneration == _rendererLifecycleGeneration &&
       _isCurrentCapture(request.key);
 
-  void rendererCommitPresented(FormatterCommitView view) {
+  Future<void> rendererCommitPresented(FormatterCommitView view) async {
     final service = _rendererService;
     final transport = controller is RendererTransport
         ? controller as RendererTransport
@@ -1212,6 +1224,50 @@ final class ShellCoordinator extends ChangeNotifier {
         }
       }
     });
+    await _rendererTail;
+  }
+
+  Future<Uint8List> capturePresentedRendererCommitPng(
+    FormatterCommitView view,
+  ) async {
+    await rendererCommitPresented(view);
+    final operation = _rendererTail.then((_) async {
+      if (_closeFuture != null ||
+          !_hostViewVisible ||
+          !identical(view, _rendererView) ||
+          !identical(view, _formatter.displayedView) ||
+          view.isRetired) {
+        throw const RenderProtocolException(
+          'render.stale',
+          'capture does not name the exact presented renderer commit',
+        );
+      }
+      final image = await view.capture();
+      try {
+        final data = await image.toByteData(format: ui.ImageByteFormat.png);
+        if (data == null) {
+          throw const RenderProtocolException(
+            'render.capture',
+            'Flutter did not encode the presented scene as PNG',
+          );
+        }
+        if (!identical(view, _rendererView) ||
+            !identical(view, _formatter.displayedView) ||
+            view.isRetired) {
+          throw const RenderProtocolException(
+            'render.stale',
+            'presented renderer commit changed during capture',
+          );
+        }
+        return Uint8List.fromList(
+          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes),
+        );
+      } finally {
+        image.dispose();
+      }
+    });
+    _rendererTail = operation.then<void>((_) {}, onError: (_, _) {});
+    return operation;
   }
 
   Future<void> _drainRenderer(RendererBrokerService service) async {
@@ -1477,7 +1533,7 @@ final class ShellCoordinator extends ChangeNotifier {
       await _inputTail;
       await _hostViewTail;
       await _rendererTail;
-      await controller.saveCurrentProfileSession();
+      if (useProfileSession) await controller.saveCurrentProfileSession();
     } catch (_) {
       // Shutdown still has to release the sole native browser owner.
     } finally {

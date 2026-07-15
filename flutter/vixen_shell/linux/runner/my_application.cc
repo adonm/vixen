@@ -1,6 +1,9 @@
 #include "my_application.h"
 
 #include <flutter_linux/flutter_linux.h>
+
+#include <cstdio>
+
 #ifdef GDK_WINDOWING_WAYLAND
 #include <gdk/gdkwayland.h>
 #endif
@@ -13,6 +16,47 @@ namespace {
 constexpr char kTextureChannel[] = "dev.adonm.vixen/texture";
 constexpr int64_t kMaxDimension = 4096;
 constexpr size_t kMaxFrameBytes = 64U * 1024U * 1024U;
+
+bool HasDartArgument(char** arguments, const char* expected) {
+  if (arguments == nullptr) {
+    return false;
+  }
+  for (size_t index = 0; arguments[index] != nullptr; index++) {
+    if (g_str_equal(arguments[index], expected)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool AutomationViewport(char** arguments, int* width, int* height) {
+  if (arguments == nullptr) {
+    return false;
+  }
+  constexpr char kPrefix[] = "--vixen-viewport=";
+  for (size_t index = 0; arguments[index] != nullptr; index++) {
+    const char* argument = arguments[index];
+    if (!g_str_has_prefix(argument, kPrefix)) {
+      continue;
+    }
+    unsigned int parsed_width = 0;
+    unsigned int parsed_height = 0;
+    char trailing = '\0';
+    if (sscanf(argument + sizeof(kPrefix) - 1, "%ux%u%c", &parsed_width,
+               &parsed_height, &trailing) != 2 ||
+        parsed_width == 0 || parsed_height == 0 ||
+        parsed_width > kMaxDimension || parsed_height > kMaxDimension ||
+        static_cast<size_t>(parsed_width) *
+                static_cast<size_t>(parsed_height) * 4U >
+            kMaxFrameBytes) {
+      return false;
+    }
+    *width = static_cast<int>(parsed_width);
+    *height = static_cast<int>(parsed_height);
+    return true;
+  }
+  return false;
+}
 
 }  // namespace
 
@@ -165,15 +209,27 @@ static void my_application_activate(GApplication* application) {
   GtkWindow* window =
       GTK_WINDOW(gtk_application_window_new(GTK_APPLICATION(application)));
 
-  // Yaru hides this host header after its in-scene title bar initializes. Keep
-  // it as a native fallback if Dart or plugin startup fails.
-  GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
-  gtk_widget_show(GTK_WIDGET(header_bar));
-  gtk_header_bar_set_title(header_bar, "Vixen");
-  gtk_header_bar_set_show_close_button(header_bar, TRUE);
-  gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
+  const bool automation =
+      HasDartArgument(self->dart_entrypoint_arguments, "--vixen-automation");
 
-  gtk_window_set_default_size(window, 1100, 820);
+  if (automation) {
+    gtk_window_set_decorated(window, FALSE);
+    gtk_window_set_resizable(window, FALSE);
+    int width = 0;
+    int height = 0;
+    if (AutomationViewport(self->dart_entrypoint_arguments, &width, &height)) {
+      gtk_window_set_default_size(window, width, height);
+    }
+  } else {
+    // Yaru hides this host header after its in-scene title bar initializes. Keep
+    // it as a native fallback if Dart or plugin startup fails.
+    GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
+    gtk_widget_show(GTK_WIDGET(header_bar));
+    gtk_header_bar_set_title(header_bar, "Vixen");
+    gtk_header_bar_set_show_close_button(header_bar, TRUE);
+    gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
+    gtk_window_set_default_size(window, 1100, 820);
+  }
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   // Flutter 3.47 beta contains Linux Impeller but its project default remains
