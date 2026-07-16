@@ -45,7 +45,7 @@ profile, platform, renderer host, command, and measured result.
 
 ## Current baseline and transition debt
 
-As of 2026-07-15 the repository has:
+As of 2026-07-16 the repository has:
 
 - one eight-crate Rust workspace with hk/`just` gates, stable diagnostics, fuzz
   targets, a fixture/WPT harness, and a committed **270 fixture / 2,027 check**
@@ -457,6 +457,11 @@ test-r7` proves source/dependency absence and both native/Flutter surfaces;
   WebRender/EGL/frame code, new Dart formatter, and chrome-less-host costs.
 - Fix renderer-transition regressions before broadening APIs or resuming FlatPark
   publication work.
+
+**First reproduction checkpoint:** on clean revision `e224bf6`, `just
+compat-report` reproduced all 270 fixtures and all 1,868 native-safe BrowserCore
+checks at 100%. The 159 render-dependent checks remain assigned to the
+release/AOT Flutter fixture host and are not inferred from this native run.
 
 **Exit:** the controlled Linux corridor uses no transitional renderer component,
 all renderer failure modes are bounded, and the next compatibility failure can be

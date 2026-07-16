@@ -11,7 +11,7 @@ semantic remains fixture/WPT-gated.
 
 ## Current measured committed fixture baseline
 
-As of 2026-07-15, `fixtures/manifest.json` contains 70 local fixtures plus
+As of 2026-07-16, `fixtures/manifest.json` contains 70 local fixtures plus
 200 imported smoke fixtures:
 
 | Category | Fixtures |
@@ -56,6 +56,12 @@ Current check mix:
 | `selector-match` | 3 |
 
 This local fixture set is release-blocking and must remain **100 % green**.
+R8 native-path reproduction on clean revision `e224bf6` ran `just
+compat-report`: all 270 fixtures and all 1,868 native-safe BrowserCore checks
+passed. This deliberately does not relabel the 19 `flutter-js-eval`, 104
+`layout-box`, 25 `visual-hash`, and 11 `ref-equivalent` checks as native
+evidence; their post-transition reproduction remains `just
+flutter-fixture-manifest` through the release/AOT Flutter host.
 The layout category currently includes normal-flow, inline-flow, positioned,
 flex row/column, grid, overflow coordinate/paint, and fragment-backed text paint
 fixtures with Flutter-commit `layout-box` and visual assertions. The paint
