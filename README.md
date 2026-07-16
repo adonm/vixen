@@ -124,6 +124,7 @@ Common recipes:
 | `just webidl` / `just gate-webidl` | Generated WebIDL/runtime host seam coverage |
 | `just audit` | `cargo audit` + `cargo deny check` |
 | `just baseline-headless` / `just baseline-headless-json` | Measure the hermetic local headless scenario suite |
+| `just baseline-flutter-linux` / `just baseline-flutter-linux-json` | Measure release/AOT Flutter exact-commit startup, capture, and process memory under Cage |
 | `just baseline-profile-growth` | Measure temporary profile growth and storage persistence across reopen |
 | `just size-headless` | Report structured headless artifact size |
 | `just flutter-size-prefetch` | Network-capable staging for pinned Linux Flutter size inputs; not evidence |

@@ -50,6 +50,7 @@ gates are deleted.
 | `just size-headless` | structured logical/allocated size, file count, and SHA-256 for the headless release binary |
 | `just size-flutter-linux` | controlled release/AOT build and component-attributed raw-bundle comparison against the checked-in hello-Flutter peer; measurement-only and not FlatPark package evidence |
 | `just baseline-headless` / `just baseline-headless-json` | per-scenario latency and Linux process-memory measurements for committed startup, navigation/runtime, layout, paint, and screenshot controls |
+| `just baseline-flutter-linux` / `just baseline-flutter-linux-json` | release/AOT Flutter-only exact-commit startup, direct-scene capture latency, and app-process memory under Cage; measurement-only, software rendered, and outside `gate-push` |
 | `just baseline-profile-growth` | opaque temporary profile growth at init/repeated/unique/storage checkpoints with localStorage reopen proof |
 | `just baseline-beta` | hermetic local headless scenarios, profile growth, and headless artifact size; measurement-only and outside `gate-push` |
 

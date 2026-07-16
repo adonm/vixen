@@ -150,6 +150,25 @@ just baseline-beta
 This runs the headless scenarios, profile growth, and headless artifact size. It
 is intentionally not part of `gate-push`.
 
+Measure the final release/AOT Flutter renderer under one Cage headless-Wayland
+session in text or JSON form:
+
+```sh
+just baseline-flutter-linux
+just baseline-flutter-linux-json 9 2
+```
+
+Every warmup and measured sample starts a fresh `vixen_shell` CDP-automation
+process and profile at 320×240, loads `fixtures/dom/basic.html`, requires
+Impeller and the pinned exact Flutter-scene PNG, and shuts down cleanly. The
+report records app-spawn → CDP-ready, app-spawn → the first exact presented
+commit induced by the controlled capture, the Rust monotonic
+`Page.captureScreenshot` dispatch, client round-trip capture latency, and the
+app process's Linux `VmHWM`/sampled `VmRSS`/`VmSize`. Cage and the Node client are
+excluded; BrowserCore, V8, Flutter, and Dart AOT all remain inside the measured
+app process. This is a controlled software-renderer observation, not a physical
+GPU matrix or accepted budget.
+
 The underlying scripts accept `--help`. Paths relative to the workspace are
 resolved from the repository rather than the caller's current directory where
 practical.
@@ -164,6 +183,7 @@ JSON reports are versioned independently:
 | Profile growth | `vixen.profile-growth-baseline-report` version 1 |
 | Artifact size | `vixen.artifact-size-report` version 1 |
 | Flutter Linux raw bundles | `vixen.flutter-linux-artifact-size-report` version 1 |
+| Flutter Linux renderer | `vixen.flutter-linux-renderer-baseline-report` version 1 |
 | Scenario input | `vixen.headless-scenario-suite` version 1 |
 
 Every report says `measurement_only: true`. Headless scenario reports include
@@ -215,14 +235,16 @@ budget.
 ## Current limits
 
 This batch completes the local latency, Linux process-memory, profile-growth,
-headless-path, historical native-shell artifact-size, and Flutter raw-release-
-bundle comparison foundations. It does not yet measure:
+headless-path, historical native-shell artifact-size, Flutter raw-release-bundle
+comparison, and first exact-commit Flutter startup/capture foundations. It does
+not yet measure:
 
 - representative external sites or complete external-site compatibility;
 - an accepted/reproduced Flutter GUI size baseline or FlatPark package artifact;
 - the GUI/FlatPark path across a supported Linux, GPU, driver, and renderer matrix;
 - native macOS, Windows, Android, or iOS Simulator BrowserCore/V8/Flutter-renderer behavior;
-- frame time, frame stability, animation smoothness, or input-to-paint latency;
+- frame time, frame stability, animation smoothness, isolated GPU raster time,
+  or input-to-paint latency;
 - V8/JavaScript heap usage separately from process memory;
 - HTTP transfer or download throughput; or
 - installed GNOME runtime size and shared-system storage attribution.
