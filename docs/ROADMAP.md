@@ -472,6 +472,16 @@ presentation, 46.087 ms median capture round trip, and 281,800,704-byte median
 checked-in measurement-only host observation, not an accepted budget, physical
 GPU matrix, frame-stability result, or isolated Flutter memory attribution.
 
+**First size/release checkpoint:** clean, equally stripped Flutter 3.47 hello
+and post-R7/Yaru Vixen release bundles now have a checked-in component report.
+The 85,377,960-byte Vixen bundle is 131,560 bytes smaller than the historical
+pre-R7 bundle despite adding Yaru assets/plugins; its aggregate native library
+is 2,076,976 bytes smaller. The hello control also shrank, so the current
+63,979,292-byte Vixen-minus-hello delta is larger and is not misreported as a
+product regression. The same Vixen bundle produces a deterministic
+31,913,890-byte archive. These are unreproduced measurements, not budgets or
+FlatPark install evidence.
+
 **Exit:** the controlled Linux corridor uses no transitional renderer component,
 all renderer failure modes are bounded, and the next compatibility failure can be
 reduced directly against the final architecture.

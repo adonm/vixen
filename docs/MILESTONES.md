@@ -96,10 +96,12 @@ gates are deleted.
 - Compatibility baseline: **270 fixtures / 2,027 checks / 100% passing**. R8
   reproduced all **1,868 native-safe checks** on 2026-07-16; the rendered
   release-host reproduction remains separate. `COMPAT.md` is authoritative.
-- Historical pre-Yaru Linux x86_64 Flutter raw-bundle reference:
-  **22,778,750-byte hello / 85,509,520-byte Vixen / 62,730,770-byte delta**,
-  measurement-only and not a current dependency-graph or FlatPark package
-  claim; see `BASELINES.md`.
+- Post-R7/Yaru Linux x86_64 Flutter raw-bundle reference:
+  **21,398,668-byte hello / 85,377,960-byte Vixen / 63,979,292-byte delta**,
+  plus a **31,913,890-byte** deterministic release archive; measurement-only,
+  not independently reproduced, and not FlatPark package evidence. The Vixen
+  bundle is 131,560 bytes smaller than the historical pre-R7 report; see
+  `BASELINES.md` for component and control-version attribution.
 - First post-R7 release/AOT renderer reference: **281.438 ms** median first exact
   presented commit, **46.087 ms** median exact-scene client round trip, and
   **281,800,704-byte** median app-process `VmHWM`; five Mesa-software samples,

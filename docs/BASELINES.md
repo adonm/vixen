@@ -4,11 +4,9 @@ Vixen's current baseline suite is a dependency-light Linux measurement
 foundation built with Node.js built-ins. It records observations; it does not
 enforce budgets or claim complete real-site behavior. The repository now has a
 checked-in hello-Flutter peer plus controlled Linux release/AOT raw-bundle build
-and comparison commands. One clean post-R7 exact-commit Flutter renderer report
-and one historical raw-bundle report are checked in for reproduction. Neither is
-an accepted budget or FlatPark package baseline. The raw-bundle reference
-predates the Yaru chrome/titlebar dependency added on 2026-07-14 and is
-historical until a clean post-Yaru size report is reviewed.
+and comparison commands. Clean post-R7 exact-commit renderer and post-Yaru raw-
+bundle reports plus the historical pre-R7 raw-bundle report are checked in for
+reproduction. None is an accepted budget or FlatPark package baseline.
 
 ## Commands
 
@@ -69,15 +67,14 @@ just size-flutter-linux-json     # controlled build and JSON report
 just size-flutter-linux-existing # analyze existing release bundles only
 ```
 
-The recorded report below used Flutter 3.44 and remains historical evidence.
-`fixtures/artifact-size/flutter_hello` now tracks the exact pinned Flutter
-3.47.0-0.1.pre beta and uses Material plus the standard Linux runner without
-Vixen code. The current local build uses the GNOME 50 builder image, its
+The current report uses the exact pinned Flutter 3.47.0-0.1.pre beta.
+`fixtures/artifact-size/flutter_hello` uses Material plus the standard Linux
+runner without Vixen code. The local build uses the GNOME 50 builder image, its
 CMake/Ninja/GTK toolchain, the mise Rust/Flutter toolchains, locked Cargo/Pub
 dependencies, and the SHA-256-pinned rusty_v8 archive. The mutable builder-image
 tag remains a limitation until the release path pins an immutable digest.
 The Vixen dependency graph now also includes locked Yaru 10.2.0 and its native
-window plugins; do not use the recorded pre-Yaru delta as a current size claim.
+window plugins.
 Both controlled runners and any bundled plugin ELFs are stripped with the same
 policy before comparison.
 
@@ -89,7 +86,41 @@ The native Vixen library remains an aggregate because stripped static
 BrowserCore/V8 attribution needs separate linker-map evidence. The recorded
 pre-R7 artifact also includes now-deleted renderer code.
 
-## Recorded Flutter raw-bundle reference
+## Recorded post-R7/Yaru Flutter raw-bundle reference
+
+[`baselines/flutter-linux-x64-raw-2026-07-16.json`](baselines/flutter-linux-x64-raw-2026-07-16.json)
+was produced from clean revision `4a12d26` with `just
+build-flutter-size-linux` followed by the JSON analyzer used by `just
+size-flutter-linux-json`. Both release/AOT builds ran in the GNOME 50 builder
+container; the analyzer verifies byte-identical shared Flutter engine and ICU
+files.
+
+| Artifact | Logical bytes | Allocated bytes | Files |
+|----------|--------------:|----------------:|------:|
+| hello-Flutter | 21,398,668 | 21,434,368 | 12 |
+| Flutter+Vixen | 85,377,960 | 85,430,272 | 27 |
+| Vixen minus hello | 63,979,292 | 63,995,904 | 15 |
+
+The current logical delta attributes 58,184,992 bytes to aggregate stripped
+BrowserCore/Rust/V8 native code, 3,096,576 bytes to Dart AOT, 2,576,028 bytes to
+Flutter assets, 121,624 bytes to four native plugins, and 72 bytes to the runner.
+The deterministic release archive made from the same bundle is 31,913,890 bytes
+with SHA-256
+`3eef1bbed0e8e79dd8a85602837d4a9217dfbb82193cfcb93b62ca8730bc7879`.
+The archive observation is documented separately because the raw-bundle schema
+correctly leaves compressed download size null.
+
+Against the historical 2026-07-12 report, the Vixen bundle is 131,560 bytes
+smaller overall and the aggregate native library is 2,076,976 bytes smaller
+after R7 deletion, while Yaru/fonts/assets add a 2,576,026-byte delta, native
+plugins add 121,624 bytes, and Dart AOT adds 638,976 bytes. These are net
+component changes, not isolated causal attribution: the comparison also moves
+from Flutter 3.44 to 3.47 and normalizes runner stripping. The hello control is
+1,380,082 bytes smaller, so Vixen-minus-hello grows by 1,248,522 bytes even
+though the Vixen bundle itself shrinks. No value is a budget, and this report
+has not yet been independently reproduced.
+
+## Historical pre-R7 Flutter raw-bundle reference
 
 [`baselines/flutter-linux-x64-raw-2026-07-12.json`](baselines/flutter-linux-x64-raw-2026-07-12.json)
 was produced from clean revision `5b1d0af` with `just
@@ -102,7 +133,7 @@ container with `--network=none`; shared Flutter engine and ICU hashes match.
 | Flutter+Vixen | 85,509,520 | 85,540,864 | 13 |
 | Vixen minus hello | 62,730,770 | 62,726,144 | 1 |
 
-The logical delta attributes 60,261,968 bytes to the aggregate stripped
+The historical logical delta attributes 60,261,968 bytes to the aggregate stripped
 `libvixen_ffi.so`, 2,457,600 bytes to Dart AOT, 11,200 bytes to the native
 runner, and 2 bytes to Flutter assets. These observations are not a budget and
 have not yet been independently reproduced. Compressed download, installation,
