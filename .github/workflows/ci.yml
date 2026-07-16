@@ -175,6 +175,7 @@ jobs:
           flutter --version --machine | python3 -c '
           import json, sys
           value = json.load(sys.stdin)
+          assert value["frameworkVersion"] == "3.47.0-1.0.pre-158"
           assert value["frameworkRevision"] == "00fee9824a795ee9b5794e0a0e2bc5975e54dba8"
           assert value["engineRevision"] == "fc1ad955f16467c959e3cd8079b760d5af0984aa"
           '
