@@ -200,7 +200,7 @@ export async function analyzeFlutterBundles({ helloBundle, vixenBundle, metadata
     flatpak_evidence: false,
     limitations: [
       'Raw release bundles are not distributable Flatpak, compressed-download, or installed-size evidence.',
-      'libvixen_ffi.so aggregates BrowserCore/Rust, V8, and WebRender; this report does not invent static subcomponent sizes.',
+      'libvixen_ffi.so aggregates BrowserCore/Rust and V8; this report does not invent static subcomponent sizes.',
       'No numerical artifact budget is accepted.',
     ],
     metadata: metadata ?? await collectMetadata(),

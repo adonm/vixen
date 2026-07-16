@@ -46,6 +46,8 @@ test('release bundle comparison attributes a deterministic hello delta', async (
   assert.equal(report.measurement_only, true);
   assert.equal(report.flatpak_evidence, false);
   assert.equal(report.metadata, metadata);
+  assert.match(report.limitations.join(' '), /BrowserCore\/Rust and V8/);
+  assert.doesNotMatch(report.limitations.join(' '), /WebRender/);
   assert.equal(report.artifacts.hello.categories.vixen_native, undefined);
   assert.equal(report.artifacts.vixen.categories.vixen_native.file_count, 1);
   assert.equal(report.delta_from_hello.logical_bytes, 14);
