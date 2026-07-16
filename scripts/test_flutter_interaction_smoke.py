@@ -193,7 +193,7 @@ class LinuxCiContractTests(unittest.TestCase):
             "release:", maxsplit=1
         )[0]
         self.assertIn("scripts/install_flutter_gtk4_sdk.py", release_job)
-        self.assertIn("00fee9824a795ee9b5794e0a0e2bc5975e54dba8", release_job)
+        self.assertIn("328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188", release_job)
         self.assertIn("fc1ad955f16467c959e3cd8079b760d5af0984aa", release_job)
         self.assertNotIn("http:flutter-beta", release_job)
 
@@ -201,7 +201,7 @@ class LinuxCiContractTests(unittest.TestCase):
         self.assertIn("github.com/adonm/flutter-dev/releases/download", installer)
         self.assertIn("flutter-engine-gtk4-", installer)
         self.assertIn(
-            "bd80913e83fa9fac66bca3c90a020bc624827c610f3fcff7971455b4f858f701",
+            "61cafba174d24e2c4f73e416cb98c0b33a0ca751b99bf0d9c42cf2c4f1f44add",
             installer,
         )
         self.assertNotIn("__CI_LIBRARY_SHA256__", installer)
