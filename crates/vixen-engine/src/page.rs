@@ -51,6 +51,7 @@ pub struct Page {
     root_scroll_max: (f32, f32),
     renderer_scroll_known: bool,
     element_scrolls: std::collections::HashMap<usize, ElementScrollState>,
+    pending_history_element_scrolls: Vec<HistoryElementScroll>,
     find_state: Option<FindState>,
 }
 
@@ -151,6 +152,7 @@ impl Page {
             root_scroll_max: (0.0, 0.0),
             renderer_scroll_known: false,
             element_scrolls: std::collections::HashMap::new(),
+            pending_history_element_scrolls: Vec::new(),
             find_state: None,
         })
     }
@@ -203,18 +205,31 @@ impl Page {
             self.url = url.to_owned();
         }
         self.history = history;
+        self.pending_history_element_scrolls.clear();
         if let Some(restoration) = restoration {
             self.scroll_root_to((
                 f64::from(restoration.root_offset.0),
                 f64::from(restoration.root_offset.1),
             ));
             for scroll in restoration.element_offsets {
-                self.set_element_scroll(
-                    scroll.node_id,
-                    scroll.element_id.as_deref(),
-                    &scroll.tag,
-                    (f64::from(scroll.offset.0), f64::from(scroll.offset.1)),
-                );
+                let target_is_known = self
+                    .document
+                    .element_by_node_id(scroll.node_id)
+                    .is_some_and(|element| {
+                        element.tag == scroll.tag
+                            && element.id.as_deref() == scroll.element_id.as_deref()
+                            && self.element_scrolls.contains_key(&scroll.node_id)
+                    });
+                if target_is_known {
+                    self.set_element_scroll(
+                        scroll.node_id,
+                        scroll.element_id.as_deref(),
+                        &scroll.tag,
+                        (f64::from(scroll.offset.0), f64::from(scroll.offset.1)),
+                    );
+                } else {
+                    self.pending_history_element_scrolls.push(scroll);
+                }
             }
         }
     }
@@ -763,6 +778,28 @@ impl Page {
             source_changed = true;
         }
         self.element_scrolls = element_scrolls;
+        for scroll in std::mem::take(&mut self.pending_history_element_scrolls) {
+            let Some(element) = self.document.element_by_node_id(scroll.node_id) else {
+                continue;
+            };
+            if element.tag != scroll.tag || element.id.as_deref() != scroll.element_id.as_deref() {
+                continue;
+            }
+            let Some(state) = self.element_scrolls.get_mut(&scroll.node_id) else {
+                continue;
+            };
+            let limit = vixen_api::RENDER_MAX_COORDINATE as f32;
+            let position = (
+                scroll.offset.0.clamp(0.0, limit),
+                scroll.offset.1.clamp(0.0, limit),
+            );
+            let intent = (f64::from(position.0), f64::from(position.1));
+            if state.position != position || state.intent != Some(intent) {
+                state.position = position;
+                state.intent = Some(intent);
+                source_changed = true;
+            }
+        }
         self.renderer_scroll_known = true;
         if source_changed {
             self.bump_accessibility_mutation_epoch();
@@ -1921,6 +1958,40 @@ mod tests {
                 .unwrap()
                 .kind,
             RenderScrollIntentKind::To(RenderPoint { x: 0.0, y: 179.2 })
+        );
+
+        let history = page.history_with_current_scroll();
+        let mut restored = Page::from_html(
+            "file:///scroll.html",
+            r#"<!doctype html><style>
+                #scroller { width:120px; height:80px; overflow:auto; }
+                #content { width:280px; height:320px; }
+            </style><div id="scroller"><div id="content"></div></div>"#,
+        )
+        .unwrap();
+        restored.set_session_history(history);
+        restored.apply_renderer_scroll(&commit);
+        let restored_snapshot = restored
+            .render_snapshot(
+                BrowsingContextId::new(1).unwrap(),
+                DocumentId::new(2).unwrap(),
+                (240, 160),
+                1,
+                1.0,
+                1.0,
+            )
+            .unwrap();
+        assert_eq!(
+            restored_snapshot
+                .scroll_intents
+                .iter()
+                .find(|intent| intent.scroll_node_id == scroll_node_id)
+                .unwrap()
+                .kind,
+            RenderScrollIntentKind::To(RenderPoint {
+                x: 0.0,
+                y: f64::from(179.2_f32),
+            })
         );
     }
 

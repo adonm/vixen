@@ -421,6 +421,20 @@ pub(crate) fn drain_renderer_submissions(
                 let mut commits = state.commits.clone();
                 let releases = match commits.accept_commit(&state.replica, commit.clone()) {
                     Ok(releases) => releases,
+                    Err(error) if error.code == vixen_api::render_error_codes::STALE => {
+                        renderer
+                            .consume_submission_with_updates(
+                                &submission,
+                                [RenderBridgeUpdate::ReleaseHandles(RenderHandleRelease {
+                                    version: vixen_api::RENDER_PROTOCOL_VERSION,
+                                    commit_id: commit.commit_id,
+                                    hit_test_handle: commit.hit_test_handle,
+                                    text_query_handle: commit.text_query_handle,
+                                })],
+                            )
+                            .map_err(renderer_broker_error)?;
+                        continue;
+                    }
                     Err(error) => {
                         renderer
                             .consume_submission_with_updates(

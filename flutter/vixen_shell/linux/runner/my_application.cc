@@ -85,8 +85,10 @@ static void my_application_activate(GApplication* application) {
       HasDartArgument(self->dart_entrypoint_arguments, "--vixen-automation") ||
       HasDartArgument(self->dart_entrypoint_arguments,
                       "--vixen-cdp-automation");
+  const bool headless_window = HasDartArgument(
+      self->dart_entrypoint_arguments, "--vixen-headless-window");
 
-  if (automation) {
+  if (automation || headless_window) {
     gtk_window_set_decorated(window, FALSE);
     gtk_window_set_resizable(window, FALSE);
     int width = 0;

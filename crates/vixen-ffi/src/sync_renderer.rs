@@ -176,6 +176,7 @@ pub(crate) fn publish_renderer_source(
     snapshot
         .validate()
         .map_err(|error| SynchronousRendererError::new(error.code, error.message))?;
+    let force_snapshot = force_snapshot || state.needs_resync;
     if !force_snapshot && state.source.as_ref() == Some(&snapshot) {
         state.needs_resync = false;
         return Ok(());
@@ -587,6 +588,68 @@ mod tests {
         );
         assert!(broker.peek_submission().unwrap().is_none());
         assert!(state.commits.presented_commit().is_none());
+    }
+
+    #[test]
+    fn stale_commit_is_released_without_poisoning_the_queue() {
+        let broker = RenderBroker::new();
+        let mut state = RendererState::default();
+        let base = source_snapshot(1, "10px");
+        publish_renderer_source(&broker, &mut state, base.clone(), false).unwrap();
+        let _ = broker.poll_message(Duration::ZERO).unwrap();
+
+        let target = source_snapshot(2, "64px");
+        publish_renderer_source(&broker, &mut state, target.clone(), false).unwrap();
+        let _ = broker.poll_message(Duration::ZERO).unwrap();
+        let stale = commit_for_snapshot(&base, 1);
+        broker
+            .submit(RenderBridgeSubmission::Commit(stale.clone()))
+            .unwrap();
+
+        assert!(
+            drain_renderer_submissions(&broker, &mut state)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            broker.poll_message(Duration::ZERO).unwrap(),
+            Some(crate::RenderBrokerMessage::Update(
+                RenderBridgeUpdate::ReleaseHandles(release)
+            )) if release.commit_id == stale.commit_id
+                && release.hit_test_handle == stale.hit_test_handle
+                && release.text_query_handle == stale.text_query_handle
+        ));
+        assert!(broker.peek_submission().unwrap().is_none());
+        assert!(state.commits.accepted_commit().is_none());
+
+        let current = commit_for_snapshot(&target, 2);
+        broker
+            .submit(RenderBridgeSubmission::Commit(current.clone()))
+            .unwrap();
+        assert_eq!(
+            drain_renderer_submissions(&broker, &mut state).unwrap(),
+            vec![current]
+        );
+    }
+
+    #[test]
+    fn pending_resync_forces_an_unchanged_full_snapshot() {
+        let broker = RenderBroker::new();
+        let mut state = RendererState::default();
+        let snapshot = source_snapshot(1, "64px");
+        publish_renderer_source(&broker, &mut state, snapshot.clone(), false).unwrap();
+        let _ = broker.poll_message(Duration::ZERO).unwrap();
+        state.needs_resync = true;
+
+        publish_renderer_source(&broker, &mut state, snapshot.clone(), false).unwrap();
+
+        assert!(matches!(
+            broker.poll_message(Duration::ZERO).unwrap(),
+            Some(crate::RenderBrokerMessage::Update(
+                RenderBridgeUpdate::FullSnapshot(republished)
+            )) if republished == snapshot
+        ));
+        assert!(!state.needs_resync);
     }
 
     #[test]

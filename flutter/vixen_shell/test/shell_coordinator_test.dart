@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vixen_shell/src/bridge/browser_models.dart';
 import 'package:vixen_shell/src/bridge/fake/scripted_browser_controller.dart';
@@ -157,12 +159,28 @@ void main() {
       final semantic = view.semanticRegions.singleWhere(
         (region) => region.descriptor.id == 3,
       );
+      final snapshotsBeforeSemanticAction = controller.commands
+          .where((command) => command.type == 'publish_renderer_snapshot')
+          .length;
       await coordinator.dispatchRendererSemanticAction(
         view,
         semantic.descriptor,
         RenderSemanticActionKind.focus,
         null,
       );
+      for (
+        var attempt = 0;
+        attempt < 50 &&
+            controller.commands
+                    .where(
+                      (command) => command.type == 'publish_renderer_snapshot',
+                    )
+                    .length ==
+                snapshotsBeforeSemanticAction;
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
       final targetRect = view.commit.geometry
           .singleWhere((entry) => entry.nodeId == 9)
           .borderBox;
@@ -286,7 +304,7 @@ void main() {
     expect(coordinator.rendererView, isNull);
     controller.enqueueRendererRequest(
       NativeFullSnapshotUpdate(
-        r3Snapshot(generation: 2, viewportGeneration: 2, updated: true),
+        r3Snapshot(generation: 2, viewportGeneration: 3, updated: true),
       ),
     );
     coordinator.updateApplicationLifecycle(BrowserHostLifecycle.resumed);
@@ -613,6 +631,64 @@ void main() {
     await coordinator.close();
   });
 
+  test('renderer publication waits for the pending host view update', () async {
+    final state = contextState(id: 3, url: 'https://ordered.test');
+    final hostView = Completer<BrowserResponse>();
+    final controller = ScriptedBrowserController(
+      rendererUpdatesEnabled: true,
+      snapshot: BrowserSnapshot(activeContextId: 3, contexts: [state]),
+      onCommand: (command, _) => switch (command.type) {
+        'browser_snapshot' => BrowserSnapshotResponse(
+          BrowserSnapshot(activeContextId: 3, contexts: [state]),
+        ),
+        'update_host_view_state' => hostView.future,
+        'accessibility_snapshot' => AccessibilitySnapshotResponse(
+          BrowserAccessibilitySnapshot(
+            sourceGeneration: 1,
+            generation: 1,
+            contextId: 3,
+            documentId: state.documentId,
+            viewportWidth: 320,
+            viewportHeight: 180,
+            nodes: const [],
+            truncated: false,
+          ),
+        ),
+        'publish_renderer_snapshot' => const AcceptedResponse(),
+        _ => throw StateError('unexpected command ${command.type}'),
+      },
+    );
+    final coordinator = ShellCoordinator(controller, useProfileSession: false);
+    await coordinator.start();
+
+    coordinator.updatePhysicalViewport(320, 180);
+    await flushEvents();
+    expect(
+      controller.commands.map((command) => command.type),
+      isNot(contains('publish_renderer_snapshot')),
+    );
+
+    hostView.complete(InputDispatchedResponse.empty());
+    for (
+      var attempt = 0;
+      attempt < 50 &&
+          !controller.commands.any(
+            (command) => command.type == 'publish_renderer_snapshot',
+          );
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(
+      controller.commands.map((command) => command.type),
+      containsAllInOrder([
+        'update_host_view_state',
+        'publish_renderer_snapshot',
+      ]),
+    );
+    await coordinator.close();
+  });
+
   test(
     'commit-independent input carries the selected generation and viewport',
     () async {
@@ -810,6 +886,7 @@ void main() {
   test('runtime effects refresh renderer and semantic projections', () async {
     var sourceGeneration = 0;
     final controller = ScriptedBrowserController(
+      rendererUpdatesEnabled: true,
       snapshot: BrowserSnapshot(
         activeContextId: 8,
         contexts: [contextState(id: 8, url: 'https://live.test')],
@@ -849,6 +926,20 @@ void main() {
     );
     await flushEvents();
 
+    for (
+      var attempt = 0;
+      attempt < 50 &&
+          controller.commands
+                  .where(
+                    (command) => command.type == 'publish_renderer_snapshot',
+                  )
+                  .length <
+              2;
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+
     expect(
       coordinator.accessibility!.sourceGeneration,
       greaterThan(firstGeneration),
@@ -859,6 +950,11 @@ void main() {
       ),
       hasLength(2),
     );
+    final viewportGenerations = controller.commands
+        .where((command) => command.type == 'publish_renderer_snapshot')
+        .map((command) => command.toWire()['viewport_generation'])
+        .toList();
+    expect(viewportGenerations, [1, 1]);
     await coordinator.close();
   });
 }

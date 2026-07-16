@@ -17,7 +17,7 @@ REQUIRED = (
     "data/icudtl.dat",
     "data/flutter_assets/AssetManifest.bin",
     "lib/libapp.so",
-    "lib/libflutter_linux_gtk.so",
+    "lib/libflutter_linux_gtk4.so",
     "lib/libvixen_ffi.so",
 )
 PREFIX = PurePosixPath("vixen")

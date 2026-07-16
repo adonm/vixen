@@ -69,7 +69,9 @@ jobs:
         run: npm ci
 
       - name: Test baseline utilities
-        run: npm test
+        run: |
+          npm test
+          python3 scripts/test_flutter_interaction_smoke.py
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -135,11 +137,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             build-essential \
+            at-spi2-core \
             cage \
             clang \
             cmake \
             gir1.2-atspi-2.0 \
             ibus \
+            ibus-gtk3 \
+            ibus-gtk4 \
             ibus-mozc \
             libegl-dev \
             libgl-dev \
@@ -209,6 +214,18 @@ jobs:
 
       - name: Native Wayland IME and nested-scroll smoke
         run: |
+          mkdir -p "$HOME/.config/mozc"
+          cat > "$HOME/.config/mozc/ibus_config.textproto" <<'EOF'
+          engines {
+            name: "mozc-jp"
+            longname: "Mozc"
+            layout: "default"
+            layout_variant: ""
+            layout_option: ""
+            rank: 80
+          }
+          active_on_launch: True
+          EOF
           dbus-run-session -- bash -lc '
             set -eu
             /usr/libexec/at-spi-bus-launcher --launch-immediately &
@@ -218,12 +235,14 @@ jobs:
             IBUS_ADDRESS="$(ibus address)" \
             XDG_RUNTIME_DIR="$GITHUB_WORKSPACE/.tmp/interaction-wayland" \
             GDK_BACKEND=wayland WLR_BACKENDS=headless \
-            WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
+            WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman \
             LIBGL_ALWAYS_SOFTWARE=1 timeout 120s cage -- \
               python3 scripts/flutter-interaction-smoke.py \
               --app flutter/vixen_shell/build/linux/x64/release/bundle/vixen_shell \
               --library flutter/vixen_shell/build/linux/x64/release/bundle/lib/libvixen_ffi.so \
               --url "file://$GITHUB_WORKSPACE/fixtures/events/linux-interaction-qa.html" \
+              --app-headless-window \
+              --app-viewport 1280x720 \
               --pointer .tmp/wayland-virtual-pointer/wayland-virtual-pointer
           '
 
@@ -239,7 +258,7 @@ jobs:
           rm "$output.first"
           sha256sum "$(basename "$output")" > "$(basename "$output").sha256"
           tar -tzf "$output" | grep -q '^vixen/lib/libvixen_ffi.so$'
-          tar -tzf "$output" | grep -q '^vixen/lib/libflutter_linux_gtk.so$'
+          tar -tzf "$output" | grep -q '^vixen/lib/libflutter_linux_gtk4.so$'
           tar -tzf "$output" | grep -q '^vixen/lib/libapp.so$'
 
       - name: Smoke exact release archive with Impeller

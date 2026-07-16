@@ -21,6 +21,8 @@ from gi.repository import Atspi  # noqa: E402
 
 
 MAX_NODES = 4096
+MAX_APP_DIMENSION = 4096
+MAX_APP_VIEWPORT_BYTES = 64 * 1024 * 1024
 STATUS_PREFIX = "Interaction status|"
 BROWSER_STATUS_PREFIX = "Browser status|"
 RENDER_COMMIT_RE = re.compile(
@@ -35,6 +37,8 @@ ROOT_RESTORE_CLAMP_TOLERANCE = 16.0
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--app", required=True)
+    parser.add_argument("--app-headless-window", action="store_true")
+    parser.add_argument("--app-viewport")
     parser.add_argument("--library", required=True)
     parser.add_argument("--url", required=True)
     parser.add_argument("--wtype", default="wtype")
@@ -43,6 +47,26 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--ibus-engine", default="mozc-jp")
     parser.add_argument("--timeout", type=float, default=45.0)
     return parser.parse_args()
+
+
+def application_command(args: argparse.Namespace) -> list[str]:
+    command = [str(Path(args.app).resolve())]
+    if args.app_headless_window:
+        command.append("--vixen-headless-window")
+    if args.app_viewport is None:
+        return command
+    match = re.fullmatch(r"([1-9][0-9]*)x([1-9][0-9]*)", args.app_viewport)
+    if match is None:
+        raise SystemExit("--app-viewport must be WIDTHxHEIGHT within renderer bounds")
+    width, height = (int(value) for value in match.groups())
+    if (
+        width > MAX_APP_DIMENSION
+        or height > MAX_APP_DIMENSION
+        or width * height * 4 > MAX_APP_VIEWPORT_BYTES
+    ):
+        raise SystemExit("--app-viewport must be WIDTHxHEIGHT within renderer bounds")
+    command.append(f"--vixen-viewport={width}x{height}")
+    return command
 
 
 def app_accessibles(process_id: int) -> list[Atspi.Accessible]:
@@ -160,7 +184,8 @@ def wait_for(
         time.sleep(0.15)
     raise SystemExit(
         f"timed out waiting for {description}; last observation: {last!r}; "
-        f"accessible names: {accessible_name_sample(process.pid)!r}"
+        f"accessible names: {accessible_name_sample(process.pid)!r}; "
+        f"process output: {process_output(process)[-8000:]}"
     )
 
 
@@ -300,10 +325,19 @@ def activate_ibus_engine(args: argparse.Namespace, engine: str) -> None:
 def ime_input(args: argparse.Namespace, codepoint: str) -> None:
     # Mozc preedit enters through IBus/GTK's real Wayland FlView IM context;
     # no AT-SPI setText or Vixen DispatchTextInput shortcut is used.
-    romaji = {"306b": "ni", "1f98a": "kitsune"}[codepoint]
+    romaji = {"306b": "ni", "3042": "a"}[codepoint]
     run_wtype(args, "-d", "150", romaji)
     time.sleep(0.5)
     run_wtype(args, "-k", "Return")
+
+
+def warm_mozc(args: argparse.Namespace) -> None:
+    # Noble's Mozc server starts on the first key. Prime it, cancelling that key
+    # if it becomes preedit before the asserted composition begins.
+    run_wtype(args, "-d", "150", "a")
+    time.sleep(0.75)
+    run_wtype(args, "-k", "Escape")
+    time.sleep(0.25)
 
 
 def run_pointer(args: argparse.Namespace, *command: str) -> None:
@@ -365,7 +399,6 @@ def main() -> int:
         timeout=10,
     ).stdout.strip()
     direct_engine = "xkb:us::eng"
-    activate_ibus_engine(args, direct_engine)
 
     env = os.environ.copy()
     env.update(
@@ -394,7 +427,7 @@ def main() -> int:
     fifo_release = threading.Event()
     fifo_thread: threading.Thread | None = None
     process = subprocess.Popen(
-        [str(app)],
+        application_command(args),
         env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
@@ -455,15 +488,8 @@ def main() -> int:
             args, process, "input", accessible_name="Native input"
         )
         time.sleep(1)
+        warm_mozc(args)
         ime_input(args, "306b")
-        time.sleep(0.5)
-        input_probe = current_status(process.pid)
-        if not input_probe or status_fields(input_probe).get("inputComposition") != (
-            "true:true:true"
-        ):
-            run_wtype(args, "-M", "ctrl", "j", "-m", "ctrl")
-            time.sleep(0.5)
-            ime_input(args, "306b")
         input_status = wait_for(
             process,
             10,
@@ -491,7 +517,20 @@ def main() -> int:
             accessible_name="Native editor",
         )
         time.sleep(1)
-        ime_input(args, "1f98a")
+        ime_input(args, "3042")
+        time.sleep(1)
+        scroll_candidates = [
+            (x, input_y + offset)
+            for offset in range(90, 166, 5)
+            for x in (input_x, max(1, input_x - 80), input_x + 80)
+        ]
+        scroll_x, scroll_y = focus_with_pointer(
+            args,
+            process,
+            "scroll",
+            scroll_candidates,
+            accessible_name="Nested scroll area",
+        )
         editor_status = wait_for(
             process,
             10,
@@ -509,18 +548,6 @@ def main() -> int:
             raise SystemExit(f"native input text did not survive blur: {editor_status}")
         editor_value = editor_fields["editor"]
 
-        scroll_candidates = [
-            (x, input_y + offset)
-            for offset in range(90, 166, 5)
-            for x in (input_x, max(1, input_x - 80), input_x + 80)
-        ]
-        scroll_x, scroll_y = focus_with_pointer(
-            args,
-            process,
-            "scroll",
-            scroll_candidates,
-            accessible_name="Nested scroll area",
-        )
         initial = status_fields(editor_status)
         initial_inner = status_number(initial, "inner")
         initial_root = status_number(initial, "root")

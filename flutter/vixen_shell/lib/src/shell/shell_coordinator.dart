@@ -63,7 +63,6 @@ final class ShellCoordinator extends ChangeNotifier {
   int _accessibilityGeneration = 0;
   int _inputGeneration = 0;
   int _hostViewGeneration = 0;
-  int _rendererViewportGeneration = 0;
   int _rendererLifecycleGeneration = 0;
   int _nextRendererQueryId = 1;
   int _rendererPresentationFailures = 0;
@@ -390,6 +389,7 @@ final class ShellCoordinator extends ChangeNotifier {
       focused: _hostAcceptsInput,
       visible: _hostViewVisible,
       lifecycle: _hostLifecycle,
+      pageZoom: selected.pageZoom,
     );
     if (key == _lastHostViewKey) return;
     _lastHostViewKey = key;
@@ -1047,13 +1047,17 @@ final class ShellCoordinator extends ChangeNotifier {
     if (externalRendererUpdates) return;
     if (_rendererService == null || controller is! RendererTransport) return;
     if (!force && key == _lastRendererKey) return;
-    if (force || key != _lastRendererKey) {
-      _rendererViewportGeneration++;
+    var viewportGeneration = _hostViewGeneration;
+    final formatterGeneration =
+        _formatter.sourceRevision?.viewportGeneration ?? 0;
+    if (formatterGeneration > viewportGeneration) {
+      viewportGeneration = formatterGeneration;
     }
+    if (viewportGeneration == 0) viewportGeneration = 1;
     _lastRendererKey = key;
     _pendingRendererSnapshot = _RendererSnapshotRequest(
       key: key,
-      viewportGeneration: _rendererViewportGeneration,
+      viewportGeneration: viewportGeneration,
       pageZoom: selectedContext?.pageZoom ?? 1,
       lifecycleGeneration: _rendererLifecycleGeneration,
     );
@@ -1142,6 +1146,8 @@ final class ShellCoordinator extends ChangeNotifier {
       return;
     }
     try {
+      await _hostViewTail;
+      if (!_isCurrentRendererRequest(request)) return;
       await controller.publishRendererSnapshot(
         contextId: key.contextId,
         documentId: key.documentId,
@@ -1463,10 +1469,18 @@ final class ShellCoordinator extends ChangeNotifier {
     _rendererPresentationFailures = 0;
     _rendererFindResult = null;
     final selected = selectedContext;
-    _formatter.reset(
+    final reset = _formatter.reset(
       contextId: selected?.contextId ?? 1,
       documentId: selected?.documentId ?? 1,
     );
+    if (controller case final RendererTransport transport
+        when transport.rendererUpdatesEnabled) {
+      try {
+        transport.submitRenderer(rendererResyncSubmission(reset));
+      } catch (error) {
+        _showError('Unable to reset Flutter renderer', error);
+      }
+    }
     _accessibility = null;
     _lastAccessibilityKey = null;
     _replacementAccessibilityCapture = null;
@@ -1566,6 +1580,7 @@ final class _HostViewKey {
     required this.focused,
     required this.visible,
     required this.lifecycle,
+    required this.pageZoom,
   });
 
   final int contextId;
@@ -1575,6 +1590,7 @@ final class _HostViewKey {
   final bool focused;
   final bool visible;
   final BrowserHostLifecycle lifecycle;
+  final double pageZoom;
 
   @override
   bool operator ==(Object other) =>
@@ -1585,7 +1601,8 @@ final class _HostViewKey {
       scaleFactor == other.scaleFactor &&
       focused == other.focused &&
       visible == other.visible &&
-      lifecycle == other.lifecycle;
+      lifecycle == other.lifecycle &&
+      pageZoom == other.pageZoom;
 
   @override
   int get hashCode => Object.hash(
@@ -1596,6 +1613,7 @@ final class _HostViewKey {
     focused,
     visible,
     lifecycle,
+    pageZoom,
   );
 }
 

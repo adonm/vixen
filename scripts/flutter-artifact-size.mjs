@@ -11,7 +11,7 @@ import {
 } from './baseline-common.mjs';
 
 const requiredFiles = [
-  'lib/libflutter_linux_gtk.so',
+  'lib/libflutter_linux_gtk4.so',
   'lib/libapp.so',
   'data/icudtl.dat',
 ];
@@ -61,7 +61,7 @@ export function parseFlutterArtifactArgs(argv) {
 }
 
 function categoryFor(path) {
-  if (path === 'lib/libflutter_linux_gtk.so') return 'flutter_engine';
+  if (path === 'lib/libflutter_linux_gtk4.so') return 'flutter_engine';
   if (path === 'data/icudtl.dat') return 'flutter_icu';
   if (path === 'lib/libapp.so') return 'dart_aot';
   if (path === 'lib/libvixen_ffi.so') return 'vixen_native';
@@ -170,7 +170,7 @@ export async function analyzeFlutterBundles({ helloBundle, vixenBundle, metadata
     inspectBundle('hello', helloRoot),
     inspectBundle('vixen', vixenRoot),
   ]);
-  for (const shared of ['lib/libflutter_linux_gtk.so', 'data/icudtl.dat']) {
+  for (const shared of ['lib/libflutter_linux_gtk4.so', 'data/icudtl.dat']) {
     const helloFile = hello.files.find((file) => file.path === shared);
     const vixenFile = vixen.files.find((file) => file.path === shared);
     if (helloFile.sha256 !== vixenFile.sha256) {
