@@ -270,7 +270,7 @@ jobs:
           set +e
           XDG_RUNTIME_DIR="$GITHUB_WORKSPACE/.tmp/wayland-runtime" \
           GDK_BACKEND=wayland WLR_BACKENDS=headless \
-          WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
+          WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman \
           LIBGL_ALWAYS_SOFTWARE=1 \
           timeout 15s cage -- .tmp/linux-release-smoke/vixen/vixen_shell \
             > linux-release-smoke.log 2>&1
