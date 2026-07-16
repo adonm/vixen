@@ -201,51 +201,62 @@ session in text or JSON form:
 
 ```sh
 just baseline-flutter-linux
-just baseline-flutter-linux-json 9 2
+just baseline-flutter-linux-json 5 1
+just baseline-flutter-linux-hardware
+just baseline-flutter-linux-hardware-json 5 1
 ```
 
 Every warmup and measured sample starts a fresh `vixen_shell` CDP-automation
 process and profile at 320×240, loads `fixtures/dom/basic.html`, requires
-Impeller and the pinned exact Flutter-scene PNG, and shuts down cleanly. The
-report records app-spawn → CDP-ready, app-spawn → the first exact presented
-commit induced by the controlled capture, the Rust monotonic
-`Page.captureScreenshot` dispatch, client round-trip capture latency, and the
-app process's Linux `VmHWM`/sampled `VmRSS`/`VmSize`. Cage and the Node client are
-excluded; BrowserCore, V8, Flutter, and Dart AOT all remain inside the measured
-app process. This is a controlled software-renderer observation, not a physical
-GPU matrix or accepted budget.
+Impeller and the renderer-specific pinned exact Flutter-scene PNG, and shuts
+down cleanly. Version 2 then loads `fixtures/cdp/playwright-smoke.html` and
+serializes eight direct attribute mutations plus one mouse release. Each
+operation requests synchronous Flutter geometry and joins its exact commit,
+coordinator acknowledgement, engine frame number, and `FrameTiming` raster
+finish. The report records app-spawn → CDP-ready, app-spawn → first exact
+presentation, capture dispatch/client latency, app-process Linux memory,
+mutation/input → exact presented-commit frame endpoints, and build/raster/total
+frame spans. Cage and Node are excluded; BrowserCore, V8, Flutter, and Dart AOT
+remain inside the app process.
 
-## Recorded Flutter renderer reference
+Software mode forces Mesa software rendering. Hardware mode removes that
+override and fails closed unless `eglinfo -B` identifies a non-software OpenGL
+ES renderer on the same Wayland display. Neither mode accepts a budget.
+`FrameTiming.rasterFinishWallTime` is not compositor acceptance, scanout, or a
+physical input timestamp, and Cage exposed no refresh rate in these runs, so
+over-refresh-interval counts are correctly `null`.
+
+## Recorded Flutter renderer references
 
 [`baselines/flutter-linux-renderer-2026-07-16.json`](baselines/flutter-linux-renderer-2026-07-16.json)
-was produced from clean revision `e18550a` with five measured runs after one
-discarded warmup. The release bundle had already been built by `just
-baseline-flutter-linux-json 1 0`; the recorded repetition used the same recipe's
-Cage environment and direct script invocation:
+and
+[`baselines/flutter-linux-renderer-hardware-2026-07-16.json`](baselines/flutter-linux-renderer-hardware-2026-07-16.json)
+were produced from clean revision `cddcb09` with five measured runs after one
+discarded warmup. The release bundle had already been built by the integration
+recipe; the recorded repetitions used the same Cage environment and direct
+script invocation with `--renderer software` and `--renderer hardware`.
 
-```sh
-XDG_RUNTIME_DIR="$PWD/.tmp/flutter-baseline-wayland" \
-GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
-WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 cage -- \
-mise x node@24 -- node scripts/flutter-linux-baseline.mjs \
-  --runs 5 --warmups 1 --json
-```
+| Metric | Software median | Software p95 | AMD/Mesa median | AMD/Mesa p95 |
+|--------|----------------:|-------------:|----------------:|-------------:|
+| CDP ready | 225.223 ms | 317.256 ms | 176.528 ms | 252.007 ms |
+| first exact presented commit | 324.232 ms | 412.192 ms | 258.415 ms | 330.925 ms |
+| exact-scene capture dispatch | 50.317 ms | 57.148 ms | 38.360 ms | 42.243 ms |
+| capture client round trip | 50.642 ms | 57.567 ms | 38.699 ms | 42.543 ms |
+| app-process `VmHWM` | 300,240,896 B | 302,569,882 B | 208,400,384 B | 208,770,662 B |
+| direct mutation → commit frame | 15.402 ms | 28.812 ms | 14.527 ms | 29.248 ms |
+| mouse release → commit frame | 26.364 ms | 29.746 ms | 25.269 ms | 29.185 ms |
+| exact-frame build span | 71 µs | 91 µs | 70 µs | 89 µs |
+| exact-frame raster span | 492 µs | 561 µs | 350 µs | 442 µs |
+| exact-frame total span | 2,587 µs | 3,461 µs | 2,590 µs | 3,338 µs |
 
-| Metric | Median | p95 |
-|--------|-------:|----:|
-| CDP ready | 204.399 ms | 207.986 ms |
-| first exact presented commit | 281.438 ms | 306.990 ms |
-| exact-scene capture dispatch | 45.688 ms | 57.314 ms |
-| capture client round trip | 46.087 ms | 57.690 ms |
-| app-process `VmHWM` | 281,800,704 bytes | 281,935,053 bytes |
-
-All five samples produced the pinned 7,721-byte PNG with SHA-256
-`34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb`
-and exited cleanly. The report names the artifact/lock/fixture hashes and host.
-Its memory includes BrowserCore/V8 and Flutter/Dart in one process; its capture
-duration is the exact CDP dispatch, not isolated GPU raster or frame-stability
-evidence. The sample uses Mesa software rendering and has not been independently
-reproduced, so these observations are not warning or failure thresholds.
+Each report contains 45 measured interaction frames, five successful clean
+exits, exact commit/frame identity, bounded diagnostics, artifact/fixture/lock
+hashes, and renderer-specific repeated PNG hashes. The hardware probe identifies
+`AMD Ryzen 7 7700X ... (radeonsi, raphael_mendocino, ACO, DRM 3.64)` with Mesa
+26.0.4 and OpenGL ES 3.2. This is one integrated physical GPU/driver
+reproduction, not a supported matrix. Version 2's longer interaction workload
+also makes its memory samples unlike the earlier version-1 startup/capture-only
+report. None of these observations is a warning or failure threshold.
 
 The underlying scripts accept `--help`. Paths relative to the workspace are
 resolved from the repository rather than the caller's current directory where
@@ -261,7 +272,7 @@ JSON reports are versioned independently:
 | Profile growth | `vixen.profile-growth-baseline-report` version 1 |
 | Artifact size | `vixen.artifact-size-report` version 1 |
 | Flutter Linux raw bundles | `vixen.flutter-linux-artifact-size-report` version 1 |
-| Flutter Linux renderer | `vixen.flutter-linux-renderer-baseline-report` version 1 |
+| Flutter Linux renderer | `vixen.flutter-linux-renderer-baseline-report` version 2 |
 | Scenario input | `vixen.headless-scenario-suite` version 1 |
 
 Every report says `measurement_only: true`. Headless scenario reports include
@@ -286,7 +297,9 @@ and file digests; it is not a Flatpak/Ostree commit checksum.
 Reports include the binary and `Cargo.lock` hashes where applicable, git revision
 and dirty state, Node/rustc/Cargo versions, kernel and distro, architecture, CPU
 model and logical CPU count, total host memory, page size, and renderer-related
-environment variables. Optional metadata is null when unavailable. A host
+environment variables. Hardware Flutter reports additionally include the
+fail-closed Wayland EGL vendor/renderer/version probe. Optional metadata is null
+when unavailable. A host
 fingerprint supports comparison; it does not make unlike hosts equivalent.
 
 ## Controlled and live inputs
@@ -314,15 +327,16 @@ budget.
 
 This batch completes the local latency, Linux process-memory, profile-growth,
 headless-path, historical native-shell artifact-size, Flutter raw-release-bundle
-comparison, and first exact-commit Flutter startup/capture foundations. It does
-not yet measure:
+comparison, exact-commit Flutter startup/capture, controlled exact-frame spans,
+synthetic mutation/input-to-commit endpoints, and one physical GPU/driver
+reproduction. It does not yet measure:
 
 - representative external sites or complete external-site compatibility;
 - an accepted/reproduced Flutter GUI size baseline or FlatPark package artifact;
 - the GUI/FlatPark path across a supported Linux, GPU, driver, and renderer matrix;
 - native macOS, Windows, Android, or iOS Simulator BrowserCore/V8/Flutter-renderer behavior;
-- frame time, frame stability, animation smoothness, isolated GPU raster time,
-  or input-to-paint latency;
+- animation cadence/smoothness, dropped vsyncs, compositor/scanout presentation,
+  isolated GPU raster cost, or physical-device input-to-paint latency;
 - V8/JavaScript heap usage separately from process memory;
 - HTTP transfer or download throughput; or
 - installed GNOME runtime size and shared-system storage attribution.

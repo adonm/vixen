@@ -31,21 +31,22 @@ The current ownership contract is specified in `ARCHITECTURE.md`, the renderer
 and shell contract in `FLUTTER_SHELL.md`, acceptance in `ACCEPTANCE.md`, and
 compatibility evidence in `COMPAT.md`.
 
-## Immediate queue: R8 stabilization and rebaseline
+## Immediate queue: remaining R8 blockers and A1 convergence
 
-1. Reproduce the complete 270-fixture Flutter manifest after the R7 cutover,
-   including `flutter-js-eval`, `layout-box`, `visual-hash`, and
-   `ref-equivalent` checks.
-2. Reproduce external rendered CDP/Playwright and two-viewport target isolation
-   under the release Flutter host and Cage.
-3. Reproduce root/nested horizontal and vertical scrolling, find reveal,
-   commit-bound pointer input, keyboard defaults, text input/IME, lifecycle
-   retirement, renderer reset, and exact scene recovery.
-4. Reproduce accessibility role/state/action/bounds behavior with native Linux
-   AT evidence and no BrowserCore layout fallback.
-5. Rebaseline release size, startup, navigation, memory, scene capture, and
-   package attribution. Pre-R7 renderer measurements are historical only.
-6. Fix cutover regressions before widening standards or product breadth.
+The complete 270-fixture Flutter manifest, external rendered Playwright/CDP,
+release archive/size, startup/capture/memory, profile growth, 45-frame software
+and physical AMD/Mesa measurements, renderer reset, and exact scene recovery now
+have post-R7 checkpoints.
+
+1. Reproduce the full native interaction gate with the pinned Mozc IBus engine;
+   do not substitute direct text injection for preedit/commit evidence.
+2. Reduce and fix Linux AT-SPI `Component` bounds timeouts and the advertised but
+   inert content `Focus` action, then require role/state/bounds/action → DOM →
+   newer-commit evidence without BrowserCore geometry fallback.
+3. Continue A1 one host family at a time. The stable live `DOMStringMap` is the
+   first landed slice; each next slice needs one mutation/source revision,
+   synchronous geometry where relevant, CDP agreement, and exact Flutter pixels.
+4. Fix these failures before widening standards or product breadth.
 
 ## Post-stabilization priorities
 

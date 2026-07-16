@@ -470,14 +470,19 @@ The matching external Playwright/CDP rerun is also green: two target viewports,
 Flutter-routed geometry/input, before/after mutation captures, target switching,
 and forced renderer reset/full-resync all retained exact scene identity.
 
-**First renderer measurement checkpoint:** `just baseline-flutter-linux` now
-measures the release/AOT CDP host from process spawn through its first exact
-Flutter commit and direct-scene capture while sampling app-process memory. A
-clean five-run/one-warmup Mesa-software reference records 281.438 ms median first
-presentation, 46.087 ms median capture round trip, and 281,800,704-byte median
-`VmHWM`; every sample produced the pinned scene and shut down cleanly. This is a
-checked-in measurement-only host observation, not an accepted budget, physical
-GPU matrix, frame-stability result, or isolated Flutter memory attribution.
+**Renderer/frame/GPU measurement checkpoint:**
+`just baseline-flutter-linux` now measures the release/AOT CDP host from process
+spawn through exact capture, then joins eight direct mutations and one mouse
+release to exact presented Flutter commits and engine frame timings. Clean
+five-run/one-warmup version-2 references contain 45 interaction frames each.
+Mesa software records 15.402 ms median mutation → commit-frame, 26.364 ms mouse
+release → commit-frame, and 2,587 µs exact-frame total span; the corresponding
+AMD Ryzen 7 7700X integrated-GPU/radeonsi/Mesa 26.0.4 run records 14.527 ms,
+25.269 ms, and 2,590 µs. Renderer-specific exact PNGs repeated in every sample
+and all processes exited cleanly. Cage reported no refresh rate, and Flutter
+raster finish is not compositor scanout. These are checked-in measurement-only
+single-host observations, not budgets, animation stability, physical-input
+latency, isolated Flutter/GPU attribution, or a supported GPU matrix.
 
 **First size/release checkpoint:** clean, equally stripped Flutter 3.47 hello
 and post-R7/Yaru Vixen release bundles now have a checked-in component report.
@@ -498,13 +503,23 @@ repeated visits and zero across unique visits, then added 139,264 bytes for a
 This is a checked-in single-host measurement, not a growth budget or broad
 history/cache workload.
 
+**Remaining R8 blocker:** this host still lacks the required Mozc IBus engine,
+so the full native interaction/IME recipe has not been reproduced. The existing
+process-filtered `linux-at-spi-smoke` name gate passes, but a stronger diagnostic
+reached the exported text role/editable-visible-showing states and then exposed
+Linux AT-SPI gaps: `Component` bounds calls timed out and the advertised `Focus`
+action produced neither DOM focus nor a newer commit. R8 remains open until
+those native interaction/accessibility failures have a passing executable gate;
+the completed frame/GPU evidence does not waive them.
+
 **Exit:** the controlled Linux corridor uses no transitional renderer component,
 all renderer failure modes are bounded, and the next compatibility failure can be
 reduced directly against the final architecture.
 
 ## Alpha — converge live browser state on render commits
 
-After R8, resume shared-core correctness in this order.
+R8 remains a release blocker. Independent shared-core reductions may proceed in
+this order when they do not hide or broaden the remaining native-host failures.
 
 ### A1. Live document/runtime convergence
 
@@ -516,6 +531,16 @@ After R8, resume shared-core correctness in this order.
 - Execute parser classic/module scripts with document event-loop and microtask
   ordering; preserve realm teardown and same-origin frame boundaries.
 - Delete plausible inert compatibility shims as real owners land.
+
+**First A1 checkpoint:** `HTMLElement.dataset` is now one stable live
+`DOMStringMap` per element instead of a frozen property projection. External
+attribute changes reflect into the retained object; property assignment/deletion
+uses the shared Rust name conversion and the normal DOM mutation path. Focused
+runtime proof requires exactly one render-source generation per write and Stylo
+attribute-selector recascade. The release/AOT Playwright smoke then performs one
+dataset write, observes 140×32 geometry synchronously in that task, reads the
+same attribute/node/geometry through CDP, and pins different before/after exact
+Flutter PNGs. This is one live host-family vertical, not completion of A1.
 
 **Proof:** script-driven mutation visibly changes the Flutter scene; synchronous
 and asynchronous geometry observe the right commit; CDP and page script inspect
@@ -683,11 +708,15 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Finish R8 Linux host stabilization:** rerun interaction/IME/AT-SPI, then add
-   frame-time/stability and physical GPU/driver coverage. Compatibility, rendered
-   CDP recovery, release archive, size, startup, app-process memory, capture, and
-   profile growth have post-R7 checkpoints above; fix any remaining transition
-   regression before breadth.
+1. **Finish R8 native host stabilization:** install/reproduce the pinned Mozc
+   path, then reduce and fix Linux AT-SPI `Component` bounds and advertised
+   `Focus` action delivery before rerunning the complete interaction/IME gate.
+   Compatibility, rendered CDP recovery, release archive, size, startup,
+   app-process memory, capture, exact-frame timings, one physical GPU/driver, and
+   profile growth have post-R7 checkpoints above.
+2. **Continue A1 live document convergence:** use the landed live `dataset`
+   vertical as the pattern; take the next snapshot/shim family only with one
+   mutation/revision, synchronous geometry, CDP, and exact Flutter-pixel proof.
 
 Do not reintroduce native layout/paint/frame ownership while stabilizing. A
 security, data-loss, or release-blocking regression may preempt the queue.

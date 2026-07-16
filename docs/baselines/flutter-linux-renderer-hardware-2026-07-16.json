@@ -2,7 +2,7 @@
   "schema": "vixen.flutter-linux-renderer-baseline-report",
   "version": 2,
   "measurement_only": true,
-  "measured_at": "2026-07-16T15:37:47.779Z",
+  "measured_at": "2026-07-16T15:39:07.710Z",
   "runs": 5,
   "warmups": 1,
   "workload": {
@@ -15,8 +15,8 @@
       "height": 240
     },
     "renderer": "Flutter Canvas/Paragraph/Scene through release/AOT CDP host",
-    "renderer_mode": "software",
-    "expected_capture_sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb",
+    "renderer_mode": "hardware",
+    "expected_capture_sha256": "d29624bf78207e6e2056742b1d6c242515f8411dd5097af7aec4baaf6cb0b152",
     "interaction": {
       "direct_mutation_method": "DOM.setAttributeValue",
       "direct_mutation_target": "#status class",
@@ -39,128 +39,128 @@
   "summary": {
     "startup_cdp_ready_ms": {
       "count": 5,
-      "min": 201.985,
-      "median": 225.223,
-      "p95": 317.256,
-      "max": 339.438,
-      "mean": 239.821
+      "min": 148.547,
+      "median": 176.528,
+      "p95": 252.007,
+      "max": 263.291,
+      "mean": 190.107
     },
     "startup_first_presented_ms": {
       "count": 5,
-      "min": 279.214,
-      "median": 324.232,
-      "p95": 412.192,
-      "max": 430.263,
-      "mean": 331.518
+      "min": 233.069,
+      "median": 258.415,
+      "p95": 330.925,
+      "max": 340.532,
+      "mean": 273.33
     },
     "capture_dispatch_us": {
       "count": 5,
-      "min": 46707,
-      "median": 50317,
-      "p95": 57148,
-      "max": 57765,
-      "mean": 51829
+      "min": 34184,
+      "median": 38360,
+      "p95": 42243,
+      "max": 42833,
+      "mean": 38117
     },
     "capture_round_trip_ms": {
       "count": 5,
-      "min": 47.237,
-      "median": 50.642,
-      "p95": 57.567,
-      "max": 58.198,
-      "mean": 52.222
+      "min": 34.537,
+      "median": 38.699,
+      "p95": 42.543,
+      "max": 43.13,
+      "mean": 38.447
     },
     "peak_memory_bytes": {
       "vmhwm_bytes": {
         "count": 5,
-        "min": 299364352,
-        "median": 300240896,
-        "p95": 302569882,
-        "max": 302686208,
-        "mean": 300796314
+        "min": 207618048,
+        "median": 208400384,
+        "p95": 208770662,
+        "max": 208781312,
+        "mean": 208334029
       },
       "vmrss_bytes": {
         "count": 5,
-        "min": 299364352,
-        "median": 300240896,
-        "p95": 302569882,
-        "max": 302686208,
-        "mean": 300796314
+        "min": 207618048,
+        "median": 208400384,
+        "p95": 208770662,
+        "max": 208781312,
+        "mean": 208334029
       },
       "vmsize_bytes": {
         "count": 5,
-        "min": 22836912128,
-        "median": 22838267904,
-        "p95": 22838817587,
-        "max": 22838878208,
-        "mean": 22838118810
+        "min": 22949797888,
+        "median": 22950649856,
+        "p95": 22951634534,
+        "max": 22951796736,
+        "mean": 22950677709
       }
     },
     "interaction": {
       "mutation_to_presented_commit_ms": {
         "count": 40,
-        "min": 10.023,
-        "median": 15.402,
-        "p95": 28.812,
-        "max": 29.295,
-        "mean": 18.255
+        "min": 10.832,
+        "median": 14.527,
+        "p95": 29.248,
+        "max": 29.882,
+        "mean": 17.231
       },
       "mutation_cdp_dispatch_us": {
         "count": 40,
-        "min": 568,
-        "median": 699,
-        "p95": 1072,
-        "max": 1320,
-        "mean": 744
+        "min": 603,
+        "median": 719,
+        "p95": 1152,
+        "max": 1173,
+        "mean": 767
       },
       "mouse_release_to_presented_commit_ms": {
         "count": 5,
-        "min": 24.108,
-        "median": 26.364,
-        "p95": 29.746,
-        "max": 29.923,
-        "mean": 26.722
+        "min": 24.997,
+        "median": 25.269,
+        "p95": 29.185,
+        "max": 29.865,
+        "mean": 26.343
       },
       "mouse_release_cdp_dispatch_us": {
         "count": 5,
-        "min": 5209,
-        "median": 5528,
-        "p95": 5608,
-        "max": 5622,
-        "mean": 5437
+        "min": 4930,
+        "median": 5025,
+        "p95": 6155,
+        "max": 6428,
+        "mean": 5275
       },
       "frames": {
         "count": 45,
         "build_us": {
           "count": 45,
-          "min": 50,
-          "median": 71,
-          "p95": 91,
-          "max": 97,
-          "mean": 71
+          "min": 46,
+          "median": 70,
+          "p95": 89,
+          "max": 107,
+          "mean": 69
         },
         "raster_us": {
           "count": 45,
-          "min": 437,
-          "median": 492,
-          "p95": 561,
-          "max": 581,
-          "mean": 500
+          "min": 303,
+          "median": 350,
+          "p95": 442,
+          "max": 457,
+          "mean": 357
         },
         "vsync_overhead_us": {
           "count": 45,
-          "min": 1212,
-          "median": 2003,
-          "p95": 2909,
-          "max": 2967,
-          "mean": 2039
+          "min": 1225,
+          "median": 2109,
+          "p95": 2856,
+          "max": 2962,
+          "mean": 2072
         },
         "total_span_us": {
           "count": 45,
-          "min": 1825,
-          "median": 2587,
-          "p95": 3461,
-          "max": 3578,
-          "mean": 2641
+          "min": 1629,
+          "median": 2590,
+          "p95": 3338,
+          "max": 3431,
+          "mean": 2528
         },
         "over_refresh_interval_count": {
           "build": null,
@@ -172,14 +172,14 @@
   },
   "samples": [
     {
-      "startup_cdp_ready_ms": 339.438,
-      "startup_first_presented_ms": 430.263,
-      "capture_dispatch_us": 57765,
-      "capture_round_trip_ms": 58.198,
+      "startup_cdp_ready_ms": 206.871,
+      "startup_first_presented_ms": 292.498,
+      "capture_dispatch_us": 39881,
+      "capture_round_trip_ms": 40.196,
       "peak_memory_bytes": {
-        "vmhwm_bytes": 302104576,
-        "vmrss_bytes": 302104576,
-        "vmsize_bytes": 22838878208
+        "vmhwm_bytes": 207618048,
+        "vmrss_bytes": 207618048,
+        "vmsize_bytes": 22949797888
       },
       "presented": {
         "context_id": 1,
@@ -189,8 +189,8 @@
       "capture": {
         "width": 320,
         "height": 240,
-        "logical_bytes": 7721,
-        "sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb"
+        "logical_bytes": 7706,
+        "sha256": "d29624bf78207e6e2056742b1d6c242515f8411dd5097af7aec4baaf6cb0b152"
       },
       "interaction": {
         "mutations": [
@@ -199,8 +199,8 @@
             "trigger": "direct_mutation",
             "trace": {
               "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216216976325,
-              "dispatch_us": 1070,
+              "start_wall_us": 1784216296955290,
+              "dispatch_us": 1151,
               "ok": true
             },
             "presented": {
@@ -216,26 +216,26 @@
                 "viewport_generation": 1374389534960,
                 "resource_generation": 2
               },
-              "coordinator_return_wall_us": 1784216216991908
+              "coordinator_return_wall_us": 1784216296984517
             },
             "frame": {
               "frame_number": 15,
               "refresh_rate_hz": null,
-              "build_us": 58,
-              "raster_us": 492,
-              "vsync_overhead_us": 1714,
-              "total_span_us": 2295,
-              "raster_finish_wall_us": 1784216216990535
+              "build_us": 107,
+              "raster_us": 415,
+              "vsync_overhead_us": 2355,
+              "total_span_us": 2916,
+              "raster_finish_wall_us": 1784216296983526
             },
-            "to_presented_commit_ms": 15.583
+            "to_presented_commit_ms": 29.227
           },
           {
             "index": 1,
             "trigger": "direct_mutation",
             "trace": {
               "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216217863126,
-              "dispatch_us": 823,
+              "start_wall_us": 1784216297838676,
+              "dispatch_us": 781,
               "ok": true
             },
             "presented": {
@@ -251,1225 +251,61 @@
                 "viewport_generation": 1374389534960,
                 "resource_generation": 3
               },
-              "coordinator_return_wall_us": 1784216217891919
+              "coordinator_return_wall_us": 1784216297868326
             },
             "frame": {
               "frame_number": 16,
-              "refresh_rate_hz": null,
-              "build_us": 88,
-              "raster_us": 489,
-              "vsync_overhead_us": 1722,
-              "total_span_us": 2331,
-              "raster_finish_wall_us": 1784216217890570
-            },
-            "to_presented_commit_ms": 28.793
-          },
-          {
-            "index": 2,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216218895567,
-              "dispatch_us": 642,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 5,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 5,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 4,
-                "style_generation": 4,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 4
-              },
-              "coordinator_return_wall_us": 1784216218909141
-            },
-            "frame": {
-              "frame_number": 17,
-              "refresh_rate_hz": null,
-              "build_us": 59,
-              "raster_us": 437,
-              "vsync_overhead_us": 2933,
-              "total_span_us": 3456,
-              "raster_finish_wall_us": 1784216218908362
-            },
-            "to_presented_commit_ms": 13.574
-          },
-          {
-            "index": 3,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216219913171,
-              "dispatch_us": 799,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 6,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 6,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 5,
-                "style_generation": 5,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 5
-              },
-              "coordinator_return_wall_us": 1784216219925125
-            },
-            "frame": {
-              "frame_number": 18,
-              "refresh_rate_hz": null,
-              "build_us": 53,
-              "raster_us": 531,
-              "vsync_overhead_us": 2258,
-              "total_span_us": 2870,
-              "raster_finish_wall_us": 1784216219924443
-            },
-            "to_presented_commit_ms": 11.954
-          },
-          {
-            "index": 4,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216220927158,
-              "dispatch_us": 673,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 7,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 7,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 6,
-                "style_generation": 6,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 6
-              },
-              "coordinator_return_wall_us": 1784216220942277
-            },
-            "frame": {
-              "frame_number": 19,
-              "refresh_rate_hz": null,
-              "build_us": 71,
-              "raster_us": 450,
-              "vsync_overhead_us": 2668,
-              "total_span_us": 3217,
-              "raster_finish_wall_us": 1784216220941456
-            },
-            "to_presented_commit_ms": 15.119
-          },
-          {
-            "index": 5,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216221945177,
-              "dispatch_us": 699,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 8,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 8,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 7,
-                "style_generation": 7,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 7
-              },
-              "coordinator_return_wall_us": 1784216221958263
-            },
-            "frame": {
-              "frame_number": 20,
-              "refresh_rate_hz": null,
-              "build_us": 67,
-              "raster_us": 481,
-              "vsync_overhead_us": 2003,
-              "total_span_us": 2579,
-              "raster_finish_wall_us": 1784216221957485
-            },
-            "to_presented_commit_ms": 13.086
-          },
-          {
-            "index": 6,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216222960318,
-              "dispatch_us": 749,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 9,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 9,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 8,
-                "style_generation": 8,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 8
-              },
-              "coordinator_return_wall_us": 1784216222974253
-            },
-            "frame": {
-              "frame_number": 21,
-              "refresh_rate_hz": null,
-              "build_us": 61,
-              "raster_us": 561,
-              "vsync_overhead_us": 1333,
-              "total_span_us": 1988,
-              "raster_finish_wall_us": 1784216222973561
-            },
-            "to_presented_commit_ms": 13.935
-          },
-          {
-            "index": 7,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216223976323,
-              "dispatch_us": 661,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 10,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 10,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 9,
-                "style_generation": 9,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 9
-              },
-              "coordinator_return_wall_us": 1784216223991912
-            },
-            "frame": {
-              "frame_number": 22,
-              "refresh_rate_hz": null,
-              "build_us": 69,
-              "raster_us": 468,
-              "vsync_overhead_us": 1743,
-              "total_span_us": 2309,
-              "raster_finish_wall_us": 1784216223990547
-            },
-            "to_presented_commit_ms": 15.589
-          }
-        ],
-        "input": {
-          "trigger": "mouse_release",
-          "trace": {
-            "method": "Input.dispatchMouseEvent",
-            "start_wall_us": 1784216225095443,
-            "dispatch_us": 5553,
-            "ok": true
-          },
-          "presented": {
-            "sequence": 11,
-            "context_id": 1,
-            "document_id": 3,
-            "commit_id": 11,
-            "revision": {
-              "context_id": 1,
-              "document_id": 3,
-              "source_generation": 20,
-              "style_generation": 20,
-              "viewport_generation": 1374389534960,
-              "resource_generation": 20
-            },
-            "coordinator_return_wall_us": 1784216225125366
-          },
-          "frame": {
-            "frame_number": 25,
-            "refresh_rate_hz": null,
-            "build_us": 92,
-            "raster_us": 581,
-            "vsync_overhead_us": 2270,
-            "total_span_us": 2974,
-            "raster_finish_wall_us": 1784216225124546
-          },
-          "to_presented_commit_ms": 29.923
-        },
-        "frame_stability": {
-          "frame_count": 9,
-          "refresh_rate_hz": null,
-          "refresh_interval_us": null,
-          "build_us": {
-            "count": 9,
-            "min": 53,
-            "median": 67,
-            "p95": 90,
-            "max": 92,
-            "mean": 69
-          },
-          "raster_us": {
-            "count": 9,
-            "min": 437,
-            "median": 489,
-            "p95": 573,
-            "max": 581,
-            "mean": 499
-          },
-          "vsync_overhead_us": {
-            "count": 9,
-            "min": 1333,
-            "median": 2003,
-            "p95": 2827,
-            "max": 2933,
-            "mean": 2072
-          },
-          "total_span_us": {
-            "count": 9,
-            "min": 1988,
-            "median": 2579,
-            "p95": 3360,
-            "max": 3456,
-            "mean": 2669
-          },
-          "over_refresh_interval_count": {
-            "build": null,
-            "raster": null,
-            "total_span": null
-          }
-        }
-      },
-      "exit_status": 0,
-      "signal": null,
-      "stdout_bytes": 772,
-      "stderr_bytes": 8294,
-      "stdout_truncated": false,
-      "stderr_truncated": false
-    },
-    {
-      "startup_cdp_ready_ms": 225.223,
-      "startup_first_presented_ms": 324.232,
-      "capture_dispatch_us": 46707,
-      "capture_round_trip_ms": 47.237,
-      "peak_memory_bytes": {
-        "vmhwm_bytes": 302686208,
-        "vmrss_bytes": 302686208,
-        "vmsize_bytes": 22838575104
-      },
-      "presented": {
-        "context_id": 1,
-        "document_id": 2,
-        "commit_id": 1
-      },
-      "capture": {
-        "width": 320,
-        "height": 240,
-        "logical_bytes": 7721,
-        "sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb"
-      },
-      "interaction": {
-        "mutations": [
-          {
-            "index": 0,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216227386349,
-              "dispatch_us": 1320,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 3,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 3,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 2,
-                "style_generation": 2,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 2
-              },
-              "coordinator_return_wall_us": 1784216227412958
-            },
-            "frame": {
-              "frame_number": 16,
-              "refresh_rate_hz": null,
-              "build_us": 97,
-              "raster_us": 531,
-              "vsync_overhead_us": 1898,
-              "total_span_us": 2558,
-              "raster_finish_wall_us": 1784216227411646
-            },
-            "to_presented_commit_ms": 26.609
-          },
-          {
-            "index": 1,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216228267516,
-              "dispatch_us": 730,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 4,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 4,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 3,
-                "style_generation": 3,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 3
-              },
-              "coordinator_return_wall_us": 1784216228279250
-            },
-            "frame": {
-              "frame_number": 17,
-              "refresh_rate_hz": null,
-              "build_us": 63,
-              "raster_us": 497,
-              "vsync_overhead_us": 2163,
-              "total_span_us": 2753,
-              "raster_finish_wall_us": 1784216228278508
-            },
-            "to_presented_commit_ms": 11.734
-          },
-          {
-            "index": 2,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216229285179,
-              "dispatch_us": 655,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 5,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 5,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 4,
-                "style_generation": 4,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 4
-              },
-              "coordinator_return_wall_us": 1784216229295202
-            },
-            "frame": {
-              "frame_number": 18,
-              "refresh_rate_hz": null,
-              "build_us": 52,
-              "raster_us": 444,
-              "vsync_overhead_us": 1478,
-              "total_span_us": 2000,
-              "raster_finish_wall_us": 1784216229294421
-            },
-            "to_presented_commit_ms": 10.023
-          },
-          {
-            "index": 3,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216230300206,
-              "dispatch_us": 619,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 6,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 6,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 5,
-                "style_generation": 5,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 5
-              },
-              "coordinator_return_wall_us": 1784216230312907
-            },
-            "frame": {
-              "frame_number": 19,
-              "refresh_rate_hz": null,
-              "build_us": 63,
-              "raster_us": 476,
-              "vsync_overhead_us": 1887,
-              "total_span_us": 2456,
-              "raster_finish_wall_us": 1784216230311544
-            },
-            "to_presented_commit_ms": 12.701
-          },
-          {
-            "index": 4,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216231314367,
-              "dispatch_us": 663,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 7,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 7,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 6,
-                "style_generation": 6,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 6
-              },
-              "coordinator_return_wall_us": 1784216231328918
-            },
-            "frame": {
-              "frame_number": 20,
-              "refresh_rate_hz": null,
-              "build_us": 70,
-              "raster_us": 513,
-              "vsync_overhead_us": 1212,
-              "total_span_us": 1825,
-              "raster_finish_wall_us": 1784216231327579
-            },
-            "to_presented_commit_ms": 14.551
-          },
-          {
-            "index": 5,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216232329298,
-              "dispatch_us": 677,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 8,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 8,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 7,
-                "style_generation": 7,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 7
-              },
-              "coordinator_return_wall_us": 1784216232346336
-            },
-            "frame": {
-              "frame_number": 21,
-              "refresh_rate_hz": null,
-              "build_us": 73,
-              "raster_us": 511,
-              "vsync_overhead_us": 2412,
-              "total_span_us": 3028,
-              "raster_finish_wall_us": 1784216232345449
-            },
-            "to_presented_commit_ms": 17.038
-          },
-          {
-            "index": 6,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216233347289,
-              "dispatch_us": 576,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 9,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 9,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 8,
-                "style_generation": 8,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 8
-              },
-              "coordinator_return_wall_us": 1784216233363296
-            },
-            "frame": {
-              "frame_number": 22,
-              "refresh_rate_hz": null,
-              "build_us": 71,
-              "raster_us": 530,
-              "vsync_overhead_us": 2829,
-              "total_span_us": 3462,
-              "raster_finish_wall_us": 1784216233362550
-            },
-            "to_presented_commit_ms": 16.007
-          },
-          {
-            "index": 7,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216234366180,
-              "dispatch_us": 645,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 10,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 10,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 9,
-                "style_generation": 9,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 9
-              },
-              "coordinator_return_wall_us": 1784216234395475
-            },
-            "frame": {
-              "frame_number": 23,
-              "refresh_rate_hz": null,
-              "build_us": 87,
-              "raster_us": 564,
-              "vsync_overhead_us": 1528,
-              "total_span_us": 2210,
-              "raster_finish_wall_us": 1784216234394631
-            },
-            "to_presented_commit_ms": 29.295
-          }
-        ],
-        "input": {
-          "trigger": "mouse_release",
-          "trace": {
-            "method": "Input.dispatchMouseEvent",
-            "start_wall_us": 1784216235504761,
-            "dispatch_us": 5528,
-            "ok": true
-          },
-          "presented": {
-            "sequence": 11,
-            "context_id": 1,
-            "document_id": 3,
-            "commit_id": 11,
-            "revision": {
-              "context_id": 1,
-              "document_id": 3,
-              "source_generation": 20,
-              "style_generation": 20,
-              "viewport_generation": 1374389534960,
-              "resource_generation": 20
-            },
-            "coordinator_return_wall_us": 1784216235528938
-          },
-          "frame": {
-            "frame_number": 25,
-            "refresh_rate_hz": null,
-            "build_us": 86,
-            "raster_us": 559,
-            "vsync_overhead_us": 1256,
-            "total_span_us": 1932,
-            "raster_finish_wall_us": 1784216235527686
-          },
-          "to_presented_commit_ms": 24.177
-        },
-        "frame_stability": {
-          "frame_count": 9,
-          "refresh_rate_hz": null,
-          "refresh_interval_us": null,
-          "build_us": {
-            "count": 9,
-            "min": 52,
-            "median": 71,
-            "p95": 93,
-            "max": 97,
-            "mean": 74
-          },
-          "raster_us": {
-            "count": 9,
-            "min": 444,
-            "median": 513,
-            "p95": 562,
-            "max": 564,
-            "mean": 514
-          },
-          "vsync_overhead_us": {
-            "count": 9,
-            "min": 1212,
-            "median": 1887,
-            "p95": 2662,
-            "max": 2829,
-            "mean": 1851
-          },
-          "total_span_us": {
-            "count": 9,
-            "min": 1825,
-            "median": 2456,
-            "p95": 3288,
-            "max": 3462,
-            "mean": 2469
-          },
-          "over_refresh_interval_count": {
-            "build": null,
-            "raster": null,
-            "total_span": null
-          }
-        }
-      },
-      "exit_status": 0,
-      "signal": null,
-      "stdout_bytes": 772,
-      "stderr_bytes": 8294,
-      "stdout_truncated": false,
-      "stderr_truncated": false
-    },
-    {
-      "startup_cdp_ready_ms": 203.934,
-      "startup_first_presented_ms": 283.975,
-      "capture_dispatch_us": 49672,
-      "capture_round_trip_ms": 49.99,
-      "peak_memory_bytes": {
-        "vmhwm_bytes": 299585536,
-        "vmrss_bytes": 299585536,
-        "vmsize_bytes": 22837960704
-      },
-      "presented": {
-        "context_id": 1,
-        "document_id": 2,
-        "commit_id": 1
-      },
-      "capture": {
-        "width": 320,
-        "height": 240,
-        "logical_bytes": 7721,
-        "sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb"
-      },
-      "interaction": {
-        "mutations": [
-          {
-            "index": 0,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216237796244,
-              "dispatch_us": 1101,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 3,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 3,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 2,
-                "style_generation": 2,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 2
-              },
-              "coordinator_return_wall_us": 1784216237819959
-            },
-            "frame": {
-              "frame_number": 16,
-              "refresh_rate_hz": null,
-              "build_us": 81,
-              "raster_us": 518,
-              "vsync_overhead_us": 1707,
-              "total_span_us": 2337,
-              "raster_finish_wall_us": 1784216237818602
-            },
-            "to_presented_commit_ms": 23.715
-          },
-          {
-            "index": 1,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216238675327,
-              "dispatch_us": 808,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 4,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 4,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 3,
-                "style_generation": 3,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 3
-              },
-              "coordinator_return_wall_us": 1784216238703928
-            },
-            "frame": {
-              "frame_number": 17,
-              "refresh_rate_hz": null,
-              "build_us": 87,
-              "raster_us": 506,
-              "vsync_overhead_us": 1347,
-              "total_span_us": 1972,
-              "raster_finish_wall_us": 1784216238701569
-            },
-            "to_presented_commit_ms": 28.601
-          },
-          {
-            "index": 2,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216239704280,
-              "dispatch_us": 706,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 5,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 5,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 4,
-                "style_generation": 4,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 4
-              },
-              "coordinator_return_wall_us": 1784216239719933
-            },
-            "frame": {
-              "frame_number": 18,
               "refresh_rate_hz": null,
               "build_us": 79,
-              "raster_us": 491,
-              "vsync_overhead_us": 1710,
-              "total_span_us": 2310,
-              "raster_finish_wall_us": 1784216239718575
+              "raster_us": 357,
+              "vsync_overhead_us": 2962,
+              "total_span_us": 3431,
+              "raster_finish_wall_us": 1784216297867376
             },
-            "to_presented_commit_ms": 15.653
+            "to_presented_commit_ms": 29.65
           },
           {
-            "index": 3,
+            "index": 2,
             "trigger": "direct_mutation",
             "trace": {
               "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216240724579,
-              "dispatch_us": 739,
+              "start_wall_us": 1784216298873187,
+              "dispatch_us": 717,
               "ok": true
             },
             "presented": {
-              "sequence": 6,
+              "sequence": 5,
               "context_id": 1,
               "document_id": 3,
-              "commit_id": 6,
+              "commit_id": 5,
               "revision": {
                 "context_id": 1,
                 "document_id": 3,
-                "source_generation": 5,
-                "style_generation": 5,
+                "source_generation": 4,
+                "style_generation": 4,
                 "viewport_generation": 1374389534960,
-                "resource_generation": 5
+                "resource_generation": 4
               },
-              "coordinator_return_wall_us": 1784216240753352
+              "coordinator_return_wall_us": 1784216298884249
             },
             "frame": {
-              "frame_number": 19,
-              "refresh_rate_hz": null,
-              "build_us": 94,
-              "raster_us": 551,
-              "vsync_overhead_us": 2244,
-              "total_span_us": 2921,
-              "raster_finish_wall_us": 1784216240752519
-            },
-            "to_presented_commit_ms": 28.773
-          },
-          {
-            "index": 4,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216241758181,
-              "dispatch_us": 738,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 7,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 7,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 6,
-                "style_generation": 6,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 6
-              },
-              "coordinator_return_wall_us": 1784216241786360
-            },
-            "frame": {
-              "frame_number": 20,
-              "refresh_rate_hz": null,
-              "build_us": 87,
-              "raster_us": 468,
-              "vsync_overhead_us": 2002,
-              "total_span_us": 2587,
-              "raster_finish_wall_us": 1784216241785517
-            },
-            "to_presented_commit_ms": 28.179
-          },
-          {
-            "index": 5,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216242791281,
-              "dispatch_us": 711,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 8,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 8,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 7,
-                "style_generation": 7,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 7
-              },
-              "coordinator_return_wall_us": 1784216242802243
-            },
-            "frame": {
-              "frame_number": 21,
-              "refresh_rate_hz": null,
-              "build_us": 58,
-              "raster_us": 475,
-              "vsync_overhead_us": 1319,
-              "total_span_us": 1880,
-              "raster_finish_wall_us": 1784216242801477
-            },
-            "to_presented_commit_ms": 10.962
-          },
-          {
-            "index": 6,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216243804013,
-              "dispatch_us": 605,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 9,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 9,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 8,
-                "style_generation": 8,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 8
-              },
-              "coordinator_return_wall_us": 1784216243819939
-            },
-            "frame": {
-              "frame_number": 22,
-              "refresh_rate_hz": null,
-              "build_us": 69,
-              "raster_us": 450,
-              "vsync_overhead_us": 1697,
-              "total_span_us": 2244,
-              "raster_finish_wall_us": 1784216243818507
-            },
-            "to_presented_commit_ms": 15.926
-          },
-          {
-            "index": 7,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216244821315,
-              "dispatch_us": 637,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 10,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 10,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 9,
-                "style_generation": 9,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 9
-              },
-              "coordinator_return_wall_us": 1784216244837375
-            },
-            "frame": {
-              "frame_number": 23,
-              "refresh_rate_hz": null,
-              "build_us": 75,
-              "raster_us": 550,
-              "vsync_overhead_us": 2919,
-              "total_span_us": 3578,
-              "raster_finish_wall_us": 1784216244836508
-            },
-            "to_presented_commit_ms": 16.06
-          }
-        ],
-        "input": {
-          "trigger": "mouse_release",
-          "trace": {
-            "method": "Input.dispatchMouseEvent",
-            "start_wall_us": 1784216245943968,
-            "dispatch_us": 5209,
-            "ok": true
-          },
-          "presented": {
-            "sequence": 11,
-            "context_id": 1,
-            "document_id": 3,
-            "commit_id": 11,
-            "revision": {
-              "context_id": 1,
-              "document_id": 3,
-              "source_generation": 20,
-              "style_generation": 20,
-              "viewport_generation": 1374389534960,
-              "resource_generation": 20
-            },
-            "coordinator_return_wall_us": 1784216245970332
-          },
-          "frame": {
-            "frame_number": 26,
-            "refresh_rate_hz": null,
-            "build_us": 58,
-            "raster_us": 533,
-            "vsync_overhead_us": 2640,
-            "total_span_us": 3259,
-            "raster_finish_wall_us": 1784216245969523
-          },
-          "to_presented_commit_ms": 26.364
-        },
-        "frame_stability": {
-          "frame_count": 9,
-          "refresh_rate_hz": null,
-          "refresh_interval_us": null,
-          "build_us": {
-            "count": 9,
-            "min": 58,
-            "median": 79,
-            "p95": 91,
-            "max": 94,
-            "mean": 76
-          },
-          "raster_us": {
-            "count": 9,
-            "min": 450,
-            "median": 506,
-            "p95": 551,
-            "max": 551,
-            "mean": 505
-          },
-          "vsync_overhead_us": {
-            "count": 9,
-            "min": 1319,
-            "median": 1710,
-            "p95": 2807,
-            "max": 2919,
-            "mean": 1954
-          },
-          "total_span_us": {
-            "count": 9,
-            "min": 1880,
-            "median": 2337,
-            "p95": 3450,
-            "max": 3578,
-            "mean": 2565
-          },
-          "over_refresh_interval_count": {
-            "build": null,
-            "raster": null,
-            "total_span": null
-          }
-        }
-      },
-      "exit_status": 0,
-      "signal": null,
-      "stdout_bytes": 772,
-      "stderr_bytes": 8294,
-      "stdout_truncated": false,
-      "stderr_truncated": false
-    },
-    {
-      "startup_cdp_ready_ms": 201.985,
-      "startup_first_presented_ms": 279.214,
-      "capture_dispatch_us": 50317,
-      "capture_round_trip_ms": 50.642,
-      "peak_memory_bytes": {
-        "vmhwm_bytes": 299364352,
-        "vmrss_bytes": 299364352,
-        "vmsize_bytes": 22836912128
-      },
-      "presented": {
-        "context_id": 1,
-        "document_id": 2,
-        "commit_id": 1
-      },
-      "capture": {
-        "width": 320,
-        "height": 240,
-        "logical_bytes": 7721,
-        "sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb"
-      },
-      "interaction": {
-        "mutations": [
-          {
-            "index": 0,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216248232234,
-              "dispatch_us": 1051,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 3,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 3,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 2,
-                "style_generation": 2,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 2
-              },
-              "coordinator_return_wall_us": 1784216248242473
-            },
-            "frame": {
-              "frame_number": 15,
+              "frame_number": 17,
               "refresh_rate_hz": null,
               "build_us": 59,
-              "raster_us": 485,
-              "vsync_overhead_us": 2295,
-              "total_span_us": 2868,
-              "raster_finish_wall_us": 1784216248241407
+              "raster_us": 367,
+              "vsync_overhead_us": 2298,
+              "total_span_us": 2757,
+              "raster_finish_wall_us": 1784216298883367
             },
-            "to_presented_commit_ms": 10.239
-          },
-          {
-            "index": 1,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216249113984,
-              "dispatch_us": 708,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 4,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 4,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 3,
-                "style_generation": 3,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 3
-              },
-              "coordinator_return_wall_us": 1784216249142194
-            },
-            "frame": {
-              "frame_number": 16,
-              "refresh_rate_hz": null,
-              "build_us": 68,
-              "raster_us": 489,
-              "vsync_overhead_us": 2294,
-              "total_span_us": 2879,
-              "raster_finish_wall_us": 1784216249141418
-            },
-            "to_presented_commit_ms": 28.21
-          },
-          {
-            "index": 2,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216250147130,
-              "dispatch_us": 654,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 5,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 5,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 4,
-                "style_generation": 4,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 4
-              },
-              "coordinator_return_wall_us": 1784216250175271
-            },
-            "frame": {
-              "frame_number": 17,
-              "refresh_rate_hz": null,
-              "build_us": 72,
-              "raster_us": 511,
-              "vsync_overhead_us": 2024,
-              "total_span_us": 2636,
-              "raster_finish_wall_us": 1784216250174509
-            },
-            "to_presented_commit_ms": 28.141
+            "to_presented_commit_ms": 11.062
           },
           {
             "index": 3,
             "trigger": "direct_mutation",
             "trace": {
               "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216251180265,
-              "dispatch_us": 691,
+              "start_wall_us": 1784216299888969,
+              "dispatch_us": 779,
               "ok": true
             },
             "presented": {
@@ -1485,26 +321,26 @@
                 "viewport_generation": 1374389534960,
                 "resource_generation": 5
               },
-              "coordinator_return_wall_us": 1784216251208929
+              "coordinator_return_wall_us": 1784216299900239
             },
             "frame": {
               "frame_number": 18,
               "refresh_rate_hz": null,
-              "build_us": 81,
-              "raster_us": 542,
-              "vsync_overhead_us": 1772,
-              "total_span_us": 2424,
-              "raster_finish_wall_us": 1784216251207631
+              "build_us": 50,
+              "raster_us": 319,
+              "vsync_overhead_us": 1677,
+              "total_span_us": 2072,
+              "raster_finish_wall_us": 1784216299899350
             },
-            "to_presented_commit_ms": 28.664
+            "to_presented_commit_ms": 11.27
           },
           {
             "index": 4,
             "trigger": "direct_mutation",
             "trace": {
               "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216252211402,
-              "dispatch_us": 669,
+              "start_wall_us": 1784216300903982,
+              "dispatch_us": 775,
               "ok": true
             },
             "presented": {
@@ -1520,414 +356,26 @@
                 "viewport_generation": 1374389534960,
                 "resource_generation": 6
               },
-              "coordinator_return_wall_us": 1784216252226185
-            },
-            "frame": {
-              "frame_number": 19,
-              "refresh_rate_hz": null,
-              "build_us": 63,
-              "raster_us": 455,
-              "vsync_overhead_us": 2967,
-              "total_span_us": 3514,
-              "raster_finish_wall_us": 1784216252225388
-            },
-            "to_presented_commit_ms": 14.783
-          },
-          {
-            "index": 5,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216253228008,
-              "dispatch_us": 695,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 8,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 8,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 7,
-                "style_generation": 7,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 7
-              },
-              "coordinator_return_wall_us": 1784216253242235
-            },
-            "frame": {
-              "frame_number": 20,
-              "refresh_rate_hz": null,
-              "build_us": 77,
-              "raster_us": 465,
-              "vsync_overhead_us": 2295,
-              "total_span_us": 2867,
-              "raster_finish_wall_us": 1784216253241406
-            },
-            "to_presented_commit_ms": 14.227
-          },
-          {
-            "index": 6,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216254244021,
-              "dispatch_us": 661,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 9,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 9,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 8,
-                "style_generation": 8,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 8
-              },
-              "coordinator_return_wall_us": 1784216254259206
-            },
-            "frame": {
-              "frame_number": 21,
-              "refresh_rate_hz": null,
-              "build_us": 55,
-              "raster_us": 445,
-              "vsync_overhead_us": 2693,
-              "total_span_us": 3220,
-              "raster_finish_wall_us": 1784216254258426
-            },
-            "to_presented_commit_ms": 15.185
-          },
-          {
-            "index": 7,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216255261132,
-              "dispatch_us": 632,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 10,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 10,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 9,
-                "style_generation": 9,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 9
-              },
-              "coordinator_return_wall_us": 1784216255275266
-            },
-            "frame": {
-              "frame_number": 22,
-              "refresh_rate_hz": null,
-              "build_us": 62,
-              "raster_us": 476,
-              "vsync_overhead_us": 2036,
-              "total_span_us": 2604,
-              "raster_finish_wall_us": 1784216255274477
-            },
-            "to_presented_commit_ms": 14.134
-          }
-        ],
-        "input": {
-          "trigger": "mouse_release",
-          "trace": {
-            "method": "Input.dispatchMouseEvent",
-            "start_wall_us": 1784216256379885,
-            "dispatch_us": 5622,
-            "ok": true
-          },
-          "presented": {
-            "sequence": 11,
-            "context_id": 1,
-            "document_id": 3,
-            "commit_id": 11,
-            "revision": {
-              "context_id": 1,
-              "document_id": 3,
-              "source_generation": 20,
-              "style_generation": 20,
-              "viewport_generation": 1374389534960,
-              "resource_generation": 20
-            },
-            "coordinator_return_wall_us": 1784216256408921
-          },
-          "frame": {
-            "frame_number": 24,
-            "refresh_rate_hz": null,
-            "build_us": 76,
-            "raster_us": 533,
-            "vsync_overhead_us": 1753,
-            "total_span_us": 2392,
-            "raster_finish_wall_us": 1784216256407599
-          },
-          "to_presented_commit_ms": 29.036
-        },
-        "frame_stability": {
-          "frame_count": 9,
-          "refresh_rate_hz": null,
-          "refresh_interval_us": null,
-          "build_us": {
-            "count": 9,
-            "min": 55,
-            "median": 68,
-            "p95": 79,
-            "max": 81,
-            "mean": 68
-          },
-          "raster_us": {
-            "count": 9,
-            "min": 445,
-            "median": 485,
-            "p95": 538,
-            "max": 542,
-            "mean": 489
-          },
-          "vsync_overhead_us": {
-            "count": 9,
-            "min": 1753,
-            "median": 2294,
-            "p95": 2857,
-            "max": 2967,
-            "mean": 2237
-          },
-          "total_span_us": {
-            "count": 9,
-            "min": 2392,
-            "median": 2867,
-            "p95": 3396,
-            "max": 3514,
-            "mean": 2823
-          },
-          "over_refresh_interval_count": {
-            "build": null,
-            "raster": null,
-            "total_span": null
-          }
-        }
-      },
-      "exit_status": 0,
-      "signal": null,
-      "stdout_bytes": 772,
-      "stderr_bytes": 8294,
-      "stdout_truncated": false,
-      "stderr_truncated": false
-    },
-    {
-      "startup_cdp_ready_ms": 228.527,
-      "startup_first_presented_ms": 339.907,
-      "capture_dispatch_us": 54682,
-      "capture_round_trip_ms": 55.043,
-      "peak_memory_bytes": {
-        "vmhwm_bytes": 300240896,
-        "vmrss_bytes": 300240896,
-        "vmsize_bytes": 22838267904
-      },
-      "presented": {
-        "context_id": 1,
-        "document_id": 2,
-        "commit_id": 1
-      },
-      "capture": {
-        "width": 320,
-        "height": 240,
-        "logical_bytes": 7721,
-        "sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb"
-      },
-      "interaction": {
-        "mutations": [
-          {
-            "index": 0,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216258675259,
-              "dispatch_us": 1046,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 3,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 3,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 2,
-                "style_generation": 2,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 2
-              },
-              "coordinator_return_wall_us": 1784216258702340
-            },
-            "frame": {
-              "frame_number": 16,
-              "refresh_rate_hz": null,
-              "build_us": 76,
-              "raster_us": 490,
-              "vsync_overhead_us": 1967,
-              "total_span_us": 2565,
-              "raster_finish_wall_us": 1784216258701541
-            },
-            "to_presented_commit_ms": 27.081
-          },
-          {
-            "index": 1,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216259554386,
-              "dispatch_us": 831,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 4,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 4,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 3,
-                "style_generation": 3,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 3
-              },
-              "coordinator_return_wall_us": 1784216259569158
-            },
-            "frame": {
-              "frame_number": 17,
-              "refresh_rate_hz": null,
-              "build_us": 57,
-              "raster_us": 467,
-              "vsync_overhead_us": 2185,
-              "total_span_us": 2741,
-              "raster_finish_wall_us": 1784216259568384
-            },
-            "to_presented_commit_ms": 14.772
-          },
-          {
-            "index": 2,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216260571084,
-              "dispatch_us": 646,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 5,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 5,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 4,
-                "style_generation": 4,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 4
-              },
-              "coordinator_return_wall_us": 1784216260586305
-            },
-            "frame": {
-              "frame_number": 18,
-              "refresh_rate_hz": null,
-              "build_us": 81,
-              "raster_us": 444,
-              "vsync_overhead_us": 2601,
-              "total_span_us": 3157,
-              "raster_finish_wall_us": 1784216260585466
-            },
-            "to_presented_commit_ms": 15.221
-          },
-          {
-            "index": 3,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216261589127,
-              "dispatch_us": 726,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 6,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 6,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 5,
-                "style_generation": 5,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 5
-              },
-              "coordinator_return_wall_us": 1784216261618297
+              "coordinator_return_wall_us": 1784216300917943
             },
             "frame": {
               "frame_number": 19,
               "refresh_rate_hz": null,
               "build_us": 74,
-              "raster_us": 521,
-              "vsync_overhead_us": 1264,
-              "total_span_us": 1889,
-              "raster_finish_wall_us": 1784216261617532
+              "raster_us": 325,
+              "vsync_overhead_us": 2109,
+              "total_span_us": 2536,
+              "raster_finish_wall_us": 1784216300916481
             },
-            "to_presented_commit_ms": 29.17
-          },
-          {
-            "index": 4,
-            "trigger": "direct_mutation",
-            "trace": {
-              "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216262622113,
-              "dispatch_us": 720,
-              "ok": true
-            },
-            "presented": {
-              "sequence": 7,
-              "context_id": 1,
-              "document_id": 3,
-              "commit_id": 7,
-              "revision": {
-                "context_id": 1,
-                "document_id": 3,
-                "source_generation": 6,
-                "style_generation": 6,
-                "viewport_generation": 1374389534960,
-                "resource_generation": 6
-              },
-              "coordinator_return_wall_us": 1784216262635942
-            },
-            "frame": {
-              "frame_number": 20,
-              "refresh_rate_hz": null,
-              "build_us": 65,
-              "raster_us": 483,
-              "vsync_overhead_us": 1731,
-              "total_span_us": 2312,
-              "raster_finish_wall_us": 1784216262634622
-            },
-            "to_presented_commit_ms": 13.829
+            "to_presented_commit_ms": 13.961
           },
           {
             "index": 5,
             "trigger": "direct_mutation",
             "trace": {
               "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216263638396,
-              "dispatch_us": 698,
+              "start_wall_us": 1784216301922537,
+              "dispatch_us": 709,
               "ok": true
             },
             "presented": {
@@ -1943,26 +391,26 @@
                 "viewport_generation": 1374389534960,
                 "resource_generation": 7
               },
-              "coordinator_return_wall_us": 1784216263653145
+              "coordinator_return_wall_us": 1784216301933920
             },
             "frame": {
-              "frame_number": 21,
+              "frame_number": 20,
               "refresh_rate_hz": null,
-              "build_us": 50,
-              "raster_us": 447,
-              "vsync_overhead_us": 2868,
-              "total_span_us": 3392,
-              "raster_finish_wall_us": 1784216263652369
+              "build_us": 77,
+              "raster_us": 337,
+              "vsync_overhead_us": 1364,
+              "total_span_us": 1808,
+              "raster_finish_wall_us": 1784216301932418
             },
-            "to_presented_commit_ms": 14.749
+            "to_presented_commit_ms": 11.383
           },
           {
             "index": 6,
             "trigger": "direct_mutation",
             "trace": {
               "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216264657154,
-              "dispatch_us": 568,
+              "start_wall_us": 1784216302937395,
+              "dispatch_us": 711,
               "ok": true
             },
             "presented": {
@@ -1978,26 +426,26 @@
                 "viewport_generation": 1374389534960,
                 "resource_generation": 8
               },
-              "coordinator_return_wall_us": 1784216264669276
+              "coordinator_return_wall_us": 1784216302951430
             },
             "frame": {
-              "frame_number": 22,
+              "frame_number": 21,
               "refresh_rate_hz": null,
-              "build_us": 83,
-              "raster_us": 540,
-              "vsync_overhead_us": 2211,
-              "total_span_us": 2866,
-              "raster_finish_wall_us": 1784216264668509
+              "build_us": 82,
+              "raster_us": 364,
+              "vsync_overhead_us": 2558,
+              "total_span_us": 3034,
+              "raster_finish_wall_us": 1784216302950311
             },
-            "to_presented_commit_ms": 12.122
+            "to_presented_commit_ms": 14.035
           },
           {
             "index": 7,
             "trigger": "direct_mutation",
             "trace": {
               "method": "DOM.setAttributeValue",
-              "start_wall_us": 1784216265670051,
-              "dispatch_us": 718,
+              "start_wall_us": 1784216303956024,
+              "dispatch_us": 744,
               "ok": true
             },
             "presented": {
@@ -2013,26 +461,26 @@
                 "viewport_generation": 1374389534960,
                 "resource_generation": 9
               },
-              "coordinator_return_wall_us": 1784216265686284
+              "coordinator_return_wall_us": 1784216303984342
             },
             "frame": {
-              "frame_number": 23,
+              "frame_number": 22,
               "refresh_rate_hz": null,
-              "build_us": 76,
-              "raster_us": 508,
-              "vsync_overhead_us": 2633,
-              "total_span_us": 3246,
-              "raster_finish_wall_us": 1784216265685556
+              "build_us": 78,
+              "raster_us": 333,
+              "vsync_overhead_us": 2313,
+              "total_span_us": 2751,
+              "raster_finish_wall_us": 1784216303983362
             },
-            "to_presented_commit_ms": 16.233
+            "to_presented_commit_ms": 28.318
           }
         ],
         "input": {
           "trigger": "mouse_release",
           "trace": {
             "method": "Input.dispatchMouseEvent",
-            "start_wall_us": 1784216266794220,
-            "dispatch_us": 5272,
+            "start_wall_us": 1784216305092792,
+            "dispatch_us": 4930,
             "ok": true
           },
           "presented": {
@@ -2048,18 +496,18 @@
               "viewport_generation": 1374389534960,
               "resource_generation": 20
             },
-            "coordinator_return_wall_us": 1784216266818328
+            "coordinator_return_wall_us": 1784216305117909
           },
           "frame": {
-            "frame_number": 25,
+            "frame_number": 24,
             "refresh_rate_hz": null,
-            "build_us": 67,
-            "raster_us": 556,
-            "vsync_overhead_us": 1276,
-            "total_span_us": 1930,
-            "raster_finish_wall_us": 1784216266817573
+            "build_us": 70,
+            "raster_us": 457,
+            "vsync_overhead_us": 2034,
+            "total_span_us": 2590,
+            "raster_finish_wall_us": 1784216305116533
           },
-          "to_presented_commit_ms": 24.108
+          "to_presented_commit_ms": 25.117
         },
         "frame_stability": {
           "frame_count": 9,
@@ -2068,34 +516,1586 @@
           "build_us": {
             "count": 9,
             "min": 50,
+            "median": 77,
+            "p95": 97,
+            "max": 107,
+            "mean": 75
+          },
+          "raster_us": {
+            "count": 9,
+            "min": 319,
+            "median": 357,
+            "p95": 440,
+            "max": 457,
+            "mean": 364
+          },
+          "vsync_overhead_us": {
+            "count": 9,
+            "min": 1364,
+            "median": 2298,
+            "p95": 2800,
+            "max": 2962,
+            "mean": 2186
+          },
+          "total_span_us": {
+            "count": 9,
+            "min": 1808,
+            "median": 2751,
+            "p95": 3272,
+            "max": 3431,
+            "mean": 2655
+          },
+          "over_refresh_interval_count": {
+            "build": null,
+            "raster": null,
+            "total_span": null
+          }
+        }
+      },
+      "exit_status": 0,
+      "signal": null,
+      "stdout_bytes": 772,
+      "stderr_bytes": 8294,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    },
+    {
+      "startup_cdp_ready_ms": 176.528,
+      "startup_first_presented_ms": 258.415,
+      "capture_dispatch_us": 38360,
+      "capture_round_trip_ms": 38.699,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 208781312,
+        "vmrss_bytes": 208781312,
+        "vmsize_bytes": 22950985728
+      },
+      "presented": {
+        "context_id": 1,
+        "document_id": 2,
+        "commit_id": 1
+      },
+      "capture": {
+        "width": 320,
+        "height": 240,
+        "logical_bytes": 7706,
+        "sha256": "d29624bf78207e6e2056742b1d6c242515f8411dd5097af7aec4baaf6cb0b152"
+      },
+      "interaction": {
+        "mutations": [
+          {
+            "index": 0,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216307381301,
+              "dispatch_us": 1162,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 3,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 3,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 2,
+                "style_generation": 2,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 2
+              },
+              "coordinator_return_wall_us": 1784216307407929
+            },
+            "frame": {
+              "frame_number": 16,
+              "refresh_rate_hz": null,
+              "build_us": 75,
+              "raster_us": 350,
+              "vsync_overhead_us": 1944,
+              "total_span_us": 2397,
+              "raster_finish_wall_us": 1784216307406411
+            },
+            "to_presented_commit_ms": 26.628
+          },
+          {
+            "index": 1,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216308263416,
+              "dispatch_us": 792,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 4,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 4,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 3,
+                "style_generation": 3,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 3
+              },
+              "coordinator_return_wall_us": 1784216308274248
+            },
+            "frame": {
+              "frame_number": 17,
+              "refresh_rate_hz": null,
+              "build_us": 56,
+              "raster_us": 307,
+              "vsync_overhead_us": 2236,
+              "total_span_us": 2628,
+              "raster_finish_wall_us": 1784216308273307
+            },
+            "to_presented_commit_ms": 10.832
+          },
+          {
+            "index": 2,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216309279120,
+              "dispatch_us": 620,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 5,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 5,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 4,
+                "style_generation": 4,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 4
+              },
+              "coordinator_return_wall_us": 1784216309290267
+            },
+            "frame": {
+              "frame_number": 18,
+              "refresh_rate_hz": null,
+              "build_us": 66,
+              "raster_us": 338,
+              "vsync_overhead_us": 1561,
+              "total_span_us": 1994,
+              "raster_finish_wall_us": 1784216309289340
+            },
+            "to_presented_commit_ms": 11.147
+          },
+          {
+            "index": 3,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216310294238,
+              "dispatch_us": 714,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 6,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 6,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 5,
+                "style_generation": 5,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 5
+              },
+              "coordinator_return_wall_us": 1784216310307922
+            },
+            "frame": {
+              "frame_number": 19,
+              "refresh_rate_hz": null,
+              "build_us": 66,
+              "raster_us": 376,
+              "vsync_overhead_us": 2057,
+              "total_span_us": 2532,
+              "raster_finish_wall_us": 1784216310306545
+            },
+            "to_presented_commit_ms": 13.684
+          },
+          {
+            "index": 4,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216311311435,
+              "dispatch_us": 667,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 7,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 7,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 6,
+                "style_generation": 6,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 6
+              },
+              "coordinator_return_wall_us": 1784216311323925
+            },
+            "frame": {
+              "frame_number": 20,
+              "refresh_rate_hz": null,
+              "build_us": 65,
+              "raster_us": 337,
+              "vsync_overhead_us": 1301,
+              "total_span_us": 1732,
+              "raster_finish_wall_us": 1784216311322412
+            },
+            "to_presented_commit_ms": 12.49
+          },
+          {
+            "index": 5,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216312326434,
+              "dispatch_us": 814,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 8,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 8,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 7,
+                "style_generation": 7,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 7
+              },
+              "coordinator_return_wall_us": 1784216312341368
+            },
+            "frame": {
+              "frame_number": 21,
+              "refresh_rate_hz": null,
+              "build_us": 68,
+              "raster_us": 329,
+              "vsync_overhead_us": 2491,
+              "total_span_us": 2918,
+              "raster_finish_wall_us": 1784216312340264
+            },
+            "to_presented_commit_ms": 14.934
+          },
+          {
+            "index": 6,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216313342210,
+              "dispatch_us": 654,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 9,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 9,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 8,
+                "style_generation": 8,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 8
+              },
+              "coordinator_return_wall_us": 1784216313358280
+            },
+            "frame": {
+              "frame_number": 22,
+              "refresh_rate_hz": null,
+              "build_us": 73,
+              "raster_us": 377,
+              "vsync_overhead_us": 2899,
+              "total_span_us": 3383,
+              "raster_finish_wall_us": 1784216313357395
+            },
+            "to_presented_commit_ms": 16.07
+          },
+          {
+            "index": 7,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216314361217,
+              "dispatch_us": 644,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 10,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 10,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 9,
+                "style_generation": 9,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 9
+              },
+              "coordinator_return_wall_us": 1784216314390339
+            },
+            "frame": {
+              "frame_number": 23,
+              "refresh_rate_hz": null,
+              "build_us": 74,
+              "raster_us": 363,
+              "vsync_overhead_us": 1549,
+              "total_span_us": 2017,
+              "raster_finish_wall_us": 1784216314389364
+            },
+            "to_presented_commit_ms": 29.122
+          }
+        ],
+        "input": {
+          "trigger": "mouse_release",
+          "trace": {
+            "method": "Input.dispatchMouseEvent",
+            "start_wall_us": 1784216315498638,
+            "dispatch_us": 5025,
+            "ok": true
+          },
+          "presented": {
+            "sequence": 11,
+            "context_id": 1,
+            "document_id": 3,
+            "commit_id": 11,
+            "revision": {
+              "context_id": 1,
+              "document_id": 3,
+              "source_generation": 20,
+              "style_generation": 20,
+              "viewport_generation": 1374389534960,
+              "resource_generation": 20
+            },
+            "coordinator_return_wall_us": 1784216315523907
+          },
+          "frame": {
+            "frame_number": 25,
+            "refresh_rate_hz": null,
+            "build_us": 70,
+            "raster_us": 423,
+            "vsync_overhead_us": 1286,
+            "total_span_us": 1806,
+            "raster_finish_wall_us": 1784216315522486
+          },
+          "to_presented_commit_ms": 25.269
+        },
+        "frame_stability": {
+          "frame_count": 9,
+          "refresh_rate_hz": null,
+          "refresh_interval_us": null,
+          "build_us": {
+            "count": 9,
+            "min": 56,
+            "median": 68,
+            "p95": 75,
+            "max": 75,
+            "mean": 68
+          },
+          "raster_us": {
+            "count": 9,
+            "min": 307,
+            "median": 350,
+            "p95": 405,
+            "max": 423,
+            "mean": 356
+          },
+          "vsync_overhead_us": {
+            "count": 9,
+            "min": 1286,
+            "median": 1944,
+            "p95": 2736,
+            "max": 2899,
+            "mean": 1925
+          },
+          "total_span_us": {
+            "count": 9,
+            "min": 1732,
+            "median": 2397,
+            "p95": 3197,
+            "max": 3383,
+            "mean": 2379
+          },
+          "over_refresh_interval_count": {
+            "build": null,
+            "raster": null,
+            "total_span": null
+          }
+        }
+      },
+      "exit_status": 0,
+      "signal": null,
+      "stdout_bytes": 772,
+      "stderr_bytes": 8294,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    },
+    {
+      "startup_cdp_ready_ms": 263.291,
+      "startup_first_presented_ms": 340.532,
+      "capture_dispatch_us": 35325,
+      "capture_round_trip_ms": 35.671,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 208142336,
+        "vmrss_bytes": 208142336,
+        "vmsize_bytes": 22951796736
+      },
+      "presented": {
+        "context_id": 1,
+        "document_id": 2,
+        "commit_id": 1
+      },
+      "capture": {
+        "width": 320,
+        "height": 240,
+        "logical_bytes": 7706,
+        "sha256": "d29624bf78207e6e2056742b1d6c242515f8411dd5097af7aec4baaf6cb0b152"
+      },
+      "interaction": {
+        "mutations": [
+          {
+            "index": 0,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216317769221,
+              "dispatch_us": 1065,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 3,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 3,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 2,
+                "style_generation": 2,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 2
+              },
+              "coordinator_return_wall_us": 1784216317783903
+            },
+            "frame": {
+              "frame_number": 16,
+              "refresh_rate_hz": null,
+              "build_us": 50,
+              "raster_us": 310,
+              "vsync_overhead_us": 1386,
+              "total_span_us": 1775,
+              "raster_finish_wall_us": 1784216317782355
+            },
+            "to_presented_commit_ms": 14.682
+          },
+          {
+            "index": 1,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216318651966,
+              "dispatch_us": 802,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 4,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 4,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 3,
+                "style_generation": 3,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 3
+              },
+              "coordinator_return_wall_us": 1784216318667970
+            },
+            "frame": {
+              "frame_number": 17,
+              "refresh_rate_hz": null,
+              "build_us": 92,
+              "raster_us": 447,
+              "vsync_overhead_us": 2064,
+              "total_span_us": 2639,
+              "raster_finish_wall_us": 1784216318666553
+            },
+            "to_presented_commit_ms": 16.004
+          },
+          {
+            "index": 2,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216319672252,
+              "dispatch_us": 625,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 5,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 5,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 4,
+                "style_generation": 4,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 4
+              },
+              "coordinator_return_wall_us": 1784216319683919
+            },
+            "frame": {
+              "frame_number": 18,
+              "refresh_rate_hz": null,
+              "build_us": 60,
+              "raster_us": 389,
+              "vsync_overhead_us": 1382,
+              "total_span_us": 1863,
+              "raster_finish_wall_us": 1784216319682444
+            },
+            "to_presented_commit_ms": 11.667
+          },
+          {
+            "index": 3,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216320686395,
+              "dispatch_us": 630,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 6,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 6,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 5,
+                "style_generation": 5,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 5
+              },
+              "coordinator_return_wall_us": 1784216320701219
+            },
+            "frame": {
+              "frame_number": 19,
+              "refresh_rate_hz": null,
+              "build_us": 74,
+              "raster_us": 341,
+              "vsync_overhead_us": 2603,
+              "total_span_us": 3047,
+              "raster_finish_wall_us": 1784216320700294
+            },
+            "to_presented_commit_ms": 14.824
+          },
+          {
+            "index": 4,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216321706000,
+              "dispatch_us": 696,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 7,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 7,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 6,
+                "style_generation": 6,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 6
+              },
+              "coordinator_return_wall_us": 1784216321717121
+            },
+            "frame": {
+              "frame_number": 20,
+              "refresh_rate_hz": null,
+              "build_us": 46,
+              "raster_us": 311,
+              "vsync_overhead_us": 1934,
+              "total_span_us": 2318,
+              "raster_finish_wall_us": 1784216321716232
+            },
+            "to_presented_commit_ms": 11.121
+          },
+          {
+            "index": 5,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216322719921,
+              "dispatch_us": 712,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 8,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 8,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 7,
+                "style_generation": 7,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 7
+              },
+              "coordinator_return_wall_us": 1784216322734266
+            },
+            "frame": {
+              "frame_number": 21,
+              "refresh_rate_hz": null,
+              "build_us": 61,
+              "raster_us": 339,
+              "vsync_overhead_us": 2341,
+              "total_span_us": 2770,
+              "raster_finish_wall_us": 1784216322733350
+            },
+            "to_presented_commit_ms": 14.345
+          },
+          {
+            "index": 6,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216323739105,
+              "dispatch_us": 639,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 9,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 9,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 8,
+                "style_generation": 8,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 8
+              },
+              "coordinator_return_wall_us": 1784216323767921
+            },
+            "frame": {
+              "frame_number": 22,
+              "refresh_rate_hz": null,
+              "build_us": 78,
+              "raster_us": 330,
+              "vsync_overhead_us": 2080,
+              "total_span_us": 2517,
+              "raster_finish_wall_us": 1784216323766431
+            },
+            "to_presented_commit_ms": 28.816
+          },
+          {
+            "index": 7,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216324771584,
+              "dispatch_us": 666,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 10,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 10,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 9,
+                "style_generation": 9,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 9
+              },
+              "coordinator_return_wall_us": 1784216324801466
+            },
+            "frame": {
+              "frame_number": 23,
+              "refresh_rate_hz": null,
+              "build_us": 90,
+              "raster_us": 361,
+              "vsync_overhead_us": 2589,
+              "total_span_us": 3071,
+              "raster_finish_wall_us": 1784216324800318
+            },
+            "to_presented_commit_ms": 29.882
+          }
+        ],
+        "input": {
+          "trigger": "mouse_release",
+          "trace": {
+            "method": "Input.dispatchMouseEvent",
+            "start_wall_us": 1784216325907930,
+            "dispatch_us": 5062,
+            "ok": true
+          },
+          "presented": {
+            "sequence": 11,
+            "context_id": 1,
+            "document_id": 3,
+            "commit_id": 11,
+            "revision": {
+              "context_id": 1,
+              "document_id": 3,
+              "source_generation": 20,
+              "style_generation": 20,
+              "viewport_generation": 1374389534960,
+              "resource_generation": 20
+            },
+            "coordinator_return_wall_us": 1784216325934397
+          },
+          "frame": {
+            "frame_number": 25,
+            "refresh_rate_hz": null,
+            "build_us": 79,
+            "raster_us": 453,
+            "vsync_overhead_us": 2346,
+            "total_span_us": 2909,
+            "raster_finish_wall_us": 1784216325933489
+          },
+          "to_presented_commit_ms": 26.467
+        },
+        "frame_stability": {
+          "frame_count": 9,
+          "refresh_rate_hz": null,
+          "refresh_interval_us": null,
+          "build_us": {
+            "count": 9,
+            "min": 46,
             "median": 74,
-            "p95": 82,
-            "max": 83,
+            "p95": 91,
+            "max": 92,
             "mean": 70
           },
           "raster_us": {
             "count": 9,
-            "min": 444,
-            "median": 490,
-            "p95": 550,
-            "max": 556,
-            "mean": 495
+            "min": 310,
+            "median": 341,
+            "p95": 451,
+            "max": 453,
+            "mean": 365
           },
           "vsync_overhead_us": {
             "count": 9,
-            "min": 1264,
-            "median": 2185,
-            "p95": 2774,
-            "max": 2868,
-            "mean": 2082
+            "min": 1382,
+            "median": 2080,
+            "p95": 2597,
+            "max": 2603,
+            "mean": 2081
           },
           "total_span_us": {
             "count": 9,
-            "min": 1889,
-            "median": 2741,
-            "p95": 3334,
-            "max": 3392,
-            "mean": 2678
+            "min": 1775,
+            "median": 2639,
+            "p95": 3061,
+            "max": 3071,
+            "mean": 2545
+          },
+          "over_refresh_interval_count": {
+            "build": null,
+            "raster": null,
+            "total_span": null
+          }
+        }
+      },
+      "exit_status": 0,
+      "signal": null,
+      "stdout_bytes": 772,
+      "stderr_bytes": 8293,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    },
+    {
+      "startup_cdp_ready_ms": 148.547,
+      "startup_first_presented_ms": 233.069,
+      "capture_dispatch_us": 34184,
+      "capture_round_trip_ms": 34.537,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 208400384,
+        "vmrss_bytes": 208400384,
+        "vmsize_bytes": 22950158336
+      },
+      "presented": {
+        "context_id": 1,
+        "document_id": 2,
+        "commit_id": 1
+      },
+      "capture": {
+        "width": 320,
+        "height": 240,
+        "logical_bytes": 7706,
+        "sha256": "d29624bf78207e6e2056742b1d6c242515f8411dd5097af7aec4baaf6cb0b152"
+      },
+      "interaction": {
+        "mutations": [
+          {
+            "index": 0,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216328132217,
+              "dispatch_us": 1071,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 3,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 3,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 2,
+                "style_generation": 2,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 2
+              },
+              "coordinator_return_wall_us": 1784216328144912
+            },
+            "frame": {
+              "frame_number": 15,
+              "refresh_rate_hz": null,
+              "build_us": 57,
+              "raster_us": 303,
+              "vsync_overhead_us": 1895,
+              "total_span_us": 2286,
+              "raster_finish_wall_us": 1784216328143376
+            },
+            "to_presented_commit_ms": 12.695
+          },
+          {
+            "index": 1,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216329016298,
+              "dispatch_us": 855,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 4,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 4,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 3,
+                "style_generation": 3,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 3
+              },
+              "coordinator_return_wall_us": 1784216329044931
+            },
+            "frame": {
+              "frame_number": 16,
+              "refresh_rate_hz": null,
+              "build_us": 84,
+              "raster_us": 399,
+              "vsync_overhead_us": 1903,
+              "total_span_us": 2419,
+              "raster_finish_wall_us": 1784216329043509
+            },
+            "to_presented_commit_ms": 28.633
+          },
+          {
+            "index": 2,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216330049498,
+              "dispatch_us": 741,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 5,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 5,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 4,
+                "style_generation": 4,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 4
+              },
+              "coordinator_return_wall_us": 1784216330078288
+            },
+            "frame": {
+              "frame_number": 17,
+              "refresh_rate_hz": null,
+              "build_us": 82,
+              "raster_us": 354,
+              "vsync_overhead_us": 2409,
+              "total_span_us": 2877,
+              "raster_finish_wall_us": 1784216330077300
+            },
+            "to_presented_commit_ms": 28.79
+          },
+          {
+            "index": 3,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216331080283,
+              "dispatch_us": 708,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 6,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 6,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 5,
+                "style_generation": 5,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 5
+              },
+              "coordinator_return_wall_us": 1784216331095292
+            },
+            "frame": {
+              "frame_number": 18,
+              "refresh_rate_hz": null,
+              "build_us": 69,
+              "raster_us": 350,
+              "vsync_overhead_us": 2842,
+              "total_span_us": 3292,
+              "raster_finish_wall_us": 1784216331094382
+            },
+            "to_presented_commit_ms": 15.009
+          },
+          {
+            "index": 4,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216332099045,
+              "dispatch_us": 826,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 7,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 7,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 6,
+                "style_generation": 6,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 6
+              },
+              "coordinator_return_wall_us": 1784216332111274
+            },
+            "frame": {
+              "frame_number": 19,
+              "refresh_rate_hz": null,
+              "build_us": 65,
+              "raster_us": 317,
+              "vsync_overhead_us": 2153,
+              "total_span_us": 2565,
+              "raster_finish_wall_us": 1784216332110321
+            },
+            "to_presented_commit_ms": 12.229
+          },
+          {
+            "index": 5,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216333112928,
+              "dispatch_us": 675,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 8,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 8,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 7,
+                "style_generation": 7,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 7
+              },
+              "coordinator_return_wall_us": 1784216333127300
+            },
+            "frame": {
+              "frame_number": 20,
+              "refresh_rate_hz": null,
+              "build_us": 68,
+              "raster_us": 364,
+              "vsync_overhead_us": 1505,
+              "total_span_us": 1967,
+              "raster_finish_wall_us": 1784216333126390
+            },
+            "to_presented_commit_ms": 14.372
+          },
+          {
+            "index": 6,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216334128677,
+              "dispatch_us": 750,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 9,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 9,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 8,
+                "style_generation": 8,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 8
+              },
+              "coordinator_return_wall_us": 1784216334144942
+            },
+            "frame": {
+              "frame_number": 21,
+              "refresh_rate_hz": null,
+              "build_us": 80,
+              "raster_us": 333,
+              "vsync_overhead_us": 1884,
+              "total_span_us": 2327,
+              "raster_finish_wall_us": 1784216334143416
+            },
+            "to_presented_commit_ms": 16.265
+          },
+          {
+            "index": 7,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216335147542,
+              "dispatch_us": 768,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 10,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 10,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 9,
+                "style_generation": 9,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 9
+              },
+              "coordinator_return_wall_us": 1784216335160924
+            },
+            "frame": {
+              "frame_number": 22,
+              "refresh_rate_hz": null,
+              "build_us": 48,
+              "raster_us": 339,
+              "vsync_overhead_us": 1225,
+              "total_span_us": 1640,
+              "raster_finish_wall_us": 1784216335159396
+            },
+            "to_presented_commit_ms": 13.382
+          }
+        ],
+        "input": {
+          "trigger": "mouse_release",
+          "trace": {
+            "method": "Input.dispatchMouseEvent",
+            "start_wall_us": 1784216336265429,
+            "dispatch_us": 4930,
+            "ok": true
+          },
+          "presented": {
+            "sequence": 11,
+            "context_id": 1,
+            "document_id": 3,
+            "commit_id": 11,
+            "revision": {
+              "context_id": 1,
+              "document_id": 3,
+              "source_generation": 20,
+              "style_generation": 20,
+              "viewport_generation": 1374389534960,
+              "resource_generation": 20
+            },
+            "coordinator_return_wall_us": 1784216336295294
+          },
+          "frame": {
+            "frame_number": 25,
+            "refresh_rate_hz": null,
+            "build_us": 59,
+            "raster_us": 355,
+            "vsync_overhead_us": 2809,
+            "total_span_us": 3250,
+            "raster_finish_wall_us": 1784216336294339
+          },
+          "to_presented_commit_ms": 29.865
+        },
+        "frame_stability": {
+          "frame_count": 9,
+          "refresh_rate_hz": null,
+          "refresh_interval_us": null,
+          "build_us": {
+            "count": 9,
+            "min": 48,
+            "median": 68,
+            "p95": 83,
+            "max": 84,
+            "mean": 68
+          },
+          "raster_us": {
+            "count": 9,
+            "min": 303,
+            "median": 350,
+            "p95": 385,
+            "max": 399,
+            "mean": 346
+          },
+          "vsync_overhead_us": {
+            "count": 9,
+            "min": 1225,
+            "median": 1903,
+            "p95": 2829,
+            "max": 2842,
+            "mean": 2069
+          },
+          "total_span_us": {
+            "count": 9,
+            "min": 1640,
+            "median": 2419,
+            "p95": 3275,
+            "max": 3292,
+            "mean": 2514
+          },
+          "over_refresh_interval_count": {
+            "build": null,
+            "raster": null,
+            "total_span": null
+          }
+        }
+      },
+      "exit_status": 0,
+      "signal": null,
+      "stdout_bytes": 772,
+      "stderr_bytes": 8293,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    },
+    {
+      "startup_cdp_ready_ms": 155.3,
+      "startup_first_presented_ms": 242.136,
+      "capture_dispatch_us": 42833,
+      "capture_round_trip_ms": 43.13,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 208728064,
+        "vmrss_bytes": 208728064,
+        "vmsize_bytes": 22950649856
+      },
+      "presented": {
+        "context_id": 1,
+        "document_id": 2,
+        "commit_id": 1
+      },
+      "capture": {
+        "width": 320,
+        "height": 240,
+        "logical_bytes": 7706,
+        "sha256": "d29624bf78207e6e2056742b1d6c242515f8411dd5097af7aec4baaf6cb0b152"
+      },
+      "interaction": {
+        "mutations": [
+          {
+            "index": 0,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216338582264,
+              "dispatch_us": 1173,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 3,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 3,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 2,
+                "style_generation": 2,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 2
+              },
+              "coordinator_return_wall_us": 1784216338609322
+            },
+            "frame": {
+              "frame_number": 16,
+              "refresh_rate_hz": null,
+              "build_us": 76,
+              "raster_us": 375,
+              "vsync_overhead_us": 2175,
+              "total_span_us": 2659,
+              "raster_finish_wall_us": 1784216338608394
+            },
+            "to_presented_commit_ms": 27.058
+          },
+          {
+            "index": 1,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216339459534,
+              "dispatch_us": 814,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 4,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 4,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 3,
+                "style_generation": 3,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 3
+              },
+              "coordinator_return_wall_us": 1784216339476469
+            },
+            "frame": {
+              "frame_number": 17,
+              "refresh_rate_hz": null,
+              "build_us": 82,
+              "raster_us": 347,
+              "vsync_overhead_us": 2440,
+              "total_span_us": 2901,
+              "raster_finish_wall_us": 1784216339475303
+            },
+            "to_presented_commit_ms": 16.935
+          },
+          {
+            "index": 2,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216340477929,
+              "dispatch_us": 717,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 5,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 5,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 4,
+                "style_generation": 4,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 4
+              },
+              "coordinator_return_wall_us": 1784216340493322
+            },
+            "frame": {
+              "frame_number": 18,
+              "refresh_rate_hz": null,
+              "build_us": 75,
+              "raster_us": 383,
+              "vsync_overhead_us": 2859,
+              "total_span_us": 3350,
+              "raster_finish_wall_us": 1784216340492417
+            },
+            "to_presented_commit_ms": 15.393
+          },
+          {
+            "index": 3,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216341497147,
+              "dispatch_us": 720,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 6,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 6,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 5,
+                "style_generation": 5,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 5
+              },
+              "coordinator_return_wall_us": 1784216341509235
+            },
+            "frame": {
+              "frame_number": 19,
+              "refresh_rate_hz": null,
+              "build_us": 54,
+              "raster_us": 364,
+              "vsync_overhead_us": 2178,
+              "total_span_us": 2626,
+              "raster_finish_wall_us": 1784216341508360
+            },
+            "to_presented_commit_ms": 12.088
+          },
+          {
+            "index": 4,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216342514151,
+              "dispatch_us": 723,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 7,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 7,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 6,
+                "style_generation": 6,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 6
+              },
+              "coordinator_return_wall_us": 1784216342525172
+            },
+            "frame": {
+              "frame_number": 20,
+              "refresh_rate_hz": null,
+              "build_us": 48,
+              "raster_us": 324,
+              "vsync_overhead_us": 1496,
+              "total_span_us": 1895,
+              "raster_finish_wall_us": 1784216342524296
+            },
+            "to_presented_commit_ms": 11.021
+          },
+          {
+            "index": 5,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216343527925,
+              "dispatch_us": 609,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 8,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 8,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 7,
+                "style_generation": 7,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 7
+              },
+              "coordinator_return_wall_us": 1784216343542906
+            },
+            "frame": {
+              "frame_number": 21,
+              "refresh_rate_hz": null,
+              "build_us": 63,
+              "raster_us": 327,
+              "vsync_overhead_us": 1893,
+              "total_span_us": 2311,
+              "raster_finish_wall_us": 1784216343541379
+            },
+            "to_presented_commit_ms": 14.981
+          },
+          {
+            "index": 6,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216344547647,
+              "dispatch_us": 603,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 9,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 9,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 8,
+                "style_generation": 8,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 8
+              },
+              "coordinator_return_wall_us": 1784216344558914
+            },
+            "frame": {
+              "frame_number": 22,
+              "refresh_rate_hz": null,
+              "build_us": 48,
+              "raster_us": 326,
+              "vsync_overhead_us": 1229,
+              "total_span_us": 1629,
+              "raster_finish_wall_us": 1784216344557364
+            },
+            "to_presented_commit_ms": 11.267
+          },
+          {
+            "index": 7,
+            "trigger": "direct_mutation",
+            "trace": {
+              "method": "DOM.setAttributeValue",
+              "start_wall_us": 1784216345562381,
+              "dispatch_us": 644,
+              "ok": true
+            },
+            "presented": {
+              "sequence": 10,
+              "context_id": 1,
+              "document_id": 3,
+              "commit_id": 10,
+              "revision": {
+                "context_id": 1,
+                "document_id": 3,
+                "source_generation": 9,
+                "style_generation": 9,
+                "viewport_generation": 1374389534960,
+                "resource_generation": 9
+              },
+              "coordinator_return_wall_us": 1784216345576358
+            },
+            "frame": {
+              "frame_number": 23,
+              "refresh_rate_hz": null,
+              "build_us": 74,
+              "raster_us": 351,
+              "vsync_overhead_us": 2432,
+              "total_span_us": 2885,
+              "raster_finish_wall_us": 1784216345575287
+            },
+            "to_presented_commit_ms": 13.977
+          }
+        ],
+        "input": {
+          "trigger": "mouse_release",
+          "trace": {
+            "method": "Input.dispatchMouseEvent",
+            "start_wall_us": 1784216346684363,
+            "dispatch_us": 6428,
+            "ok": true
+          },
+          "presented": {
+            "sequence": 11,
+            "context_id": 1,
+            "document_id": 3,
+            "commit_id": 11,
+            "revision": {
+              "context_id": 1,
+              "document_id": 3,
+              "source_generation": 20,
+              "style_generation": 20,
+              "viewport_generation": 1374389534960,
+              "resource_generation": 20
+            },
+            "coordinator_return_wall_us": 1784216346709360
+          },
+          "frame": {
+            "frame_number": 25,
+            "refresh_rate_hz": null,
+            "build_us": 70,
+            "raster_us": 415,
+            "vsync_overhead_us": 2179,
+            "total_span_us": 2691,
+            "raster_finish_wall_us": 1784216346708426
+          },
+          "to_presented_commit_ms": 24.997
+        },
+        "frame_stability": {
+          "frame_count": 9,
+          "refresh_rate_hz": null,
+          "refresh_interval_us": null,
+          "build_us": {
+            "count": 9,
+            "min": 48,
+            "median": 70,
+            "p95": 80,
+            "max": 82,
+            "mean": 66
+          },
+          "raster_us": {
+            "count": 9,
+            "min": 324,
+            "median": 351,
+            "p95": 402,
+            "max": 415,
+            "mean": 357
+          },
+          "vsync_overhead_us": {
+            "count": 9,
+            "min": 1229,
+            "median": 2178,
+            "p95": 2691,
+            "max": 2859,
+            "mean": 2098
+          },
+          "total_span_us": {
+            "count": 9,
+            "min": 1629,
+            "median": 2659,
+            "p95": 3170,
+            "max": 3350,
+            "mean": 2550
           },
           "over_refresh_interval_count": {
             "build": null,
@@ -2160,13 +2160,22 @@
       "memory_total_bytes": 66461454336,
       "page_size_bytes": 4096,
       "renderer_environment": {
-        "LIBGL_ALWAYS_SOFTWARE": "1",
+        "LIBGL_ALWAYS_SOFTWARE": null,
         "MESA_LOADER_DRIVER_OVERRIDE": null,
         "GALLIUM_DRIVER": null,
         "WGPU_BACKEND": null,
         "DISPLAY": ":2",
         "WAYLAND_DISPLAY": "wayland-0",
         "XDG_SESSION_TYPE": "x11"
+      },
+      "hardware_renderer": {
+        "probe": "eglinfo -B / Wayland platform OpenGL ES profile",
+        "egl_vendor": "Mesa Project",
+        "egl_version": "1.5",
+        "opengl_es_vendor": "AMD",
+        "opengl_es_renderer": "AMD Ryzen 7 7700X 8-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 6.17.7-ba29.fc43.x86_64)",
+        "opengl_es_version": "OpenGL ES 3.2 Mesa 26.0.4",
+        "hardware_accelerated": true
       }
     }
   },
@@ -2179,6 +2188,6 @@
     "Nine serialized exact commit frames measure discrete controlled variability, not animation cadence, dropped-vsync count, or burst throughput.",
     "Frame timing callbacks and bounded diagnostics add opt-in measurement overhead.",
     "The version-2 interaction workload makes memory results unlike the shorter version-1 workload.",
-    "Mesa software rendering under one headless Wayland compositor is not a physical GPU/driver matrix."
+    "One hardware-rendered headless-Wayland run is not a GPU/driver matrix or physical scanout measurement."
   ]
 }

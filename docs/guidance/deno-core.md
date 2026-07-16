@@ -47,12 +47,15 @@ Current state:
   hand-rolling every constructor shape.
 - `encoding.rs` registers the first op-backed host extension; JS constructors
   delegate UTF-8 encode/decode work to `vixen-engine::text_codec` through ops.
-- `dom.rs` registers a page-snapshot extension for focused read-only
-  `document`/`Element`/DOMTokenList/dataset evals. Page data crosses the
-  `deno_core` op boundary through `op_vixen_dom_snapshot`; element data is
-  loaded through `op_vixen_dom_element_snapshot`; selector lookup,
-  `Element.matches()`, element text/attribute reads, and read-only token/dataset
-  surfaces delegate through focused DOM ops. Element geometry reads
+- `dom.rs` registers the compatibility projection while host families move to
+  live resources. Page data crosses the `deno_core` op boundary through
+  `op_vixen_dom_snapshot`; element data is loaded through
+  `op_vixen_dom_element_snapshot`; selector lookup, `Element.matches()`,
+  element text/attribute reads, and read-only token surfaces delegate through
+  focused DOM ops. `HTMLElement.dataset` is the first host-family convergence:
+  one stable Proxy-backed `DOMStringMap` reflects live attributes and routes
+  assignment/deletion through the shared Rust name conversion and normal Page
+  mutation path. Element geometry reads
   (`getBoundingClientRect()` / `getClientRects()` / `getBoxQuads()`), Range
   rectangles, and client/offset/scroll metrics now cross a DOM rect op and
   materialize Web-shaped rect/list/quad objects on generated WebIDL prototypes.

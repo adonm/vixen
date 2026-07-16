@@ -39,9 +39,10 @@ The checked-in Linux Flutter slice uses an exact ignored SDK checkout and
 `just gate-flutter-shell`; bootstrap it with `just setup-flutter`. Do not report
 Rust/GTK checks as Flutter proof, or Dart/widget checks as Linux package proof.
 Platform work follows `ROADMAP.md` and `FLUTTER_SHELL.md`: ADR-022 R1–R7 are
-complete. Reproduce Linux compatibility/interaction/AT/release evidence against
-the Flutter-only architecture before widening shell behavior, then resume host
-services, FlatPark publishing, desktop expansion, Android, and the iOS Simulator.
+complete. Post-R7 compatibility/release/frame/GPU checkpoints are recorded;
+finish the remaining Linux Mozc interaction and AT-SPI bounds/action failures
+without weakening their gates. Independent A1 shared-core reductions may proceed
+one proven host family at a time before broader shell/platform expansion.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

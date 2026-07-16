@@ -38,9 +38,9 @@ gates are deleted.
 | `just audit` | `cargo audit` plus `cargo deny check` |
 | `just linux-release-smoke` | pinned x86_64 Flutter 3.47.0-0.1.pre beta release/AOT plus Rust bridge/Yaru window-plugin build; stripped runner/plugin ELFs, deterministic archive creation, clean extraction, and Impeller-aware Cage/headless-Wayland launch smoke |
 | `just linux-at-spi-smoke` | real release/AOT Flutter bundle in Cage's headless Wayland compositor with a fresh BrowserCore profile and local fixture; bounded process-filtered AT-SPI traversal must observe the BrowserCore-derived `DOM Basic` heading; Linux native AT evidence, not a screen-reader matrix |
-| `just linux-interaction-smoke` | real release/AOT Flutter bundle in Cage with AT-SPI observation only; physical address entry visibly navigates to the controlled fixture, native back/forward and reload restore BrowserCore-owned root/nested offsets, a gated FIFO read proves the visible stop control cancels an active navigation and recovers the prior page, wtype drives IBus Anthy/GTK preedit+commit for native/contenteditable hosts, and a wlr virtual pointer proves nested wheel ownership/cancellation/root chaining; script/accepted-wheel DOM offsets correlate with newer exact Flutter commit ids while canceled wheel preserves the returned offset; one controlled Linux interaction proof, not an IME/device matrix |
+| `just linux-interaction-smoke` | real release/AOT Flutter bundle in Cage with process-filtered AT-SPI observation plus contenteditable role/state/bounds/Focus-action → DOM → newer-commit checks; physical address entry visibly navigates to the controlled fixture, native back/forward and reload restore BrowserCore-owned root/nested offsets, a gated FIFO read proves the visible stop control cancels an active navigation and recovers the prior page, wtype drives IBus Mozc/GTK preedit+commit for native/contenteditable hosts, and a wlr virtual pointer proves nested wheel ownership/cancellation/root chaining; script/accepted-wheel DOM offsets correlate with newer exact Flutter commit ids while canceled wheel preserves the returned offset; one controlled Linux interaction proof, not an IME/device matrix |
 | `just linux-automation-smoke` | same release/AOT executable runtime-selects the page-only host under Cage, projects the controlled fixture's renderable full DOM/resolved styles/stable element ids through the renderer protocol, bypasses profile tabs and browser chrome, acknowledges one exact Flutter commit, and writes its direct scene PNG at 320×240 and 480×300; validates Impeller, strict PNG structure/dimensions, real document content, pinned full-scene hashes, and bounded exit; direct scene serialization excludes browser/runner/compositor chrome |
-| `just flutter-cdp-playwright-smoke` | release/AOT Flutter host under Cage owns the sole BrowserCore and an in-process `vixen-cdp` subscriber; focused external Playwright proof obtains layout from Flutter commits, routes pointer input through Flutter hit testing, captures exact scenes before/after mutation, keeps 320×240 and 480×300 targets independent, switches back without state/pixel drift, and forces renderer reset/full-resync to a byte-identical scene; no browser/compositor chrome in direct PNGs |
+| `just flutter-cdp-playwright-smoke` | release/AOT Flutter host under Cage owns the sole BrowserCore and an in-process `vixen-cdp` subscriber; focused external Playwright proof obtains layout from Flutter commits, writes a stable live `dataset`, matches same-task 140×32 and later CDP geometry/attributes, pins exact before/after pixels, routes pointer input through Flutter hit testing, keeps 320×240 and 480×300 targets independent, and forces renderer reset/full-resync to a byte-identical scene; no browser/compositor chrome in direct PNGs |
 | `just flutter-fixture-manifest` | one release/AOT Flutter host and BrowserCore execute all 270 fixtures / 2,027 checks in manifest order; each fixture gets an isolated target in the same core, 1,868 native-safe source/runtime checks use typed BrowserCore inspection, while 19 Flutter JS geometry checks, 104 layout boxes, 25 Flutter visual hashes, and 11 exact-pixel references use the matching presented Flutter commit |
 | `just gate-r5` | complete R5 product gate: bounded one-shot scene capture, shared-core external Playwright/CDP input/capture/isolation/loss recovery, and the complete Flutter-hosted fixture manifest |
 | `just test-r6` | focused R6 exact source diff, same-task DOM/style mutation → `EnsureLayout` → matching commit geometry, repeated-read reuse, Paragraph Range/caret queries, blocked-command broker progress, cancellation/late-reply races, malformed commit, and full-resync recovery evidence across Rust and Dart |
@@ -50,7 +50,8 @@ gates are deleted.
 | `just size-headless` | structured logical/allocated size, file count, and SHA-256 for the headless release binary |
 | `just size-flutter-linux` | controlled release/AOT build and component-attributed raw-bundle comparison against the checked-in hello-Flutter peer; measurement-only and not FlatPark package evidence |
 | `just baseline-headless` / `just baseline-headless-json` | per-scenario latency and Linux process-memory measurements for committed startup, navigation/runtime, layout, paint, and screenshot controls |
-| `just baseline-flutter-linux` / `just baseline-flutter-linux-json` | release/AOT Flutter-only exact-commit startup, direct-scene capture latency, and app-process memory under Cage; measurement-only, software rendered, and outside `gate-push` |
+| `just baseline-flutter-linux` / `just baseline-flutter-linux-json` | release/AOT Flutter exact-commit startup/capture/memory plus serialized mutation/input-to-commit frame timing under Cage; measurement-only, software rendered, and outside `gate-push` |
+| `just baseline-flutter-linux-hardware` / `just baseline-flutter-linux-hardware-json` | same bounded workload without the software override; fails unless the same Wayland display reports a non-software EGL renderer and records its GPU/driver fingerprint; one-host evidence, not a matrix or budget |
 | `just baseline-profile-growth` | opaque temporary profile growth at init/repeated/unique/storage checkpoints with localStorage reopen proof |
 | `just baseline-beta` | hermetic local headless scenarios, profile growth, and headless artifact size; measurement-only and outside `gate-push` |
 
@@ -103,10 +104,12 @@ gates are deleted.
   not independently reproduced, and not FlatPark package evidence. The Vixen
   bundle is 131,560 bytes smaller than the historical pre-R7 report; see
   `BASELINES.md` for component and control-version attribution.
-- First post-R7 release/AOT renderer reference: **281.438 ms** median first exact
-  presented commit, **46.087 ms** median exact-scene client round trip, and
-  **281,800,704-byte** median app-process `VmHWM`; five Mesa-software samples,
-  measurement-only and not a budget. See `BASELINES.md`.
+- Post-R7 release/AOT renderer version-2 references: five software and five
+  physical AMD/Mesa samples each joined **45 exact interaction frames**. Software
+  median mutation/mouse-release/total-frame values are **15.402 ms / 26.364 ms /
+  2,587 µs**; hardware values are **14.527 ms / 25.269 ms / 2,590 µs**. Cage
+  reported no refresh rate. Single-host, measurement-only, not a budget or
+  GPU/driver matrix; see `BASELINES.md`.
 - Post-R7 profile-growth reference: five repeated and five unique visits caused
   **8,192 bytes** and **0 bytes** of allocated growth respectively; a persisted
   65,536-byte localStorage payload added **139,264 bytes** and passed reopen.

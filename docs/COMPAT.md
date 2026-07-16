@@ -153,8 +153,11 @@ Notification permission state, and StorageManager estimate/persisted state backe
 by profile/storage records before the remaining host-object swap; Encoding API constructors,
 Web Storage mutation, focused `fetch()` success/blocking checks, sequential
 global/storage persistence across `Runtime.evaluate`, focused `document`/`Element`
-snapshot host-object evals, and read-only `DOMTokenList`/`DOMStringMap` property
-reads are also exercised directly through the persistent `deno_core` runtime seam.
+snapshot host-object evals and read-only `DOMTokenList` property reads are also
+exercised directly through the persistent `deno_core` runtime seam.
+`HTMLElement.dataset` has since moved off that frozen projection: its stable live
+`DOMStringMap` reflects external attributes and routes assignment/deletion through
+the authoritative DOM mutation, Stylo, and renderer-source path.
 
 Static parser-discovered PNG `<img src>` has one resource-to-pixel vertical.
 BrowserCore applies exact generations, URL/CSP/mixed-content/redirect policy,
@@ -188,7 +191,10 @@ metadata only, not expressions, request headers, form values, or page text.
 R8 reran the release/AOT Flutter-hosted smoke after cutover: two target
 viewports remained isolated, Flutter geometry/input and before/after scene pixels
 agreed, target switching preserved the first scene, and forced renderer reset
-recovered by full resync to byte-identical pixels.
+recovered by full resync to byte-identical pixels. The first A1 extension now
+also writes a live `dataset` property, observes the attribute-selector-driven
+140×32 box synchronously, matches later CDP DOM attributes/geometry, and pins
+renderer-specific before/after Flutter scene hashes.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,

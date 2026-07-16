@@ -124,7 +124,8 @@ Common recipes:
 | `just webidl` / `just gate-webidl` | Generated WebIDL/runtime host seam coverage |
 | `just audit` | `cargo audit` + `cargo deny check` |
 | `just baseline-headless` / `just baseline-headless-json` | Measure the hermetic local headless scenario suite |
-| `just baseline-flutter-linux` / `just baseline-flutter-linux-json` | Measure release/AOT Flutter exact-commit startup, capture, and process memory under Cage |
+| `just baseline-flutter-linux` / `just baseline-flutter-linux-json` | Measure software-rendered release/AOT Flutter startup, capture, memory, exact commit frames, and synthetic mutation/input endpoints under Cage |
+| `just baseline-flutter-linux-hardware` / `just baseline-flutter-linux-hardware-json` | Run the same measurement only after a non-software Wayland EGL renderer is fingerprinted |
 | `just baseline-profile-growth` | Measure temporary profile growth and storage persistence across reopen |
 | `just size-headless` | Report structured headless artifact size |
 | `just flutter-size-prefetch` | Network-capable staging for pinned Linux Flutter size inputs; not evidence |
@@ -136,8 +137,9 @@ Common recipes:
 
 These commands complete the local latency, Linux process-memory, profile-growth,
 headless-path, and artifact-size measurement foundation. They are measurement-
-only: real external-site coverage, the GUI/FlatPark host matrix, frame time, JS
-heap, and transfer throughput remain future baselines. See
+only: real external-site coverage, the GUI/FlatPark host matrix, animation/
+scanout/physical-input timing, JS heap, and transfer throughput remain future
+baselines. See
 [`docs/BASELINES.md`](docs/BASELINES.md).
 
 The Flutter release and size recipes use a controlled checked-in hello
