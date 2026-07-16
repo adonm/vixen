@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/widgets.dart';
 
@@ -8,6 +9,7 @@ import '../renderer/formatter_painter.dart';
 import '../shell/shell_coordinator.dart';
 import 'automation_app.dart';
 import 'automation_config.dart';
+import 'frame_timing_recorder.dart';
 
 const Duration vixenCdpRendererPollInterval = Duration(milliseconds: 4);
 
@@ -35,6 +37,8 @@ final class _VixenCdpAutomationAppState extends State<VixenCdpAutomationApp> {
   FormatterCommitView? _scheduledPresentation;
   bool _finished = false;
   bool _serviceInFlight = false;
+  bool _timingsCallbackRegistered = false;
+  PresentedFrameTimingRecorder? _frameTimings;
 
   @override
   void initState() {
@@ -45,6 +49,14 @@ final class _VixenCdpAutomationAppState extends State<VixenCdpAutomationApp> {
       widget.config.height,
     );
     widget.coordinator.updateContentFocus(true);
+    if (widget.config.frameTimingLimit > 0) {
+      _frameTimings = PresentedFrameTimingRecorder(
+        limit: widget.config.frameTimingLimit,
+        report: widget.onError,
+      );
+      WidgetsBinding.instance.addTimingsCallback(_recordFrameTimings);
+      _timingsCallbackRegistered = true;
+    }
     _signalSubscription = ProcessSignal.sigterm.watch().listen((_) {
       unawaited(_finish(0));
     });
@@ -113,6 +125,19 @@ final class _VixenCdpAutomationAppState extends State<VixenCdpAutomationApp> {
   Future<void> _present(FormatterCommitView view) async {
     try {
       await widget.coordinator.rendererCommitPresented(view);
+      if (!mounted ||
+          _finished ||
+          !identical(view, widget.coordinator.rendererView) ||
+          !identical(view, widget.coordinator.presentedRendererView) ||
+          view.isRetired) {
+        throw StateError(
+          'measured renderer commit changed during presentation',
+        );
+      }
+      _frameTimings?.recordPresented(
+        view,
+        View.of(context).display.refreshRate,
+      );
     } catch (error, stackTrace) {
       await _fail(error, stackTrace);
     } finally {
@@ -133,6 +158,10 @@ final class _VixenCdpAutomationAppState extends State<VixenCdpAutomationApp> {
     if (_finished) return;
     _finished = true;
     _rendererPoll?.cancel();
+    if (_timingsCallbackRegistered) {
+      WidgetsBinding.instance.removeTimingsCallback(_recordFrameTimings);
+      _timingsCallbackRegistered = false;
+    }
     await _signalSubscription?.cancel();
     var exitStatus = status;
     try {
@@ -149,10 +178,22 @@ final class _VixenCdpAutomationAppState extends State<VixenCdpAutomationApp> {
   @override
   void dispose() {
     _rendererPoll?.cancel();
+    if (_timingsCallbackRegistered) {
+      WidgetsBinding.instance.removeTimingsCallback(_recordFrameTimings);
+      _timingsCallbackRegistered = false;
+    }
+    if (_frameTimings != null) {
+      _frameTimings?.dispose();
+      _frameTimings = null;
+    }
     unawaited(_signalSubscription?.cancel());
     widget.coordinator.removeListener(_coordinatorChanged);
     widget.coordinator.dispose();
     super.dispose();
+  }
+
+  void _recordFrameTimings(List<ui.FrameTiming> timings) {
+    _frameTimings?.recordTimings(timings);
   }
 
   @override
@@ -171,7 +212,10 @@ final class _VixenCdpAutomationAppState extends State<VixenCdpAutomationApp> {
                   height: view.commit.viewport.height.toDouble(),
                   child: CustomPaint(
                     key: const Key('cdp-automation-renderer-view'),
-                    painter: RenderCommitPainter(view),
+                    painter: RenderCommitPainter(
+                      view,
+                      onPaint: _frameTimings?.recordPaint,
+                    ),
                   ),
                 )
               : const SizedBox.shrink(

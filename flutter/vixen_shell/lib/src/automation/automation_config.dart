@@ -6,6 +6,7 @@ const String vixenAutomationFlag = '--vixen-automation';
 const String vixenCdpAutomationFlag = '--vixen-cdp-automation';
 const int vixenAutomationMaxUrlBytes = 16 * 1024;
 const int vixenAutomationMaxOutputPathBytes = 4096;
+const int vixenAutomationMaxFrameTimings = 128;
 
 final class AutomationConfig {
   const AutomationConfig({
@@ -126,17 +127,20 @@ final class CdpAutomationConfig {
     required this.width,
     required this.height,
     required this.port,
+    required this.frameTimingLimit,
   });
 
   final String url;
   final int width;
   final int height;
   final int port;
+  final int frameTimingLimit;
 
   static CdpAutomationConfig parse(List<String> arguments) {
     String? url;
     String? viewport;
     int? port;
+    int? frameTimingLimit;
     var flags = 0;
     for (final argument in arguments) {
       if (argument == vixenCdpAutomationFlag) {
@@ -154,6 +158,19 @@ final class CdpAutomationConfig {
           AutomationConfig._invalid('duplicate --vixen-cdp-port');
         }
         port = int.tryParse(argument.substring('--vixen-cdp-port='.length));
+      } else if (argument.startsWith('--vixen-frame-timing-limit=')) {
+        if (frameTimingLimit != null) {
+          AutomationConfig._invalid('duplicate --vixen-frame-timing-limit');
+        }
+        frameTimingLimit = int.tryParse(
+          argument.substring('--vixen-frame-timing-limit='.length),
+        );
+        if (frameTimingLimit == null) {
+          AutomationConfig._invalid(
+            '--vixen-frame-timing-limit must be in 0..'
+            '$vixenAutomationMaxFrameTimings',
+          );
+        }
       } else {
         AutomationConfig._invalid('unknown argument $argument');
       }
@@ -166,12 +183,21 @@ final class CdpAutomationConfig {
     if (port == null || port <= 0 || port > 65535) {
       AutomationConfig._invalid('--vixen-cdp-port must be in 1..65535');
     }
+    final parsedFrameTimingLimit = frameTimingLimit ?? 0;
+    if (parsedFrameTimingLimit < 0 ||
+        parsedFrameTimingLimit > vixenAutomationMaxFrameTimings) {
+      AutomationConfig._invalid(
+        '--vixen-frame-timing-limit must be in 0..'
+        '$vixenAutomationMaxFrameTimings',
+      );
+    }
     final dimensions = AutomationConfig._parseViewport(viewport);
     return CdpAutomationConfig(
       url: AutomationConfig._parseUrl(url),
       width: dimensions.width,
       height: dimensions.height,
       port: port,
+      frameTimingLimit: parsedFrameTimingLimit,
     );
   }
 }

@@ -5,7 +5,10 @@ import test from 'node:test';
 import {
   captureDurationFromTrace,
   FlutterDiagnosticTracker,
+  measuredOperation,
+  parseWaylandEglInfo,
   parseFlutterLinuxBaselineArgs,
+  validateMeasurementRecord,
   validateFlutterCapture,
 } from './flutter-linux-baseline.mjs';
 
@@ -17,6 +20,7 @@ test('Flutter Linux baseline arguments are bounded', () => {
     warmups: 1,
     port: 9324,
     timeoutMs: 60_000,
+    renderer: 'software',
     json: false,
   });
   assert.deepEqual(
@@ -27,6 +31,7 @@ test('Flutter Linux baseline arguments are bounded', () => {
       '--warmups', '2',
       '--port', '12345',
       '--timeout-ms', '90000',
+      '--renderer', 'hardware',
       '--json',
     ]),
     {
@@ -36,12 +41,14 @@ test('Flutter Linux baseline arguments are bounded', () => {
       warmups: 2,
       port: 12345,
       timeoutMs: 90_000,
+      renderer: 'hardware',
       json: true,
     },
   );
   assert.throws(() => parseFlutterLinuxBaselineArgs(['--runs', '0']), /\[1, 20\]/);
   assert.throws(() => parseFlutterLinuxBaselineArgs(['--port', '65536']), /\[1, 65535\]/);
   assert.throws(() => parseFlutterLinuxBaselineArgs(['--wat']), /unknown argument/);
+  assert.throws(() => parseFlutterLinuxBaselineArgs(['--renderer', 'maybe']), /software or hardware/);
 });
 
 test('Flutter diagnostics survive arbitrary chunk boundaries', () => {
@@ -103,4 +110,121 @@ test('capture trace parser rejects loss, duplicates, and failed events', () => {
     () => captureDurationFromTrace({ traceEvents: [{ ...event, dur: 1.5 }] }),
     /failed or malformed/,
   );
+});
+
+test('structured frame diagnostics join across arbitrary ordering and chunks', () => {
+  const tracker = new FlutterDiagnosticTracker(1n);
+  const presented = {
+    v: 1,
+    type: 'presented_commit',
+    sequence: 4,
+    context_id: 1,
+    document_id: 2,
+    commit_id: 3,
+    revision: { source_generation: 2 },
+    frame_number: 9,
+    coordinator_return_wall_us: 2_000_000,
+  };
+  const frame = {
+    v: 1,
+    type: 'presented_commit_frame_timing',
+    sequence: 4,
+    context_id: 1,
+    document_id: 2,
+    commit_id: 3,
+    frame_number: 9,
+    refresh_rate_hz: 60,
+    raster_finish_wall_us: 1_999_000,
+    durations_us: { vsync_overhead: 100, build: 200, raster: 300, total_span: 600 },
+  };
+  const encoded = `Vixen measurement ${JSON.stringify(frame)}\nVixen measurement ${JSON.stringify(presented)}\n`;
+  tracker.append(encoded.slice(0, 17), 2n);
+  tracker.append(encoded.slice(17, 91), 3n);
+  tracker.append(encoded.slice(91), 4n);
+
+  assert.equal(tracker.measurementError, null);
+  assert.deepEqual(tracker.completeMeasurementAfter(3), { presented, frame });
+  assert.equal(tracker.latestMeasurementSequence, 4);
+});
+
+test('structured frame diagnostics reject malformed, duplicate, and limit records', () => {
+  assert.throws(() => validateMeasurementRecord({ v: 2 }), /malformed/);
+  assert.throws(
+    () => validateMeasurementRecord({
+      v: 1,
+      type: 'presented_commit_frame_timing',
+      sequence: 1,
+      context_id: 1,
+      document_id: 1,
+      commit_id: 1,
+      frame_number: 1,
+      raster_finish_wall_us: 1,
+      durations_us: { vsync_overhead: 0, build: -1, raster: 0, total_span: 0 },
+    }),
+    /duration build/,
+  );
+  const tracker = new FlutterDiagnosticTracker(1n);
+  tracker.append('Vixen measurement {"v":1,"type":"frame_timing_limit_reached","limit":32}\n', 2n);
+  assert.match(tracker.measurementError.message, /limit was reached/);
+});
+
+test('operation correlation uses the later exact presentation endpoint', () => {
+  const operation = measuredOperation(
+    'direct_mutation',
+    { name: 'DOM.setAttributeValue', ts: 1_900_000, dur: 500 },
+    {
+      presented: {
+        sequence: 1,
+        context_id: 1,
+        document_id: 2,
+        commit_id: 3,
+        revision: { source_generation: 2 },
+        frame_number: 9,
+        coordinator_return_wall_us: 2_000_000,
+      },
+      frame: {
+        sequence: 1,
+        context_id: 1,
+        document_id: 2,
+        commit_id: 3,
+        frame_number: 9,
+        refresh_rate_hz: 60,
+        raster_finish_wall_us: 2_010_000,
+        durations_us: { vsync_overhead: 100, build: 200, raster: 300, total_span: 600 },
+      },
+    },
+  );
+  assert.equal(operation.to_presented_commit_ms, 110);
+  assert.equal(operation.frame.raster_us, 300);
+  assert.throws(
+    () => measuredOperation(
+      'bad',
+      { name: 'DOM.setAttributeValue', ts: 3_000_000, dur: 1 },
+      {
+        presented: { coordinator_return_wall_us: 2_000_000 },
+        frame: { raster_finish_wall_us: 2_000_000 },
+      },
+    ),
+    /preceded/,
+  );
+});
+
+test('Wayland EGL fingerprint distinguishes hardware and software renderers', () => {
+  assert.deepEqual(
+    parseWaylandEglInfo(`GBM platform:\nignored\n\nWayland platform:\nEGL vendor string: Mesa Project\nEGL version string: 1.5\nOpenGL ES profile vendor: AMD\nOpenGL ES profile renderer: AMD Radeon RX 6600 (radeonsi, navi23, DRM 3.64)\nOpenGL ES profile version: OpenGL ES 3.2 Mesa 26.0.4\n\nX11 platform:\nignored\n`),
+    {
+      probe: 'eglinfo -B / Wayland platform OpenGL ES profile',
+      egl_vendor: 'Mesa Project',
+      egl_version: '1.5',
+      opengl_es_vendor: 'AMD',
+      opengl_es_renderer: 'AMD Radeon RX 6600 (radeonsi, navi23, DRM 3.64)',
+      opengl_es_version: 'OpenGL ES 3.2 Mesa 26.0.4',
+      hardware_accelerated: true,
+    },
+  );
+  assert.equal(
+    parseWaylandEglInfo(`Wayland platform:\nOpenGL ES profile renderer: llvmpipe (LLVM 21.1.8, 256 bits)\n\nX11 platform:\n`).hardware_accelerated,
+    false,
+  );
+  assert.throws(() => parseWaylandEglInfo('GBM platform:\n'), /Wayland/);
 });

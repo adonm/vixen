@@ -479,22 +479,29 @@ baseline-beta runs="5" warmups="1": build-release
 # Release/AOT Flutter-only renderer measurement under headless Wayland. This
 # records exact-commit startup, capture, and app-process memory without budgets.
 baseline-flutter-linux runs="5" warmups="1":
-    just _baseline-flutter-linux {{runs}} {{warmups}} false
+    just _baseline-flutter-linux {{runs}} {{warmups}} false software
 
 baseline-flutter-linux-json runs="5" warmups="1":
-    just _baseline-flutter-linux {{runs}} {{warmups}} true
+    just _baseline-flutter-linux {{runs}} {{warmups}} true software
 
-_baseline-flutter-linux runs warmups json: build-flutter-release-linux _node-deps
+baseline-flutter-linux-hardware runs="5" warmups="1":
+    just _baseline-flutter-linux {{runs}} {{warmups}} false hardware
+
+baseline-flutter-linux-hardware-json runs="5" warmups="1":
+    just _baseline-flutter-linux {{runs}} {{warmups}} true hardware
+
+_baseline-flutter-linux runs warmups json renderer: build-flutter-release-linux _node-deps
     command -v cage >/dev/null || { printf '%s\n' "cage is required for the Flutter Linux baseline" >&2; exit 1; }
     rm -rf .tmp/flutter-baseline-wayland && mkdir -m 700 -p .tmp/flutter-baseline-wayland
     json_flag=""; if [ "{{json}}" = true ]; then json_flag="--json"; fi; \
+        if [ "{{renderer}}" = software ]; then export LIBGL_ALWAYS_SOFTWARE=1; else unset LIBGL_ALWAYS_SOFTWARE; fi; \
         XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/flutter-baseline-wayland" \
         GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
-        WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 cage -- mise x node@24 -- \
+        WLR_RENDERER=gles2 cage -- mise x node@24 -- \
         node scripts/flutter-linux-baseline.mjs \
         --app {{LINUX_RELEASE_BUNDLE}}/vixen_shell \
         --library {{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so \
-        --runs {{runs}} --warmups {{warmups}} $json_flag
+        --runs {{runs}} --warmups {{warmups}} --renderer {{renderer}} $json_flag
 
 build-release:
     cargo build --locked --release -p vixen-headless --bin vixen-headless

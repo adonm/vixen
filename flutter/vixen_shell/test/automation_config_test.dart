@@ -124,6 +124,7 @@ void main() {
     expect(config.width, 800);
     expect(config.height, 600);
     expect(config.port, 9323);
+    expect(config.frameTimingLimit, 0);
     expect(isAutomationInvocation(const ['--vixen-cdp-automation']), isTrue);
     expect(isCdpAutomationInvocation(const ['--vixen-cdp-automation']), isTrue);
     for (final port in ['0', '65536', 'bad']) {
@@ -137,6 +138,39 @@ void main() {
         throwsA(isA<FormatException>()),
       );
     }
+    expect(
+      CdpAutomationConfig.parse(const [
+        '--vixen-cdp-automation',
+        '--vixen-url=file:///fixture.html',
+        '--vixen-viewport=800x600',
+        '--vixen-cdp-port=9323',
+        '--vixen-frame-timing-limit=32',
+      ]).frameTimingLimit,
+      32,
+    );
+    for (final limit in ['-1', '129', 'bad']) {
+      expect(
+        () => CdpAutomationConfig.parse([
+          '--vixen-cdp-automation',
+          '--vixen-url=file:///fixture.html',
+          '--vixen-viewport=800x600',
+          '--vixen-cdp-port=9323',
+          '--vixen-frame-timing-limit=$limit',
+        ]),
+        throwsA(isA<FormatException>()),
+      );
+    }
+    expect(
+      () => CdpAutomationConfig.parse(const [
+        '--vixen-cdp-automation',
+        '--vixen-url=file:///fixture.html',
+        '--vixen-viewport=800x600',
+        '--vixen-cdp-port=9323',
+        '--vixen-frame-timing-limit=1',
+        '--vixen-frame-timing-limit=2',
+      ]),
+      throwsA(isA<FormatException>()),
+    );
   });
 
   test('writes bounded PNG output only into an existing directory', () async {

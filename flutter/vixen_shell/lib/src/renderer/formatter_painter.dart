@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/rendering.dart';
 import 'package:flutter/widgets.dart';
 
@@ -9,33 +11,39 @@ typedef FormatterSemanticActionCallback = void Function(
   RenderSemanticActionKind action,
   String? value,
 );
+typedef FormatterPaintCallback = void Function(
+  FormatterCommitView view,
+  int frameNumber,
+);
 
 final class RenderCommitPainter extends CustomPainter {
   const RenderCommitPainter(
     this.view, {
     this.findResult,
     this.onSemanticAction,
+    this.onPaint,
   });
   final FormatterCommitView view;
   final FormatterFindResult? findResult;
   final FormatterSemanticActionCallback? onSemanticAction;
+  final FormatterPaintCallback? onPaint;
 
   @override
   void paint(Canvas canvas, Size size) {
     view.paint(canvas);
     final result = findResult;
-    if (result == null ||
-        result.commitId != view.commit.commitId ||
-        result.revision != view.commit.revision) {
-      return;
+    if (result != null &&
+        result.commitId == view.commit.commitId &&
+        result.revision == view.commit.revision) {
+      final paint = Paint()..color = const Color(0x66ffd54f);
+      for (final box in result.boxes) {
+        canvas.drawRect(
+          Rect.fromLTWH(box.x, box.y, box.width, box.height),
+          paint,
+        );
+      }
     }
-    final paint = Paint()..color = const Color(0x66ffd54f);
-    for (final box in result.boxes) {
-      canvas.drawRect(
-        Rect.fromLTWH(box.x, box.y, box.width, box.height),
-        paint,
-      );
-    }
+    onPaint?.call(view, ui.PlatformDispatcher.instance.frameData.frameNumber);
   }
 
   @override
