@@ -21,7 +21,7 @@ use vixen_api::{
 };
 
 use crate::class_list::DomTokenList;
-use crate::dataset::collect_dataset;
+use crate::dataset::{collect_dataset, property_to_attribute};
 use crate::engine_error::{EngineError, codes};
 use crate::form_submission::{FormEntry, FormEntryValue};
 use crate::media_query::Viewport;
@@ -196,6 +196,7 @@ deno_core::extension!(
         op_vixen_dom_element_attribute,
         op_vixen_dom_element_tokens,
         op_vixen_dom_element_dataset,
+        op_vixen_dom_dataset_attribute_name,
         op_vixen_dom_element_rect,
         op_vixen_dom_range_rect,
         op_vixen_dom_image_current_src,
@@ -741,6 +742,15 @@ fn op_vixen_dom_element_dataset(state: &mut OpState, node_id: u32) -> deno_core:
         return missing_element_result(node_id);
     };
     json!({ "ok": true, "pairs": &record.dataset })
+}
+
+#[deno_core::op2]
+#[serde]
+fn op_vixen_dom_dataset_attribute_name(#[string] property: String) -> deno_core::serde_json::Value {
+    match property_to_attribute(&property) {
+        Ok(name) => json!({ "ok": true, "name": name }),
+        Err(error) => json!({ "ok": false, "message": error.to_string() }),
+    }
 }
 
 #[deno_core::op2]
@@ -1513,6 +1523,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     op_vixen_dom_element_attribute,
     op_vixen_dom_element_tokens,
     op_vixen_dom_element_dataset,
+    op_vixen_dom_dataset_attribute_name,
     op_vixen_dom_element_rect,
     op_vixen_dom_range_rect,
     op_vixen_dom_image_current_src,
@@ -1802,6 +1813,14 @@ const DOM_API_BOOTSTRAP: &str = r#"
     return pairs;
   }
 
+  function datasetAttributeName(property) {
+    const result = op_vixen_dom_dataset_attribute_name(String(property));
+    if (!result || result.ok !== true) {
+      throw new TypeError(result && result.message ? result.message : 'Invalid dataset property name');
+    }
+    return result.name;
+  }
+
   function elementRect(nodeId) {
     const record = recordForElementNodeId(nodeId);
     if (record && Number(nodeId) < 0) return normalizedElementRect(record, { x: 0, y: 0, width: 0, height: 0 });
@@ -2023,7 +2042,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
   function invalidateElementCaches(nodeId) {
     const element = elementObjects.get(nodeId);
     if (!element) return;
-    for (const key of ['__vixenAttributes', '__vixenClassList', '__vixenRelList', '__vixenSandboxList', '__vixenDataset', '__vixenStyle']) {
+    for (const key of ['__vixenAttributes', '__vixenClassList', '__vixenRelList', '__vixenSandboxList', '__vixenStyle']) {
       if (Object.prototype.hasOwnProperty.call(element, key)) delete element[key];
     }
   }
@@ -2569,20 +2588,51 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   class VixenDOMStringMap {
-    constructor(pairs) {
-      Object.defineProperty(this, '__vixenPairs', {
-        value: Object.freeze(pairs.map(([name, value]) => Object.freeze([name, value]))),
-        enumerable: false,
-      });
-      for (const [name, value] of this.__vixenPairs) {
-        if (!Object.prototype.hasOwnProperty.call(this, name)) {
-          Object.defineProperty(this, name, {
-            value,
+    constructor(ownerElement) {
+      const pairs = () => elementDataset(ownerElement.__vixenNodeId);
+      const entry = (property) => pairs().find(([name]) => name === property);
+      return new Proxy(this, {
+        get(target, property, receiver) {
+          if (typeof property === 'string') {
+            const pair = entry(property);
+            if (pair) return pair[1];
+          }
+          return Reflect.get(target, property, receiver);
+        },
+        set(_target, property, value) {
+          if (typeof property !== 'string') return false;
+          setElementAttribute(
+            ownerElement.__vixenNodeId,
+            datasetAttributeName(property),
+            String(value),
+          );
+          return true;
+        },
+        deleteProperty(_target, property) {
+          if (typeof property !== 'string') return false;
+          removeElementAttribute(
+            ownerElement.__vixenNodeId,
+            datasetAttributeName(property),
+          );
+          return true;
+        },
+        has(target, property) {
+          return typeof property === 'string' && entry(property) !== undefined
+            || Reflect.has(target, property);
+        },
+        ownKeys() { return pairs().map(([name]) => name); },
+        getOwnPropertyDescriptor(_target, property) {
+          if (typeof property !== 'string') return undefined;
+          const pair = entry(property);
+          if (!pair) return undefined;
+          return {
+            value: pair[1],
+            writable: true,
             enumerable: true,
             configurable: true,
-          });
-        }
-      }
+          };
+        },
+      });
     }
   }
 
@@ -5048,7 +5098,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
       return cachedElementObject(this, '__vixenSheet', () => makeStyleSheetObject(this));
     }
     get dataset() {
-      return cachedElementObject(this, '__vixenDataset', () => new VixenDOMStringMap(elementDataset(this.__vixenNodeId)));
+      return cachedElementObject(this, '__vixenDataset', () => new VixenDOMStringMap(this));
     }
     get hidden() { return booleanAttribute(this, 'hidden'); }
     set hidden(value) { setBooleanAttribute(this, 'hidden', value); }

@@ -12,6 +12,8 @@ const app = process.env.VIXEN_CDP_APP;
 const port = Number(process.env.VIXEN_CDP_PORT || 9323);
 const endpoint = `ws://127.0.0.1:${port}`;
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const expectedDatasetBaseline = '08ad4b805cd6d2be56fae95dc70660206cdac94b1c0776d52b1d0eb03bd32dce';
+const expectedDatasetMutation = '4b8654191f7e9f4eb95486eb34bbb689d2153f4d2484cfaa617d2fb7075b1a24';
 
 function fail(message) {
   throw new Error(`playwright-flutter-cdp-smoke: ${message}`);
@@ -66,13 +68,16 @@ function pngInfo(png) {
   };
 }
 
-function assertCapture(png, width, height, firstPixel, label) {
+function assertCapture(png, width, height, firstPixel, label, expectedHash = null) {
   const info = pngInfo(png);
   if (info.width !== width || info.height !== height) {
     fail(`${label} dimensions were ${info.width}x${info.height}, expected ${width}x${height}`);
   }
   if (JSON.stringify(info.firstPixel) !== JSON.stringify(firstPixel)) {
     fail(`${label} first pixel was ${JSON.stringify(info.firstPixel)}, expected ${JSON.stringify(firstPixel)}`);
+  }
+  if (expectedHash !== null && info.hash !== expectedHash) {
+    fail(`${label} SHA-256 was ${info.hash}, expected ${expectedHash}`);
   }
   return info;
 }
@@ -132,7 +137,81 @@ async function main() {
 
     await page.setViewportSize({ width: 320, height: 240 });
     const baseline = await page.screenshot({ timeout: 20000 });
-    const baselineInfo = assertCapture(baseline, 320, 240, [34, 187, 102, 255], 'baseline');
+    const baselineInfo = assertCapture(
+      baseline,
+      320,
+      240,
+      [34, 187, 102, 255],
+      'baseline',
+      expectedDatasetBaseline,
+    );
+
+    const datasetEvidence = await page.evaluate(() => {
+      const target = document.querySelector('#dataset-target');
+      const dataset = target.dataset;
+      globalThis.__datasetObject = dataset;
+      dataset.layoutMode = 'wide';
+      const rect = target.getBoundingClientRect();
+      return {
+        stable: dataset === target.dataset,
+        reflectedAttribute: target.getAttribute('data-layout-mode'),
+        reflectedProperty: target.dataset.layoutMode,
+        authorName: dataset.authorName,
+        keys: Object.keys(dataset),
+        synchronousRect: {
+          x: rect.x,
+          y: rect.y,
+          width: rect.width,
+          height: rect.height,
+        },
+      };
+    });
+    if (!datasetEvidence.stable
+        || datasetEvidence.reflectedAttribute !== 'wide'
+        || datasetEvidence.reflectedProperty !== 'wide'
+        || datasetEvidence.authorName !== 'ada'
+        || JSON.stringify(datasetEvidence.keys) !== JSON.stringify(['authorName', 'layoutMode'])
+        || datasetEvidence.synchronousRect.width !== 140
+        || datasetEvidence.synchronousRect.height !== 32) {
+      fail(`live dataset evidence was ${JSON.stringify(datasetEvidence)}`);
+    }
+    const document = await firstSession.send('DOM.getDocument');
+    const datasetNode = await firstSession.send('DOM.querySelector', {
+      nodeId: document.root.nodeId,
+      selector: '#dataset-target',
+    });
+    const datasetAttributes = await firstSession.send('DOM.getAttributes', {
+      nodeId: datasetNode.nodeId,
+    });
+    const attributePairs = Object.fromEntries(Array.from(
+      { length: datasetAttributes.attributes.length / 2 },
+      (_, index) => datasetAttributes.attributes.slice(index * 2, index * 2 + 2),
+    ));
+    if (attributePairs['data-layout-mode'] !== 'wide') {
+      fail(`CDP DOM did not inspect the dataset mutation: ${JSON.stringify(attributePairs)}`);
+    }
+    const datasetModel = await firstSession.send('DOM.getBoxModel', {
+      nodeId: datasetNode.nodeId,
+    });
+    const datasetContent = datasetModel.model.content;
+    if (datasetContent[2] - datasetContent[0] !== 140
+        || datasetContent[5] - datasetContent[1] !== 32
+        || await page.evaluate(() => globalThis.__datasetObject
+          !== document.querySelector('#dataset-target').dataset)) {
+      fail(`CDP/page dataset identity or geometry diverged: ${JSON.stringify(datasetModel.model)}`);
+    }
+    const afterDataset = await page.screenshot({ timeout: 20000 });
+    const afterDatasetInfo = assertCapture(
+      afterDataset,
+      320,
+      240,
+      [34, 187, 102, 255],
+      'post-dataset',
+      expectedDatasetMutation,
+    );
+    if (afterDatasetInfo.hash === baselineInfo.hash) {
+      fail('dataset mutation did not change exact Flutter pixels');
+    }
 
     const hitBox = await page.locator('#hit').boundingBox({ timeout: 20000 });
     if (!hitBox || hitBox.x !== 0 || hitBox.y !== 0 || hitBox.width !== 120 || hitBox.height < 40) {
@@ -144,8 +223,8 @@ async function main() {
     }
     const afterClick = await page.screenshot({ timeout: 20000 });
     const afterClickInfo = assertCapture(afterClick, 320, 240, [34, 187, 102, 255], 'post-click');
-    if (afterClickInfo.hash === baselineInfo.hash) {
-      fail('before/after mutation captures were identical');
+    if (afterClickInfo.hash === afterDatasetInfo.hash) {
+      fail('click mutation did not change the post-dataset exact scene');
     }
 
     const second = await context.newPage();
@@ -185,7 +264,7 @@ async function main() {
       fail('renderer-loss full resync did not recover the exact scene');
     }
 
-    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} after=${afterClickInfo.hash} second=${secondInfo.hash}`);
+    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} after=${afterClickInfo.hash} second=${secondInfo.hash}`);
   } finally {
     if (browser) await browser.close().catch(() => {});
     await stopServer(child);

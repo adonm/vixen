@@ -4056,6 +4056,71 @@ mod tests {
     }
 
     #[test]
+    fn live_dataset_reflects_attributes_and_advances_one_source_revision_per_write() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///dataset-mutate.html",
+            "<html><head><style>\
+               body { margin: 0; }\
+               #target { display: block; width: 80px; height: 20px; }\
+               #target[data-layout-mode='wide'] { width: 140px; height: 30px; }\
+             </style></head><body>\
+               <div id='target' data-role='copy' data-author-name='ada'>target</div>\
+             </body></html>",
+        )
+        .unwrap();
+
+        let initial_generation = page.renderer_source_generation();
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 globalThis.__liveDataset = target.dataset;\
+                 target.setAttribute('data-author-name', 'grace');\
+                 return String(__liveDataset === target.dataset) + ':' +\
+                   __liveDataset.authorName + ':' + target.dataset.authorName + ':' +\
+                   Object.keys(__liveDataset).join(','); })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:grace:grace:role,authorName".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 1);
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 __liveDataset.layoutMode = 'wide';\
+                 return __liveDataset.layoutMode + ':' +\
+                   target.getAttribute('data-layout-mode') + ':' +\
+                   Object.keys(target.dataset).join(',') + ':' +\
+                   String(__liveDataset === target.dataset); })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("wide:wide:role,authorName,layoutMode:true".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 2);
+        let target_id = page.query_selector_all("#target").unwrap()[0].node_id;
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("width".to_owned(), "140px".to_owned()))
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 return String(delete __liveDataset.role) + ':' +\
+                   String(target.getAttribute('data-role')) + ':' +\
+                   typeof target.dataset.role; })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:null:undefined".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 3);
+    }
+
+    #[test]
     fn page_dynamic_inline_script_elements_execute_when_inserted() {
         let mut rt = JsRuntime::new().expect("engine init");
         let mut page = Page::from_html(
