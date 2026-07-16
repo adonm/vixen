@@ -463,6 +463,15 @@ compat-report` reproduced all 270 fixtures and all 1,868 native-safe BrowserCore
 checks at 100%. The 159 render-dependent checks remain assigned to the
 release/AOT Flutter fixture host and are not inferred from this native run.
 
+**First renderer measurement checkpoint:** `just baseline-flutter-linux` now
+measures the release/AOT CDP host from process spawn through its first exact
+Flutter commit and direct-scene capture while sampling app-process memory. A
+clean five-run/one-warmup Mesa-software reference records 281.438 ms median first
+presentation, 46.087 ms median capture round trip, and 281,800,704-byte median
+`VmHWM`; every sample produced the pinned scene and shut down cleanly. This is a
+checked-in measurement-only host observation, not an accepted budget, physical
+GPU matrix, frame-stability result, or isolated Flutter memory attribution.
+
 **Exit:** the controlled Linux corridor uses no transitional renderer component,
 all renderer failure modes are bounded, and the next compatibility failure can be
 reduced directly against the final architecture.

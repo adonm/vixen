@@ -4,11 +4,11 @@ Vixen's current baseline suite is a dependency-light Linux measurement
 foundation built with Node.js built-ins. It records observations; it does not
 enforce budgets or claim complete real-site behavior. The repository now has a
 checked-in hello-Flutter peer plus controlled Linux release/AOT raw-bundle build
-and comparison commands. No accepted Flutter report or FlatPark package
-size/performance baseline has been recorded yet; one clean
-measurement-only raw-bundle reference is checked in for reproduction. That
-reference predates the Yaru chrome/titlebar dependency added on 2026-07-14 and
-is historical until a clean post-Yaru report is reviewed.
+and comparison commands. One clean post-R7 exact-commit Flutter renderer report
+and one historical raw-bundle report are checked in for reproduction. Neither is
+an accepted budget or FlatPark package baseline. The raw-bundle reference
+predates the Yaru chrome/titlebar dependency added on 2026-07-14 and is
+historical until a clean post-Yaru size report is reviewed.
 
 ## Commands
 
@@ -168,6 +168,38 @@ app process's Linux `VmHWM`/sampled `VmRSS`/`VmSize`. Cage and the Node client a
 excluded; BrowserCore, V8, Flutter, and Dart AOT all remain inside the measured
 app process. This is a controlled software-renderer observation, not a physical
 GPU matrix or accepted budget.
+
+## Recorded Flutter renderer reference
+
+[`baselines/flutter-linux-renderer-2026-07-16.json`](baselines/flutter-linux-renderer-2026-07-16.json)
+was produced from clean revision `e18550a` with five measured runs after one
+discarded warmup. The release bundle had already been built by `just
+baseline-flutter-linux-json 1 0`; the recorded repetition used the same recipe's
+Cage environment and direct script invocation:
+
+```sh
+XDG_RUNTIME_DIR="$PWD/.tmp/flutter-baseline-wayland" \
+GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
+WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 cage -- \
+mise x node@24 -- node scripts/flutter-linux-baseline.mjs \
+  --runs 5 --warmups 1 --json
+```
+
+| Metric | Median | p95 |
+|--------|-------:|----:|
+| CDP ready | 204.399 ms | 207.986 ms |
+| first exact presented commit | 281.438 ms | 306.990 ms |
+| exact-scene capture dispatch | 45.688 ms | 57.314 ms |
+| capture client round trip | 46.087 ms | 57.690 ms |
+| app-process `VmHWM` | 281,800,704 bytes | 281,935,053 bytes |
+
+All five samples produced the pinned 7,721-byte PNG with SHA-256
+`34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb`
+and exited cleanly. The report names the artifact/lock/fixture hashes and host.
+Its memory includes BrowserCore/V8 and Flutter/Dart in one process; its capture
+duration is the exact CDP dispatch, not isolated GPU raster or frame-stability
+evidence. The sample uses Mesa software rendering and has not been independently
+reproduced, so these observations are not warning or failure thresholds.
 
 The underlying scripts accept `--help`. Paths relative to the workspace are
 resolved from the repository rather than the caller's current directory where

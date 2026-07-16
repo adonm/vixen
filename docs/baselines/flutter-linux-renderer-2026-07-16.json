@@ -1,0 +1,287 @@
+{
+  "schema": "vixen.flutter-linux-renderer-baseline-report",
+  "version": 1,
+  "measurement_only": true,
+  "measured_at": "2026-07-16T14:11:11.076Z",
+  "runs": 5,
+  "warmups": 1,
+  "workload": {
+    "fixture": "/var/home/bazzite/dev/flutter-dev/apps/vixen/fixtures/dom/basic.html",
+    "fixture_url": "file:///var/home/bazzite/dev/flutter-dev/apps/vixen/fixtures/dom/basic.html",
+    "viewport": {
+      "width": 320,
+      "height": 240
+    },
+    "renderer": "Flutter Canvas/Paragraph/Scene through release/AOT CDP host",
+    "expected_capture_sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb"
+  },
+  "metric_definitions": {
+    "startup_cdp_ready_ms": "release app spawn to the loopback CDP-listener diagnostic",
+    "startup_first_presented_ms": "release app spawn to the first exact Flutter commit presentation induced by the controlled capture",
+    "capture_dispatch_us": "Rust monotonic CDP Page.captureScreenshot dispatch, exact presentation through PNG/base64 result",
+    "capture_round_trip_ms": "Node monotonic Page.captureScreenshot request/response round trip",
+    "peak_memory_bytes": "Linux /proc values for the vixen_shell process; BrowserCore/V8 and Flutter are included"
+  },
+  "summary": {
+    "startup_cdp_ready_ms": {
+      "count": 5,
+      "min": 200.304,
+      "median": 204.399,
+      "p95": 207.986,
+      "max": 208.175,
+      "mean": 204.752
+    },
+    "startup_first_presented_ms": {
+      "count": 5,
+      "min": 269.171,
+      "median": 281.438,
+      "p95": 306.99,
+      "max": 308.873,
+      "mean": 286.389
+    },
+    "capture_dispatch_us": {
+      "count": 5,
+      "min": 41038,
+      "median": 45688,
+      "p95": 57314,
+      "max": 57968,
+      "mean": 48598
+    },
+    "capture_round_trip_ms": {
+      "count": 5,
+      "min": 41.36,
+      "median": 46.087,
+      "p95": 57.69,
+      "max": 58.325,
+      "mean": 48.971
+    },
+    "peak_memory_bytes": {
+      "vmhwm_bytes": {
+        "count": 5,
+        "min": 281432064,
+        "median": 281800704,
+        "p95": 281935053,
+        "max": 281939968,
+        "mean": 281740083
+      },
+      "vmrss_bytes": {
+        "count": 5,
+        "min": 281432064,
+        "median": 281800704,
+        "p95": 281935053,
+        "max": 281939968,
+        "mean": 281740083
+      },
+      "vmsize_bytes": {
+        "count": 5,
+        "min": 21886545920,
+        "median": 21953204224,
+        "p95": 21957807309,
+        "max": 21957861376,
+        "mean": 21940958822
+      }
+    }
+  },
+  "samples": [
+    {
+      "startup_cdp_ready_ms": 208.175,
+      "startup_first_presented_ms": 308.873,
+      "capture_dispatch_us": 54699,
+      "capture_round_trip_ms": 55.152,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 281800704,
+        "vmrss_bytes": 281800704,
+        "vmsize_bytes": 21949591552
+      },
+      "presented": {
+        "context_id": 1,
+        "document_id": 2,
+        "commit_id": 1
+      },
+      "capture": {
+        "width": 320,
+        "height": 240,
+        "logical_bytes": 7721,
+        "sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb"
+      },
+      "exit_status": 0,
+      "signal": null,
+      "stdout_bytes": 70,
+      "stderr_bytes": 252,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    },
+    {
+      "startup_cdp_ready_ms": 203.654,
+      "startup_first_presented_ms": 269.171,
+      "capture_dispatch_us": 43595,
+      "capture_round_trip_ms": 43.93,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 281915392,
+        "vmrss_bytes": 281915392,
+        "vmsize_bytes": 21953204224
+      },
+      "presented": {
+        "context_id": 1,
+        "document_id": 2,
+        "commit_id": 1
+      },
+      "capture": {
+        "width": 320,
+        "height": 240,
+        "logical_bytes": 7721,
+        "sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb"
+      },
+      "exit_status": 0,
+      "signal": null,
+      "stdout_bytes": 70,
+      "stderr_bytes": 252,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    },
+    {
+      "startup_cdp_ready_ms": 204.399,
+      "startup_first_presented_ms": 299.458,
+      "capture_dispatch_us": 45688,
+      "capture_round_trip_ms": 46.087,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 281612288,
+        "vmrss_bytes": 281612288,
+        "vmsize_bytes": 21957591040
+      },
+      "presented": {
+        "context_id": 1,
+        "document_id": 2,
+        "commit_id": 1
+      },
+      "capture": {
+        "width": 320,
+        "height": 240,
+        "logical_bytes": 7721,
+        "sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb"
+      },
+      "exit_status": 0,
+      "signal": null,
+      "stdout_bytes": 70,
+      "stderr_bytes": 252,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    },
+    {
+      "startup_cdp_ready_ms": 200.304,
+      "startup_first_presented_ms": 281.438,
+      "capture_dispatch_us": 57968,
+      "capture_round_trip_ms": 58.325,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 281432064,
+        "vmrss_bytes": 281432064,
+        "vmsize_bytes": 21886545920
+      },
+      "presented": {
+        "context_id": 1,
+        "document_id": 2,
+        "commit_id": 1
+      },
+      "capture": {
+        "width": 320,
+        "height": 240,
+        "logical_bytes": 7721,
+        "sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb"
+      },
+      "exit_status": 0,
+      "signal": null,
+      "stdout_bytes": 70,
+      "stderr_bytes": 252,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    },
+    {
+      "startup_cdp_ready_ms": 207.23,
+      "startup_first_presented_ms": 273.006,
+      "capture_dispatch_us": 41038,
+      "capture_round_trip_ms": 41.36,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 281939968,
+        "vmrss_bytes": 281939968,
+        "vmsize_bytes": 21957861376
+      },
+      "presented": {
+        "context_id": 1,
+        "document_id": 2,
+        "commit_id": 1
+      },
+      "capture": {
+        "width": 320,
+        "height": 240,
+        "logical_bytes": 7721,
+        "sha256": "34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb"
+      },
+      "exit_status": 0,
+      "signal": null,
+      "stdout_bytes": 70,
+      "stderr_bytes": 252,
+      "stdout_truncated": false,
+      "stderr_truncated": false
+    }
+  ],
+  "artifacts": {
+    "app": {
+      "path": "/var/home/bazzite/dev/flutter-dev/apps/vixen/flutter/vixen_shell/build/linux/x64/release/bundle/vixen_shell",
+      "logical_bytes": 19184,
+      "sha256": "5a8bd55c656e77b0298b01ed68b8fd949fb4480443b00b1bf9f27c6f59cec786"
+    },
+    "library": {
+      "path": "/var/home/bazzite/dev/flutter-dev/apps/vixen/flutter/vixen_shell/build/linux/x64/release/bundle/lib/libvixen_ffi.so",
+      "logical_bytes": 58184992,
+      "sha256": "f804b0e106658cce760554a4376c2a822cbac1eda350ff7b593dcfff95c9390b"
+    },
+    "fixture": {
+      "path": "/var/home/bazzite/dev/flutter-dev/apps/vixen/fixtures/dom/basic.html",
+      "sha256": "de694b59d2ad511085e8d7d471808555503c55475255febbd307df1b765214f5"
+    },
+    "cargo_lock": {
+      "path": "/var/home/bazzite/dev/flutter-dev/apps/vixen/Cargo.lock",
+      "sha256": "58e178763e48c7e4ef7cac62147258cefd063d27d2e6305ce837c2406a67245a"
+    },
+    "flutter_pubspec_lock": {
+      "path": "/var/home/bazzite/dev/flutter-dev/apps/vixen/flutter/vixen_shell/pubspec.lock",
+      "sha256": "4563c17e2794ebd5816b3b00739e233c872433244662f1626754e0d01b701cbe"
+    }
+  },
+  "metadata": {
+    "git": {
+      "revision": "e18550a54fa6bce7712489411930eeea9afec591",
+      "dirty": false
+    },
+    "toolchain": {
+      "node": "v24.18.0",
+      "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+      "cargo": "cargo 1.96.1 (356927216 2026-06-26)"
+    },
+    "host": {
+      "platform": "linux",
+      "architecture": "x64",
+      "kernel_release": "6.17.7-ba29.fc43.x86_64",
+      "distro": "Bazzite",
+      "cpu_model": "AMD Ryzen 7 7700X 8-Core Processor",
+      "logical_cpu_count": 16,
+      "memory_total_bytes": 66461454336,
+      "page_size_bytes": 4096,
+      "renderer_environment": {
+        "LIBGL_ALWAYS_SOFTWARE": "1",
+        "MESA_LOADER_DRIVER_OVERRIDE": null,
+        "GALLIUM_DRIVER": null,
+        "WGPU_BACKEND": null,
+        "DISPLAY": ":2",
+        "WAYLAND_DISPLAY": "wayland-0",
+        "XDG_SESSION_TYPE": "x11"
+      }
+    }
+  },
+  "limitations": [
+    "Measurement only; no numerical startup, memory, or capture budget is accepted.",
+    "vixen_shell process memory includes BrowserCore, V8, the Flutter engine, and Dart AOT; it excludes Cage and the Node client.",
+    "The CDP dispatch duration covers exact-scene capture and encoding, not isolated GPU raster time or frame stability.",
+    "Mesa software rendering under one headless Wayland compositor is not a physical GPU/driver matrix."
+  ]
+}

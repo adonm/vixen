@@ -100,6 +100,10 @@ gates are deleted.
   **22,778,750-byte hello / 85,509,520-byte Vixen / 62,730,770-byte delta**,
   measurement-only and not a current dependency-graph or FlatPark package
   claim; see `BASELINES.md`.
+- First post-R7 release/AOT renderer reference: **281.438 ms** median first exact
+  presented commit, **46.087 ms** median exact-scene client round trip, and
+  **281,800,704-byte** median app-process `VmHWM`; five Mesa-software samples,
+  measurement-only and not a budget. See `BASELINES.md`.
 - External automation contract: [`CDP_PLAYWRIGHT_SMOKE.md`](CDP_PLAYWRIGHT_SMOKE.md).
 - Browser ownership/cancellation vertical: `just test-browser-core` (engine,
   headless, and FFI controller adapters through the production command/event
