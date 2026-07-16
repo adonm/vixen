@@ -210,6 +210,11 @@ class LinuxCiContractTests(unittest.TestCase):
         self.assertIn("libgtk-4.so.1", installer)
         self.assertIn("libgtk-3.so.0", installer)
 
+        for script in ("flutter-at-spi-smoke.py", "flutter-interaction-smoke.py"):
+            smoke = (ROOT / "scripts" / script).read_text()
+            self.assertIn('"GTK_A11Y": "atspi"', smoke)
+            self.assertNotIn('"GTK_A11Y": "1"', smoke)
+
     def test_local_smoke_requires_the_same_ibus_engine(self) -> None:
         justfile = (ROOT / "justfile").read_text()
         recipe = justfile.split("linux-interaction-smoke:", maxsplit=1)[1].split(

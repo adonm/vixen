@@ -63,7 +63,7 @@ def main() -> int:
     env.update(
         {
             "GDK_BACKEND": "wayland",
-            "GTK_A11Y": "1",
+            "GTK_A11Y": "atspi",
             "NO_AT_BRIDGE": "0",
             "LIBGL_ALWAYS_SOFTWARE": "1",
             "VIXEN_FFI_LIBRARY": str(library),
