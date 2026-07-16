@@ -167,12 +167,12 @@ class LinuxCiContractTests(unittest.TestCase):
 
     def test_release_smoke_uses_drm_independent_wlroots_renderer(self) -> None:
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
-        interaction_step = workflow.split(
+        release_steps = workflow.split(
             "- name: Native Wayland IME and nested-scroll smoke", maxsplit=1
-        )[1].split("- name: Create deterministic release archive", maxsplit=1)[0]
-        self.assertIn("WLR_BACKENDS=headless", interaction_step)
-        self.assertIn("WLR_RENDERER=pixman", interaction_step)
-        self.assertNotIn("WLR_RENDERER=gles2", interaction_step)
+        )[1].split("- name: Upload Linux release assets", maxsplit=1)[0]
+        self.assertEqual(release_steps.count("WLR_BACKENDS=headless"), 2)
+        self.assertEqual(release_steps.count("WLR_RENDERER=pixman"), 2)
+        self.assertNotIn("WLR_RENDERER=gles2", release_steps)
 
     def test_local_smoke_requires_the_same_ibus_engine(self) -> None:
         justfile = (ROOT / "justfile").read_text()
