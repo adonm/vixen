@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from collections import deque
+import math
 import os
 from pathlib import Path
 import re
@@ -95,6 +96,69 @@ def named_accessible(process_id: int, name: str) -> Atspi.Accessible | None:
         except Exception:
             continue
     return None
+
+
+def accessible_action_evidence(
+    node: Atspi.Accessible,
+    *,
+    role,
+    required_states: tuple,
+    action_name: str,
+):
+    if node.get_role() != role:
+        raise ValueError(
+            f"role was {node.get_role_name()!r}, expected {role!r}"
+        )
+    states = node.get_state_set()
+    missing = [state for state in required_states if not states.contains(state)]
+    if missing:
+        raise ValueError(f"missing required AT-SPI states: {missing!r}")
+    rect = node.get_component_iface().get_extents(Atspi.CoordType.SCREEN)
+    bounds = (rect.x, rect.y, rect.width, rect.height)
+    if (
+        not all(math.isfinite(float(value)) for value in bounds)
+        or rect.width <= 0
+        or rect.height <= 0
+    ):
+        raise ValueError(f"AT-SPI bounds are not finite and positive: {bounds!r}")
+    action = node.get_action_iface()
+    actions = [
+        action.get_action_name(index) for index in range(action.get_n_actions())
+    ]
+    expected = action_name.casefold()
+    index = next(
+        (
+            index
+            for index, name in enumerate(actions)
+            if isinstance(name, str) and name.casefold() == expected
+        ),
+        None,
+    )
+    if index is None:
+        raise ValueError(
+            f"AT-SPI action {action_name!r} is missing from {actions!r}"
+        )
+    return action, index, bounds
+
+
+def named_accessible_action(process_id: int, name: str, action_name: str):
+    node = named_accessible(process_id, name)
+    if node is None:
+        return None
+    try:
+        action, index, bounds = accessible_action_evidence(
+            node,
+            role=Atspi.Role.TEXT,
+            required_states=(
+                Atspi.StateType.EDITABLE,
+                Atspi.StateType.VISIBLE,
+                Atspi.StateType.SHOWING,
+            ),
+            action_name=action_name,
+        )
+        return node, action, index, bounds
+    except (Exception, ValueError):
+        return None
 
 
 def accessible_centers(process_id: int, name: str) -> list[tuple[int, int]]:
@@ -228,6 +292,37 @@ def wait_for_renderer_commit(
         return None
 
     return wait_for(process, timeout, description, probe)
+
+
+def wait_for_quiescent_renderer_commit(
+    process: subprocess.Popen[str],
+    timeout: float,
+    description: str,
+    *,
+    after_commit: int = 0,
+    quiet_seconds: float = 0.4,
+) -> tuple[int, int, int, float | None]:
+    deadline = time.monotonic() + timeout
+    candidate = None
+    changed_at = time.monotonic()
+    while time.monotonic() < deadline:
+        if process.poll() is not None:
+            raise SystemExit(
+                f"Flutter shell exited before {description} ({process.returncode})\n"
+                f"{process_output(process)}"
+            )
+        commits = renderer_commits(process)
+        latest = commits[-1] if commits and commits[-1][2] > after_commit else None
+        if latest != candidate:
+            candidate = latest
+            changed_at = time.monotonic()
+        elif candidate is not None and time.monotonic() - changed_at >= quiet_seconds:
+            return candidate
+        time.sleep(0.05)
+    raise SystemExit(
+        f"timed out waiting for {description}; commits={renderer_commits(process)!r}; "
+        f"process output: {process_output(process)[-8000:]}"
+    )
 
 
 def status_fields(status: str) -> dict[str, str]:
@@ -504,18 +599,46 @@ def main() -> int:
         )
         input_value = status_fields(input_status)["input"]
 
-        editor_candidates = [
-            (x, input_y + offset)
-            for offset in range(40, 81, 5)
-            for x in (input_x, max(1, input_x - 80), input_x + 80)
-        ]
-        focus_with_pointer(
-            args,
+        before_atspi_commit = wait_for_quiescent_renderer_commit(
             process,
-            "editor",
-            editor_candidates,
-            accessible_name="Native editor",
+            10,
+            "quiescent pre-AT-SPI Flutter renderer commit",
+            after_commit=initial_commit[2],
         )
+        _, atspi_action, atspi_action_index, atspi_bounds = wait_for(
+            process,
+            10,
+            "native editor AT-SPI role/state/bounds/focus action",
+            lambda: named_accessible_action(process.pid, "Native editor", "Focus"),
+        )
+        if not atspi_action.do_action(atspi_action_index):
+            raise SystemExit("native editor AT-SPI Focus action was rejected")
+        atspi_status = wait_for(
+            process,
+            10,
+            "AT-SPI focus DOM effect",
+            lambda: (
+                status
+                if (status := current_status(process.pid))
+                and status_fields(status).get("focus") == "editor"
+                and status_fields(status).get("input") == input_value
+                else None
+            ),
+        )
+        after_atspi_commit = wait_for_renderer_commit(
+            process,
+            10,
+            "AT-SPI focus Flutter renderer commit",
+            after_commit=before_atspi_commit[2],
+            scroll_y=before_atspi_commit[3],
+        )
+        if after_atspi_commit[:2] != before_atspi_commit[:2]:
+            raise SystemExit(
+                "AT-SPI focus commit changed context/document identity: "
+                f"{before_atspi_commit!r} -> {after_atspi_commit!r}"
+            )
+        if status_fields(atspi_status).get("focus") != "editor":
+            raise SystemExit(f"AT-SPI focus did not reach the DOM: {atspi_status}")
         time.sleep(1)
         ime_input(args, "3042")
         time.sleep(1)
@@ -794,6 +917,8 @@ def main() -> int:
             f"stop={stopped_browser_status!r}",
             f"wheels={chained_fields['wheelCount']}",
             f"canceled={chained_fields['canceledWheelCount']}",
+            f"atspi={before_atspi_commit[2]}>{after_atspi_commit[2]}",
+            f"atspiBounds={atspi_bounds!r}",
             f"commits={initial_commit[2]}>{first_commit[2]}>{canceled_commit[2]}"
             f">{script_commit[2]}>{chained_commit[2]}",
         )

@@ -21,7 +21,17 @@ def load_harness() -> types.ModuleType:
     gi = types.ModuleType("gi")
     gi.require_version = lambda *_args: None
     repository = types.ModuleType("gi.repository")
-    repository.Atspi = object()
+    repository.Atspi = types.SimpleNamespace(
+        CoordType=types.SimpleNamespace(SCREEN="screen"),
+        Role=types.SimpleNamespace(TEXT="text"),
+        StateType=types.SimpleNamespace(
+            EDITABLE="editable",
+            VISIBLE="visible",
+            SHOWING="showing",
+            FOCUSED="focused",
+        ),
+        Accessible=object,
+    )
     gi.repository = repository
     sys.modules["gi"] = gi
     sys.modules["gi.repository"] = repository
@@ -149,6 +159,95 @@ class InteractionHarnessTests(unittest.TestCase):
             self.assertRaisesRegex(SystemExit, "process output: renderer failed"),
         ):
             HARNESS.wait_for(process, 0, "renderer", lambda: None)
+
+    def test_accessible_action_evidence_validates_role_state_bounds_and_name(self) -> None:
+        states = mock.Mock()
+        states.contains.side_effect = lambda state: state in {
+            "editable",
+            "visible",
+            "showing",
+        }
+        component = mock.Mock()
+        component.get_extents.return_value = types.SimpleNamespace(
+            x=10, y=20, width=120, height=32
+        )
+        action = mock.Mock()
+        action.get_n_actions.return_value = 2
+        action.get_action_name.side_effect = ["Tap", "Focus"]
+        node = mock.Mock()
+        node.get_role.return_value = "text"
+        node.get_role_name.return_value = "text"
+        node.get_state_set.return_value = states
+        node.get_component_iface.return_value = component
+        node.get_action_iface.return_value = action
+
+        result = HARNESS.accessible_action_evidence(
+            node,
+            role="text",
+            required_states=("editable", "visible", "showing"),
+            action_name="focus",
+        )
+
+        self.assertEqual(result, (action, 1, (10, 20, 120, 32)))
+
+    def test_accessible_action_evidence_fails_closed(self) -> None:
+        states = mock.Mock()
+        states.contains.return_value = False
+        node = mock.Mock()
+        node.get_role.return_value = "button"
+        node.get_role_name.return_value = "button"
+        with self.assertRaisesRegex(ValueError, "role was"):
+            HARNESS.accessible_action_evidence(
+                node,
+                role="text",
+                required_states=("editable",),
+                action_name="Focus",
+            )
+
+        node.get_role.return_value = "text"
+        node.get_state_set.return_value = states
+        with self.assertRaisesRegex(ValueError, "missing required"):
+            HARNESS.accessible_action_evidence(
+                node,
+                role="text",
+                required_states=("editable",),
+                action_name="Focus",
+            )
+
+    def test_accessible_action_evidence_rejects_bad_bounds_and_missing_action(self) -> None:
+        states = mock.Mock()
+        states.contains.return_value = True
+        component = mock.Mock()
+        component.get_extents.return_value = types.SimpleNamespace(
+            x=0, y=0, width=float("nan"), height=0
+        )
+        node = mock.Mock()
+        node.get_role.return_value = "text"
+        node.get_role_name.return_value = "text"
+        node.get_state_set.return_value = states
+        node.get_component_iface.return_value = component
+        with self.assertRaisesRegex(ValueError, "bounds"):
+            HARNESS.accessible_action_evidence(
+                node,
+                role="text",
+                required_states=("editable",),
+                action_name="Focus",
+            )
+
+        component.get_extents.return_value = types.SimpleNamespace(
+            x=0, y=0, width=10, height=10
+        )
+        action = mock.Mock()
+        action.get_n_actions.return_value = 1
+        action.get_action_name.return_value = "Tap"
+        node.get_action_iface.return_value = action
+        with self.assertRaisesRegex(ValueError, "missing"):
+            HARNESS.accessible_action_evidence(
+                node,
+                role="text",
+                required_states=("editable",),
+                action_name="Focus",
+            )
 
 
 class LinuxCiContractTests(unittest.TestCase):
