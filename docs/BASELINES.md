@@ -43,6 +43,16 @@ deterministic localStorage payload. A fresh process must reopen and read the
 payload before the last checkpoint. The script treats the profile as an opaque
 directory and does not depend on redb files, tables, or allocation internals.
 
+[`baselines/profile-growth-2026-07-16.json`](baselines/profile-growth-2026-07-16.json)
+records the first post-R7 reproduction from clean revision `6a61897`: five
+repeated local visits, five unique `data:` visits, a 65,536-byte localStorage
+payload, and a fresh-process persistence read all exited successfully. The
+opaque profile's 3,686,400-byte logical file size remained constant; allocated
+storage was 1,622,016 bytes after initialization, grew 8,192 bytes across
+repeated visits, did not grow across unique visits, and grew 139,264 bytes for
+the persisted payload to 1,769,472 bytes. This single-host measurement is not a
+growth budget or a broad history/cache/storage workload.
+
 Measure the headless binary and create the official compressed Linux archive:
 
 ```sh

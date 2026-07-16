@@ -1,0 +1,266 @@
+{
+  "schema": "vixen.profile-growth-baseline-report",
+  "version": 1,
+  "measurement_only": true,
+  "measured_at": "2026-07-16T14:25:39.463Z",
+  "profile": {
+    "temporary": true,
+    "explicit_profile_dir": "/var/home/bazzite/dev/flutter-dev/apps/vixen/.tmp/vixen-profile-growth-4iEMEI/profile",
+    "storage_payload_bytes": 65536
+  },
+  "workload": {
+    "repeated_local_visits": 5,
+    "unique_data_url_visits": 5,
+    "persistence_reopen_verified": true,
+    "fixture": "/var/home/bazzite/dev/flutter-dev/apps/vixen/fixtures/realworld/static-document.html"
+  },
+  "artifacts": {
+    "binary": {
+      "path": "/var/home/bazzite/dev/flutter-dev/apps/vixen/target/release/vixen-headless",
+      "logical_bytes": 58285616,
+      "sha256": "03e98db15cecd12c5f28c02c38368e8a2e680d690075c4ce021f3716d29cf943"
+    },
+    "cargo_lock": {
+      "path": "/var/home/bazzite/dev/flutter-dev/apps/vixen/Cargo.lock",
+      "sha256": "58e178763e48c7e4ef7cac62147258cefd063d27d2e6305ce837c2406a67245a"
+    }
+  },
+  "metadata": {
+    "git": {
+      "revision": "6a61897bf57c4756e3d9ff2243c926ca05b93506",
+      "dirty": false
+    },
+    "toolchain": {
+      "node": "v24.18.0",
+      "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+      "cargo": "cargo 1.96.1 (356927216 2026-06-26)"
+    },
+    "host": {
+      "platform": "linux",
+      "architecture": "x64",
+      "kernel_release": "6.17.7-ba29.fc43.x86_64",
+      "distro": "Bazzite",
+      "cpu_model": "AMD Ryzen 7 7700X 8-Core Processor",
+      "logical_cpu_count": 16,
+      "memory_total_bytes": 66461454336,
+      "page_size_bytes": 4096,
+      "renderer_environment": {
+        "LIBGL_ALWAYS_SOFTWARE": null,
+        "MESA_LOADER_DRIVER_OVERRIDE": null,
+        "GALLIUM_DRIVER": null,
+        "WGPU_BACKEND": null,
+        "DISPLAY": null,
+        "WAYLAND_DISPLAY": null,
+        "XDG_SESSION_TYPE": "x11"
+      }
+    }
+  },
+  "checkpoints": [
+    {
+      "name": "init",
+      "logical_bytes": 3686400,
+      "allocated_bytes": 1622016,
+      "file_count": 1,
+      "directory_count": 1,
+      "hardlinks_deduplicated": 0,
+      "logical_growth_bytes": 3686400,
+      "allocated_growth_bytes": 1622016
+    },
+    {
+      "name": "repeated_visits",
+      "logical_bytes": 3686400,
+      "allocated_bytes": 1630208,
+      "file_count": 1,
+      "directory_count": 1,
+      "hardlinks_deduplicated": 0,
+      "logical_growth_bytes": 0,
+      "allocated_growth_bytes": 8192
+    },
+    {
+      "name": "unique_visits",
+      "logical_bytes": 3686400,
+      "allocated_bytes": 1630208,
+      "file_count": 1,
+      "directory_count": 1,
+      "hardlinks_deduplicated": 0,
+      "logical_growth_bytes": 0,
+      "allocated_growth_bytes": 0
+    },
+    {
+      "name": "storage_payload",
+      "logical_bytes": 3686400,
+      "allocated_bytes": 1769472,
+      "file_count": 1,
+      "directory_count": 1,
+      "hardlinks_deduplicated": 0,
+      "logical_growth_bytes": 0,
+      "allocated_growth_bytes": 139264
+    }
+  ],
+  "process_wall_ms": {
+    "count": 13,
+    "min": 52.648,
+    "median": 54.774,
+    "p95": 107.304,
+    "max": 176.812,
+    "mean": 64.758
+  },
+  "processes": [
+    {
+      "label": "init",
+      "wall_ms": 176.812,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 51372032,
+        "vmrss_bytes": 51372032,
+        "vmsize_bytes": 19654197248
+      },
+      "exit_status": 0,
+      "stdout_bytes": 30,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "repeated-local-1",
+      "wall_ms": 54.776,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 50909184,
+        "vmrss_bytes": 50909184,
+        "vmsize_bytes": 19655794688
+      },
+      "exit_status": 0,
+      "stdout_bytes": 2,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "repeated-local-2",
+      "wall_ms": 60.682,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 50589696,
+        "vmrss_bytes": 50589696,
+        "vmsize_bytes": 19655254016
+      },
+      "exit_status": 0,
+      "stdout_bytes": 2,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "repeated-local-3",
+      "wall_ms": 54.411,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 50839552,
+        "vmrss_bytes": 50839552,
+        "vmsize_bytes": 19655532544
+      },
+      "exit_status": 0,
+      "stdout_bytes": 2,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "repeated-local-4",
+      "wall_ms": 53.563,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 51261440,
+        "vmrss_bytes": 51261440,
+        "vmsize_bytes": 19656056832
+      },
+      "exit_status": 0,
+      "stdout_bytes": 2,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "repeated-local-5",
+      "wall_ms": 54.774,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 50827264,
+        "vmrss_bytes": 50827264,
+        "vmsize_bytes": 19655532544
+      },
+      "exit_status": 0,
+      "stdout_bytes": 2,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "unique-data-1",
+      "wall_ms": 53.484,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 50618368,
+        "vmrss_bytes": 50618368,
+        "vmsize_bytes": 19585769472
+      },
+      "exit_status": 0,
+      "stdout_bytes": 19,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "unique-data-2",
+      "wall_ms": 55.22,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 50515968,
+        "vmrss_bytes": 50515968,
+        "vmsize_bytes": 19517612032
+      },
+      "exit_status": 0,
+      "stdout_bytes": 19,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "unique-data-3",
+      "wall_ms": 53.722,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 50446336,
+        "vmrss_bytes": 50446336,
+        "vmsize_bytes": 19585507328
+      },
+      "exit_status": 0,
+      "stdout_bytes": 19,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "unique-data-4",
+      "wall_ms": 54.342,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 50184192,
+        "vmrss_bytes": 50184192,
+        "vmsize_bytes": 19585769472
+      },
+      "exit_status": 0,
+      "stdout_bytes": 19,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "unique-data-5",
+      "wall_ms": 52.648,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 50286592,
+        "vmrss_bytes": 50286592,
+        "vmsize_bytes": 19584983040
+      },
+      "exit_status": 0,
+      "stdout_bytes": 19,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "storage-write",
+      "wall_ms": 60.965,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 51097600,
+        "vmrss_bytes": 51097600,
+        "vmsize_bytes": 19655131136
+      },
+      "exit_status": 0,
+      "stdout_bytes": 6,
+      "stderr_bytes": 0
+    },
+    {
+      "label": "storage-reopen-check",
+      "wall_ms": 56.455,
+      "peak_memory_bytes": {
+        "vmhwm_bytes": 51085312,
+        "vmrss_bytes": 51085312,
+        "vmsize_bytes": 19655794688
+      },
+      "exit_status": 0,
+      "stdout_bytes": 16,
+      "stderr_bytes": 0
+    }
+  ]
+}

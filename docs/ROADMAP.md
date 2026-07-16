@@ -491,6 +491,13 @@ Impeller and presented an exact Flutter commit. These are unreproduced
 measurements and one controlled launch, not budgets, sustained release evidence,
 or FlatPark install evidence.
 
+**Profile-growth checkpoint:** a clean five-repeated/five-unique-visit run kept
+the opaque profile's logical size constant, added 8,192 allocated bytes across
+repeated visits and zero across unique visits, then added 139,264 bytes for a
+65,536-byte localStorage payload that a fresh process reopened successfully.
+This is a checked-in single-host measurement, not a growth budget or broad
+history/cache workload.
+
 **Exit:** the controlled Linux corridor uses no transitional renderer component,
 all renderer failure modes are bounded, and the next compatibility failure can be
 reduced directly against the final architecture.
@@ -676,11 +683,11 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Finish R8 Linux host stabilization:** rerun interaction/IME/AT-SPI and
-   profile-growth evidence, then add frame-time/stability and physical GPU/driver
-   coverage. Compatibility, rendered CDP recovery, release archive, size,
-   startup, app-process memory, and capture have post-R7 checkpoints above; fix
-   any remaining transition regression before breadth.
+1. **Finish R8 Linux host stabilization:** rerun interaction/IME/AT-SPI, then add
+   frame-time/stability and physical GPU/driver coverage. Compatibility, rendered
+   CDP recovery, release archive, size, startup, app-process memory, capture, and
+   profile growth have post-R7 checkpoints above; fix any remaining transition
+   regression before breadth.
 
 Do not reintroduce native layout/paint/frame ownership while stabilizing. A
 security, data-loss, or release-blocking regression may preempt the queue.

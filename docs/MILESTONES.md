@@ -107,6 +107,10 @@ gates are deleted.
   presented commit, **46.087 ms** median exact-scene client round trip, and
   **281,800,704-byte** median app-process `VmHWM`; five Mesa-software samples,
   measurement-only and not a budget. See `BASELINES.md`.
+- Post-R7 profile-growth reference: five repeated and five unique visits caused
+  **8,192 bytes** and **0 bytes** of allocated growth respectively; a persisted
+  65,536-byte localStorage payload added **139,264 bytes** and passed reopen.
+  Single-host, measurement-only, and not a budget; see `BASELINES.md`.
 - External automation contract: [`CDP_PLAYWRIGHT_SMOKE.md`](CDP_PLAYWRIGHT_SMOKE.md).
 - Browser ownership/cancellation vertical: `just test-browser-core` (engine,
   headless, and FFI controller adapters through the production command/event
