@@ -552,7 +552,7 @@ def main() -> int:
         initial_inner = status_number(initial, "inner")
         initial_root = status_number(initial, "root")
         initial_wheel_count = status_number(initial, "wheelCount")
-        run_pointer(args, "wheel", str(scroll_x), str(scroll_y), "1")
+        run_pointer(args, "wheel", str(scroll_x), str(scroll_y), "40")
         first_scroll = wait_for(
             process,
             5,
@@ -592,7 +592,7 @@ def main() -> int:
                 else None
             ),
         )
-        run_pointer(args, "wheel", str(scroll_x), str(scroll_y), "1")
+        run_pointer(args, "wheel", str(scroll_x), str(scroll_y), "40")
         canceled = wait_for(
             process,
             5,
