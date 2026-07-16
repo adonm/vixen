@@ -187,6 +187,29 @@ class LinuxCiContractTests(unittest.TestCase):
         ).read_text()
         self.assertIn("linux-gtk-default: gtk4", hello_pubspec)
 
+    def test_gtk4_release_installs_pinned_engine_artifact(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        release_job = workflow.split("linux-release:", maxsplit=1)[1].split(
+            "release:", maxsplit=1
+        )[0]
+        self.assertIn("scripts/install_flutter_gtk4_sdk.py", release_job)
+        self.assertIn("00fee9824a795ee9b5794e0a0e2bc5975e54dba8", release_job)
+        self.assertIn("fc1ad955f16467c959e3cd8079b760d5af0984aa", release_job)
+        self.assertNotIn("http:flutter-beta", release_job)
+
+        installer = (ROOT / "scripts" / "install_flutter_gtk4_sdk.py").read_text()
+        self.assertIn("github.com/adonm/flutter-dev/releases/download", installer)
+        self.assertIn("flutter-engine-gtk4-", installer)
+        self.assertIn(
+            "bd80913e83fa9fac66bca3c90a020bc624827c610f3fcff7971455b4f858f701",
+            installer,
+        )
+        self.assertNotIn("__CI_LIBRARY_SHA256__", installer)
+        self.assertIn("linux-x64-release", installer)
+        self.assertIn("libflutter_linux_gtk4.so", installer)
+        self.assertIn("libgtk-4.so.1", installer)
+        self.assertIn("libgtk-3.so.0", installer)
+
     def test_local_smoke_requires_the_same_ibus_engine(self) -> None:
         justfile = (ROOT / "justfile").read_text()
         recipe = justfile.split("linux-interaction-smoke:", maxsplit=1)[1].split(
