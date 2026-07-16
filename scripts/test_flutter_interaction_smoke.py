@@ -174,6 +174,19 @@ class LinuxCiContractTests(unittest.TestCase):
         self.assertEqual(release_steps.count("WLR_RENDERER=pixman"), 2)
         self.assertNotIn("WLR_RENDERER=gles2", release_steps)
 
+    def test_gtk4_release_uses_isolated_build_directory(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        release_job = workflow.split("linux-release:", maxsplit=1)[1].split(
+            "release:", maxsplit=1
+        )[0]
+        self.assertIn("build/linux-gtk4/x64/release/bundle", release_job)
+        self.assertNotIn("build/linux/x64/release/bundle", release_job)
+
+        hello_pubspec = (
+            ROOT / "fixtures" / "artifact-size" / "flutter_hello" / "pubspec.yaml"
+        ).read_text()
+        self.assertIn("linux-gtk-default: gtk4", hello_pubspec)
+
     def test_local_smoke_requires_the_same_ibus_engine(self) -> None:
         justfile = (ROOT / "justfile").read_text()
         recipe = justfile.split("linux-interaction-smoke:", maxsplit=1)[1].split(

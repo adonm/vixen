@@ -192,8 +192,8 @@ jobs:
           cd flutter/vixen_shell
           flutter pub get --enforce-lockfile
           flutter build linux --release --no-pub
-          strip --strip-unneeded build/linux/x64/release/bundle/vixen_shell
-          find build/linux/x64/release/bundle/lib -maxdepth 1 -type f \
+          strip --strip-unneeded build/linux-gtk4/x64/release/bundle/vixen_shell
+          find build/linux-gtk4/x64/release/bundle/lib -maxdepth 1 -type f \
             -name '*_plugin.so' -exec strip --strip-unneeded {} +
 
       - name: Build native Wayland input driver
@@ -238,8 +238,8 @@ jobs:
             WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman \
             LIBGL_ALWAYS_SOFTWARE=1 timeout 120s cage -- \
               python3 scripts/flutter-interaction-smoke.py \
-              --app flutter/vixen_shell/build/linux/x64/release/bundle/vixen_shell \
-              --library flutter/vixen_shell/build/linux/x64/release/bundle/lib/libvixen_ffi.so \
+              --app flutter/vixen_shell/build/linux-gtk4/x64/release/bundle/vixen_shell \
+              --library flutter/vixen_shell/build/linux-gtk4/x64/release/bundle/lib/libvixen_ffi.so \
               --url "file://$GITHUB_WORKSPACE/fixtures/events/linux-interaction-qa.html" \
               --app-headless-window \
               --app-viewport 1280x720 \
@@ -249,7 +249,7 @@ jobs:
       - name: Create deterministic release archive
         run: |
           set -eu
-          bundle=flutter/vixen_shell/build/linux/x64/release/bundle
+          bundle=flutter/vixen_shell/build/linux-gtk4/x64/release/bundle
           output="$GITHUB_WORKSPACE/vixen-linux-x86_64.tar.gz"
           python3 scripts/package-linux-release.py "$bundle" "$output"
           cp "$output" "$output.first"
