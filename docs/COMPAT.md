@@ -58,10 +58,12 @@ Current check mix:
 This local fixture set is release-blocking and must remain **100 % green**.
 R8 native-path reproduction on clean revision `e224bf6` ran `just
 compat-report`: all 270 fixtures and all 1,868 native-safe BrowserCore checks
-passed. This deliberately does not relabel the 19 `flutter-js-eval`, 104
-`layout-box`, 25 `visual-hash`, and 11 `ref-equivalent` checks as native
-evidence; their post-transition reproduction remains `just
-flutter-fixture-manifest` through the release/AOT Flutter host.
+passed. R8 release-host reproduction then ran `just flutter-fixture-manifest`'s
+exact command against the clean post-R7/Yaru release bundle: all 270 fixtures and
+all 2,027 checks passed. The host summary reports 140 direct rendered checks
+(104 `layout-box`, 25 `visual-hash`, and 11 `ref-equivalent`); the remaining 19
+`flutter-js-eval` checks also run only in that Flutter host. None is relabeled as
+native evidence.
 The layout category currently includes normal-flow, inline-flow, positioned,
 flex row/column, grid, overflow coordinate/paint, and fragment-backed text paint
 fixtures with Flutter-commit `layout-box` and visual assertions. The paint
@@ -183,6 +185,10 @@ CDP `IO` streams, idle stop-loading behavior, and stable protocol errors. CDP
 permission overrides are exact-origin or wildcard scoped and do not mutate
 persisted user decisions. Trace records contain method/timing/session/success
 metadata only, not expressions, request headers, form values, or page text.
+R8 reran the release/AOT Flutter-hosted smoke after cutover: two target
+viewports remained isolated, Flutter geometry/input and before/after scene pixels
+agreed, target switching preserved the first scene, and forced renderer reset
+recovered by full resync to byte-identical pixels.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,

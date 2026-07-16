@@ -108,7 +108,10 @@ The deterministic release archive made from the same bundle is 31,913,890 bytes
 with SHA-256
 `3eef1bbed0e8e79dd8a85602837d4a9217dfbb82193cfcb93b62ca8730bc7879`.
 The archive observation is documented separately because the raw-bundle schema
-correctly leaves compressed download size null.
+correctly leaves compressed download size null. Clean extraction and the bounded
+`linux-release-smoke` Cage launch steps reported Impeller and presented a Flutter
+commit from this exact archive; that is one controlled release launch, not
+sustained host/GPU evidence.
 
 Against the historical 2026-07-12 report, the Vixen bundle is 131,560 bytes
 smaller overall and the aggregate native library is 2,076,976 bytes smaller

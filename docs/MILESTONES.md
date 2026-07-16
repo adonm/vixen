@@ -94,8 +94,9 @@ gates are deleted.
 ## Current measured anchors
 
 - Compatibility baseline: **270 fixtures / 2,027 checks / 100% passing**. R8
-  reproduced all **1,868 native-safe checks** on 2026-07-16; the rendered
-  release-host reproduction remains separate. `COMPAT.md` is authoritative.
+  reproduced all **1,868 native-safe checks** and then the full **2,027-check
+  release/AOT Flutter-hosted manifest** on 2026-07-16. `COMPAT.md` is
+  authoritative.
 - Post-R7/Yaru Linux x86_64 Flutter raw-bundle reference:
   **21,398,668-byte hello / 85,377,960-byte Vixen / 63,979,292-byte delta**,
   plus a **31,913,890-byte** deterministic release archive; measurement-only,

@@ -458,10 +458,17 @@ test-r7` proves source/dependency absence and both native/Flutter surfaces;
 - Fix renderer-transition regressions before broadening APIs or resuming FlatPark
   publication work.
 
-**First reproduction checkpoint:** on clean revision `e224bf6`, `just
+**Compatibility reproduction checkpoint:** on clean revision `e224bf6`, `just
 compat-report` reproduced all 270 fixtures and all 1,868 native-safe BrowserCore
-checks at 100%. The 159 render-dependent checks remain assigned to the
-release/AOT Flutter fixture host and are not inferred from this native run.
+checks at 100%. The post-R7/Yaru release/AOT Flutter host subsequently reproduced
+the full 270 fixtures / 2,027 checks at 100%, including 19
+`flutter-js-eval` checks plus 104 exact layout boxes, 25 visual hashes, and 11
+exact-pixel references. Renderer evidence is kept separate from, not inferred
+from, the native run.
+
+The matching external Playwright/CDP rerun is also green: two target viewports,
+Flutter-routed geometry/input, before/after mutation captures, target switching,
+and forced renderer reset/full-resync all retained exact scene identity.
 
 **First renderer measurement checkpoint:** `just baseline-flutter-linux` now
 measures the release/AOT CDP host from process spawn through its first exact
@@ -479,8 +486,10 @@ pre-R7 bundle despite adding Yaru assets/plugins; its aggregate native library
 is 2,076,976 bytes smaller. The hello control also shrank, so the current
 63,979,292-byte Vixen-minus-hello delta is larger and is not misreported as a
 product regression. The same Vixen bundle produces a deterministic
-31,913,890-byte archive. These are unreproduced measurements, not budgets or
-FlatPark install evidence.
+31,913,890-byte archive; clean extraction and a bounded Cage launch reported
+Impeller and presented an exact Flutter commit. These are unreproduced
+measurements and one controlled launch, not budgets, sustained release evidence,
+or FlatPark install evidence.
 
 **Exit:** the controlled Linux corridor uses no transitional renderer component,
 all renderer failure modes are bounded, and the next compatibility failure can be
@@ -667,9 +676,11 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **R8 Linux stabilization/rebaseline:** reproduce compatibility, interaction,
-   accessibility, release, size, startup, memory, and capture evidence against
-   the final Flutter-only architecture; fix transition regressions before breadth.
+1. **Finish R8 Linux host stabilization:** rerun interaction/IME/AT-SPI and
+   profile-growth evidence, then add frame-time/stability and physical GPU/driver
+   coverage. Compatibility, rendered CDP recovery, release archive, size,
+   startup, app-process memory, and capture have post-R7 checkpoints above; fix
+   any remaining transition regression before breadth.
 
 Do not reintroduce native layout/paint/frame ownership while stabilizing. A
 security, data-loss, or release-blocking regression may preempt the queue.
