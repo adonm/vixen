@@ -1,6 +1,5 @@
 #!/usr/bin/env node
-import { mkdtemp, rm, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, mkdtemp, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -113,7 +112,9 @@ async function main() {
   if (!binaryStats.isFile()) throw new Error(`binary is not a file: ${binary}`);
   const fixture = resolveWorkspacePath('fixtures/realworld/static-document.html');
   const fixtureUrl = pathToFileURL(fixture).href;
-  const root = await mkdtemp(join(tmpdir(), 'vixen-profile-growth-'));
+  const tempRoot = resolveWorkspacePath('.tmp');
+  await mkdir(tempRoot, { recursive: true });
+  const root = await mkdtemp(join(tempRoot, 'vixen-profile-growth-'));
   const profile = join(root, 'profile');
   const checkpoints = [];
   const processes = [];

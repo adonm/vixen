@@ -36,12 +36,12 @@ just baseline-profile-growth       # 5 repeated and 5 unique visits
 just baseline-profile-growth 12
 ```
 
-The command creates a temporary explicit profile, closes each headless process
-before sizing, and records checkpoints after initialization, repeated local-file
-visits, unique `data:` URL visits, and a deterministic localStorage payload. A
-fresh process must reopen and read the payload before the last checkpoint. The
-script treats the profile as an opaque directory and does not depend on redb
-files, tables, or allocation internals.
+The command creates a temporary explicit profile under workspace-local `.tmp/`,
+closes each headless process before sizing, and records checkpoints after
+initialization, repeated local-file visits, unique `data:` URL visits, and a
+deterministic localStorage payload. A fresh process must reopen and read the
+payload before the last checkpoint. The script treats the profile as an opaque
+directory and does not depend on redb files, tables, or allocation internals.
 
 Measure the headless binary and create the official compressed Linux archive:
 
