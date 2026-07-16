@@ -78,6 +78,8 @@ dependencies, and the SHA-256-pinned rusty_v8 archive. The mutable builder-image
 tag remains a limitation until the release path pins an immutable digest.
 The Vixen dependency graph now also includes locked Yaru 10.2.0 and its native
 window plugins; do not use the recorded pre-Yaru delta as a current size claim.
+Both controlled runners and any bundled plugin ELFs are stripped with the same
+policy before comparison.
 
 The analyzer requires release bundle structure (`libapp.so`, Flutter engine,
 and ICU), requires exactly one `libvixen_ffi.so` only in Vixen, rejects debug and

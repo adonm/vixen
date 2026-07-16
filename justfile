@@ -264,6 +264,9 @@ build-flutter-size-linux: build-flutter-release-linux
         'export PATH=/workspace/.tmp/linux-release/bin:/opt/flutter-tool/flutter/bin:/usr/sbin:/usr/bin; \
          cd /workspace/{{FLUTTER_HELLO}} && flutter pub get --enforce-lockfile && flutter build linux --release --no-pub'
     cd {{FLUTTER_HELLO}} && flutter pub get --offline --enforce-lockfile
+    strip --strip-unneeded {{FLUTTER_HELLO}}/build/linux/x64/release/bundle/vixen_hello
+    find {{FLUTTER_HELLO}}/build/linux/x64/release/bundle/lib -maxdepth 1 -type f -name '*_plugin.so' \
+        -exec strip --strip-unneeded {} +
 
 size-flutter-linux: build-flutter-size-linux
     node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle
