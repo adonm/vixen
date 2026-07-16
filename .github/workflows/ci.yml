@@ -194,10 +194,20 @@ jobs:
           printf 'RUSTY_V8_ARCHIVE=%s\n' "$archive" >> "$GITHUB_ENV"
 
       - name: Build Flutter release bundle
+        env:
+          CARGO_BUILD_JOBS: "2"
         run: |
           cd flutter/vixen_shell
           flutter pub get --enforce-lockfile
-          flutter build linux --release --no-pub
+          for attempt in 1 2; do
+            if flutter build linux --release --no-pub; then
+              break
+            fi
+            if test "$attempt" -eq 2; then
+              exit 1
+            fi
+            echo 'Flutter release build failed; retrying once with its populated cache' >&2
+          done
           strip --strip-unneeded build/linux-gtk4/x64/release/bundle/vixen_shell
           find build/linux-gtk4/x64/release/bundle/lib -maxdepth 1 -type f \
             -name '*_plugin.so' -exec strip --strip-unneeded {} +
