@@ -222,7 +222,7 @@ _build-wayland-virtual-pointer: linux-release-check-inputs
 # commit, and nested/root wheel routing in the release process.
 linux-interaction-smoke: build-flutter-release-linux _build-wayland-virtual-pointer
     test -x "{{WTYPE}}" || command -v "{{WTYPE}}" >/dev/null || { printf '%s\n' "wtype is required for native Wayland keyboard input" >&2; exit 1; }
-    command -v ibus >/dev/null && ibus list-engine | grep -q '^  anthy -' || { printf '%s\n' "IBus Anthy is required for native preedit evidence" >&2; exit 1; }
+    command -v ibus >/dev/null && ibus list-engine | grep -q '^  mozc-jp -' || { printf '%s\n' "IBus Mozc is required for native preedit evidence" >&2; exit 1; }
     test -n "$DBUS_SESSION_BUS_ADDRESS" || { printf '%s\n' "an active user D-Bus/AT-SPI session is required" >&2; exit 1; }
     python3 -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi'
     rm -rf .tmp/linux-interaction-wayland .tmp/interaction-profile && mkdir -m 700 -p .tmp/linux-interaction-wayland
@@ -346,6 +346,7 @@ test-r7: _flutter-sdk-present
     cc -std=c11 -Wall -Wextra -Werror -fsyntax-only crates/vixen-ffi/tests/header_smoke.c
     jq empty fixtures/manifest.json
     node --check scripts/flutter-fixture-manifest.mjs
+    python3 scripts/test_flutter_interaction_smoke.py
     cd flutter/vixen_shell && dart format --output=none --set-exit-if-changed lib test
     cd flutter/vixen_shell && flutter analyze
     cd flutter/vixen_shell && flutter test --enable-impeller --dart-define=VIXEN_REQUIRE_IMPELLER=true

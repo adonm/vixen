@@ -252,7 +252,9 @@ impl RenderMutationBatch {
             .collect::<BTreeMap<_, _>>();
 
         let mut mutations = Vec::new();
-        if base.viewport != target.viewport {
+        if base.viewport != target.viewport
+            || base.revision.viewport_generation != target.revision.viewport_generation
+        {
             mutations.push(RenderMutation::SetViewport(target.viewport));
         }
         mutations.extend(
@@ -1233,6 +1235,29 @@ mod tests {
             })
             .unwrap();
         assert_eq!(replica.viewport(), Some(next_viewport));
+    }
+
+    #[test]
+    fn snapshot_diff_records_same_sized_viewport_generations() {
+        let base = snapshot(1);
+        let mut target = snapshot(2);
+        target.revision.viewport_generation = 2;
+
+        let batch = RenderMutationBatch::between(&base, &target).unwrap();
+        assert!(matches!(
+            batch.mutations.first(),
+            Some(RenderMutation::SetViewport(next)) if *next == target.viewport
+        ));
+
+        let mut replica = RenderReplica::default();
+        replica.accept_full_snapshot(base).unwrap();
+        assert_eq!(
+            replica.apply_batch(batch).unwrap(),
+            ApplyRenderBatchOutcome::Applied {
+                revision: target.revision
+            }
+        );
+        assert_eq!(replica.viewport(), Some(target.viewport));
     }
 
     #[test]
