@@ -503,14 +503,24 @@ repeated visits and zero across unique visits, then added 139,264 bytes for a
 This is a checked-in single-host measurement, not a growth budget or broad
 history/cache workload.
 
-**Remaining R8 blocker:** this host still lacks the required Mozc IBus engine,
-so the full native interaction/IME recipe has not been reproduced. The existing
-process-filtered `linux-at-spi-smoke` name gate passes, but a stronger diagnostic
-reached the exported text role/editable-visible-showing states and then exposed
-Linux AT-SPI gaps: `Component` bounds calls timed out and the advertised `Focus`
-action produced neither DOM focus nor a newer commit. R8 remains open until
-those native interaction/accessibility failures have a passing executable gate;
-the completed frame/GPU evidence does not waive them.
+**Native interaction/accessibility checkpoint:** R8's final gate passed on
+2026-07-17. An unchanged Fedora `ibus-mozc`/`mozc`
+2.29.5111.102-16.fc43 pair ran from a workspace-local extraction under a private
+IBus daemon; a user-namespace bind supplied its compiled `/usr/libexec` path
+without changing host packages. The release/AOT Cage run observed real GTK
+preedit start/update/end and commits in both the native input and
+contenteditable controls. A narrowly scoped Linux-runner guard terminates
+Flutter 3.47's recursive `Component.get_extents` walk at its non-component
+`FlViewAccessible` root; descendant bounds remain Flutter-authored. The same run
+then observed the editor as text/editable/visible/showing with positive bounds
+`(8, 187, 40, 20)`, invoked Flutter's unchanged native `Focus` action, reached
+DOM `focus=editor`, and advanced the same document from commit 18 to 20. The
+complete interaction corridor continued through IME, wheel ownership and
+cancellation, script/root scroll, navigation stop/recovery, keyboard input, and
+clean app exit (`commits=3>31>34>40>45`). `just linux-at-spi-smoke` separately
+passed the process-filtered name gate. This closes R8; it is one controlled
+Linux/IBus/Mozc/AT-SPI proof, not an IME, assistive-technology, compositor, or
+device matrix.
 
 **Exit:** the controlled Linux corridor uses no transitional renderer component,
 all renderer failure modes are bounded, and the next compatibility failure can be
@@ -518,8 +528,8 @@ reduced directly against the final architecture.
 
 ## Alpha — converge live browser state on render commits
 
-R8 remains a release blocker. Independent shared-core reductions may proceed in
-this order when they do not hide or broaden the remaining native-host failures.
+R8 is complete. Continue shared-core convergence in this order without
+reintroducing native renderer ownership or weakening the landed host gates.
 
 ### A1. Live document/runtime convergence
 
@@ -708,15 +718,13 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Finish R8 native host stabilization:** install/reproduce the pinned Mozc
-   path, then reduce and fix Linux AT-SPI `Component` bounds and advertised
-   `Focus` action delivery before rerunning the complete interaction/IME gate.
-   Compatibility, rendered CDP recovery, release archive, size, startup,
-   app-process memory, capture, exact-frame timings, one physical GPU/driver, and
-   profile growth have post-R7 checkpoints above.
-2. **Continue A1 live document convergence:** use the landed live `dataset`
+1. **Continue A1 live document convergence:** use the landed live `dataset`
    vertical as the pattern; take the next snapshot/shim family only with one
    mutation/revision, synchronous geometry, CDP, and exact Flutter-pixel proof.
+2. **Preserve the R8 host corridor:** keep real Mozc preedit/commit and native
+   AT-SPI role/state/bounds/action → DOM → newer-commit evidence green while
+   widening shared-core behavior; do not replace it with injected text or
+   BrowserCore geometry.
 
 Do not reintroduce native layout/paint/frame ownership while stabilizing. A
 security, data-loss, or release-blocking regression may preempt the queue.

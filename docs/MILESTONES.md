@@ -114,6 +114,12 @@ gates are deleted.
   **8,192 bytes** and **0 bytes** of allocated growth respectively; a persisted
   65,536-byte localStorage payload added **139,264 bytes** and passed reopen.
   Single-host, measurement-only, and not a budget; see `BASELINES.md`.
+- R8 native-host checkpoint: the release/AOT Cage corridor passed with real IBus
+  Mozc preedit/commit in native and contenteditable controls, positive Flutter
+  AT-SPI editor bounds **(8, 187, 40, 20)**, unchanged native `Focus` → DOM focus
+  → same-document commit **18 → 20**, wheel cancellation/scroll/navigation
+  recovery, and clean exit. Single controlled Fedora host, not an IME,
+  assistive-technology, compositor, or device matrix.
 - External automation contract: [`CDP_PLAYWRIGHT_SMOKE.md`](CDP_PLAYWRIGHT_SMOKE.md).
 - Browser ownership/cancellation vertical: `just test-browser-core` (engine,
   headless, and FFI controller adapters through the production command/event

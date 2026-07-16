@@ -80,6 +80,12 @@ semantic bounds. Stale action generations and stale commits fail closed.
 Accessibility metadata refresh is independent of scene capture. There is no
 frame/Semantics pairing or BrowserCore layout bbox fallback.
 
+The pinned Flutter 3.47 GTK3 bridge recursively asks its non-component
+`FlViewAccessible` root for `Component` extents. The Linux runner terminates only
+that root walk with view-local bounds; descendant transforms and sizes remain
+the displayed Flutter semantics geometry, and Flutter's native semantic-action
+dispatch remains unchanged.
+
 ## Lifecycle and recovery
 
 Host-view commands carry a monotonic generation, physical viewport, scale,

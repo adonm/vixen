@@ -75,8 +75,10 @@ Pre-v1.0. The current integrated vertical includes:
 - A text/runtime-only `vixen-headless`, CDP core, C ABI/Dart worker bridge, Rust
   source-inspection WPT runner, and Flutter-rendered fixture/CDP/Playwright
   runners. Render-dependent manifest checks are explicitly routed to Flutter.
-- R1–R7 evidence recipes. `just test-r7` is the focused cutover/deletion gate;
-  `just gate-r7` composes all prior rendered product evidence.
+- R1–R8 evidence. `just test-r7` is the focused cutover/deletion gate;
+  `just gate-r7` composes all prior rendered product evidence, while the R8
+  checkpoints add compatibility/release/frame/GPU rebaselines and a passing
+  real Mozc plus native AT-SPI interaction corridor.
 
 The project is not yet a daily-driver browser. Remaining work is product breadth:
 standards compatibility, accessibility/IME/device matrices, performance and size,

@@ -31,22 +31,24 @@ The current ownership contract is specified in `ARCHITECTURE.md`, the renderer
 and shell contract in `FLUTTER_SHELL.md`, acceptance in `ACCEPTANCE.md`, and
 compatibility evidence in `COMPAT.md`.
 
-## Immediate queue: remaining R8 blockers and A1 convergence
+## Immediate queue: A1 convergence after R8
 
 The complete 270-fixture Flutter manifest, external rendered Playwright/CDP,
 release archive/size, startup/capture/memory, profile growth, 45-frame software
 and physical AMD/Mesa measurements, renderer reset, and exact scene recovery now
 have post-R7 checkpoints.
 
-1. Reproduce the full native interaction gate with the pinned Mozc IBus engine;
-   do not substitute direct text injection for preedit/commit evidence.
-2. Reduce and fix Linux AT-SPI `Component` bounds timeouts and the advertised but
-   inert content `Focus` action, then require role/state/bounds/action → DOM →
-   newer-commit evidence without BrowserCore geometry fallback.
-3. Continue A1 one host family at a time. The stable live `DOMStringMap` is the
+R8 completed on 2026-07-17: the full release/AOT native interaction gate passed
+with real workspace-local IBus Mozc preedit/commit, Flutter-authored positive
+AT-SPI bounds, native `Focus` → DOM focus → newer same-document commit evidence,
+and the remaining interaction corridor. Keep that gate intact; it is one
+controlled host proof rather than an IME or assistive-technology matrix.
+
+1. Continue A1 one host family at a time. The stable live `DOMStringMap` is the
    first landed slice; each next slice needs one mutation/source revision,
    synchronous geometry where relevant, CDP agreement, and exact Flutter pixels.
-4. Fix these failures before widening standards or product breadth.
+2. Preserve the complete R8 compatibility, release, renderer, and native-host
+   gates while widening standards behavior or product breadth.
 
 ## Post-stabilization priorities
 
