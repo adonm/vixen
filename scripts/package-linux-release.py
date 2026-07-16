@@ -17,7 +17,7 @@ REQUIRED = (
     "data/icudtl.dat",
     "data/flutter_assets/AssetManifest.bin",
     "lib/libapp.so",
-    "lib/libflutter_linux_gtk.so",
+    "lib/libflutter_linux_gtk4.so",
     "lib/libvixen_ffi.so",
 )
 PREFIX = PurePosixPath("vixen")
@@ -33,6 +33,7 @@ def validate_bundle(bundle: Path) -> None:
     if not os.access(bundle / "vixen_shell", os.X_OK):
         raise SystemExit("release runner is not executable")
 
+    saw_gtk4 = False
     for path in bundle.rglob("*"):
         if not path.is_file():
             continue
@@ -47,6 +48,21 @@ def validate_bundle(bundle: Path) -> None:
             ).stdout
             if re.search(r"\.debug_(?:info|line)\b", sections):
                 raise SystemExit(f"release ELF contains debug sections: {path.relative_to(bundle)}")
+            dynamic = subprocess.run(
+                ["readelf", "--dynamic", "--wide", path],
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            needed = set(re.findall(r"\(NEEDED\).*Shared library: \[([^]]+)]", dynamic))
+            if "libgtk-3.so.0" in needed:
+                raise SystemExit(
+                    f"GTK4 release ELF links GTK3: {path.relative_to(bundle)}"
+                )
+            saw_gtk4 = saw_gtk4 or "libgtk-4.so.1" in needed
+
+    if not saw_gtk4:
+        raise SystemExit("GTK4 release bundle does not link libgtk-4.so.1")
 
     forbidden = [
         path.relative_to(bundle)

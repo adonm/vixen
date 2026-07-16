@@ -26,7 +26,7 @@ FLUTTER_ENGINE        := "bbd15867c003dc66e678cb3c218649fa8bf914f2"
 FLUTTER_HELLO         := "fixtures/artifact-size/flutter_hello"
 RUSTY_V8_ARCHIVE      := ".tmp/linux-release/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
 RUSTY_V8_SHA256       := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"
-LINUX_RELEASE_BUNDLE  := "flutter/vixen_shell/build/linux/x64/release/bundle"
+LINUX_RELEASE_BUNDLE  := "flutter/vixen_shell/build/linux-gtk4/x64/release/bundle"
 LINUX_RELEASE_ARCHIVE := ".tmp/release/vixen-linux-x86_64.tar.gz"
 WTYPE                 := env_var_or_default("WTYPE", "wtype")
 
@@ -266,13 +266,13 @@ build-flutter-size-linux: build-flutter-release-linux
     cd {{FLUTTER_HELLO}} && flutter pub get --offline --enforce-lockfile
 
 size-flutter-linux: build-flutter-size-linux
-    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux-gtk4/x64/release/bundle --vixen-bundle {{LINUX_RELEASE_BUNDLE}}
 
 size-flutter-linux-json: build-flutter-size-linux
-    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle --json
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux-gtk4/x64/release/bundle --vixen-bundle {{LINUX_RELEASE_BUNDLE}} --json
 
 size-flutter-linux-existing:
-    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux-gtk4/x64/release/bundle --vixen-bundle {{LINUX_RELEASE_BUNDLE}}
 
 # ADR-017 ownership vertical: production BrowserCore transport, context/runtime
 # generations, bounded events, profile/session partitioning, and headless adapter.

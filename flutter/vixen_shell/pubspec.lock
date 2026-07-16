@@ -137,13 +137,14 @@ packages:
     source: hosted
     version: "0.2.8"
   gtk:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: gtk
-      sha256: "4ff85b2a16724029dd9e5bbb5a94b6918f9973f74ba571c949d2002801879cf5"
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.2.0"
+      path: "."
+      ref: "8f9a5db741176a25657fbf6fecb2a90df8741e48"
+      resolved-ref: "8f9a5db741176a25657fbf6fecb2a90df8741e48"
+      url: "https://github.com/adonm/gtk.dart.git"
+    source: git
+    version: "2.3.0"
   image:
     dependency: transitive
     description:
@@ -281,21 +282,23 @@ packages:
     source: hosted
     version: "6.5.0"
   screen_retriever:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: screen_retriever
-      sha256: ace919117a7520c13a50a6259e60c4a0d4cbe98809468792a91b5c5adada2aa6
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.2.2"
+      path: "packages/screen_retriever"
+      ref: a4d8f718ecbee78207945aa87ded0f97e2509c87
+      resolved-ref: a4d8f718ecbee78207945aa87ded0f97e2509c87
+      url: "https://github.com/adonm/screen_retriever.git"
+    source: git
+    version: "0.2.3"
   screen_retriever_linux:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: screen_retriever_linux
-      sha256: "7b52006a5ceae1f3d5af7f77188c3290d6e7d8ded16d99809bea84967c65c257"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.2.2"
+      path: "packages/screen_retriever_linux"
+      ref: a4d8f718ecbee78207945aa87ded0f97e2509c87
+      resolved-ref: a4d8f718ecbee78207945aa87ded0f97e2509c87
+      url: "https://github.com/adonm/screen_retriever.git"
+    source: git
+    version: "0.2.3"
   screen_retriever_macos:
     dependency: transitive
     description:
@@ -390,13 +393,14 @@ packages:
     source: hosted
     version: "15.2.0"
   window_manager:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: window_manager
-      sha256: "05c231fd7b23d2380f14c5cc10b7b93d60d4fa4a2fb4e0f032de27e44b5560e9"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.5.2"
+      path: "packages/window_manager"
+      ref: "3acfbdd1624202edfe03ccc7d4eae548b6c18459"
+      resolved-ref: "3acfbdd1624202edfe03ccc7d4eae548b6c18459"
+      url: "https://github.com/adonm/window_manager.git"
+    source: git
+    version: "0.5.3"
   xdg_directories:
     dependency: transitive
     description:
@@ -430,13 +434,14 @@ packages:
     source: hosted
     version: "0.2.2"
   yaru_window_linux:
-    dependency: transitive
+    dependency: "direct overridden"
     description:
-      name: yaru_window_linux
-      sha256: "885ad0ba5832d350c42862ce02da478599ef550280eb7f6b15285481fcff6f53"
-      url: "https://pub.dev"
-    source: hosted
-    version: "0.2.2"
+      path: "packages/yaru_window_linux"
+      ref: "4f22de320ea0270662506900e1ae070eb7b6cb13"
+      resolved-ref: "4f22de320ea0270662506900e1ae070eb7b6cb13"
+      url: "https://github.com/adonm/yaru_window.dart.git"
+    source: git
+    version: "0.2.3"
   yaru_window_manager:
     dependency: transitive
     description:

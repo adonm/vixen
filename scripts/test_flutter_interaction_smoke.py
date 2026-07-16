@@ -174,6 +174,47 @@ class LinuxCiContractTests(unittest.TestCase):
         self.assertEqual(release_steps.count("WLR_RENDERER=pixman"), 2)
         self.assertNotIn("WLR_RENDERER=gles2", release_steps)
 
+    def test_gtk4_release_uses_isolated_build_directory(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        release_job = workflow.split("linux-release:", maxsplit=1)[1].split(
+            "release:", maxsplit=1
+        )[0]
+        self.assertIn("build/linux-gtk4/x64/release/bundle", release_job)
+        self.assertNotIn("build/linux/x64/release/bundle", release_job)
+
+        hello_pubspec = (
+            ROOT / "fixtures" / "artifact-size" / "flutter_hello" / "pubspec.yaml"
+        ).read_text()
+        self.assertIn("linux-gtk-default: gtk4", hello_pubspec)
+
+    def test_gtk4_release_installs_pinned_engine_artifact(self) -> None:
+        workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
+        release_job = workflow.split("linux-release:", maxsplit=1)[1].split(
+            "release:", maxsplit=1
+        )[0]
+        self.assertIn("scripts/install_flutter_gtk4_sdk.py", release_job)
+        self.assertIn("328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188", release_job)
+        self.assertIn("fc1ad955f16467c959e3cd8079b760d5af0984aa", release_job)
+        self.assertNotIn("http:flutter-beta", release_job)
+
+        installer = (ROOT / "scripts" / "install_flutter_gtk4_sdk.py").read_text()
+        self.assertIn("github.com/adonm/flutter-dev/releases/download", installer)
+        self.assertIn("flutter-engine-gtk4-", installer)
+        self.assertIn(
+            "61cafba174d24e2c4f73e416cb98c0b33a0ca751b99bf0d9c42cf2c4f1f44add",
+            installer,
+        )
+        self.assertNotIn("__CI_LIBRARY_SHA256__", installer)
+        self.assertIn("linux-x64-release", installer)
+        self.assertIn("libflutter_linux_gtk4.so", installer)
+        self.assertIn("libgtk-4.so.1", installer)
+        self.assertIn("libgtk-3.so.0", installer)
+
+        for script in ("flutter-at-spi-smoke.py", "flutter-interaction-smoke.py"):
+            smoke = (ROOT / "scripts" / script).read_text()
+            self.assertIn('"GTK_A11Y": "atspi"', smoke)
+            self.assertNotIn('"GTK_A11Y": "1"', smoke)
+
     def test_local_smoke_requires_the_same_ibus_engine(self) -> None:
         justfile = (ROOT / "justfile").read_text()
         recipe = justfile.split("linux-interaction-smoke:", maxsplit=1)[1].split(

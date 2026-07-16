@@ -1,0 +1,25 @@
+dependency_overrides:
+  gtk:
+    git:
+      url: https://github.com/adonm/gtk.dart.git
+      ref: 8f9a5db741176a25657fbf6fecb2a90df8741e48
+  screen_retriever:
+    git:
+      url: https://github.com/adonm/screen_retriever.git
+      ref: a4d8f718ecbee78207945aa87ded0f97e2509c87
+      path: packages/screen_retriever
+  screen_retriever_linux:
+    git:
+      url: https://github.com/adonm/screen_retriever.git
+      ref: a4d8f718ecbee78207945aa87ded0f97e2509c87
+      path: packages/screen_retriever_linux
+  window_manager:
+    git:
+      url: https://github.com/adonm/window_manager.git
+      ref: 3acfbdd1624202edfe03ccc7d4eae548b6c18459
+      path: packages/window_manager
+  yaru_window_linux:
+    git:
+      url: https://github.com/adonm/yaru_window.dart.git
+      ref: 4f22de320ea0270662506900e1ae070eb7b6cb13
+      path: packages/yaru_window_linux
