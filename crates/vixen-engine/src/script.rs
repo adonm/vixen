@@ -4396,6 +4396,76 @@ mod tests {
     }
 
     #[test]
+    fn live_structural_collections_retain_identity_and_static_queries_stay_static() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///live-collections.html",
+            "<html><body>\
+               <div id='root'><span id='first' class='item'>first</span></div>\
+               <form id='form'><input id='first-control' name='first-control'></form>\
+             </body></html>",
+        )
+        .unwrap();
+
+        let initial_generation = page.renderer_source_generation();
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => {\
+                   const root = document.querySelector('#root');\
+                   const form = document.querySelector('#form');\
+                   globalThis.__liveChildNodes = root.childNodes;\
+                   globalThis.__liveChildren = root.children;\
+                   globalThis.__liveItems = root.getElementsByClassName('item');\
+                   globalThis.__liveSpans = document.getElementsByTagName('span');\
+                   globalThis.__staticItems = root.querySelectorAll('.item');\
+                   globalThis.__liveForms = document.forms;\
+                   globalThis.__liveFormElements = form.elements;\
+                   const second = document.createElement('span');\
+                   second.id = 'second';\
+                   second.className = 'item';\
+                   second.textContent = 'second';\
+                   root.appendChild(second);\
+                   return [\
+                     __liveChildNodes === root.childNodes,\
+                     __liveChildren === root.children,\
+                     __liveItems === root.getElementsByClassName('item'),\
+                     __liveSpans === document.getElementsByTagName('span'),\
+                     __liveForms === document.forms,\
+                     __liveChildNodes.length, __liveChildren.length,\
+                     __liveItems.length, __liveSpans.length, __staticItems.length,\
+                     __liveChildren.second === second, __liveChildren.namedItem('second') === second\
+                   ].join(':');\
+                 })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:true:true:true:true:2:2:2:2:1:true:true".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 1);
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => {\
+                   const form = document.querySelector('#form');\
+                   const second = document.createElement('input');\
+                   second.id = 'second-control';\
+                   second.name = 'second-control';\
+                   form.appendChild(second);\
+                   return [\
+                     __liveFormElements === form.elements,\
+                     __liveFormElements.length, form.length,\
+                     __liveFormElements['second-control'] === second\
+                   ].join(':');\
+                 })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:2:2:true".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 2);
+    }
+
+    #[test]
     fn page_dynamic_inline_script_elements_execute_when_inserted() {
         let mut rt = JsRuntime::new().expect("engine init");
         let mut page = Page::from_html(

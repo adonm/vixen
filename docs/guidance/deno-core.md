@@ -64,7 +64,9 @@ Current state:
   `CSSStyleDeclaration` across external and declaration-API writes.
   `Element.attributes` retains a live `NamedNodeMap` and stable attached `Attr`
   nodes whose values read and write the same Page state; detached Attr operations
-  remain separate work. Element geometry reads
+  remain separate work. Structural Node/Element/document/form/select/table
+  collections use retained resolver-backed `NodeList`/`HTMLCollection` objects;
+  selector-all results intentionally remain static. Element geometry reads
   (`getBoundingClientRect()` / `getClientRects()` / `getBoxQuads()`), Range
   rectangles, and client/offset/scroll metrics now cross a DOM rect op and
   materialize Web-shaped rect/list/quad objects on generated WebIDL prototypes.

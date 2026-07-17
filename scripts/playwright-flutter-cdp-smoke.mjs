@@ -224,6 +224,29 @@ async function main() {
       return status.classList === globalThis.__classListObject;
     });
     if (!classListBeforeClick) fail('classList identity was not stable before input');
+    const structuralCollectionsBeforeClick = await page.evaluate(() => {
+      const root = document.querySelector('#dynamic-root');
+      globalThis.__bodyChildren = document.body.children;
+      globalThis.__rootChildren = root.children;
+      globalThis.__liveBadges = document.getElementsByClassName('badge');
+      globalThis.__staticBadges = document.querySelectorAll('.badge');
+      return {
+        bodyStable: __bodyChildren === document.body.children,
+        rootStable: __rootChildren === root.children,
+        badgesStable: __liveBadges === document.getElementsByClassName('badge'),
+        rootLength: __rootChildren.length,
+        liveLength: __liveBadges.length,
+        staticLength: __staticBadges.length,
+      };
+    });
+    if (!structuralCollectionsBeforeClick.bodyStable
+        || !structuralCollectionsBeforeClick.rootStable
+        || !structuralCollectionsBeforeClick.badgesStable
+        || structuralCollectionsBeforeClick.rootLength !== 0
+        || structuralCollectionsBeforeClick.liveLength !== 0
+        || structuralCollectionsBeforeClick.staticLength !== 0) {
+      fail(`initial structural collections were ${JSON.stringify(structuralCollectionsBeforeClick)}`);
+    }
     const hitBox = await page.locator('#hit').boundingBox({ timeout: 20000 });
     if (!hitBox || hitBox.x !== 0 || hitBox.y !== 0 || hitBox.width !== 120 || hitBox.height < 40) {
       fail(`Flutter commit geometry for #hit was ${JSON.stringify(hitBox)}`);
@@ -249,6 +272,50 @@ async function main() {
         || JSON.stringify(classListEvidence.tokens) !== JSON.stringify(['clicked'])
         || classListEvidence.synchronousWidth !== 140) {
       fail(`live classList evidence was ${JSON.stringify(classListEvidence)}`);
+    }
+    const structuralCollectionsEvidence = await page.evaluate(() => {
+      const root = document.querySelector('#dynamic-root');
+      const dynamic = document.querySelector('#dynamic');
+      return {
+        bodyStable: __bodyChildren === document.body.children,
+        rootStable: __rootChildren === root.children,
+        badgesStable: __liveBadges === document.getElementsByClassName('badge'),
+        rootLength: __rootChildren.length,
+        liveLength: __liveBadges.length,
+        staticLength: __staticBadges.length,
+        indexed: __rootChildren[0] === dynamic,
+        named: __rootChildren.dynamic === dynamic,
+        text: dynamic?.textContent,
+      };
+    });
+    if (!structuralCollectionsEvidence.bodyStable
+        || !structuralCollectionsEvidence.rootStable
+        || !structuralCollectionsEvidence.badgesStable
+        || structuralCollectionsEvidence.rootLength !== 1
+        || structuralCollectionsEvidence.liveLength !== 1
+        || structuralCollectionsEvidence.staticLength !== 0
+        || !structuralCollectionsEvidence.indexed
+        || !structuralCollectionsEvidence.named
+        || structuralCollectionsEvidence.text !== 'dynamic:1') {
+      fail(`live structural collections were ${JSON.stringify(structuralCollectionsEvidence)}`);
+    }
+    const structuralDocument = await firstSession.send('DOM.getDocument', {
+      depth: -1,
+      pierce: true,
+    });
+    const dynamicNode = await firstSession.send('DOM.querySelector', {
+      nodeId: structuralDocument.root.nodeId,
+      selector: '#dynamic',
+    });
+    const dynamicDescription = await firstSession.send('DOM.describeNode', {
+      nodeId: dynamicNode.nodeId,
+    });
+    const dynamicAttributePairs = Object.fromEntries(Array.from(
+      { length: dynamicDescription.node.attributes.length / 2 },
+      (_, index) => dynamicDescription.node.attributes.slice(index * 2, index * 2 + 2),
+    ));
+    if (dynamicNode.nodeId <= 0 || dynamicAttributePairs.class !== 'badge') {
+      fail(`CDP DOM did not agree with structural collections: ${JSON.stringify({ dynamicNode, dynamicAttributePairs })}`);
     }
     const statusNode = await firstSession.send('DOM.querySelector', {
       nodeId: document.root.nodeId,

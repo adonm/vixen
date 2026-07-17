@@ -615,6 +615,20 @@ before byte-identical target switching and renderer recovery. Detached Attr
 lifecycle plus `setNamedItem`/`removeNamedItem`, and live structural collections,
 remain separate work.
 
+**Seventh A1 checkpoint:** live structural collection attributes now retain
+resolver-backed identity while reflecting Page mutations: Node/Element
+`childNodes`/`children`, document forms/images/links/scripts, form controls,
+select/datalist options, labels, and table collections. Element/document
+`getElementsByTagName` and `getElementsByClassName` return cached live
+`HTMLCollection`s; `querySelectorAll` remains a static `NodeList` as required.
+Focused proof performs two structural writes, observes exactly one
+renderer-source generation each, preserves collection identity/index/name
+lookup, and proves a pre-mutation query list stays static. The release/AOT click
+corridor retains empty collections before Flutter-routed input, observes the
+rendered `#dynamic.badge` afterward through the same objects, matches the
+authoritative CDP node, and keeps the pinned classList scene hash byte-identical.
+Detached Attr operations and live CSSOM/script scheduling remain separate work.
+
 **Proof:** script-driven mutation visibly changes the Flutter scene; synchronous
 and asynchronous geometry observe the right commit; CDP and page script inspect
 the same nodes.

@@ -2655,13 +2655,42 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   class VixenNodeList {
     constructor(nodeIds) {
-      const nodes = nodeIds.map((node) => typeof node === 'number' ? wrapNodeById(node) : node).filter((node) => node !== null);
-      Object.defineProperty(this, '__vixenNodes', {
-        value: Object.freeze(nodes),
+      const resolve = typeof nodeIds === 'function'
+        ? nodeIds
+        : (() => nodeIds.slice());
+      Object.defineProperty(this, '__vixenResolveNodes', {
+        value: () => resolve()
+          .map((node) => typeof node === 'number' ? wrapNodeById(node) : node)
+          .filter((node) => node !== null),
         enumerable: false,
       });
-      defineIndexedValues(this, this.__vixenNodes);
+      return new Proxy(this, {
+        get(target, property, receiver) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            return target.item(Number(property));
+          }
+          return Reflect.get(target, property, receiver);
+        },
+        ownKeys(target) {
+          const indexed = Array.from({ length: target.length }, (_, index) => String(index));
+          return [...indexed, ...Reflect.ownKeys(target)];
+        },
+        getOwnPropertyDescriptor(target, property) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            const node = target.item(Number(property));
+            if (node === null) return undefined;
+            return {
+              value: node,
+              writable: false,
+              enumerable: true,
+              configurable: true,
+            };
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      });
     }
+    get __vixenNodes() { return this.__vixenResolveNodes(); }
     get length() { return this.__vixenNodes.length; }
     item(index) {
       const n = Number(index);
@@ -2676,13 +2705,62 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   class VixenHTMLCollection {
     constructor(nodeIds) {
-      const nodes = nodeIds.map(wrapElementByNodeId).filter((node) => node !== null);
-      Object.defineProperty(this, '__vixenNodes', {
-        value: Object.freeze(nodes),
+      const resolve = typeof nodeIds === 'function'
+        ? nodeIds
+        : (() => nodeIds.slice());
+      Object.defineProperty(this, '__vixenResolveNodes', {
+        value: () => resolve()
+          .map((node) => typeof node === 'number' ? wrapElementByNodeId(node) : node)
+          .filter((node) => node !== null),
         enumerable: false,
       });
-      defineIndexedValues(this, this.__vixenNodes);
+      return new Proxy(this, {
+        get(target, property, receiver) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            return target.item(Number(property));
+          }
+          if (typeof property === 'string' && !Reflect.has(target, property)) {
+            const node = target.namedItem(property);
+            if (node !== null) return node;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+        ownKeys(target) {
+          const nodes = target.__vixenNodes;
+          const indexed = Array.from({ length: nodes.length }, (_, index) => String(index));
+          const own = Reflect.ownKeys(target);
+          const named = nodes.flatMap((node) => [node.id, elementAttribute(node.__vixenNodeId, 'name')])
+            .filter((name, index, names) => name && !indexed.includes(name)
+              && !own.includes(name) && names.indexOf(name) === index);
+          return [...indexed, ...named, ...own];
+        },
+        getOwnPropertyDescriptor(target, property) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            const node = target.item(Number(property));
+            if (node === null) return undefined;
+            return {
+              value: node,
+              writable: false,
+              enumerable: true,
+              configurable: true,
+            };
+          }
+          if (typeof property === 'string' && !Reflect.has(target, property)) {
+            const node = target.namedItem(property);
+            if (node !== null) {
+              return {
+                value: node,
+                writable: false,
+                enumerable: false,
+                configurable: true,
+              };
+            }
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      });
     }
+    get __vixenNodes() { return this.__vixenResolveNodes(); }
     get length() { return this.__vixenNodes.length; }
     item(index) {
       const n = Number(index);
@@ -3512,8 +3590,16 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get ownerDocument() { return vixenDocument; }
     get isConnected() { return false; }
     get parentNode() { return null; }
-    get childNodes() { return new VixenNodeList([]); }
-    get children() { return new VixenHTMLCollection([]); }
+    get childNodes() {
+      return cachedElementObject(this, '__vixenChildNodes', () => new VixenNodeList(
+        () => [],
+      ));
+    }
+    get children() {
+      return cachedElementObject(this, '__vixenChildren', () => new VixenHTMLCollection(
+        () => [],
+      ));
+    }
     get firstChild() { return null; }
     get lastChild() { return null; }
     get firstElementChild() { return null; }
@@ -3563,6 +3649,13 @@ const DOM_API_BOOTSTRAP: &str = r#"
       });
     }
     return element[key];
+  }
+
+  function cachedQueryCollection(owner, kind, query, make) {
+    const cache = cachedElementObject(owner, '__vixenQueryCollections', () => new Map());
+    const key = kind + '\0' + query;
+    if (!cache.has(key)) cache.set(key, make());
+    return cache.get(key);
   }
 
   function makeStyleSheetObject(ownerNode) {
@@ -4058,17 +4151,22 @@ const DOM_API_BOOTSTRAP: &str = r#"
 
   function tableRowsCollection(element) {
     const tag = elementTag(element);
-    if (tag === 'table' || tag === 'thead' || tag === 'tbody' || tag === 'tfoot') return new VixenHTMLCollection(descendantElementsBySelector(element, 'tr'));
+    if (tag === 'table' || tag === 'thead' || tag === 'tbody' || tag === 'tfoot') {
+      return cachedElementObject(element, '__vixenRows', () => new VixenHTMLCollection(
+        () => descendantElementsBySelector(element, 'tr'),
+      ));
+    }
     return reflectedUnsigned(element, 'rows') || 2;
   }
 
   function tableCellsCollection(row) {
-    if (elementTag(row) !== 'tr') return new VixenHTMLCollection([]);
-    const cellIds = elementRecord(row).childElementNodeIds.filter((nodeId) => {
-      const cell = wrapElementByNodeId(nodeId);
-      return cell && (elementTag(cell) === 'td' || elementTag(cell) === 'th');
-    });
-    return new VixenHTMLCollection(cellIds);
+    return cachedElementObject(row, '__vixenCells', () => new VixenHTMLCollection(() => {
+      if (elementTag(row) !== 'tr') return [];
+      return elementRecord(row).childElementNodeIds.filter((nodeId) => {
+        const cell = wrapElementByNodeId(nodeId);
+        return cell && (elementTag(cell) === 'td' || elementTag(cell) === 'th');
+      });
+    }));
   }
 
   function tableRowIndex(row) {
@@ -4648,7 +4746,8 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   function optionElements(select) {
-    if (!select || typeof select.__vixenNodeId !== 'number' || elementTag(select) !== 'select') return [];
+    if (!select || typeof select.__vixenNodeId !== 'number'
+        || !['select', 'datalist'].includes(elementTag(select))) return [];
     return Array.from(select.querySelectorAll('option'));
   }
 
@@ -5056,8 +5155,16 @@ const DOM_API_BOOTSTRAP: &str = r#"
       const parent = this.parentNode;
       return parent && parent.nodeType === 1 ? parent : null;
     }
-    get childNodes() { return new VixenNodeList(childIds(elementRecord(this))); }
-    get children() { return new VixenHTMLCollection(elementRecord(this).childElementNodeIds); }
+    get childNodes() {
+      return cachedElementObject(this, '__vixenChildNodes', () => new VixenNodeList(
+        () => childIds(elementRecord(this)),
+      ));
+    }
+    get children() {
+      return cachedElementObject(this, '__vixenChildren', () => new VixenHTMLCollection(
+        () => elementRecord(this).childElementNodeIds,
+      ));
+    }
     get firstChild() {
       const ids = childIds(elementRecord(this));
       return wrapNodeById(ids.length ? ids[0] : null);
@@ -5379,7 +5486,11 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get caption() { return elementTag(this) === 'table' ? firstDescendantElementBySelector(this, 'caption') : null; }
     get tHead() { return elementTag(this) === 'table' ? firstDescendantElementBySelector(this, 'thead') : null; }
     get tFoot() { return elementTag(this) === 'table' ? firstDescendantElementBySelector(this, 'tfoot') : null; }
-    get tBodies() { return elementTag(this) === 'table' ? new VixenHTMLCollection(descendantElementsBySelector(this, 'tbody')) : new VixenHTMLCollection([]); }
+    get tBodies() {
+      return cachedElementObject(this, '__vixenTBodies', () => new VixenHTMLCollection(
+        () => elementTag(this) === 'table' ? descendantElementsBySelector(this, 'tbody') : [],
+      ));
+    }
     get cells() { return tableCellsCollection(this); }
     get rowIndex() { return tableRowIndex(this); }
     get sectionRowIndex() { return sectionRowIndex(this); }
@@ -5387,23 +5498,42 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get htmlFor() { return reflectedAttribute(this, 'for'); }
     set htmlFor(value) { setReflectedAttribute(this, 'for', value); }
     get control() { return labelControlElement(this); }
-    get labels() { return new VixenNodeList(controlLabelNodeIds(this)); }
+    get labels() {
+      return cachedElementObject(this, '__vixenLabels', () => new VixenNodeList(
+        () => controlLabelNodeIds(this),
+      ));
+    }
     get contentEditable() { return contentEditableState(this); }
     set contentEditable(value) { setReflectedAttribute(this, 'contenteditable', value); }
     get isContentEditable() { return isContentEditableElement(this); }
     get options() {
-      return elementTag(this) === 'select'
-        ? new VixenHTMLCollection(optionElements(this).map((option) => option.__vixenNodeId))
+      return elementTag(this) === 'select' || elementTag(this) === 'datalist'
+        ? cachedElementObject(this, '__vixenOptions', () => new VixenHTMLCollection(
+            () => optionElements(this).map((option) => option.__vixenNodeId),
+          ))
         : undefined;
     }
     get selectedOptions() {
       return elementTag(this) === 'select'
-        ? new VixenHTMLCollection(selectedOptionElements(this).map((option) => option.__vixenNodeId))
+        ? cachedElementObject(this, '__vixenSelectedOptions', () => new VixenHTMLCollection(
+            () => selectedOptionElements(this).map((option) => option.__vixenNodeId),
+          ))
         : undefined;
     }
     get selectedIndex() { return elementTag(this) === 'select' ? selectSelectedIndex(this) : -1; }
     set selectedIndex(value) { if (elementTag(this) === 'select') setSelectSelectedIndex(this, value); }
-    get length() { return elementTag(this) === 'select' ? optionElements(this).length : 0; }
+    get elements() {
+      return elementTag(this) === 'form'
+        ? cachedElementObject(this, '__vixenFormElements', () => new VixenHTMLCollection(
+            () => formControlElements(this).map((control) => control.__vixenNodeId),
+          ))
+        : undefined;
+    }
+    get length() {
+      if (elementTag(this) === 'select') return optionElements(this).length;
+      if (elementTag(this) === 'form') return formControlElements(this).length;
+      return 0;
+    }
     get size() {
       if (elementTag(this) !== 'select' && elementTag(this) !== 'input') return 0;
       const n = Number.parseInt(reflectedAttribute(this, 'size') || '0', 10);
@@ -5503,10 +5633,15 @@ const DOM_API_BOOTSTRAP: &str = r#"
     }
     getElementsByTagName(tagName) {
       const selector = String(tagName) === '*' ? '*' : String(tagName);
-      return new VixenHTMLCollection(findAllNodeIds(selector).filter((nodeId) => isDescendantOf(nodeId, this.__vixenNodeId)));
+      return cachedQueryCollection(this, 'tag', selector, () => new VixenHTMLCollection(
+        () => findAllNodeIds(selector).filter((nodeId) => isDescendantOf(nodeId, this.__vixenNodeId)),
+      ));
     }
     getElementsByClassName(className) {
-      return new VixenHTMLCollection(findAllNodeIds('.' + String(className)).filter((nodeId) => isDescendantOf(nodeId, this.__vixenNodeId)));
+      const selector = '.' + String(className);
+      return cachedQueryCollection(this, 'class', selector, () => new VixenHTMLCollection(
+        () => findAllNodeIds(selector).filter((nodeId) => isDescendantOf(nodeId, this.__vixenNodeId)),
+      ));
     }
     appendChild(child) { return appendChildNode(this, child); }
     removeChild(child) { return removeChildNode(this, child); }
@@ -5581,7 +5716,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     'placeholder', 'autocomplete', 'min', 'max', 'maxLength', 'minLength', 'pattern', 'step', 'cols', 'rows', 'wrap', 'low', 'high', 'optimum', 'position',
     'caption', 'tHead', 'tFoot', 'tBodies', 'cells', 'rowIndex', 'sectionRowIndex', 'cellIndex',
     'htmlFor', 'control', 'labels', 'contentEditable', 'isContentEditable',
-    'options', 'selectedOptions', 'selectedIndex', 'length', 'size', 'label', 'defaultSelected', 'selected', 'index',
+    'elements', 'options', 'selectedOptions', 'selectedIndex', 'length', 'size', 'label', 'defaultSelected', 'selected', 'index',
     'files', 'value', 'valueAsNumber', 'valueAsDate', 'textLength', 'indeterminate', 'willValidate', 'validity', 'validationMessage', 'checkValidity', 'reportValidity', 'setCustomValidity',
     'defaultValue', 'defaultChecked', 'selectionStart', 'selectionEnd', 'setSelectionRange', 'setRangeText', 'select', 'stepUp', 'stepDown', 'showPicker', 'checked',
     'getAttribute', 'hasAttribute', 'setAttribute', 'removeAttribute', 'toggleAttribute',
@@ -6448,7 +6583,11 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get ownerDocument() { return null; }
     get parentNode() { return null; }
     get parentElement() { return null; }
-    get childNodes() { return new VixenNodeList(data.documentElementNodeId === null ? [] : [data.documentElementNodeId]); }
+    get childNodes() {
+      return cachedElementObject(this, '__vixenChildNodes', () => new VixenNodeList(
+        () => data.documentElementNodeId === null ? [] : [data.documentElementNodeId],
+      ));
+    }
     get firstChild() { return this.documentElement; }
     get lastChild() { return this.documentElement; }
     get textContent() { return null; }
@@ -6474,10 +6613,26 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get body() { return wrapElementByNodeId(data.bodyNodeId); }
     get activeElement() { return wrapElementByNodeId(activeElementNodeId) || this.body; }
     get scrollingElement() { return wrapElementByNodeId(data.scrollingElementNodeId); }
-    get forms() { return new VixenHTMLCollection(data.collections.forms); }
-    get images() { return new VixenHTMLCollection(data.collections.images); }
-    get links() { return new VixenHTMLCollection(data.collections.links); }
-    get scripts() { return new VixenHTMLCollection(data.collections.scripts); }
+    get forms() {
+      return cachedElementObject(this, '__vixenForms', () => new VixenHTMLCollection(
+        () => findAllNodeIds('form'),
+      ));
+    }
+    get images() {
+      return cachedElementObject(this, '__vixenImages', () => new VixenHTMLCollection(
+        () => findAllNodeIds('img'),
+      ));
+    }
+    get links() {
+      return cachedElementObject(this, '__vixenLinks', () => new VixenHTMLCollection(
+        () => findAllNodeIds('a[href], area[href]'),
+      ));
+    }
+    get scripts() {
+      return cachedElementObject(this, '__vixenScripts', () => new VixenHTMLCollection(
+        () => findAllNodeIds('script'),
+      ));
+    }
     getRootNode() { return this; }
     contains(target) { return nodeContains(this, target); }
     hasFocus() { return documentHasFocus; }
@@ -6497,8 +6652,18 @@ const DOM_API_BOOTSTRAP: &str = r#"
         return record && record.id === value;
       }));
     }
-    getElementsByTagName(tagName) { return new VixenHTMLCollection(findAllNodeIds(String(tagName) === '*' ? '*' : String(tagName))); }
-    getElementsByClassName(className) { return new VixenHTMLCollection(findAllNodeIds('.' + String(className))); }
+    getElementsByTagName(tagName) {
+      const selector = String(tagName) === '*' ? '*' : String(tagName);
+      return cachedQueryCollection(this, 'tag', selector, () => new VixenHTMLCollection(
+        () => findAllNodeIds(selector),
+      ));
+    }
+    getElementsByClassName(className) {
+      const selector = '.' + String(className);
+      return cachedQueryCollection(this, 'class', selector, () => new VixenHTMLCollection(
+        () => findAllNodeIds(selector),
+      ));
+    }
     createElement(tagName) {
       const tag = String(tagName).trim().toLowerCase();
       if (!/^[a-z][a-z0-9-]*$/.test(tag)) throw new TypeError('Invalid tag name: ' + tagName);

@@ -170,6 +170,9 @@ authoritative mutation/cascade path.
 `Element.attributes` now retains a live `NamedNodeMap`, and attached `Attr`
 objects retain identity, reflect external writes, and write through `Attr.value`.
 Detached Attr lifecycle and `setNamedItem`/`removeNamedItem` remain incomplete.
+Structural `childNodes`/`children`, document/form/select/table collections, and
+`getElementsBy*` results are retained live objects; `querySelectorAll` remains a
+static result by design.
 
 Static parser-discovered PNG `<img src>` has one resource-to-pixel vertical.
 BrowserCore applies exact generations, URL/CSP/mixed-content/redirect policy,
@@ -213,6 +216,9 @@ through valid token writes, then retain inline `style` through external and API
 writes and attached attributes through `Attr.value`. Page and CDP views match
 the resulting geometry; every exact scene recovers byte-identically after
 renderer reset.
+The seventh extension retains empty structural collections across the rendered
+click mutation, observes the same dynamic node through live indexed/named access
+and CDP, and preserves the existing exact click hash.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,

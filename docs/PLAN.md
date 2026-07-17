@@ -48,9 +48,10 @@ controlled host proof rather than an IME or assistive-technology matrix.
    currently hosted attribute-backed token-list identities (`classList`,
    `relList`, and iframe `sandbox`), and inline `CSSStyleDeclaration` are landed;
    stable attached `NamedNodeMap`/`Attr` identity is also landed, with detached
-   Attr operations still separate. Each next slice needs one mutation/source
-   revision, synchronous geometry where relevant, CDP agreement, and exact
-   Flutter pixels.
+   Attr operations still separate. Structural NodeList/HTMLCollection attributes
+   and `getElementsBy*` queries are live while `querySelectorAll` remains static.
+   Each next slice needs one mutation/source revision, synchronous geometry where
+   relevant, CDP agreement, and exact Flutter pixels.
 2. Preserve the complete R8 compatibility, release, renderer, and native-host
    gates while widening standards behavior or product breadth.
 
