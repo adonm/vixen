@@ -602,6 +602,19 @@ style and geometry through CDP, and pins exact Flutter pixels to
 before byte-identical target switching and renderer recovery. Collections and
 attribute nodes remain separate work.
 
+**Sixth A1 checkpoint:** `Element.attributes` now retains one live
+`NamedNodeMap`, with dynamic length/index/name lookup and stable attached `Attr`
+identity across external writes. Attached `Attr.value` reads current state and
+writes through the authoritative DOM mutation path. Focused proof retains both
+identities through `setAttribute` and `Attr.value`, advances exactly one
+renderer-source generation per write, and recascades to 140×30. A hidden target
+preserves all prior exact hashes; the release/AOT corridor reveals it at 120×32,
+agrees with CDP attribute/geometry state, and pins Flutter pixels to
+`17cb0de692001fcb97dcab23c870b800e7e7c3b09010e312a0bbc64e496ec1ea`
+before byte-identical target switching and renderer recovery. Detached Attr
+lifecycle plus `setNamedItem`/`removeNamedItem`, and live structural collections,
+remain separate work.
+
 **Proof:** script-driven mutation visibly changes the Flutter scene; synchronous
 and asynchronous geometry observe the right commit; CDP and page script inspect
 the same nodes.

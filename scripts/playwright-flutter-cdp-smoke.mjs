@@ -18,6 +18,7 @@ const expectedClassListMutation = '5633ca7a032c8c6a1582f5389b6b4a594b91d99e89784
 const expectedRelListMutation = '7ae6e6d8f650d733922b1af018dfdcac310bdcbb4f14537cdb20500c44da3c04';
 const expectedSandboxMutation = '57b9814c22902e40fc38180d79a1a78068f1b15154f4149bef8fbea5b6cf05cb';
 const expectedInlineStyleMutation = 'b4fe0e2cdba9f98193e8dfc7aadb7fa892e508e269a4a94beb9c2970d8ce5096';
+const expectedAttributesMutation = '17cb0de692001fcb97dcab23c870b800e7e7c3b09010e312a0bbc64e496ec1ea';
 
 function fail(message) {
   throw new Error(`playwright-flutter-cdp-smoke: ${message}`);
@@ -452,6 +453,70 @@ async function main() {
       fail('inline style mutation did not change the post-sandbox exact scene');
     }
 
+    const attributesEvidence = await page.evaluate(() => {
+      const target = document.querySelector('#attributes-target');
+      const attributes = target.attributes;
+      const layoutAttr = attributes.getNamedItem('data-layout');
+      globalThis.__attributesObject = attributes;
+      globalThis.__layoutAttrObject = layoutAttr;
+      target.setAttribute('data-layout', 'wide');
+      layoutAttr.value = 'tall';
+      const rect = target.getBoundingClientRect();
+      return {
+        stableMap: attributes === target.attributes,
+        stableAttr: layoutAttr === target.attributes.getNamedItem('data-layout'),
+        indexedAttr: target.attributes[1] === layoutAttr,
+        namedAttr: target.attributes['data-layout'] === layoutAttr,
+        reflectedAttribute: target.getAttribute('data-layout'),
+        reflectedValue: layoutAttr.value,
+        synchronousRect: {
+          width: rect.width,
+          height: rect.height,
+        },
+      };
+    });
+    if (!attributesEvidence.stableMap
+        || !attributesEvidence.stableAttr
+        || !attributesEvidence.indexedAttr
+        || !attributesEvidence.namedAttr
+        || attributesEvidence.reflectedAttribute !== 'tall'
+        || attributesEvidence.reflectedValue !== 'tall'
+        || attributesEvidence.synchronousRect.width !== 120
+        || attributesEvidence.synchronousRect.height !== 32) {
+      fail(`live attributes evidence was ${JSON.stringify(attributesEvidence)}`);
+    }
+    const attributesTargetNode = await firstSession.send('DOM.querySelector', {
+      nodeId: document.root.nodeId,
+      selector: '#attributes-target',
+    });
+    const attributesTargetAttributes = await firstSession.send('DOM.getAttributes', {
+      nodeId: attributesTargetNode.nodeId,
+    });
+    const attributesTargetPairs = Object.fromEntries(Array.from(
+      { length: attributesTargetAttributes.attributes.length / 2 },
+      (_, index) => attributesTargetAttributes.attributes.slice(index * 2, index * 2 + 2),
+    ));
+    const attributesTargetModel = await firstSession.send('DOM.getBoxModel', {
+      nodeId: attributesTargetNode.nodeId,
+    });
+    if (attributesTargetPairs['data-layout'] !== 'tall'
+        || attributesTargetModel.model.content[2] - attributesTargetModel.model.content[0] !== 120
+        || attributesTargetModel.model.content[5] - attributesTargetModel.model.content[1] !== 32) {
+      fail(`CDP DOM did not agree with attributes: ${JSON.stringify({ attributesTargetPairs, model: attributesTargetModel.model })}`);
+    }
+    const afterAttributes = await page.screenshot({ timeout: 20000 });
+    const afterAttributesInfo = assertCapture(
+      afterAttributes,
+      320,
+      240,
+      [34, 187, 102, 255],
+      'post-attributes',
+      expectedAttributesMutation,
+    );
+    if (afterAttributesInfo.hash === afterInlineStyleInfo.hash) {
+      fail('attributes mutation did not change the post-inline-style exact scene');
+    }
+
     const second = await context.newPage();
     await second.setViewportSize({ width: 480, height: 300 });
     await second.setContent(`<!doctype html><style>
@@ -465,7 +530,7 @@ async function main() {
     });
     const secondPng = await second.screenshot({ timeout: 20000 });
     const secondInfo = assertCapture(secondPng, 480, 300, [202, 36, 104, 255], 'second target');
-    if (secondInfo.hash === afterInlineStyleInfo.hash) fail('independent target captures were identical');
+    if (secondInfo.hash === afterAttributesInfo.hash) fail('independent target captures were identical');
     const secondBox = await second.locator('#second').boundingBox({ timeout: 20000 });
     if (!secondBox) fail('second target has no Flutter commit geometry');
     await second.mouse.click(secondBox.x + 5, secondBox.y + 5);
@@ -478,18 +543,18 @@ async function main() {
 
     const firstAgain = await page.screenshot({ timeout: 20000 });
     const firstAgainInfo = assertCapture(firstAgain, 320, 240, [34, 187, 102, 255], 'first target restored');
-    if (firstAgainInfo.hash !== afterInlineStyleInfo.hash) {
+    if (firstAgainInfo.hash !== afterAttributesInfo.hash) {
       fail('switching targets changed the first target exact scene');
     }
 
     await firstSession.send('Vixen.resetRenderer');
     const recovered = await page.screenshot({ timeout: 20000 });
     const recoveredInfo = assertCapture(recovered, 320, 240, [34, 187, 102, 255], 'renderer-loss recovery');
-    if (recoveredInfo.hash !== afterInlineStyleInfo.hash) {
+    if (recoveredInfo.hash !== afterAttributesInfo.hash) {
       fail('renderer-loss full resync did not recover the exact scene');
     }
 
-    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} classList=${afterClickInfo.hash} relList=${afterRelListInfo.hash} sandbox=${afterSandboxInfo.hash} style=${afterInlineStyleInfo.hash} second=${secondInfo.hash}`);
+    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} classList=${afterClickInfo.hash} relList=${afterRelListInfo.hash} sandbox=${afterSandboxInfo.hash} style=${afterInlineStyleInfo.hash} attributes=${afterAttributesInfo.hash} second=${secondInfo.hash}`);
   } finally {
     if (browser) await browser.close().catch(() => {});
     await stopServer(child);

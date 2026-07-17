@@ -167,6 +167,9 @@ attribute-backed token-list families currently hosted by the runtime.
 `HTMLElement.style` now likewise retains one live inline `CSSStyleDeclaration`
 across external attribute replacement and declaration API writes, using the same
 authoritative mutation/cascade path.
+`Element.attributes` now retains a live `NamedNodeMap`, and attached `Attr`
+objects retain identity, reflect external writes, and write through `Attr.value`.
+Detached Attr lifecycle and `setNamedItem`/`removeNamedItem` remain incomplete.
 
 Static parser-discovered PNG `<img src>` has one resource-to-pixel vertical.
 BrowserCore applies exact generations, URL/CSP/mixed-content/redirect policy,
@@ -203,12 +206,13 @@ agreed, target switching preserved the first scene, and forced renderer reset
 recovered by full resync to byte-identical pixels. The first A1 extension now
 also writes a live `dataset` property, observes the attribute-selector-driven
 140×32 box synchronously, matches later CDP DOM attributes/geometry, and pins
-renderer-specific before/after Flutter scene hashes. The second through fifth A1
+renderer-specific before/after Flutter scene hashes. The second through sixth A1
 extensions retain `classList` through the click mutation, a real anchor's
 `relList` through a visible rel-selector mutation, and a real iframe's `sandbox`
 through valid token writes, then retain inline `style` through external and API
-writes. Page and CDP views match the resulting geometry; every exact scene
-recovers byte-identically after renderer reset.
+writes and attached attributes through `Attr.value`. Page and CDP views match
+the resulting geometry; every exact scene recovers byte-identically after
+renderer reset.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,

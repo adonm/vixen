@@ -61,8 +61,10 @@ Current state:
   `HTMLAnchorElement.relList` and `HTMLIFrameElement.sandbox` now follow the same
   retained live-object path, completing the token-list attributes currently
   hosted by the runtime. `HTMLElement.style` also retains one live inline
-  `CSSStyleDeclaration` across external and declaration-API writes. Element
-  geometry reads
+  `CSSStyleDeclaration` across external and declaration-API writes.
+  `Element.attributes` retains a live `NamedNodeMap` and stable attached `Attr`
+  nodes whose values read and write the same Page state; detached Attr operations
+  remain separate work. Element geometry reads
   (`getBoundingClientRect()` / `getClientRects()` / `getBoxQuads()`), Range
   rectangles, and client/offset/scroll metrics now cross a DOM rect op and
   materialize Web-shaped rect/list/quad objects on generated WebIDL prototypes.

@@ -4340,6 +4340,62 @@ mod tests {
     }
 
     #[test]
+    fn live_attributes_reflect_and_attr_value_advances_one_source_revision() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///attributes-mutate.html",
+            "<html><head><style>\
+               #target { display: none; }\
+               #target[data-layout='wide'] { display: block; width: 140px; height: 20px; }\
+               #target[data-layout='tall'] { display: block; width: 140px; height: 30px; }\
+             </style></head><body>\
+               <div id='target' data-layout='compact'>target</div>\
+             </body></html>",
+        )
+        .unwrap();
+
+        let initial_generation = page.renderer_source_generation();
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 globalThis.__liveAttributes = target.attributes;\
+                 globalThis.__liveLayoutAttr = __liveAttributes.getNamedItem('data-layout');\
+                 target.setAttribute('data-layout', 'wide');\
+                 return String(__liveAttributes === target.attributes) + ':' +\
+                   String(__liveLayoutAttr === target.attributes.getNamedItem('data-layout')) + ':' +\
+                   __liveLayoutAttr.value + ':' + target.attributes[1].name; })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:true:wide:data-layout".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 1);
+        let target_id = page.query_selector_all("#target").unwrap()[0].node_id;
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("width".to_owned(), "140px".to_owned()))
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 __liveLayoutAttr.value = 'tall';\
+                 return String(__liveAttributes === target.attributes) + ':' +\
+                   String(__liveLayoutAttr === target.attributes['data-layout']) + ':' +\
+                   target.getAttribute('data-layout') + ':' + __liveLayoutAttr.value; })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:true:tall:tall".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 2);
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("height".to_owned(), "30px".to_owned()))
+        );
+    }
+
+    #[test]
     fn page_dynamic_inline_script_elements_execute_when_inserted() {
         let mut rt = JsRuntime::new().expect("engine init");
         let mut page = Page::from_html(

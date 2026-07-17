@@ -2015,7 +2015,6 @@ const DOM_API_BOOTSTRAP: &str = r#"
         record.selectionEnd = attrValue.length;
       }
     }
-    invalidateElementCaches(record.nodeId);
     return attrName;
   }
 
@@ -2035,16 +2034,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
         record.selectionEnd = 0;
       }
     }
-    invalidateElementCaches(record.nodeId);
     return attrName;
-  }
-
-  function invalidateElementCaches(nodeId) {
-    const element = elementObjects.get(nodeId);
-    if (!element) return;
-    for (const key of ['__vixenAttributes']) {
-      if (Object.prototype.hasOwnProperty.call(element, key)) delete element[key];
-    }
   }
 
   function parseTokenSet(input) {
@@ -2706,35 +2696,78 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   class VixenAttr {
-    constructor(ownerElement, name, value) {
+    constructor(ownerElement, name) {
       Object.defineProperties(this, {
-        ownerElement: { value: ownerElement, enumerable: true, configurable: true },
-        name: { value: String(name), enumerable: true, configurable: true },
-        localName: { value: String(name), enumerable: true, configurable: true },
-        value: { value: String(value), enumerable: true, configurable: true },
-        namespaceURI: { value: null, enumerable: true, configurable: true },
-        prefix: { value: null, enumerable: true, configurable: true },
+        __vixenOwner: { value: ownerElement, enumerable: false },
+        __vixenName: { value: String(name), enumerable: false },
       });
     }
+    get ownerElement() { return this.__vixenOwner; }
+    get name() { return this.__vixenName; }
+    get localName() { return this.__vixenName; }
+    get value() { return elementAttribute(this.__vixenOwner.__vixenNodeId, this.__vixenName) || ''; }
+    set value(value) {
+      setElementAttribute(this.__vixenOwner.__vixenNodeId, this.__vixenName, String(value));
+    }
+    get namespaceURI() { return null; }
+    get prefix() { return null; }
   }
 
   class VixenNamedNodeMap {
     constructor(ownerElement) {
-      const attrs = elementRecord(ownerElement).attributes.map(([name, value]) => new VixenAttr(ownerElement, name, value));
-      Object.defineProperty(this, '__vixenAttributes', {
-        value: Object.freeze(attrs),
-        enumerable: false,
+      Object.defineProperties(this, {
+        __vixenOwner: { value: ownerElement, enumerable: false },
+        __vixenAttributeObjects: { value: new Map(), enumerable: false },
       });
-      defineIndexedValues(this, this.__vixenAttributes);
+      return new Proxy(this, {
+        get(target, property, receiver) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            return target.item(Number(property));
+          }
+          if (typeof property === 'string' && !Reflect.has(target, property)) {
+            const attr = target.getNamedItem(property);
+            if (attr !== null) return attr;
+          }
+          return Reflect.get(target, property, receiver);
+        },
+        ownKeys(target) {
+          const indexed = Array.from({ length: target.length }, (_, index) => String(index));
+          return [...indexed, ...Reflect.ownKeys(target)];
+        },
+        getOwnPropertyDescriptor(target, property) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            const attr = target.item(Number(property));
+            if (attr === null) return undefined;
+            return {
+              value: attr,
+              writable: false,
+              enumerable: true,
+              configurable: true,
+            };
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      });
     }
-    get length() { return this.__vixenAttributes.length; }
+    get __vixenPairs() { return elementRecord(this.__vixenOwner).attributes; }
+    __vixenAttribute(name) {
+      let attr = this.__vixenAttributeObjects.get(name);
+      if (attr === undefined) {
+        attr = new VixenAttr(this.__vixenOwner, name);
+        this.__vixenAttributeObjects.set(name, attr);
+      }
+      return attr;
+    }
+    get length() { return this.__vixenPairs.length; }
     item(index) {
       const n = Number(index);
-      return Number.isInteger(n) && n >= 0 && n < this.__vixenAttributes.length ? this.__vixenAttributes[n] : null;
+      if (!Number.isInteger(n) || n < 0 || n >= this.__vixenPairs.length) return null;
+      return this.__vixenAttribute(this.__vixenPairs[n][0]);
     }
     getNamedItem(name) {
       const value = String(name);
-      return this.__vixenAttributes.find((attr) => attr.name === value || attr.name.toLowerCase() === value.toLowerCase()) || null;
+      const pair = this.__vixenPairs.find(([attr]) => attr === value || attr.toLowerCase() === value.toLowerCase());
+      return pair === undefined ? null : this.__vixenAttribute(pair[0]);
     }
   }
 
@@ -5081,7 +5114,9 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get innerHTML() { return elementRecord(this).innerHTML; }
     set innerHTML(value) { setElementInnerHTML(this, String(value)); }
     get outerHTML() { return serializeElementRecord(elementRecord(this)); }
-    get attributes() { return new VixenNamedNodeMap(this); }
+    get attributes() {
+      return cachedElementObject(this, '__vixenAttributes', () => new VixenNamedNodeMap(this));
+    }
     get classList() {
       return cachedElementObject(this, '__vixenClassList', () => new VixenDOMTokenList(this, 'class'));
     }
