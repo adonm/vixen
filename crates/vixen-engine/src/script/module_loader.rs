@@ -27,7 +27,7 @@ use super::webapi::{CacheDisabledFlag, RuntimeNetworkState, WebStorageBackend};
 use super::{ExternalPageScript, JsNetworkEvent, persist_profile_cookies};
 use crate::browser::{
     ExternalResourceLoadInput, LoadedExternalResource, SharedRequestIdAllocator,
-    load_external_resource, persist_external_resource_cache,
+    load_external_resource, module_script_response_allowed, persist_external_resource_cache,
 };
 
 const MAX_MODULE_GRAPH_LOADS: usize = 64;
@@ -347,6 +347,7 @@ impl PageModuleLoader {
             }
         };
         let mut profile_baseline = self.network_state.cookie_snapshots()?;
+        let profile_cache_enabled = !self.cache_disabled.snapshot();
         let mut cookies = CookieJar::from_snapshots(profile_baseline.clone());
         let mut network = match Network::new(self.network_config.clone()) {
             Ok(network) => network,
@@ -368,6 +369,7 @@ impl PageModuleLoader {
                 store: &store,
                 profile_baseline: &mut profile_baseline,
                 request,
+                revalidate_profile_cache: profile_cache_enabled,
                 max_body_bytes: self.network_config.max_body_bytes,
                 max_redirects: self.network_config.max_redirects,
             },
@@ -397,7 +399,7 @@ impl PageModuleLoader {
                         );
                     }
                 };
-                if !module_response_allowed(&response) {
+                if !module_script_response_allowed(&response) {
                     let message = format!(
                         "module dependency response policy rejected {}",
                         response.final_url
@@ -443,7 +445,7 @@ impl PageModuleLoader {
                 message,
             );
         }
-        if !self.cache_disabled.snapshot()
+        if profile_cache_enabled
             && let Some(response) = cache_response.as_ref()
             && let Err(error) = persist_external_resource_cache(&store, response)
         {
@@ -483,13 +485,6 @@ impl PageModuleLoader {
         self.record_events(events)?;
         Err(message)
     }
-}
-
-fn module_response_allowed(response: &vixen_net::ByteResponse) -> bool {
-    (200..300).contains(&response.status)
-        && response
-            .content_type()
-            .is_some_and(vixen_net::nosniff::is_javascript_mime)
 }
 
 fn module_network_events(

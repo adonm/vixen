@@ -750,8 +750,20 @@ through dependencies. Wildcard default graphs remain credentialless. Focused
 BrowserCore tests prove allowed redirect/final/nested responses, missing-header
 rejection without following the redirect or executing source, ignored default
 cookies, credentialed root-cookie propagation, and stable lifecycle settlement.
-Cache reads/revalidation, import maps, dynamic `import()`, and import attributes
-remain explicit next work.
+
+**Third A2 checkpoint:** eligible exact-URL HTTP(S) module cache entries now
+conditionally revalidate both external roots and graph dependencies through the
+shared resource loader. Cached validators are added to live requests; only a
+matching 304 restores bounded raw source bytes, while current URL/CSP,
+mixed-content, CORS, status, and strict JavaScript MIME policy still run before
+V8 exposure. Cache-disabled contexts perform neither module cache reads nor
+writes. Entries with `no-store`, unsupported `Vary`, no validator, non-2xx
+status, or bodies beyond the current resource limit are not reused. Focused
+two-context tests prove root/dependency validator requests, raw 304 diagnostics,
+source execution, persisted 200 representations, cache-disable bypass, current
+CORS rejection, and strict MIME for external roots. Freshness-based reuse,
+redirect aliases, full `Vary`, import maps, dynamic `import()`, and import
+attributes remain explicit next work.
 
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
@@ -906,9 +918,8 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue the A2 module family:** add profile-cache reads/revalidation, then
-   import-map resolution and dynamic
-   `import()` without weakening the landed static graph limits, request ids,
+1. **Continue the A2 module family:** add import-map resolution and then dynamic
+   `import()` without weakening the landed static graph/cache limits, request ids,
    policy, cancellation, diagnostics, or profile behavior.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →

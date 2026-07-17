@@ -46,8 +46,9 @@ pinned engine exposes no AT-SPI Action interface. Keep the executable gates
 intact while shared-core reductions proceed one proven host family at a time
 before broader shell/platform expansion. A2 static same-origin/file module
 dependency graphs now use the shared resource loader; continue that family with
-CORS now enforced before V8 exposure. Continue with cache reads/revalidation,
-import maps, and dynamic imports.
+CORS enforced before V8 exposure and eligible HTTP(S) cache entries
+conditionally revalidated under current policy. Continue with import maps and
+dynamic imports.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

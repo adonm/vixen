@@ -90,8 +90,12 @@ Current state:
   The second checkpoint applies CORS to cross-origin HTTP(S) roots,
   dependencies, and redirects before V8 exposure, omits default cross-origin
   credentials, and inherits explicitly credentialed root policy through the
-  graph. Import maps, dynamic imports, import attributes, and cache
-  reads/revalidation remain fail closed.
+  graph. The third checkpoint conditionally revalidates eligible exact-URL
+  profile entries for roots and dependencies through live requests, restores
+  bounded raw source only after a matching 304, and reruns current
+  CORS/status/strict-MIME policy before V8 exposure. Cache-disabled contexts
+  bypass reads and writes. Freshness reuse, full `Vary`, import maps, dynamic
+  imports, and import attributes remain fail closed.
 
 Rules:
 

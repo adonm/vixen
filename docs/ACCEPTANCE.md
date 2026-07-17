@@ -203,6 +203,10 @@ explicit until promoted by measured tests.
 - Cross-origin module roots, dependencies, and redirects pass CORS before V8
   exposure; default graphs omit credentials and explicit credentialed graphs
   require exact origin/credential permission throughout the graph.
+- Eligible exact-URL HTTP(S) module roots and dependencies conditionally
+  revalidate profile entries; a 304 restores bounded source only before current
+  CORS/status/strict-MIME policy, and cache-disabled contexts bypass reads and
+  writes.
 - Policy runs before resource bytes/handles cross to Flutter.
 - redb profile tables preserve partitioning, bounds, recovery, clear-data, and
   reopen behavior.

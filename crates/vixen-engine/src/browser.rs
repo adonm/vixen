@@ -765,6 +765,7 @@ enum NavigationScriptStep {
 struct PendingExternalScript {
     key: ExternalScriptLoadKey,
     request: ExternalPageScript,
+    profile_cache_enabled: bool,
     work: NavigationScriptWork,
 }
 
@@ -2527,6 +2528,7 @@ impl BrowserCore {
                             store: &store,
                             profile_baseline: &mut profile_baseline,
                             request: worker_request,
+                            revalidate_profile_cache: false,
                             max_body_bytes,
                             max_redirects,
                         },
@@ -2858,6 +2860,7 @@ impl BrowserCore {
                             store: &store,
                             profile_baseline: &mut profile_baseline,
                             request: worker_request,
+                            revalidate_profile_cache: false,
                             max_body_bytes,
                             max_redirects,
                         },
@@ -3053,6 +3056,7 @@ impl BrowserCore {
         let runtime_slot = context.runtime_slot;
         let frame_id = context.frame_id;
         let document_url = context.page().url().to_owned();
+        let profile_cache_enabled = !context.config.cache_disabled;
         let host_source = work
             .preload_scripts
             .pop_front()
@@ -3134,6 +3138,7 @@ impl BrowserCore {
                         request_id,
                     },
                     request,
+                    profile_cache_enabled,
                     work,
                     baseline,
                 );
@@ -3241,6 +3246,7 @@ impl BrowserCore {
         &mut self,
         key: ExternalScriptLoadKey,
         request: ExternalPageScript,
+        profile_cache_enabled: bool,
         work: NavigationScriptWork,
         baseline: Vec<vixen_net::CookieSnapshot>,
     ) {
@@ -3248,6 +3254,7 @@ impl BrowserCore {
         let mut network = self.network.clone();
         let max_body_bytes = self.network_config.max_body_bytes;
         let max_redirects = self.network_config.max_redirects;
+        let revalidate_profile_cache = profile_cache_enabled && request.is_module();
         let worker_request = request.clone();
         let store = Arc::clone(&self.store);
         let command_tx = self.command_tx.clone();
@@ -3261,7 +3268,12 @@ impl BrowserCore {
                 .as_mut()
                 .expect("external script navigation was checked");
             active.cancel = Some(cancel);
-            active.pending_script = Some(PendingExternalScript { key, request, work });
+            active.pending_script = Some(PendingExternalScript {
+                key,
+                request,
+                profile_cache_enabled,
+                work,
+            });
         }
 
         let task = self
@@ -3279,6 +3291,7 @@ impl BrowserCore {
                             store: &store,
                             profile_baseline: &mut profile_baseline,
                             request: worker_request,
+                            revalidate_profile_cache,
                             max_body_bytes,
                             max_redirects,
                         },
@@ -3385,7 +3398,11 @@ impl BrowserCore {
                         requested_urls,
                         None,
                     )
-                } else if !script_response_allowed_bytes(&response) {
+                } else if !(if pending.request.is_module() {
+                    module_script_response_allowed(&response)
+                } else {
+                    script_response_allowed_bytes(&response)
+                }) {
                     (
                         None,
                         None,
@@ -3456,7 +3473,8 @@ impl BrowserCore {
             );
             return;
         }
-        if let Some(response) = cache_response
+        if pending.profile_cache_enabled
+            && let Some(response) = cache_response
             && let Err(error) = persist_external_resource_cache(&self.store, &response)
         {
             effects.exceptions.push(RuntimeExceptionEvent { error });
@@ -5051,6 +5069,7 @@ pub(crate) struct ExternalResourceLoadInput<'a, R> {
     pub(crate) store: &'a Store,
     pub(crate) profile_baseline: &'a mut Vec<vixen_net::CookieSnapshot>,
     pub(crate) request: R,
+    pub(crate) revalidate_profile_cache: bool,
     pub(crate) max_body_bytes: u64,
     pub(crate) max_redirects: usize,
 }
@@ -5064,6 +5083,7 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
         store,
         profile_baseline,
         request,
+        revalidate_profile_cache,
         max_body_bytes,
         max_redirects,
     } = input;
@@ -5169,6 +5189,22 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
                 } else {
                     &mut credentialless_cookies
                 };
+                let cached = if revalidate_profile_cache {
+                    external_resource_cache_lookup(store, &current, max_body_bytes).map_err(
+                        |error| ExternalResourceLoadFailure {
+                            error,
+                            url: current.to_string(),
+                            events: events.clone(),
+                            blocked_reason: "cache",
+                        },
+                    )?
+                } else {
+                    None
+                };
+                let mut headers = request.request_headers(&current);
+                let revalidating = cached.as_ref().is_some_and(|cached| {
+                    add_external_resource_revalidation_headers(&mut headers, cached)
+                });
                 let mut hop_events = Vec::new();
                 let response = network
                     .get_bytes_with_cookies_request_with_progress_and_limit(
@@ -5178,7 +5214,7 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
                             cross_site: request.is_cross_site(&current),
                             method: Method::Get,
                             redirect_mode: RedirectMode::Manual,
-                            headers: request.request_headers(&current),
+                            headers,
                             body: None,
                         },
                         max_body_bytes,
@@ -5201,6 +5237,11 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
                     }
                 };
                 events.append(&mut response.events);
+                let mut response = if revalidating {
+                    revalidated_external_resource_response(response, cached)
+                } else {
+                    response
+                };
 
                 if let Some(blocked_reason) = request.response_blocked_reason(&current, &response) {
                     return Err(ExternalResourceLoadFailure {
@@ -5661,6 +5702,13 @@ fn script_response_allowed_bytes(response: &ByteResponse) -> bool {
     )
 }
 
+pub(crate) fn module_script_response_allowed(response: &ByteResponse) -> bool {
+    (200..300).contains(&response.status)
+        && response
+            .content_type()
+            .is_some_and(vixen_net::nosniff::is_javascript_mime)
+}
+
 fn image_response_allowed(response: &ByteResponse) -> bool {
     (200..300).contains(&response.status)
         && response
@@ -5704,6 +5752,112 @@ pub(crate) fn persist_external_resource_cache(
                 format!("external resource cache write failed: {error}"),
             )
         })
+}
+
+fn external_resource_cache_lookup(
+    store: &Store,
+    url: &url::Url,
+    max_body_bytes: u64,
+) -> Result<Option<ByteResponse>, BrowserError> {
+    let origin_key = vixen_net::Origin::from_url(url).partition_key();
+    let entry = store
+        .get_cache(&origin_key, url.as_str())
+        .map_err(|error| {
+            BrowserError::new(
+                browser_error_codes::PROFILE,
+                format!("external resource cache read failed: {error}"),
+            )
+        })?;
+    let Some(entry) = entry else {
+        return Ok(None);
+    };
+    let headers = entry.headers.into_iter().collect::<BTreeMap<_, _>>();
+    let cache_control = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("cache-control"))
+        .map(|(_, value)| value.as_str());
+    let has_no_store = cache_control.is_some_and(|value| {
+        value.split(',').any(|directive| {
+            directive
+                .split_once('=')
+                .map_or(directive, |(name, _)| name)
+                .trim()
+                .eq_ignore_ascii_case("no-store")
+        })
+    });
+    let has_vary = headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case("vary"))
+        .is_some_and(|(_, value)| !value.trim().is_empty());
+    let has_validator = headers.keys().any(|name| {
+        name.eq_ignore_ascii_case("etag") || name.eq_ignore_ascii_case("last-modified")
+    });
+    if !(200..300).contains(&entry.status)
+        || entry.body.len() as u64 > max_body_bytes
+        || has_no_store
+        || has_vary
+        || !has_validator
+    {
+        return Ok(None);
+    }
+    Ok(Some(ByteResponse {
+        body: entry.body,
+        headers,
+        status: entry.status,
+        final_url: url.to_string(),
+        set_cookie: Vec::new(),
+        redirects: 0,
+        events: Vec::new(),
+    }))
+}
+
+fn add_external_resource_revalidation_headers(
+    headers: &mut Vec<(String, String)>,
+    cached: &ByteResponse,
+) -> bool {
+    let mut added = false;
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("if-none-match"))
+        && let Some(etag) = cached.header("etag")
+    {
+        headers.push(("if-none-match".to_owned(), etag.to_owned()));
+        added = true;
+    }
+    if !headers
+        .iter()
+        .any(|(name, _)| name.eq_ignore_ascii_case("if-modified-since"))
+        && let Some(last_modified) = cached.header("last-modified")
+    {
+        headers.push(("if-modified-since".to_owned(), last_modified.to_owned()));
+        added = true;
+    }
+    added
+}
+
+fn revalidated_external_resource_response(
+    response: ByteResponse,
+    cached: Option<ByteResponse>,
+) -> ByteResponse {
+    if response.status != 304 {
+        return response;
+    }
+    let Some(mut cached) = cached else {
+        return response;
+    };
+    cached.final_url = response.final_url;
+    cached.redirects = response.redirects;
+    cached.set_cookie = response.set_cookie;
+    cached.events = response.events;
+    for (name, value) in response.headers {
+        if !matches!(
+            name.to_ascii_lowercase().as_str(),
+            "content-length" | "content-range" | "transfer-encoding"
+        ) {
+            cached.headers.insert(name, value);
+        }
+    }
+    cached
 }
 
 fn drain_runtime_effects(
@@ -6361,6 +6515,8 @@ mod tests {
         path: String,
         cookie: Option<String>,
         origin: Option<String>,
+        if_none_match: Option<String>,
+        if_modified_since: Option<String>,
         respond: mpsc::SyncSender<String>,
         completed: mpsc::Receiver<()>,
         disconnected: mpsc::Receiver<()>,
@@ -6411,6 +6567,16 @@ mod tests {
                             name.eq_ignore_ascii_case("origin")
                                 .then(|| value.trim().to_owned())
                         });
+                        let if_none_match = request.lines().find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("if-none-match")
+                                .then(|| value.trim().to_owned())
+                        });
+                        let if_modified_since = request.lines().find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("if-modified-since")
+                                .then(|| value.trim().to_owned())
+                        });
                         let cookie_value = path.trim_matches('/').to_owned();
                         let (respond, response) = mpsc::sync_channel(1);
                         let (completed, completed_rx) = mpsc::sync_channel(1);
@@ -6420,6 +6586,8 @@ mod tests {
                                 path,
                                 cookie,
                                 origin,
+                                if_none_match,
+                                if_modified_since,
                                 respond,
                                 completed: completed_rx,
                                 disconnected: disconnected_rx,
@@ -6529,6 +6697,26 @@ mod tests {
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\n{cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{source}",
             source.len()
+        )
+    }
+
+    fn validated_script_response(source: &str, etag: &str, last_modified: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nETag: {etag}\r\nLast-Modified: {last_modified}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{source}",
+            source.len()
+        )
+    }
+
+    fn validated_cors_script_response(source: &str, allow_origin: &str, etag: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nETag: {etag}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{source}",
+            source.len()
+        )
+    }
+
+    fn not_modified_response(etag: &str) -> String {
+        format!(
+            "HTTP/1.1 304 Not Modified\r\nETag: {etag}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         )
     }
 
@@ -9367,6 +9555,389 @@ mod tests {
             );
         }
         drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn module_root_and_dependency_conditionally_revalidate_profile_cache() {
+        const LAST_MODIFIED: &str = "Wed, 15 Jul 2026 12:00:00 GMT";
+        const ROOT_ETAG: &str = "\"root-v1\"";
+        const DEPENDENCY_ETAG: &str = "\"dependency-v1\"";
+        const ROOT_SOURCE: &str =
+            "import { value } from './dependency.js'; document.title = `cache-${value}`;";
+        const DEPENDENCY_SOURCE: &str = "export const value = 42;";
+
+        let server = GatedHttpServer::start(4);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/module-cache-page");
+        let root_url = server.url("/cache/root.js");
+        let dependency_url = server.url("/cache/dependency.js");
+        config.document_overrides.insert(
+            page_url.clone(),
+            format!(
+                "<!doctype html><title>initial</title><script type='module' src='{root_url}'></script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let first_context = create(&mut handle);
+        let second_context = create(&mut handle);
+        drain_events(&mut handle);
+
+        let first_navigation = dispatch_navigation(&mut handle, first_context, &page_url);
+        let first_root = server.request();
+        assert_eq!(first_root.path, "/cache/root.js");
+        assert_eq!(first_root.if_none_match, None);
+        assert_eq!(first_root.if_modified_since, None);
+        first_root
+            .respond
+            .send(validated_script_response(
+                ROOT_SOURCE,
+                ROOT_ETAG,
+                LAST_MODIFIED,
+            ))
+            .unwrap();
+        first_root
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("initial module root watchdog");
+
+        let first_dependency = server.request();
+        assert_eq!(first_dependency.path, "/cache/dependency.js");
+        assert_eq!(first_dependency.if_none_match, None);
+        assert_eq!(first_dependency.if_modified_since, None);
+        first_dependency
+            .respond
+            .send(validated_script_response(
+                DEPENDENCY_SOURCE,
+                DEPENDENCY_ETAG,
+                LAST_MODIFIED,
+            ))
+            .unwrap();
+        first_dependency
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("initial module dependency watchdog");
+        wait_for_navigation(&mut handle, first_context, first_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, first_context).title.as_deref(),
+            Some("cache-42")
+        );
+
+        let second_navigation = dispatch_navigation(&mut handle, second_context, &page_url);
+        let second_root = server.request();
+        assert_eq!(second_root.path, "/cache/root.js");
+        assert_eq!(second_root.if_none_match.as_deref(), Some(ROOT_ETAG));
+        assert_eq!(
+            second_root.if_modified_since.as_deref(),
+            Some(LAST_MODIFIED)
+        );
+        second_root
+            .respond
+            .send(not_modified_response(ROOT_ETAG))
+            .unwrap();
+        second_root
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("revalidated module root watchdog");
+
+        let second_dependency = server.request();
+        assert_eq!(second_dependency.path, "/cache/dependency.js");
+        assert_eq!(
+            second_dependency.if_none_match.as_deref(),
+            Some(DEPENDENCY_ETAG)
+        );
+        assert_eq!(
+            second_dependency.if_modified_since.as_deref(),
+            Some(LAST_MODIFIED)
+        );
+        second_dependency
+            .respond
+            .send(not_modified_response(DEPENDENCY_ETAG))
+            .unwrap();
+        second_dependency
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("revalidated module dependency watchdog");
+        let events = wait_for_navigation(&mut handle, second_context, second_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, second_context).title.as_deref(),
+            Some("cache-42")
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter_map(|event| match event {
+                    BrowserEvent::RuntimeEffects { effects, .. } => Some(&effects.network),
+                    _ => None,
+                })
+                .flatten()
+                .filter(|event| matches!(event, RuntimeNetworkEvent::Response { status: 304, .. }))
+                .count(),
+            2
+        );
+
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        for (url, source) in [
+            (&root_url, ROOT_SOURCE),
+            (&dependency_url, DEPENDENCY_SOURCE),
+        ] {
+            let url = url::Url::parse(url).unwrap();
+            let origin_key = vixen_net::Origin::from_url(&url).partition_key();
+            let entry = store.get_cache(&origin_key, url.as_str()).unwrap().unwrap();
+            assert_eq!(entry.status, 200);
+            assert_eq!(entry.body, source.as_bytes());
+        }
+        drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn cache_disabled_module_graph_bypasses_profile_cache_reads_and_writes() {
+        const LAST_MODIFIED: &str = "Wed, 15 Jul 2026 12:00:00 GMT";
+        const ROOT_ETAG: &str = "\"root-seeded\"";
+        const DEPENDENCY_ETAG: &str = "\"dependency-seeded\"";
+        const ROOT_SOURCE: &str =
+            "import { value } from './dependency.js'; document.title = `seed-${value}`;";
+        const DEPENDENCY_SOURCE: &str = "export const value = 41;";
+        const FRESH_ROOT_SOURCE: &str =
+            "import { value } from './dependency.js'; document.title = `fresh-${value}`;";
+        const FRESH_DEPENDENCY_SOURCE: &str = "export const value = 42;";
+
+        let server = GatedHttpServer::start(4);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/module-cache-disabled-page");
+        let root_url = server.url("/disabled/root.js");
+        let dependency_url = server.url("/disabled/dependency.js");
+        config.document_overrides.insert(
+            page_url.clone(),
+            format!(
+                "<!doctype html><title>initial</title><script type='module' src='{root_url}'></script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let seed_context = create(&mut handle);
+        let disabled_context = create(&mut handle);
+        drain_events(&mut handle);
+
+        let seed_navigation = dispatch_navigation(&mut handle, seed_context, &page_url);
+        let seed_root = server.request();
+        seed_root
+            .respond
+            .send(validated_script_response(
+                ROOT_SOURCE,
+                ROOT_ETAG,
+                LAST_MODIFIED,
+            ))
+            .unwrap();
+        seed_root
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let seed_dependency = server.request();
+        seed_dependency
+            .respond
+            .send(validated_script_response(
+                DEPENDENCY_SOURCE,
+                DEPENDENCY_ETAG,
+                LAST_MODIFIED,
+            ))
+            .unwrap();
+        seed_dependency
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        wait_for_navigation(&mut handle, seed_context, seed_navigation).unwrap();
+
+        handle
+            .dispatch(BrowserCommand::ConfigureBrowsingContext {
+                context_id: disabled_context,
+                config: BrowsingContextConfig {
+                    cache_disabled: true,
+                    ..BrowsingContextConfig::default()
+                },
+            })
+            .unwrap();
+        let disabled_navigation = dispatch_navigation(&mut handle, disabled_context, &page_url);
+        let fresh_root = server.request();
+        assert_eq!(fresh_root.path, "/disabled/root.js");
+        assert_eq!(fresh_root.if_none_match, None);
+        assert_eq!(fresh_root.if_modified_since, None);
+        fresh_root
+            .respond
+            .send(script_response(FRESH_ROOT_SOURCE, None))
+            .unwrap();
+        fresh_root
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let fresh_dependency = server.request();
+        assert_eq!(fresh_dependency.path, "/disabled/dependency.js");
+        assert_eq!(fresh_dependency.if_none_match, None);
+        assert_eq!(fresh_dependency.if_modified_since, None);
+        fresh_dependency
+            .respond
+            .send(script_response(FRESH_DEPENDENCY_SOURCE, None))
+            .unwrap();
+        fresh_dependency
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        wait_for_navigation(&mut handle, disabled_context, disabled_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, disabled_context).title.as_deref(),
+            Some("fresh-42")
+        );
+
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        for (url, source) in [
+            (&root_url, ROOT_SOURCE),
+            (&dependency_url, DEPENDENCY_SOURCE),
+        ] {
+            let url = url::Url::parse(url).unwrap();
+            let origin_key = vixen_net::Origin::from_url(&url).partition_key();
+            assert_eq!(
+                store
+                    .get_cache(&origin_key, url.as_str())
+                    .unwrap()
+                    .unwrap()
+                    .body,
+                source.as_bytes()
+            );
+        }
+        drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn external_module_roots_require_a_javascript_mime() {
+        let server = GatedHttpServer::start(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/strict-module-mime-page");
+        let root_url = server.url("/strict-module-mime.js");
+        config.document_overrides.insert(
+            page_url.clone(),
+            format!(
+                "<!doctype html><title>initial</title><script type='module' src='{root_url}'></script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &page_url);
+        let request = server.request();
+        let source = "document.title = 'must-not-execute';";
+        request
+            .respond
+            .send(format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{source}",
+                source.len()
+            ))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("initial")
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Failure { blocked_reason: Some(reason), .. }
+                        if reason == "response-policy"
+                ))
+        )));
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn revalidated_module_cache_reapplies_current_cors_policy() {
+        const ETAG: &str = "\"cors-v1\"";
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let first_page = "http://first.test/module-cache-cors";
+        let second_page = "http://second.test/module-cache-cors";
+        let root_url = server.url("/cors-cache/root.js");
+        for page in [first_page, second_page] {
+            config.document_overrides.insert(
+                page.to_owned(),
+                format!(
+                    "<!doctype html><title>initial</title><script type='module' src='{root_url}'></script>"
+                ),
+            );
+        }
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let first_context = create(&mut handle);
+        let second_context = create(&mut handle);
+        drain_events(&mut handle);
+
+        let first_navigation = dispatch_navigation(&mut handle, first_context, first_page);
+        let first = server.request();
+        assert_eq!(first.origin.as_deref(), Some("http://first.test"));
+        first
+            .respond
+            .send(validated_cors_script_response(
+                "document.title = 'first-accepted';",
+                "http://first.test",
+                ETAG,
+            ))
+            .unwrap();
+        first
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        wait_for_navigation(&mut handle, first_context, first_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, first_context).title.as_deref(),
+            Some("first-accepted")
+        );
+
+        let second_navigation = dispatch_navigation(&mut handle, second_context, second_page);
+        let second = server.request();
+        assert_eq!(second.origin.as_deref(), Some("http://second.test"));
+        assert_eq!(second.if_none_match.as_deref(), Some(ETAG));
+        second.respond.send(not_modified_response(ETAG)).unwrap();
+        second
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let events = wait_for_navigation(&mut handle, second_context, second_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, second_context).title.as_deref(),
+            Some("initial")
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Failure { blocked_reason: Some(reason), .. }
+                        if reason == "cors"
+                ))
+        )));
+
+        server.join();
+        drop(handle);
         let _ = std::fs::remove_file(profile_path);
     }
 
