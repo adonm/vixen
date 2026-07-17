@@ -31,17 +31,20 @@ then matches CDP DOM attributes/geometry and a pinned distinct Flutter PNG.
    reflects valid ordered tokens, agrees with 120×32 synchronous/CDP geometry,
    and produces a fourth pinned exact Flutter PNG without changing earlier
    hashes.
-8. Pointer input uses the displayed commit's Flutter hit-test handle and target;
+8. One retained inline `CSSStyleDeclaration` survives external and declaration
+   API writes, reflects current serialized declarations, agrees with 120×32
+   synchronous/CDP geometry, and produces a fifth pinned exact Flutter PNG.
+9. Pointer input uses the displayed commit's Flutter hit-test handle and target;
    the C ABI has no raw coordinate command.
-9. Later DOM/style mutation produces a new source revision and distinct exact scene.
-10. `Page.captureScreenshot` and high-level screenshot return direct Flutter scene
+10. Later DOM/style mutation produces a new source revision and distinct exact scene.
+11. `Page.captureScreenshot` and high-level screenshot return direct Flutter scene
    PNGs without browser/compositor chrome.
-11. Simultaneous 320×240 and 480×300 targets keep source, viewport, input, and
+12. Simultaneous 320×240 and 480×300 targets keep source, viewport, input, and
    scene state independent.
-12. Switching targets does not lose presentation state.
-13. Forced renderer reset requests a full snapshot and recovers a byte-identical
+13. Switching targets does not lose presentation state.
+14. Forced renderer reset requests a full snapshot and recovers a byte-identical
    scene.
-14. Runtime, network, permissions, tracing, history, dialog, form/text input, and
+15. Runtime, network, permissions, tracing, history, dialog, form/text input, and
     stable protocol-error slices remain available through the shared CDP core.
 
 Native `vixen-headless --cdp` is text/runtime-only. Screenshot, layout geometry,

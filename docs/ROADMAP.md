@@ -590,6 +590,18 @@ Flutter pixels to
 before byte-identical target switching and renderer recovery. Inline style,
 collections, and attribute nodes remain separate work.
 
+**Fifth A1 checkpoint:** `HTMLElement.style` now retains one live inline
+`CSSStyleDeclaration` across external `style` replacement and declaration API
+writes instead of replacing its wrapper after each mutation. Focused proof
+retains identity through `setAttribute` and `setProperty`, reflects current
+declarations in both directions, advances exactly one renderer-source generation
+per write, and recascades to 140×30. A hidden target preserves all prior exact
+hashes; the release/AOT corridor reveals it at 120×32, matches its serialized
+style and geometry through CDP, and pins exact Flutter pixels to
+`b4fe0e2cdba9f98193e8dfc7aadb7fa892e508e269a4a94beb9c2970d8ce5096`
+before byte-identical target switching and renderer recovery. Collections and
+attribute nodes remain separate work.
+
 **Proof:** script-driven mutation visibly changes the Flutter scene; synchronous
 and asynchronous geometry observe the right commit; CDP and page script inspect
 the same nodes.

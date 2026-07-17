@@ -4287,6 +4287,59 @@ mod tests {
     }
 
     #[test]
+    fn live_inline_style_reflects_attributes_and_advances_one_source_revision_per_write() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///inline-style-mutate.html",
+            "<html><body>\
+               <div id='target' style='display: none'>target</div>\
+             </body></html>",
+        )
+        .unwrap();
+
+        let initial_generation = page.renderer_source_generation();
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 globalThis.__liveStyle = target.style;\
+                 target.setAttribute(\
+                   'style',\
+                   'display: block; width: 140px; height: 20px'\
+                 );\
+                 return String(__liveStyle === target.style) + ':' +\
+                   __liveStyle.getPropertyValue('width') + ':' +\
+                   __liveStyle.display; })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:140px:block".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 1);
+        let target_id = page.query_selector_all("#target").unwrap()[0].node_id;
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("width".to_owned(), "140px".to_owned()))
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 __liveStyle.setProperty('height', '30px');\
+                 return String(__liveStyle === target.style) + ':' +\
+                   target.getAttribute('style') + ':' + target.style.height; })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:display: block; width: 140px; height: 30px;:30px".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 2);
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("height".to_owned(), "30px".to_owned()))
+        );
+    }
+
+    #[test]
     fn page_dynamic_inline_script_elements_execute_when_inserted() {
         let mut rt = JsRuntime::new().expect("engine init");
         let mut page = Page::from_html(

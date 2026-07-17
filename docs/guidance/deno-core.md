@@ -60,7 +60,9 @@ Current state:
   the same Page mutation path instead of being discarded after each mutation.
   `HTMLAnchorElement.relList` and `HTMLIFrameElement.sandbox` now follow the same
   retained live-object path, completing the token-list attributes currently
-  hosted by the runtime. Element geometry reads
+  hosted by the runtime. `HTMLElement.style` also retains one live inline
+  `CSSStyleDeclaration` across external and declaration-API writes. Element
+  geometry reads
   (`getBoundingClientRect()` / `getClientRects()` / `getBoxQuads()`), Range
   rectangles, and client/offset/scroll metrics now cross a DOM rect op and
   materialize Web-shaped rect/list/quad objects on generated WebIDL prototypes.
