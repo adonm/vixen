@@ -1,11 +1,11 @@
 //! Static page-module dependency loading through BrowserCore's shared resource boundary.
 //!
-//! V8 owns graph discovery and evaluation. This loader resolves only static
-//! same-origin/file imports, then delegates bytes, redirects, CSP/mixed-content
-//! checks, profile cookies/cache writes, and bounded network diagnostics to the
-//! same external-resource loader used by parser scripts, stylesheets, and images.
-//! Dynamic imports, import attributes, cross-origin CORS graphs, and graphs over
-//! the explicit load/event limits fail closed before module evaluation.
+//! V8 owns graph discovery and evaluation. This loader resolves static file and
+//! HTTP(S) imports, then delegates bytes, redirects, CORS, CSP/mixed-content
+//! checks, profile credentials/cache writes, and bounded network diagnostics to
+//! the same external-resource loader used by parser scripts, stylesheets, and
+//! images. Dynamic imports, import attributes, and graphs over the explicit
+//! load/event limits fail closed before module evaluation.
 
 use std::collections::VecDeque;
 use std::future::Future;

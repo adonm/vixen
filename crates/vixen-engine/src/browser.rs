@@ -999,6 +999,19 @@ pub(crate) trait ExternalResourceRequest: Clone + Send + 'static {
     fn url(&self) -> &url::Url;
     fn blocked_reason(&self, url: &url::Url) -> Option<&'static str>;
     fn is_cross_site(&self, url: &url::Url) -> bool;
+    fn request_headers(&self, _url: &url::Url) -> Vec<(String, String)> {
+        Vec::new()
+    }
+    fn sends_credentials(&self, _url: &url::Url) -> bool {
+        true
+    }
+    fn response_blocked_reason(
+        &self,
+        _url: &url::Url,
+        _response: &ByteResponse,
+    ) -> Option<&'static str> {
+        None
+    }
     fn kind(&self) -> &'static str;
 }
 
@@ -1013,6 +1026,22 @@ impl ExternalResourceRequest for ExternalPageScript {
 
     fn is_cross_site(&self, url: &url::Url) -> bool {
         self.is_cross_site(url)
+    }
+
+    fn request_headers(&self, url: &url::Url) -> Vec<(String, String)> {
+        self.request_headers(url)
+    }
+
+    fn sends_credentials(&self, url: &url::Url) -> bool {
+        self.sends_credentials(url)
+    }
+
+    fn response_blocked_reason(
+        &self,
+        url: &url::Url,
+        response: &ByteResponse,
+    ) -> Option<&'static str> {
+        self.response_blocked_reason(url, response)
     }
 
     fn kind(&self) -> &'static str {
@@ -5122,25 +5151,34 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
                     });
                 }
                 visited.insert(current.to_string());
-                merge_profile_cookies(store, &current, cookies, profile_baseline).map_err(
-                    |error| ExternalResourceLoadFailure {
-                        error: script_error(error),
-                        url: current.to_string(),
-                        events: events.clone(),
-                        blocked_reason: "load",
-                    },
-                )?;
-                requested_urls.push(current.clone());
+                let send_credentials = request.sends_credentials(&current);
+                if send_credentials {
+                    merge_profile_cookies(store, &current, cookies, profile_baseline).map_err(
+                        |error| ExternalResourceLoadFailure {
+                            error: script_error(error),
+                            url: current.to_string(),
+                            events: events.clone(),
+                            blocked_reason: "load",
+                        },
+                    )?;
+                    requested_urls.push(current.clone());
+                }
+                let mut credentialless_cookies = CookieJar::default();
+                let request_cookies = if send_credentials {
+                    &mut *cookies
+                } else {
+                    &mut credentialless_cookies
+                };
                 let mut hop_events = Vec::new();
                 let response = network
                     .get_bytes_with_cookies_request_with_progress_and_limit(
-                        cookies,
+                        request_cookies,
                         TextRequest {
                             url: current.clone(),
                             cross_site: request.is_cross_site(&current),
                             method: Method::Get,
                             redirect_mode: RedirectMode::Manual,
-                            headers: Vec::new(),
+                            headers: request.request_headers(&current),
                             body: None,
                         },
                         max_body_bytes,
@@ -5163,6 +5201,20 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
                     }
                 };
                 events.append(&mut response.events);
+
+                if let Some(blocked_reason) = request.response_blocked_reason(&current, &response) {
+                    return Err(ExternalResourceLoadFailure {
+                        error: BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!(
+                                "external {resource_kind} blocked by {blocked_reason}: {current}"
+                            ),
+                        ),
+                        url: current.to_string(),
+                        events,
+                        blocked_reason,
+                    });
+                }
 
                 if !is_followable_redirect(response.status) {
                     response.events = events;
@@ -6308,6 +6360,7 @@ mod tests {
     struct GatedRequest {
         path: String,
         cookie: Option<String>,
+        origin: Option<String>,
         respond: mpsc::SyncSender<String>,
         completed: mpsc::Receiver<()>,
         disconnected: mpsc::Receiver<()>,
@@ -6353,6 +6406,11 @@ mod tests {
                             name.eq_ignore_ascii_case("cookie")
                                 .then(|| value.trim().to_owned())
                         });
+                        let origin = request.lines().find_map(|line| {
+                            let (name, value) = line.split_once(':')?;
+                            name.eq_ignore_ascii_case("origin")
+                                .then(|| value.trim().to_owned())
+                        });
                         let cookie_value = path.trim_matches('/').to_owned();
                         let (respond, response) = mpsc::sync_channel(1);
                         let (completed, completed_rx) = mpsc::sync_channel(1);
@@ -6361,6 +6419,7 @@ mod tests {
                             .send(GatedRequest {
                                 path,
                                 cookie,
+                                origin,
                                 respond,
                                 completed: completed_rx,
                                 disconnected: disconnected_rx,
@@ -6470,6 +6529,32 @@ mod tests {
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\n{cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{source}",
             source.len()
+        )
+    }
+
+    fn cors_script_response(
+        source: &str,
+        allow_origin: &str,
+        allow_credentials: bool,
+        set_cookie: Option<&str>,
+    ) -> String {
+        let credentials = if allow_credentials {
+            "Access-Control-Allow-Credentials: true\r\n"
+        } else {
+            ""
+        };
+        let cookie = set_cookie
+            .map(|value| format!("Set-Cookie: {value}\r\n"))
+            .unwrap_or_default();
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nAccess-Control-Allow-Origin: {allow_origin}\r\n{credentials}{cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{source}",
+            source.len()
+        )
+    }
+
+    fn cors_redirect_response(location: &str, allow_origin: &str) -> String {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         )
     }
 
@@ -9021,9 +9106,9 @@ mod tests {
         let server = GatedHttpServer::start(1);
         let mut config = test_config();
         server.configure(&mut config);
-        let page_url = "http://same.test/gated-module-success";
+        let page_url = server.url("/gated-module-success");
         config.document_overrides.insert(
-            page_url.to_owned(),
+            page_url.clone(),
             format!(
                 "<!doctype html><title>initial</title>\
                  <script>globalThis.order = 'before'</script>\
@@ -9037,7 +9122,7 @@ mod tests {
         let context_id = create(&mut handle);
         drain_events(&mut handle);
 
-        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &page_url);
         let request = server.request();
         assert_eq!(request.path, "/ordered-module.js");
         request
@@ -9282,6 +9367,200 @@ mod tests {
             );
         }
         drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn cross_origin_module_graph_enforces_cors_on_redirects_and_responses() {
+        let server = GatedHttpServer::start(4);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let allowed_page = "http://source.test/cors-module-allowed";
+        let blocked_page = "http://source.test/cors-module-blocked";
+        let entry_url = server.url("/cors/entry.js");
+        let blocked_url = server.url("/cors/blocked.js");
+        config.document_overrides.insert(
+            allowed_page.to_owned(),
+            format!(
+                "<!doctype html><title>allowed-initial</title><script type='module'>import {{ answer }} from '{entry_url}'; document.title = `cors-${{answer}}`;</script>"
+            ),
+        );
+        config.document_overrides.insert(
+            blocked_page.to_owned(),
+            format!(
+                "<!doctype html><title>blocked-initial</title><script type='module'>import '{blocked_url}'; document.title = 'cors-should-not-run';</script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, allowed_page);
+        let redirect = server.request();
+        assert_eq!(redirect.path, "/cors/entry.js");
+        assert_eq!(redirect.origin.as_deref(), Some("http://source.test"));
+        assert_eq!(redirect.cookie, None);
+        redirect
+            .respond
+            .send(cors_redirect_response("/cors/final.js", "*"))
+            .unwrap();
+        redirect
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("CORS module redirect watchdog");
+
+        let final_module = server.request();
+        assert_eq!(final_module.path, "/cors/final.js");
+        assert_eq!(final_module.origin.as_deref(), Some("http://source.test"));
+        assert_eq!(final_module.cookie, None);
+        final_module
+            .respond
+            .send(cors_script_response(
+                "import { value } from './nested.js'; export const answer = value + 1;",
+                "*",
+                false,
+                Some("cors_default_cookie=ignored; Path=/"),
+            ))
+            .unwrap();
+        final_module
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("CORS final module watchdog");
+
+        let nested = server.request();
+        assert_eq!(nested.path, "/cors/nested.js");
+        assert_eq!(nested.origin.as_deref(), Some("http://source.test"));
+        assert_eq!(nested.cookie, None);
+        nested
+            .respond
+            .send(cors_script_response(
+                "export const value = 41;",
+                "*",
+                false,
+                None,
+            ))
+            .unwrap();
+        nested
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("nested CORS module watchdog");
+
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("cors-42")
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Failure { blocked_reason: Some(reason), .. }
+                        if reason == "cors"
+                ))
+        )));
+
+        let blocked_navigation = dispatch_navigation(&mut handle, context_id, blocked_page);
+        let blocked = server.request();
+        assert_eq!(blocked.path, "/cors/blocked.js");
+        assert_eq!(blocked.origin.as_deref(), Some("http://source.test"));
+        blocked
+            .respond
+            .send(redirect_response("/cors/must-not-load.js"))
+            .unwrap();
+        blocked
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("blocked CORS module watchdog");
+        let blocked_events =
+            wait_for_navigation(&mut handle, context_id, blocked_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("blocked-initial")
+        );
+        assert!(blocked_events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Failure { url, blocked_reason: Some(reason), .. }
+                        if url == &blocked_url && reason == "cors"
+                ))
+        )));
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn credentialed_cross_origin_module_root_applies_to_its_dependencies() {
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = "http://source.test/credentialed-module";
+        let root_url = server.url("/credentialed/root.js");
+        config.document_overrides.insert(
+            page_url.to_owned(),
+            format!(
+                "<!doctype html><title>initial</title><script type='module' src='{root_url}' crossorigin='use-credentials'></script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let root = server.request();
+        assert_eq!(root.path, "/credentialed/root.js");
+        assert_eq!(root.origin.as_deref(), Some("http://source.test"));
+        root.respond
+            .send(cors_script_response(
+                "import { value } from './dependency.js'; document.title = `credentialed-${value}`;",
+                "http://source.test",
+                true,
+                Some("credentialed_module=accepted; Path=/"),
+            ))
+            .unwrap();
+        root.completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("credentialed module root watchdog");
+
+        let dependency = server.request();
+        assert_eq!(dependency.path, "/credentialed/dependency.js");
+        assert_eq!(dependency.origin.as_deref(), Some("http://source.test"));
+        assert!(
+            dependency
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("credentialed_module=accepted")
+        );
+        dependency
+            .respond
+            .send(cors_script_response(
+                "export const value = 42;",
+                "http://source.test",
+                true,
+                None,
+            ))
+            .unwrap();
+        dependency
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("credentialed module dependency watchdog");
+
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("credentialed-42")
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        server.join();
+        drop(handle);
         let _ = std::fs::remove_file(profile_path);
     }
 

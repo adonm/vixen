@@ -200,6 +200,9 @@ explicit until promoted by measured tests.
 - Static ES-module dependencies use the shared external-resource boundary with
   BrowserCore request ids, redirects/final URLs, policy, profile cookies/cache,
   bounded diagnostics, graph limits, and cancellation before V8 evaluation.
+- Cross-origin module roots, dependencies, and redirects pass CORS before V8
+  exposure; default graphs omit credentials and explicit credentialed graphs
+  require exact origin/credential permission throughout the graph.
 - Policy runs before resource bytes/handles cross to Flutter.
 - redb profile tables preserve partitioning, bounds, recovery, clear-data, and
   reopen behavior.

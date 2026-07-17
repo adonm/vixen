@@ -682,8 +682,8 @@ task owner replaces Promise-backed timer shims with bounded timeout, interval,
 animation-frame, cancellation, and post-load/automation pumps. CSP, mixed
 content, response policy, cancellation, and stale document/runtime rejection
 remain on the existing BrowserCore external-script boundary. Unresolved module
-imports were left fail closed for A2's unified dependency loader. Focused runtime and
-production-navigation proofs pin classic → microtask → deferred module → module
+imports were left fail closed for A2's unified dependency loader. Focused
+runtime and production-navigation proofs pin classic → microtask → deferred module → module
 microtask/await → load → task ordering, task cancellation, one interval turn,
 animation-frame delivery, post-load tasks, realm reuse after failure, exactly
 one renderer-source generation for the module mutation, and external module
@@ -738,8 +738,20 @@ cross-context profile cookies, cache records, distinct request ids,
 cross-origin fail-closed diagnostics, final-URL resolution, and transport
 disconnect on cancellation. The existing release/AOT Playwright fixture now
 imports a real dependency before producing the unchanged module-owned Flutter
-scene. Cross-origin CORS graphs, cache reads/revalidation, import maps, dynamic
-`import()`, and import attributes remain explicit next work.
+scene.
+
+**Second A2 checkpoint:** static HTTP(S) graphs now enforce CORS for external
+module roots and every dependency/redirect response before source reaches V8.
+Cross-origin requests carry the serialized document `Origin`; default and
+anonymous module graphs suppress cross-origin credentials and ignore response
+cookies, while `crossorigin="use-credentials"` requires an exact allowed origin,
+`Access-Control-Allow-Credentials: true`, and inherits credentialed behavior
+through dependencies. Wildcard default graphs remain credentialless. Focused
+BrowserCore tests prove allowed redirect/final/nested responses, missing-header
+rejection without following the redirect or executing source, ignored default
+cookies, credentialed root-cookie propagation, and stable lifecycle settlement.
+Cache reads/revalidation, import maps, dynamic `import()`, and import attributes
+remain explicit next work.
 
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
@@ -894,8 +906,8 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue the A2 module family:** add cross-origin CORS graph loading and
-   profile-cache reads/revalidation, then import-map resolution and dynamic
+1. **Continue the A2 module family:** add profile-cache reads/revalidation, then
+   import-map resolution and dynamic
    `import()` without weakening the landed static graph limits, request ids,
    policy, cancellation, diagnostics, or profile behavior.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native

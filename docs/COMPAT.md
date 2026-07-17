@@ -236,9 +236,13 @@ The first A2 extension imports a real file dependency in that same rendered
 corridor. Same-origin/file static dependency graphs now share BrowserCore
 request ids, redirect/final-URL policy, profile cookies/cache writes, bounded
 diagnostics, and stop cancellation while preserving the exact scene hash.
-Cross-origin CORS graphs, cache reads/revalidation, import maps, dynamic
-`import()`, and import attributes still fail closed. Child frame globals and
-documents remain unavailable rather than fabricated until A3.
+The second A2 extension applies CORS to cross-origin HTTP(S) module roots,
+dependencies, and redirects before V8 exposure. Default graphs omit
+cross-origin credentials; `crossorigin="use-credentials"` requires an exact
+credentialed response and is inherited by dependencies. Cache
+reads/revalidation, import maps, dynamic `import()`, and import attributes still
+fail closed. Child frame globals and documents remain unavailable rather than
+fabricated until A3.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,

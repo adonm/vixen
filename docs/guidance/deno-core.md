@@ -87,8 +87,11 @@ Current state:
   discover same-origin/file static dependency graphs while BrowserCore's shared
   resource boundary owns request ids, redirects, CSP/mixed-content and response
   policy, profile cookie/cache writes, diagnostics, limits, and cancellation.
-  Cross-origin CORS graphs, import maps, dynamic imports, import attributes, and
-  cache reads/revalidation remain fail closed.
+  The second checkpoint applies CORS to cross-origin HTTP(S) roots,
+  dependencies, and redirects before V8 exposure, omits default cross-origin
+  credentials, and inherits explicitly credentialed root policy through the
+  graph. Import maps, dynamic imports, import attributes, and cache
+  reads/revalidation remain fail closed.
 
 Rules:
 

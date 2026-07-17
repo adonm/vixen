@@ -65,6 +65,9 @@ pub struct ExternalScript {
     pub src: String,
     /// CSP nonce, if one was authored on the `<script>` element.
     pub nonce: Option<String>,
+    /// Authored CORS settings attribute. Module graph loading interprets
+    /// `use-credentials`; missing/anonymous values use same-origin credentials.
+    pub cross_origin: Option<String>,
 }
 
 /// Document-ordered events relevant to classic and module script execution.
@@ -397,12 +400,16 @@ impl Document {
                             .iter()
                             .find(|attr| attr.name.local.as_ref() == "nonce")
                             .map(|attr| attr.value.to_string());
-                        Some((src, nonce))
+                        let cross_origin = attrs
+                            .iter()
+                            .find(|attr| attr.name.local.as_ref() == "crossorigin")
+                            .map(|attr| attr.value.to_string());
+                        Some((src, nonce, cross_origin))
                     } else {
                         None
                     }
                 };
-                if let Some((src, nonce)) = script_item {
+                if let Some((src, nonce, cross_origin)) = script_item {
                     let module = attrs.borrow().iter().any(|attr| {
                         attr.name.local.as_ref() == "type"
                             && attr.value.trim().eq_ignore_ascii_case("module")
@@ -412,6 +419,7 @@ impl Document {
                             out.push(DocumentScriptItem::ExternalClassicScript(ExternalScript {
                                 src,
                                 nonce,
+                                cross_origin,
                             }))
                         }
                         (false, None) => {
@@ -424,6 +432,7 @@ impl Document {
                             out.push(DocumentScriptItem::ExternalModuleScript(ExternalScript {
                                 src,
                                 nonce,
+                                cross_origin,
                             }))
                         }
                         (true, None) => {
@@ -1115,7 +1124,7 @@ mod tests {
     fn script_execution_items_include_inline_and_external_modules() {
         let doc = Document::parse(
             "<script type='module'>export const inline = true;</script>\
-             <script type='module' src='/module.js' nonce='module-nonce'></script>\
+             <script type='module' src='/module.js' nonce='module-nonce' crossorigin='use-credentials'></script>\
              <script type='importmap'>{}</script>",
         )
         .unwrap();
@@ -1132,6 +1141,7 @@ mod tests {
             DocumentScriptItem::ExternalModuleScript(script)
                 if script.src == "/module.js"
                     && script.nonce.as_deref() == Some("module-nonce")
+                    && script.cross_origin.as_deref() == Some("use-credentials")
         ));
     }
 

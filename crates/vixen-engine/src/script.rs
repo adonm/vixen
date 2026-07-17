@@ -129,6 +129,13 @@ pub(crate) struct ExternalPageScript {
     nonce: Option<String>,
     context_trustworthy: bool,
     module: bool,
+    module_credentials: ModuleCredentialsMode,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ModuleCredentialsMode {
+    SameOrigin,
+    Include,
 }
 
 impl ExternalPageScript {
@@ -164,6 +171,40 @@ impl ExternalPageScript {
         !vixen_net::is_same_site(&self.origin, &vixen_net::Origin::from_url(url))
     }
 
+    pub(crate) fn request_headers(&self, url: &url::Url) -> Vec<(String, String)> {
+        if self.module && self.is_cross_origin(url) {
+            vec![("origin".to_owned(), cors_origin_value(&self.origin))]
+        } else {
+            Vec::new()
+        }
+    }
+
+    pub(crate) fn sends_credentials(&self, url: &url::Url) -> bool {
+        !self.module
+            || !self.is_cross_origin(url)
+            || self.module_credentials == ModuleCredentialsMode::Include
+    }
+
+    pub(crate) fn response_blocked_reason(
+        &self,
+        url: &url::Url,
+        response: &vixen_net::ByteResponse,
+    ) -> Option<&'static str> {
+        if !self.module || !self.is_cross_origin(url) {
+            return None;
+        }
+        let headers = vixen_net::CorsResponseHeaders::from_headers(response.headers.iter());
+        let credentials = match self.module_credentials {
+            ModuleCredentialsMode::SameOrigin => vixen_net::CorsCredentialsMode::SameOrigin,
+            ModuleCredentialsMode::Include => vixen_net::CorsCredentialsMode::Include,
+        };
+        matches!(
+            vixen_net::cors_check(&headers, &cors_origin_value(&self.origin), credentials),
+            vixen_net::CorsCheckOutcome::Fail(_)
+        )
+        .then_some("cors")
+    }
+
     pub(crate) fn is_module(&self) -> bool {
         self.module
     }
@@ -185,16 +226,29 @@ impl ExternalPageScript {
             nonce: None,
             context_trustworthy: self.context_trustworthy,
             module: true,
+            module_credentials: self.module_credentials,
         };
         if let Some(reason) = request.blocked_reason(&request.url) {
             return Err(reason);
         }
-        let same_origin = vixen_net::Origin::from_url(&request.url) == self.origin;
-        let same_file_origin = self.url.scheme() == "file" && request.url.scheme() == "file";
-        if !same_origin && !same_file_origin {
-            return Err("cors");
-        }
         Ok(request)
+    }
+
+    fn is_cross_origin(&self, url: &url::Url) -> bool {
+        vixen_net::Origin::from_url(url) != self.origin
+    }
+}
+
+fn cors_origin_value(origin: &vixen_net::Origin) -> String {
+    if origin.is_opaque() {
+        return "null".to_owned();
+    }
+    match (origin.scheme(), origin.host(), origin.port()) {
+        ("http", host, Some(80)) | ("https", host, Some(443)) => {
+            format!("{}://{host}", origin.scheme())
+        }
+        (_, host, Some(port)) => format!("{}://{host}:{port}", origin.scheme()),
+        (_, host, None) => format!("{}://{host}", origin.scheme()),
     }
 }
 
@@ -1289,6 +1343,7 @@ impl PageScriptRunner {
                                     vixen_net::referrer_policy::is_potentially_trustworthy,
                                 ),
                             module: true,
+                            module_credentials: ModuleCredentialsMode::SameOrigin,
                         },
                     }
                 }
@@ -1330,6 +1385,16 @@ impl PageScriptRunner {
                 .as_ref()
                 .is_some_and(vixen_net::referrer_policy::is_potentially_trustworthy),
             module,
+            module_credentials: if module
+                && script
+                    .cross_origin
+                    .as_deref()
+                    .is_some_and(|value| value.eq_ignore_ascii_case("use-credentials"))
+            {
+                ModuleCredentialsMode::Include
+            } else {
+                ModuleCredentialsMode::SameOrigin
+            },
         };
         if request.allows_url(request.url()) {
             PreparedPageScript::External(request)
@@ -5640,31 +5705,73 @@ mod tests {
     }
 
     #[test]
-    fn cross_origin_module_dependency_fails_closed_with_network_diagnostic() {
-        let mut page = Page::from_html(
+    fn cross_origin_module_dependency_requires_cors_response() {
+        let page = Page::from_html(
             "https://module-origin.example/page.html",
             "<script type='module' nonce='allowed'>import 'https://cross-origin.example/dependency.js';</script>",
         )
         .unwrap();
-        let mut runtime = JsRuntime::new().unwrap();
-
-        assert_eq!(
-            runtime.execute_page_scripts(&mut page).unwrap_err().code(),
-            codes::SCRIPT_EVAL
-        );
-        assert!(runtime.drain_network_events().unwrap().iter().any(|event| {
-            matches!(
-                event,
-                JsNetworkEvent::Failure {
-                    url,
-                    blocked_reason: Some(reason),
-                    ..
-                } if url == "https://cross-origin.example/dependency.js" && reason == "cors"
+        let mut scripts = PageScriptRunner::new(&page, false);
+        let PreparedPageScript::InlineModule { request, .. } = scripts.prepare_next(&page).unwrap()
+        else {
+            panic!("expected inline module");
+        };
+        let dependency = request
+            .module_dependency(
+                url::Url::parse("https://cross-origin.example/dependency.js").unwrap(),
             )
-        }));
+            .unwrap();
+        let mut response = vixen_net::ByteResponse {
+            body: b"export const value = 42;".to_vec(),
+            headers: std::collections::BTreeMap::from([(
+                "content-type".to_owned(),
+                "text/javascript".to_owned(),
+            )]),
+            status: 200,
+            final_url: dependency.url().to_string(),
+            set_cookie: Vec::new(),
+            redirects: 0,
+            events: Vec::new(),
+        };
+
+        assert!(!dependency.sends_credentials(dependency.url()));
         assert_eq!(
-            runtime.evaluate_with_page("1 + 1", &page).unwrap(),
-            JsValue::Int32(2)
+            dependency.request_headers(dependency.url()),
+            vec![(
+                "origin".to_owned(),
+                "https://module-origin.example".to_owned()
+            )]
+        );
+        assert_eq!(
+            dependency.response_blocked_reason(dependency.url(), &response),
+            Some("cors")
+        );
+        response
+            .headers
+            .insert("access-control-allow-origin".to_owned(), "*".to_owned());
+        assert_eq!(
+            dependency.response_blocked_reason(dependency.url(), &response),
+            None
+        );
+
+        let mut credentialed = dependency.clone();
+        credentialed.module_credentials = ModuleCredentialsMode::Include;
+        assert!(credentialed.sends_credentials(credentialed.url()));
+        assert_eq!(
+            credentialed.response_blocked_reason(credentialed.url(), &response),
+            Some("cors")
+        );
+        response.headers.insert(
+            "access-control-allow-origin".to_owned(),
+            "https://module-origin.example".to_owned(),
+        );
+        response.headers.insert(
+            "access-control-allow-credentials".to_owned(),
+            "true".to_owned(),
+        );
+        assert_eq!(
+            credentialed.response_blocked_reason(credentialed.url(), &response),
+            None
         );
     }
 

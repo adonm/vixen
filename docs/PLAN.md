@@ -50,14 +50,16 @@ controlled host proof rather than an IME or assistive-technology matrix.
    document tasks have focused and release/AOT proof. Cross-document realm
    teardown and context isolation remain pinned. Unsupported child-frame realms
    stay fail-closed for A3.
-2. A2's first loader checkpoint now routes same-origin/file static ES-module
+2. A2's first two loader checkpoints now route static ES-module
    dependency graphs through the shared external-resource loader with numeric
    BrowserCore request ids, redirect/final-URL policy, strict response MIME,
    profile cookie/cache writes, bounded diagnostics, and stop cancellation. The
    release/AOT Playwright fixture imports a real dependency without changing its
-   exact Flutter scene. Continue with cross-origin CORS graphs, cache reads and
-   revalidation, import maps, and dynamic imports before moving to another
-   resource family.
+   exact Flutter scene. HTTP(S) roots, dependencies, and redirects now enforce
+   CORS before V8 exposure; default cross-origin graphs omit credentials, while
+   `use-credentials` requires exact credentialed permission and propagates
+   through the graph. Continue with cache reads/revalidation, import maps, and
+   dynamic imports before moving to another resource family.
 
 ## Post-stabilization priorities
 
