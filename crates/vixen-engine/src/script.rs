@@ -4176,6 +4176,60 @@ mod tests {
     }
 
     #[test]
+    fn live_rel_list_reflects_attributes_and_advances_one_source_revision_per_write() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///rel-list-mutate.html",
+            "<html><head><style>\
+               #target { display: none; }\
+               #target[rel~='wide'] { display: block; width: 140px; height: 20px; }\
+               #target[rel~='tall'] { height: 30px; }\
+             </style></head><body>\
+               <a id='target' rel='compact'>target</a>\
+             </body></html>",
+        )
+        .unwrap();
+
+        let initial_generation = page.renderer_source_generation();
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 globalThis.__liveRelList = target.relList;\
+                 target.setAttribute('rel', 'wide');\
+                 return String(__liveRelList === target.relList) + ':' +\
+                   __liveRelList.value + ':' + __liveRelList.contains('wide'); })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:wide:true".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 1);
+        let target_id = page.query_selector_all("#target").unwrap()[0].node_id;
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("width".to_owned(), "140px".to_owned()))
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 __liveRelList.add('tall');\
+                 return target.getAttribute('rel') + ':' +\
+                   String(__liveRelList === target.relList) + ':' +\
+                   Array.from(target.relList).join(','); })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("wide tall:true:wide,tall".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 2);
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("height".to_owned(), "30px".to_owned()))
+        );
+    }
+
+    #[test]
     fn page_dynamic_inline_script_elements_execute_when_inserted() {
         let mut rt = JsRuntime::new().expect("engine init");
         let mut page = Page::from_html(

@@ -15,6 +15,7 @@ const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a
 const expectedDatasetBaseline = '08ad4b805cd6d2be56fae95dc70660206cdac94b1c0776d52b1d0eb03bd32dce';
 const expectedDatasetMutation = '4b8654191f7e9f4eb95486eb34bbb689d2153f4d2484cfaa617d2fb7075b1a24';
 const expectedClassListMutation = '5633ca7a032c8c6a1582f5389b6b4a594b91d99e89784683fbf3679f18639f95';
+const expectedRelListMutation = '7ae6e6d8f650d733922b1af018dfdcac310bdcbb4f14537cdb20500c44da3c04';
 
 function fail(message) {
   throw new Error(`playwright-flutter-cdp-smoke: ${message}`);
@@ -277,6 +278,62 @@ async function main() {
       fail('click mutation did not change the post-dataset exact scene');
     }
 
+    const relListEvidence = await page.evaluate(() => {
+      const target = document.querySelector('#rel-target');
+      const relList = target.relList;
+      globalThis.__relListObject = relList;
+      target.setAttribute('rel', 'wide');
+      relList.add('tall');
+      const rect = target.getBoundingClientRect();
+      return {
+        stable: relList === target.relList,
+        reflectedAttribute: target.getAttribute('rel'),
+        reflectedTokens: Array.from(relList),
+        synchronousRect: {
+          width: rect.width,
+          height: rect.height,
+        },
+      };
+    });
+    if (!relListEvidence.stable
+        || relListEvidence.reflectedAttribute !== 'wide tall'
+        || JSON.stringify(relListEvidence.reflectedTokens) !== JSON.stringify(['wide', 'tall'])
+        || relListEvidence.synchronousRect.width !== 120
+        || relListEvidence.synchronousRect.height !== 32) {
+      fail(`live relList evidence was ${JSON.stringify(relListEvidence)}`);
+    }
+    const relTargetNode = await firstSession.send('DOM.querySelector', {
+      nodeId: document.root.nodeId,
+      selector: '#rel-target',
+    });
+    const relTargetAttributes = await firstSession.send('DOM.getAttributes', {
+      nodeId: relTargetNode.nodeId,
+    });
+    const relTargetAttributePairs = Object.fromEntries(Array.from(
+      { length: relTargetAttributes.attributes.length / 2 },
+      (_, index) => relTargetAttributes.attributes.slice(index * 2, index * 2 + 2),
+    ));
+    const relTargetModel = await firstSession.send('DOM.getBoxModel', {
+      nodeId: relTargetNode.nodeId,
+    });
+    if (relTargetAttributePairs.rel !== 'wide tall'
+        || relTargetModel.model.content[2] - relTargetModel.model.content[0] !== 120
+        || relTargetModel.model.content[5] - relTargetModel.model.content[1] !== 32) {
+      fail(`CDP DOM did not agree with relList: ${JSON.stringify({ relTargetAttributePairs, model: relTargetModel.model })}`);
+    }
+    const afterRelList = await page.screenshot({ timeout: 20000 });
+    const afterRelListInfo = assertCapture(
+      afterRelList,
+      320,
+      240,
+      [34, 187, 102, 255],
+      'post-relList',
+      expectedRelListMutation,
+    );
+    if (afterRelListInfo.hash === afterClickInfo.hash) {
+      fail('relList mutation did not change the post-classList exact scene');
+    }
+
     const second = await context.newPage();
     await second.setViewportSize({ width: 480, height: 300 });
     await second.setContent(`<!doctype html><style>
@@ -290,7 +347,7 @@ async function main() {
     });
     const secondPng = await second.screenshot({ timeout: 20000 });
     const secondInfo = assertCapture(secondPng, 480, 300, [202, 36, 104, 255], 'second target');
-    if (secondInfo.hash === afterClickInfo.hash) fail('independent target captures were identical');
+    if (secondInfo.hash === afterRelListInfo.hash) fail('independent target captures were identical');
     const secondBox = await second.locator('#second').boundingBox({ timeout: 20000 });
     if (!secondBox) fail('second target has no Flutter commit geometry');
     await second.mouse.click(secondBox.x + 5, secondBox.y + 5);
@@ -303,18 +360,18 @@ async function main() {
 
     const firstAgain = await page.screenshot({ timeout: 20000 });
     const firstAgainInfo = assertCapture(firstAgain, 320, 240, [34, 187, 102, 255], 'first target restored');
-    if (firstAgainInfo.hash !== afterClickInfo.hash) {
+    if (firstAgainInfo.hash !== afterRelListInfo.hash) {
       fail('switching targets changed the first target exact scene');
     }
 
     await firstSession.send('Vixen.resetRenderer');
     const recovered = await page.screenshot({ timeout: 20000 });
     const recoveredInfo = assertCapture(recovered, 320, 240, [34, 187, 102, 255], 'renderer-loss recovery');
-    if (recoveredInfo.hash !== afterClickInfo.hash) {
+    if (recoveredInfo.hash !== afterRelListInfo.hash) {
       fail('renderer-loss full resync did not recover the exact scene');
     }
 
-    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} after=${afterClickInfo.hash} second=${secondInfo.hash}`);
+    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} classList=${afterClickInfo.hash} relList=${afterRelListInfo.hash} second=${secondInfo.hash}`);
   } finally {
     if (browser) await browser.close().catch(() => {});
     await stopServer(child);

@@ -160,8 +160,9 @@ exercised directly through the persistent `deno_core` runtime seam.
 the authoritative DOM mutation, Stylo, and renderer-source path.
 `Element.classList` now also retains a stable live `DOMTokenList` identity across
 external and list-driven `class` writes, with current token reflection and the
-same authoritative mutation/cascade path. Other token-list families remain
-separate compatibility work.
+same authoritative mutation/cascade path. `HTMLAnchorElement.relList` retains
+the same identity and behavior across `rel` writes. Other token-list families
+remain separate compatibility work.
 
 Static parser-discovered PNG `<img src>` has one resource-to-pixel vertical.
 BrowserCore applies exact generations, URL/CSP/mixed-content/redirect policy,
@@ -198,10 +199,11 @@ agreed, target switching preserved the first scene, and forced renderer reset
 recovered by full resync to byte-identical pixels. The first A1 extension now
 also writes a live `dataset` property, observes the attribute-selector-driven
 140×32 box synchronously, matches later CDP DOM attributes/geometry, and pins
-renderer-specific before/after Flutter scene hashes. The second A1 extension
-retains `classList` through the click mutation, matches `clicked` and 140px
-geometry in page and CDP views, and pins the resulting exact scene before
-byte-identical reset recovery.
+renderer-specific before/after Flutter scene hashes. The second and third A1
+extensions retain `classList` through the click mutation and a real anchor's
+`relList` through a visible rel-selector mutation, match the resulting 140px and
+120×32 geometry in page and CDP views, and pin both exact scenes before
+byte-identical renderer-reset recovery.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,

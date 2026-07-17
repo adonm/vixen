@@ -44,8 +44,8 @@ AT-SPI bounds, native `Focus` → DOM focus → newer same-document commit evide
 and the remaining interaction corridor. Keep that gate intact; it is one
 controlled host proof rather than an IME or assistive-technology matrix.
 
-1. Continue A1 one host family at a time. Stable live `DOMStringMap` and
-   `classList` `DOMTokenList` identities are the first two landed slices; each
+1. Continue A1 one host family at a time. Stable live `DOMStringMap`,
+   `classList`, and `relList` identities are the first three landed slices; each
    next slice needs one mutation/source revision, synchronous geometry where
    relevant, CDP agreement, and exact Flutter pixels.
 2. Preserve the complete R8 compatibility, release, renderer, and native-host

@@ -8,6 +8,9 @@
   #status.clicked { background: #fd0; }
   #dataset-target { width: 80px; height: 24px; background: #b24; color: white; }
   #dataset-target[data-layout-mode="wide"] { width: 140px; height: 32px; background: #2468ca; }
+  #rel-target { display: none; }
+  #rel-target[rel~="wide"] { display: block; width: 120px; height: 24px; background: #7254c8; color: white; }
+  #rel-target[rel~="tall"] { height: 32px; }
   #nested-scroll { width: 160px; height: 80px; overflow: auto; background: #def; }
   #nested-content { height: 260px; }
   #nested-marker { display: block; margin-top: 120px; width: 120px; height: 30px; }
@@ -16,6 +19,7 @@
 <button id="hit">Hit me</button>
 <p id="status">waiting</p>
 <div id="dataset-target" data-author-name="ada">dataset</div>
+<a id="rel-target" rel="compact">rel target</a>
 <div id="nested-scroll"><div id="nested-content"><button id="nested-marker">Nested marker</button></div></div>
 <input id="default-check" type="checkbox" name="agree">
 <label>Extra check <input id="playwright-check" type="checkbox" name="extra"></label>

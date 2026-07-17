@@ -565,6 +565,18 @@ byte-identical target switching and renderer recovery. This converges one more
 attribute-backed host object; other token lists, inline style, collections, and
 attribute nodes remain separate work.
 
+**Third A1 checkpoint:** `HTMLAnchorElement.relList` now retains one live
+`DOMTokenList` across external and list-driven `rel` mutations. Focused runtime
+proof retains identity through `setAttribute` and `add`, reflects ordered tokens,
+advances exactly one renderer-source generation per write, and recascades
+`[rel~="wide"]`/`[rel~="tall"]` selectors to 140×30. A hidden real anchor keeps
+the prior release/AOT baseline, dataset, and classList hashes unchanged; its rel
+mutation becomes visible at 120×32, agrees with CDP attributes/geometry, and
+pins exact Flutter pixels to
+`7ae6e6d8f650d733922b1af018dfdcac310bdcbb4f14537cdb20500c44da3c04` before
+byte-identical target switching and renderer recovery. Sandbox tokens, inline
+style, collections, and attribute nodes remain separate work.
+
 **Proof:** script-driven mutation visibly changes the Flutter scene; synchronous
 and asynchronous geometry observe the right commit; CDP and page script inspect
 the same nodes.
