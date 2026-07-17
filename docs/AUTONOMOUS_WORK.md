@@ -47,8 +47,10 @@ intact while shared-core reductions proceed one proven host family at a time
 before broader shell/platform expansion. A2 static same-origin/file module
 dependency graphs now use the shared resource loader; continue that family with
 CORS enforced before V8 exposure and eligible HTTP(S) cache entries
-conditionally revalidated under current policy. Continue with import maps and
-dynamic imports.
+conditionally revalidated under current policy. One bounded pre-module inline
+import map now resolves through
+the same policy-bound loader; continue with dynamic imports without weakening
+graph provenance or cancellation.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

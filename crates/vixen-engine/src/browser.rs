@@ -3137,10 +3137,49 @@ impl BrowserCore {
                         runtime_context_id,
                         request_id,
                     },
-                    request,
+                    *request,
                     profile_cache_enabled,
                     work,
                     baseline,
+                );
+                return;
+            }
+            NavigationScriptStep::Author(PreparedPageScript::ImportMap { diagnostics, error }) => {
+                let mut effects = RuntimeEffects::default();
+                effects
+                    .console
+                    .extend(diagnostics.into_iter().map(|message| RuntimeConsoleEvent {
+                        kind: "warning".to_owned(),
+                        args: vec![RuntimeConsoleArg {
+                            type_name: "string".to_owned(),
+                            subtype: None,
+                            value: Some(RuntimeConsoleValue::String(message.clone())),
+                            unserializable_value: None,
+                            description: message,
+                        }],
+                    }));
+                if let Some(error) = error {
+                    effects.exceptions.push(RuntimeExceptionEvent {
+                        error: BrowserError::new(
+                            crate::engine_error::codes::SCRIPT_IMPORT_MAP,
+                            error,
+                        ),
+                    });
+                }
+                if !effects.is_empty() {
+                    self.emit(BrowserEvent::RuntimeEffects {
+                        context_id,
+                        frame_id,
+                        document_id,
+                        runtime_context_id,
+                        url: document_url.clone(),
+                        effects,
+                    });
+                }
+                self.restore_navigation_work(
+                    context_id,
+                    navigation_id,
+                    NavigationWork::Scripts(work),
                 );
                 return;
             }
@@ -3169,6 +3208,9 @@ impl BrowserCore {
                             &context.page,
                         )),
                         NavigationScriptStep::Author(PreparedPageScript::Skip) => Some(Ok(())),
+                        NavigationScriptStep::Author(PreparedPageScript::ImportMap { .. }) => {
+                            unreachable!("import maps are handled before entering the isolate")
+                        }
                         NavigationScriptStep::Complete => None,
                         NavigationScriptStep::Author(PreparedPageScript::External(_)) => {
                             unreachable!("external scripts start before entering the isolate")
@@ -9555,6 +9597,130 @@ mod tests {
             );
         }
         drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn module_import_map_resolves_through_shared_loader_and_preserves_cors() {
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let mapped_page = server.url("/import-map-page");
+        let cross_origin_page = "http://source.test/import-map-cors";
+        let cross_origin_module = server.url("/mapped/cross-origin.js");
+        config.document_overrides.insert(
+            mapped_page.clone(),
+            "<!doctype html><title>initial</title>\
+             <script type='importmap'>{\"imports\":{\"answer\":\"./mapped/answer.js\"}}</script>\
+             <script type='module'>import { answer } from 'answer'; document.title = `mapped-${answer}`;</script>"
+                .to_owned(),
+        );
+        config.document_overrides.insert(
+            cross_origin_page.to_owned(),
+            format!(
+                "<!doctype html><title>blocked</title>\
+                 <script type='importmap'>{{\"imports\":{{\"mapped\":\"{cross_origin_module}\"}}}}</script>\
+                 <script type='module'>import 'mapped'; document.title = 'must-not-run';</script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let mapped_navigation = dispatch_navigation(&mut handle, context_id, &mapped_page);
+        let mapped = server.request();
+        assert_eq!(mapped.path, "/mapped/answer.js");
+        mapped
+            .respond
+            .send(script_response("export const answer = 42;", None))
+            .unwrap();
+        mapped
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let mapped_events =
+            wait_for_navigation(&mut handle, context_id, mapped_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("mapped-42")
+        );
+        assert!(mapped_events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Request { request_id, url, .. }
+                        if request_id.parse::<u64>().is_ok()
+                            && url.ends_with("/mapped/answer.js")
+                ))
+        )));
+
+        let blocked_navigation = dispatch_navigation(&mut handle, context_id, cross_origin_page);
+        let blocked = server.request();
+        assert_eq!(blocked.path, "/mapped/cross-origin.js");
+        assert_eq!(blocked.origin.as_deref(), Some("http://source.test"));
+        assert_eq!(blocked.cookie, None);
+        blocked
+            .respond
+            .send(script_response("document.title = 'cors-bypassed';", None))
+            .unwrap();
+        blocked
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+        let blocked_events =
+            wait_for_navigation(&mut handle, context_id, blocked_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("blocked")
+        );
+        assert!(blocked_events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Failure { blocked_reason: Some(reason), .. }
+                        if reason == "cors"
+                ))
+        )));
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn late_import_map_reports_stable_error_and_does_not_remap_prior_module() {
+        let mut config = test_config();
+        let page_url = "https://same.test/late-import-map";
+        config.document_overrides.insert(
+            page_url.to_owned(),
+            "<!doctype html><title>initial</title>\
+             <script type='module'>import 'answer'; document.title = 'must-not-run';</script>\
+             <script type='importmap'>{\"imports\":{\"answer\":\"./answer.js\"}}</script>"
+                .to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("initial")
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.exceptions.iter().any(|exception|
+                    exception.error.code == crate::engine_error::codes::SCRIPT_IMPORT_MAP
+                )
+        )));
+
+        drop(handle);
         let _ = std::fs::remove_file(profile_path);
     }
 

@@ -50,7 +50,7 @@ controlled host proof rather than an IME or assistive-technology matrix.
    document tasks have focused and release/AOT proof. Cross-document realm
    teardown and context isolation remain pinned. Unsupported child-frame realms
    stay fail-closed for A3.
-2. A2's first three loader checkpoints now route static ES-module
+2. A2's first four loader checkpoints now route static ES-module
    dependency graphs through the shared external-resource loader with numeric
    BrowserCore request ids, redirect/final-URL policy, strict response MIME,
    profile cookie/cache writes, bounded diagnostics, and stop cancellation. The
@@ -61,8 +61,11 @@ controlled host proof rather than an IME or assistive-technology matrix.
    through the graph. Eligible exact-URL root/dependency cache entries now
    conditionally revalidate through live requests; a matching 304 restores
    bounded bytes only before current CORS/status/strict-MIME policy reruns, and
-   cache-disabled contexts bypass reads and writes. Continue with import maps
-   and dynamic imports before moving to another resource family.
+   cache-disabled contexts bypass reads and writes. One bounded inline import
+   map registered before module discovery now resolves exact/prefix/URL-like and
+   scoped mappings through the same loader without remapping module `src` or
+   bypassing policy. External/multiple/late/integrity maps fail closed. Continue
+   with dynamic imports before moving to another resource family.
 
 ## Post-stabilization priorities
 

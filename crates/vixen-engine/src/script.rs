@@ -28,6 +28,7 @@ use crate::storage_key::{StorageKind, StoragePartition};
 mod cssom;
 mod dom;
 mod encoding;
+mod import_maps;
 mod module_loader;
 mod runtime;
 mod webapi;
@@ -109,6 +110,9 @@ pub(crate) struct PageScriptRunner {
     origin: vixen_net::Origin,
     bypass_csp: bool,
     next_inline_module: u64,
+    import_map: Option<import_maps::PageImportMap>,
+    import_map_seen: bool,
+    module_seen: bool,
 }
 
 pub(crate) enum PreparedPageScript {
@@ -116,9 +120,13 @@ pub(crate) enum PreparedPageScript {
     Inline(String),
     InlineModule {
         source: String,
-        request: ExternalPageScript,
+        request: Box<ExternalPageScript>,
     },
-    External(ExternalPageScript),
+    ImportMap {
+        diagnostics: Vec<String>,
+        error: Option<String>,
+    },
+    External(Box<ExternalPageScript>),
 }
 
 #[derive(Clone)]
@@ -130,6 +138,7 @@ pub(crate) struct ExternalPageScript {
     context_trustworthy: bool,
     module: bool,
     module_credentials: ModuleCredentialsMode,
+    import_map: Option<import_maps::PageImportMap>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -215,8 +224,17 @@ impl ExternalPageScript {
         request
     }
 
+    fn import_map(&self) -> Option<import_maps::PageImportMap> {
+        self.import_map.clone()
+    }
+
     fn module_dependency(&self, url: url::Url) -> Result<Self, &'static str> {
         if !self.module {
+            return Err("module-policy");
+        }
+        if !matches!(url.scheme(), "file" | "http" | "https")
+            || matches!(self.origin.scheme(), "http" | "https") && url.scheme() == "file"
+        {
             return Err("module-policy");
         }
         let request = Self {
@@ -227,6 +245,7 @@ impl ExternalPageScript {
             context_trustworthy: self.context_trustworthy,
             module: true,
             module_credentials: self.module_credentials,
+            import_map: self.import_map.clone(),
         };
         if let Some(reason) = request.blocked_reason(&request.url) {
             return Err(reason);
@@ -883,6 +902,7 @@ impl JsRuntime {
                     self.evaluate_module_with_page_mut(&source, &request, page)?;
                     executed += 1;
                 }
+                PreparedPageScript::ImportMap { .. } => {}
                 PreparedPageScript::External(request) => {
                     let module = request.is_module();
                     if let Some(source) = load_external_page_script(&self.network_config, &request)?
@@ -1291,6 +1311,9 @@ impl PageScriptRunner {
             origin: page_origin(page),
             bypass_csp,
             next_inline_module: 0,
+            import_map: None,
+            import_map_seen: false,
+            module_seen: false,
         }
     }
 
@@ -1318,20 +1341,22 @@ impl PageScriptRunner {
                     return Some(self.prepare_external(page, script, false));
                 }
                 DocumentScriptItem::InlineModuleScript(script) => {
+                    self.module_seen = true;
                     if !self.inline_allowed(&script) {
                         continue;
                     }
                     self.next_inline_module = self.next_inline_module.saturating_add(1);
-                    let mut specifier = url::Url::parse(page.url()).unwrap_or_else(|_| {
-                        url::Url::parse("about:blank").expect("static module base URL")
-                    });
+                    let mut specifier =
+                        url::Url::parse(&page.document_base_uri()).unwrap_or_else(|_| {
+                            url::Url::parse("about:blank").expect("static module base URL")
+                        });
                     specifier.set_fragment(Some(&format!(
                         "vixen-inline-module-{}",
                         self.next_inline_module
                     )));
                     PreparedPageScript::InlineModule {
                         source: script.source,
-                        request: ExternalPageScript {
+                        request: Box::new(ExternalPageScript {
                             url: specifier,
                             csp: (!self.bypass_csp).then(|| self.csp.clone()),
                             origin: self.origin.clone(),
@@ -1344,11 +1369,16 @@ impl PageScriptRunner {
                                 ),
                             module: true,
                             module_credentials: ModuleCredentialsMode::SameOrigin,
-                        },
+                            import_map: self.import_map.clone(),
+                        }),
                     }
                 }
                 DocumentScriptItem::ExternalModuleScript(script) => {
+                    self.module_seen = true;
                     self.prepare_external(page, script, true)
+                }
+                DocumentScriptItem::ImportMap(import_map) => {
+                    return Some(self.prepare_import_map(page, import_map));
                 }
             };
             if !matches!(prepared, PreparedPageScript::Skip) {
@@ -1395,12 +1425,75 @@ impl PageScriptRunner {
             } else {
                 ModuleCredentialsMode::SameOrigin
             },
+            import_map: if module {
+                self.import_map.clone()
+            } else {
+                None
+            },
         };
         if request.allows_url(request.url()) {
-            PreparedPageScript::External(request)
+            PreparedPageScript::External(Box::new(request))
         } else {
             PreparedPageScript::Skip
         }
+    }
+
+    fn prepare_import_map(
+        &mut self,
+        page: &Page,
+        import_map: crate::doc::InlineImportMap,
+    ) -> PreparedPageScript {
+        if self.import_map_seen {
+            return PreparedPageScript::ImportMap {
+                diagnostics: Vec::new(),
+                error: Some("multiple import maps are not supported".to_owned()),
+            };
+        }
+        self.import_map_seen = true;
+        if self.module_seen {
+            return PreparedPageScript::ImportMap {
+                diagnostics: Vec::new(),
+                error: Some("import maps after module discovery are not supported".to_owned()),
+            };
+        }
+        if import_map.src.is_some() {
+            return PreparedPageScript::ImportMap {
+                diagnostics: Vec::new(),
+                error: Some("external import maps are not supported".to_owned()),
+            };
+        }
+        if !self.inline_source_allowed(&import_map.source, import_map.nonce.as_deref()) {
+            return PreparedPageScript::Skip;
+        }
+        let base_url = match url::Url::parse(&page.document_base_uri()) {
+            Ok(base_url) => base_url,
+            Err(error) => {
+                return PreparedPageScript::ImportMap {
+                    diagnostics: Vec::new(),
+                    error: Some(format!("import map base URL is invalid: {error}")),
+                };
+            }
+        };
+        match import_maps::parse_inline_import_map(&import_map.source, base_url) {
+            Ok(parsed) => {
+                self.import_map = Some(parsed.map);
+                PreparedPageScript::ImportMap {
+                    diagnostics: parsed.diagnostics,
+                    error: None,
+                }
+            }
+            Err(error) => PreparedPageScript::ImportMap {
+                diagnostics: Vec::new(),
+                error: Some(error),
+            },
+        }
+    }
+
+    fn inline_source_allowed(&self, source: &str, nonce: Option<&str>) -> bool {
+        self.bypass_csp
+            || self
+                .csp
+                .allows_inline_script(&self.origin, Some(source), nonce)
     }
 }
 
@@ -5705,6 +5798,150 @@ mod tests {
     }
 
     #[test]
+    fn parser_import_map_resolves_bare_prefix_and_import_meta_specifiers() {
+        let directory = std::env::temp_dir().join(format!(
+            "vixen-import-map-{}-{}",
+            std::process::id(),
+            next_storage_session_id()
+        ));
+        let assets = directory.join("assets");
+        std::fs::create_dir_all(assets.join("pkg")).unwrap();
+        std::fs::write(assets.join("answer.js"), "export const answer = 40;").unwrap();
+        std::fs::write(assets.join("pkg/value.js"), "export const value = 2;").unwrap();
+        let page_url = url::Url::from_file_path(directory.join("page.html"))
+            .unwrap()
+            .to_string();
+        let mut page = Page::from_html(
+            page_url,
+            "<title>initial</title><base href='./assets/'>\
+             <script type='importmap'>{\"imports\":{\"answer\":\"./answer.js\",\"pkg/\":\"./pkg/\"}}</script>\
+             <script type='module'>\
+               import { answer } from 'answer';\
+               import { value } from 'pkg/value.js';\
+               globalThis.__mappedUrl = import.meta.resolve('answer');\
+               document.title = `mapped-${answer + value}`;\
+             </script>",
+        )
+        .unwrap();
+        let mut runtime = JsRuntime::new().unwrap();
+
+        assert_eq!(runtime.execute_page_scripts(&mut page).unwrap(), 1);
+        assert_eq!(page.document().title().as_deref(), Some("mapped-42"));
+        assert_eq!(
+            runtime
+                .evaluate_with_page("__mappedUrl.endsWith('/assets/answer.js')", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            runtime
+                .drain_network_events()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, JsNetworkEvent::Response { status: 200, .. }))
+                .count(),
+            2
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn external_multiple_and_late_import_maps_fail_closed() {
+        let external = Page::from_html(
+            "https://example.test/external.html",
+            "<script type='importmap' src='/map.json'></script>",
+        )
+        .unwrap();
+        let mut scripts = PageScriptRunner::new(&external, false);
+        assert!(matches!(
+            scripts.prepare_next(&external),
+            Some(PreparedPageScript::ImportMap { error: Some(error), .. })
+                if error.contains("external")
+        ));
+
+        let multiple = Page::from_html(
+            "https://example.test/multiple.html",
+            "<script type='importmap'>{\"imports\":{}}</script>\
+             <script type='importmap'>{\"imports\":{}}</script>",
+        )
+        .unwrap();
+        let mut scripts = PageScriptRunner::new(&multiple, false);
+        assert!(matches!(
+            scripts.prepare_next(&multiple),
+            Some(PreparedPageScript::ImportMap { error: None, .. })
+        ));
+        assert!(matches!(
+            scripts.prepare_next(&multiple),
+            Some(PreparedPageScript::ImportMap { error: Some(error), .. })
+                if error.contains("multiple")
+        ));
+
+        let late = Page::from_html(
+            "https://example.test/late.html",
+            "<script type='module'>import 'answer';</script>\
+             <script type='importmap'>{\"imports\":{\"answer\":\"./answer.js\"}}</script>",
+        )
+        .unwrap();
+        let mut scripts = PageScriptRunner::new(&late, false);
+        assert!(matches!(
+            scripts.prepare_next(&late),
+            Some(PreparedPageScript::ImportMap { error: Some(error), .. })
+                if error.contains("after module")
+        ));
+        assert!(matches!(
+            scripts.prepare_next(&late),
+            Some(PreparedPageScript::InlineModule { .. })
+        ));
+
+        let root = Page::from_html(
+            "https://example.test/root.html",
+            "<script type='importmap'>{\"imports\":{\"./root.js\":\"./wrong.js\"}}</script>\
+             <script type='module' src='./root.js'></script>",
+        )
+        .unwrap();
+        let mut scripts = PageScriptRunner::new(&root, false);
+        assert!(matches!(
+            scripts.prepare_next(&root),
+            Some(PreparedPageScript::ImportMap { error: None, .. })
+        ));
+        assert!(matches!(
+            scripts.prepare_next(&root),
+            Some(PreparedPageScript::External(request))
+                if request.url().as_str() == "https://example.test/root.js"
+        ));
+
+        let allowed = Page::from_html_with_headers(
+            "https://example.test/csp-map.html",
+            "<script type='importmap' nonce='ok'>{\"imports\":{}}</script>\
+             <script type='module' nonce='ok'>export const value = 1;</script>",
+            [("Content-Security-Policy", "script-src 'nonce-ok'")],
+        )
+        .unwrap();
+        let mut scripts = PageScriptRunner::new(&allowed, false);
+        assert!(matches!(
+            scripts.prepare_next(&allowed),
+            Some(PreparedPageScript::ImportMap { error: None, .. })
+        ));
+        assert!(matches!(
+            scripts.prepare_next(&allowed),
+            Some(PreparedPageScript::InlineModule { .. })
+        ));
+
+        let blocked = Page::from_html_with_headers(
+            "https://example.test/csp-blocked-map.html",
+            "<script type='importmap'>{\"imports\":{}}</script>",
+            [("Content-Security-Policy", "script-src 'none'")],
+        )
+        .unwrap();
+        let mut scripts = PageScriptRunner::new(&blocked, false);
+        assert!(matches!(
+            scripts.prepare_next(&blocked),
+            Some(PreparedPageScript::Skip)
+        ));
+    }
+
+    #[test]
     fn cross_origin_module_dependency_requires_cors_response() {
         let page = Page::from_html(
             "https://module-origin.example/page.html",
@@ -5772,6 +6009,11 @@ mod tests {
         assert_eq!(
             credentialed.response_blocked_reason(credentialed.url(), &response),
             None
+        );
+        assert!(
+            credentialed
+                .module_dependency(url::Url::parse("file:///secret.js").unwrap())
+                .is_err()
         );
     }
 

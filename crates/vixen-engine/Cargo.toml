@@ -14,6 +14,7 @@ vixen-api = { path = "../vixen-api" }
 vixen-net = { path = "../vixen-net" }
 vixen-store = { path = "../vixen-store" }
 deno_core = "0.406.0"
+import_map = { version = "0.25.0", default-features = false }
 thiserror = "2"
 tokio = { version = "1", features = ["fs", "io-util", "net", "rt-multi-thread", "sync", "time"] }
 html5ever = "0.39"

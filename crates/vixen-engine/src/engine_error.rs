@@ -14,6 +14,7 @@ pub mod codes {
     pub const UNSUPPORTED_SCREENSHOT: &str = "unsupported.screenshot";
     pub const INVALID_SELECTOR: &str = "invalid-selector";
     pub const SCRIPT_INTERRUPTED: &str = "script.interrupted";
+    pub const SCRIPT_IMPORT_MAP: &str = "script.import-map";
 }
 
 /// Engine-level error carrying a stable code.

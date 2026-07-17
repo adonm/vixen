@@ -94,8 +94,14 @@ Current state:
   profile entries for roots and dependencies through live requests, restores
   bounded raw source only after a matching 304, and reruns current
   CORS/status/strict-MIME policy before V8 exposure. Cache-disabled contexts
-  bypass reads and writes. Freshness reuse, full `Vary`, import maps, dynamic
-  imports, and import attributes remain fail closed.
+  bypass reads and writes. Freshness reuse and full `Vary` remain fail closed.
+  The fourth checkpoint uses
+  the Deno-maintained `import_map` crate inside `PageModuleLoader` for one
+  bounded inline map registered before module discovery. Exact, prefix,
+  URL-like, null-blocking, and scoped mappings plus `import.meta.resolve()` feed
+  the existing resource/policy path; module `src` is not remapped.
+  External/multiple/late/integrity maps, dynamic imports, and import attributes
+  remain fail closed.
 
 Rules:
 

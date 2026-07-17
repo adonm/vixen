@@ -7,7 +7,7 @@
 //! images. Dynamic imports, import attributes, and graphs over the explicit
 //! load/event limits fail closed before module evaluation.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -23,6 +23,7 @@ use deno_core::{
 use url::Url;
 use vixen_net::{CookieJar, Method, Network, NetworkEvent};
 
+use super::import_maps::MAX_MODULE_SPECIFIER_BYTES;
 use super::webapi::{CacheDisabledFlag, RuntimeNetworkState, WebStorageBackend};
 use super::{ExternalPageScript, JsNetworkEvent, persist_profile_cookies};
 use crate::browser::{
@@ -225,6 +226,50 @@ impl PageModuleLoader {
         *executor = Some(Arc::clone(&runtime));
         Ok(runtime)
     }
+
+    fn resolve_module_specifier(
+        &self,
+        specifier: &str,
+        referrer: &str,
+    ) -> Result<ModuleSpecifier, ModuleLoaderError> {
+        if specifier.len() > MAX_MODULE_SPECIFIER_BYTES
+            || referrer.len() > MAX_MODULE_SPECIFIER_BYTES
+        {
+            return Err(ModuleLoaderError::generic(
+                "module specifier or referrer exceeds the loader limit",
+            ));
+        }
+        if referrer == "." {
+            let root = Url::parse(specifier).map_err(ModuleLoaderError::from_err)?;
+            if root.as_str().len() > MAX_MODULE_SPECIFIER_BYTES {
+                return Err(ModuleLoaderError::generic(
+                    "module root URL exceeds the loader limit",
+                ));
+            }
+            return Ok(root);
+        }
+        let referrer_url = Url::parse(referrer).map_err(ModuleLoaderError::from_err)?;
+        let import_map = self
+            .state
+            .lock()
+            .map_err(|_| ModuleLoaderError::generic("module loader state is poisoned"))?
+            .request
+            .as_ref()
+            .and_then(ExternalPageScript::import_map);
+        let resolved = if let Some(import_map) = import_map {
+            import_map
+                .resolve(specifier, &referrer_url)
+                .map_err(ModuleLoaderError::generic)?
+        } else {
+            deno_core::resolve_import(specifier, referrer).map_err(ModuleLoaderError::from_err)?
+        };
+        if resolved.as_str().len() > MAX_MODULE_SPECIFIER_BYTES {
+            return Err(ModuleLoaderError::generic(
+                "resolved module URL exceeds the loader limit",
+            ));
+        }
+        Ok(resolved)
+    }
 }
 
 impl ModuleLoader for PageModuleLoader {
@@ -239,7 +284,31 @@ impl ModuleLoader for PageModuleLoader {
                 "dynamic import is not enabled for page module graphs",
             ));
         }
-        deno_core::resolve_import(specifier, referrer).map_err(ModuleLoaderError::from_err)
+        self.resolve_module_specifier(specifier, referrer)
+    }
+
+    fn resolve_with_scope(
+        &self,
+        _scope: &mut deno_core::v8::PinScope,
+        specifier: &str,
+        referrer: &str,
+        kind: ResolutionKind,
+        import_attributes: &HashMap<String, String>,
+    ) -> ModuleResolveResponse {
+        if !import_attributes.is_empty() {
+            return Err(ModuleLoaderError::generic(
+                "import attributes are not enabled for page module graphs",
+            ));
+        }
+        self.resolve(specifier, referrer, kind)
+    }
+
+    fn import_meta_resolve(
+        &self,
+        specifier: &str,
+        referrer: &str,
+    ) -> Result<ModuleSpecifier, ModuleLoaderError> {
+        self.resolve_module_specifier(specifier, referrer)
     }
 
     fn load(

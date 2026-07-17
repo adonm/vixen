@@ -70,6 +70,15 @@ pub struct ExternalScript {
     pub cross_origin: Option<String>,
 }
 
+/// A parser-discovered inline import map. External maps are retained so the
+/// script runner can reject them explicitly instead of treating them as code.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlineImportMap {
+    pub source: String,
+    pub nonce: Option<String>,
+    pub src: Option<String>,
+}
+
 /// Document-ordered events relevant to classic and module script execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentScriptItem {
@@ -83,6 +92,8 @@ pub enum DocumentScriptItem {
     InlineModuleScript(InlineScript),
     /// External deferred `<script type="module" src>`.
     ExternalModuleScript(ExternalScript),
+    /// Inline `<script type="importmap">` registration data.
+    ImportMap(InlineImportMap),
 }
 
 /// Document-ordered author-style items used by the core resource loader and
@@ -332,7 +343,8 @@ impl Document {
                 DocumentScriptItem::CspMeta(_)
                 | DocumentScriptItem::ExternalClassicScript(_)
                 | DocumentScriptItem::InlineModuleScript(_)
-                | DocumentScriptItem::ExternalModuleScript(_) => None,
+                | DocumentScriptItem::ExternalModuleScript(_)
+                | DocumentScriptItem::ImportMap(_) => None,
             })
             .collect()
     }
@@ -395,7 +407,7 @@ impl Document {
                         .iter()
                         .find(|attr| attr.name.local.as_ref() == "type")
                         .map(|attr| attr.value.to_string());
-                    if script_kind(script_type.as_deref()).is_some() {
+                    if let Some(kind) = script_kind(script_type.as_deref()) {
                         let nonce = attrs
                             .iter()
                             .find(|attr| attr.name.local.as_ref() == "nonce")
@@ -404,41 +416,44 @@ impl Document {
                             .iter()
                             .find(|attr| attr.name.local.as_ref() == "crossorigin")
                             .map(|attr| attr.value.to_string());
-                        Some((src, nonce, cross_origin))
+                        Some((kind, src, nonce, cross_origin))
                     } else {
                         None
                     }
                 };
-                if let Some((src, nonce, cross_origin)) = script_item {
-                    let module = attrs.borrow().iter().any(|attr| {
-                        attr.name.local.as_ref() == "type"
-                            && attr.value.trim().eq_ignore_ascii_case("module")
-                    });
-                    match (module, src) {
-                        (false, Some(src)) => {
+                if let Some((kind, src, nonce, cross_origin)) = script_item {
+                    match (kind, src) {
+                        (ScriptKind::Classic, Some(src)) => {
                             out.push(DocumentScriptItem::ExternalClassicScript(ExternalScript {
                                 src,
                                 nonce,
                                 cross_origin,
                             }))
                         }
-                        (false, None) => {
+                        (ScriptKind::Classic, None) => {
                             out.push(DocumentScriptItem::InlineClassicScript(InlineScript {
                                 source: text_content_of(node),
                                 nonce,
                             }))
                         }
-                        (true, Some(src)) => {
+                        (ScriptKind::Module, Some(src)) => {
                             out.push(DocumentScriptItem::ExternalModuleScript(ExternalScript {
                                 src,
                                 nonce,
                                 cross_origin,
                             }))
                         }
-                        (true, None) => {
+                        (ScriptKind::Module, None) => {
                             out.push(DocumentScriptItem::InlineModuleScript(InlineScript {
                                 source: text_content_of(node),
                                 nonce,
+                            }))
+                        }
+                        (ScriptKind::ImportMap, src) => {
+                            out.push(DocumentScriptItem::ImportMap(InlineImportMap {
+                                source: text_content_of(node),
+                                nonce,
+                                src,
                             }))
                         }
                     }
@@ -815,24 +830,29 @@ fn text_content_of(node: &Handle) -> String {
 enum ScriptKind {
     Classic,
     Module,
+    ImportMap,
 }
 
 fn script_kind(script_type: Option<&str>) -> Option<ScriptKind> {
     let Some(script_type) = script_type else {
         return Some(ScriptKind::Classic);
     };
-    let essence = script_type
+    let normalized = script_type.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return Some(ScriptKind::Classic);
+    }
+    if normalized == "module" {
+        return Some(ScriptKind::Module);
+    }
+    if normalized == "importmap" {
+        return Some(ScriptKind::ImportMap);
+    }
+    let essence = normalized
         .split(';')
         .next()
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
-    if essence.is_empty() {
-        return Some(ScriptKind::Classic);
-    }
-    if essence == "module" {
-        return Some(ScriptKind::Module);
-    }
     matches!(
         essence.as_str(),
         "application/ecmascript"
@@ -1130,7 +1150,7 @@ mod tests {
         .unwrap();
 
         let items = doc.script_execution_items();
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
         assert!(matches!(
             &items[0],
             DocumentScriptItem::InlineModuleScript(script)
@@ -1142,6 +1162,29 @@ mod tests {
                 if script.src == "/module.js"
                     && script.nonce.as_deref() == Some("module-nonce")
                     && script.cross_origin.as_deref() == Some("use-credentials")
+        ));
+        assert!(matches!(
+            &items[2],
+            DocumentScriptItem::ImportMap(import_map)
+                if import_map.source == "{}" && import_map.src.is_none()
+        ));
+    }
+
+    #[test]
+    fn import_map_types_are_exact_and_preserve_external_src() {
+        let doc = Document::parse(
+            "<script type='IMPORTMAP' src=''>{\"imports\":{}}</script>\
+             <script type='importmap;ignored'>{}</script>\
+             <script type='module;ignored'>throw new Error('ignored')</script>",
+        )
+        .unwrap();
+        let items = doc.script_execution_items();
+        assert_eq!(items.len(), 1);
+        assert!(matches!(
+            &items[0],
+            DocumentScriptItem::ImportMap(import_map)
+                if import_map.src.as_deref() == Some("")
+                    && import_map.source.contains("imports")
         ));
     }
 

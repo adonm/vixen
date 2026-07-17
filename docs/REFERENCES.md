@@ -109,6 +109,13 @@ host boundaries, bootstrap script packaging, and feature-family test layout. Do
 not cite Deno for DOM/Web API semantics over Firefox/specs; Deno is the runtime
 substrate reference, while Web-facing behavior remains WPT/spec-gated.
 
+Import-map matching uses Deno's
+[`import_map` 0.25.0](https://crates.io/crates/import_map/0.25.0) resolver with
+default logging disabled. Vixen owns parser ordering, bounds, diagnostics,
+scheme/policy checks, and the deliberately narrower one-map-before-modules
+product contract; the crate does not establish support for current-standard
+multiple-map merging or integrity metadata.
+
 ```
 deno/core/                                         ← op/extension/runtime core patterns
 deno/runtime/                                      ← permissions, workers, bootstrap packaging

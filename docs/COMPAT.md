@@ -243,9 +243,14 @@ credentialed response and is inherited by dependencies. Cache
 reads now conditionally revalidate eligible exact-URL HTTP(S) roots and
 dependencies; matching 304 responses reuse bounded raw bytes only after current
 CORS/status/strict-MIME policy, while cache-disabled contexts bypass reads and
-writes. Freshness reuse, redirect aliases, full `Vary`, import maps, dynamic
-`import()`, and import attributes still fail closed. Child frame globals and
-documents remain unavailable rather than fabricated until A3.
+writes. Freshness reuse, redirect aliases, and full `Vary` still fail closed.
+One bounded inline import
+map before module discovery now supports exact, prefix, URL-like, null-blocking,
+and scoped mappings plus `import.meta.resolve()` through the same policy-bound
+loader. External, multiple, late, integrity-bearing, malformed, and oversized
+maps fail closed; current-standard multiple-map merging remains unsupported.
+Dynamic `import()` and import attributes still fail closed. Child frame globals
+and documents remain unavailable rather than fabricated until A3.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,

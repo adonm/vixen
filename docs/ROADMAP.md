@@ -765,6 +765,23 @@ CORS rejection, and strict MIME for external roots. Freshness-based reuse,
 redirect aliases, full `Vary`, import maps, dynamic `import()`, and import
 attributes remain explicit next work.
 
+**Fourth A2 checkpoint:** one bounded parser-discovered inline import map may now
+register before module discovery. The Deno-maintained `import_map` resolver
+handles exact, prefix, URL-like, null-blocking, and most-specific scoped
+`imports`/`scopes` mappings; each mapped URL still crosses the existing graph's
+scheme, CSP, mixed-content, CORS, credentials, strict-MIME, cache, request-id,
+cancellation, and diagnostics boundaries. Maps are capped at 256 KiB, 2,048
+mappings, 128 scopes, and 16 KiB strings/URLs; recoverable parser diagnostics are
+bounded before becoming runtime warnings. Import maps do not remap a module
+script's `src`, and `import.meta.resolve()` uses the same frozen map. External,
+multiple, late, integrity-bearing, malformed, or oversized maps fail closed with
+stable `script.import-map` diagnostics and no partial registration. Focused file
+graphs prove bare/prefix/base/scoped resolution; BrowserCore HTTP tests prove
+numeric request ids, visible module mutation, and CORS rejection for a mapped
+cross-origin target. Modern multiple-map merging/resolved-module-set behavior,
+integrity maps, dynamic `import()`, and import attributes remain explicit next
+work.
+
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
 
@@ -918,8 +935,8 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue the A2 module family:** add import-map resolution and then dynamic
-   `import()` without weakening the landed static graph/cache limits, request ids,
+1. **Continue the A2 module family:** add dynamic `import()` without weakening
+   the landed static graph/cache/import-map limits, request ids,
    policy, cancellation, diagnostics, or profile behavior.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →

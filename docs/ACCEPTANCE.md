@@ -207,6 +207,10 @@ explicit until promoted by measured tests.
   revalidate profile entries; a 304 restores bounded source only before current
   CORS/status/strict-MIME policy, and cache-disabled contexts bypass reads and
   writes.
+- One bounded inline import map registered before module discovery resolves
+  exact/prefix/URL-like and scoped dependencies through that same policy-bound
+  loader; external/multiple/late/integrity maps and import attributes fail
+  closed without partial registration.
 - Policy runs before resource bytes/handles cross to Flutter.
 - redb profile tables preserve partitioning, bounds, recovery, clear-data, and
   reopen behavior.
