@@ -4230,6 +4230,63 @@ mod tests {
     }
 
     #[test]
+    fn live_sandbox_list_reflects_attributes_and_advances_one_source_revision_per_write() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///sandbox-list-mutate.html",
+            "<html><head><style>\
+               #target { display: none; }\
+               #target[sandbox~='allow-same-origin'] { display: block; width: 140px; height: 20px; }\
+               #target[sandbox~='allow-forms'] { height: 30px; }\
+             </style></head><body>\
+               <iframe id='target' sandbox='allow-scripts'></iframe>\
+             </body></html>",
+        )
+        .unwrap();
+
+        let initial_generation = page.renderer_source_generation();
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 globalThis.__liveSandbox = target.sandbox;\
+                 target.setAttribute('sandbox', 'allow-same-origin');\
+                 return String(__liveSandbox === target.sandbox) + ':' +\
+                   __liveSandbox.value + ':' +\
+                   __liveSandbox.contains('allow-same-origin'); })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:allow-same-origin:true".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 1);
+        let target_id = page.query_selector_all("#target").unwrap()[0].node_id;
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("width".to_owned(), "140px".to_owned()))
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 __liveSandbox.add('allow-forms');\
+                 return target.getAttribute('sandbox') + ':' +\
+                   String(__liveSandbox === target.sandbox) + ':' +\
+                   Array.from(target.sandbox).join(','); })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String(
+                "allow-same-origin allow-forms:true:allow-same-origin,allow-forms".to_owned()
+            )
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 2);
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("height".to_owned(), "30px".to_owned()))
+        );
+    }
+
+    #[test]
     fn page_dynamic_inline_script_elements_execute_when_inserted() {
         let mut rt = JsRuntime::new().expect("engine init");
         let mut page = Page::from_html(

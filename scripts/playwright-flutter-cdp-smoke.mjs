@@ -16,6 +16,7 @@ const expectedDatasetBaseline = '08ad4b805cd6d2be56fae95dc70660206cdac94b1c0776d
 const expectedDatasetMutation = '4b8654191f7e9f4eb95486eb34bbb689d2153f4d2484cfaa617d2fb7075b1a24';
 const expectedClassListMutation = '5633ca7a032c8c6a1582f5389b6b4a594b91d99e89784683fbf3679f18639f95';
 const expectedRelListMutation = '7ae6e6d8f650d733922b1af018dfdcac310bdcbb4f14537cdb20500c44da3c04';
+const expectedSandboxMutation = '57b9814c22902e40fc38180d79a1a78068f1b15154f4149bef8fbea5b6cf05cb';
 
 function fail(message) {
   throw new Error(`playwright-flutter-cdp-smoke: ${message}`);
@@ -334,6 +335,62 @@ async function main() {
       fail('relList mutation did not change the post-classList exact scene');
     }
 
+    const sandboxEvidence = await page.evaluate(() => {
+      const target = document.querySelector('#sandbox-target');
+      const sandbox = target.sandbox;
+      globalThis.__sandboxObject = sandbox;
+      target.setAttribute('sandbox', 'allow-same-origin');
+      sandbox.add('allow-forms');
+      const rect = target.getBoundingClientRect();
+      return {
+        stable: sandbox === target.sandbox,
+        reflectedAttribute: target.getAttribute('sandbox'),
+        reflectedTokens: Array.from(sandbox),
+        synchronousRect: {
+          width: rect.width,
+          height: rect.height,
+        },
+      };
+    });
+    if (!sandboxEvidence.stable
+        || sandboxEvidence.reflectedAttribute !== 'allow-same-origin allow-forms'
+        || JSON.stringify(sandboxEvidence.reflectedTokens) !== JSON.stringify(['allow-same-origin', 'allow-forms'])
+        || sandboxEvidence.synchronousRect.width !== 120
+        || sandboxEvidence.synchronousRect.height !== 32) {
+      fail(`live sandbox evidence was ${JSON.stringify(sandboxEvidence)}`);
+    }
+    const sandboxTargetNode = await firstSession.send('DOM.querySelector', {
+      nodeId: document.root.nodeId,
+      selector: '#sandbox-target',
+    });
+    const sandboxTargetAttributes = await firstSession.send('DOM.getAttributes', {
+      nodeId: sandboxTargetNode.nodeId,
+    });
+    const sandboxTargetAttributePairs = Object.fromEntries(Array.from(
+      { length: sandboxTargetAttributes.attributes.length / 2 },
+      (_, index) => sandboxTargetAttributes.attributes.slice(index * 2, index * 2 + 2),
+    ));
+    const sandboxTargetModel = await firstSession.send('DOM.getBoxModel', {
+      nodeId: sandboxTargetNode.nodeId,
+    });
+    if (sandboxTargetAttributePairs.sandbox !== 'allow-same-origin allow-forms'
+        || sandboxTargetModel.model.content[2] - sandboxTargetModel.model.content[0] !== 120
+        || sandboxTargetModel.model.content[5] - sandboxTargetModel.model.content[1] !== 32) {
+      fail(`CDP DOM did not agree with sandbox: ${JSON.stringify({ sandboxTargetAttributePairs, model: sandboxTargetModel.model })}`);
+    }
+    const afterSandbox = await page.screenshot({ timeout: 20000 });
+    const afterSandboxInfo = assertCapture(
+      afterSandbox,
+      320,
+      240,
+      [34, 187, 102, 255],
+      'post-sandbox',
+      expectedSandboxMutation,
+    );
+    if (afterSandboxInfo.hash === afterRelListInfo.hash) {
+      fail('sandbox mutation did not change the post-relList exact scene');
+    }
+
     const second = await context.newPage();
     await second.setViewportSize({ width: 480, height: 300 });
     await second.setContent(`<!doctype html><style>
@@ -347,7 +404,7 @@ async function main() {
     });
     const secondPng = await second.screenshot({ timeout: 20000 });
     const secondInfo = assertCapture(secondPng, 480, 300, [202, 36, 104, 255], 'second target');
-    if (secondInfo.hash === afterRelListInfo.hash) fail('independent target captures were identical');
+    if (secondInfo.hash === afterSandboxInfo.hash) fail('independent target captures were identical');
     const secondBox = await second.locator('#second').boundingBox({ timeout: 20000 });
     if (!secondBox) fail('second target has no Flutter commit geometry');
     await second.mouse.click(secondBox.x + 5, secondBox.y + 5);
@@ -360,18 +417,18 @@ async function main() {
 
     const firstAgain = await page.screenshot({ timeout: 20000 });
     const firstAgainInfo = assertCapture(firstAgain, 320, 240, [34, 187, 102, 255], 'first target restored');
-    if (firstAgainInfo.hash !== afterRelListInfo.hash) {
+    if (firstAgainInfo.hash !== afterSandboxInfo.hash) {
       fail('switching targets changed the first target exact scene');
     }
 
     await firstSession.send('Vixen.resetRenderer');
     const recovered = await page.screenshot({ timeout: 20000 });
     const recoveredInfo = assertCapture(recovered, 320, 240, [34, 187, 102, 255], 'renderer-loss recovery');
-    if (recoveredInfo.hash !== afterRelListInfo.hash) {
+    if (recoveredInfo.hash !== afterSandboxInfo.hash) {
       fail('renderer-loss full resync did not recover the exact scene');
     }
 
-    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} classList=${afterClickInfo.hash} relList=${afterRelListInfo.hash} second=${secondInfo.hash}`);
+    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} classList=${afterClickInfo.hash} relList=${afterRelListInfo.hash} sandbox=${afterSandboxInfo.hash} second=${secondInfo.hash}`);
   } finally {
     if (browser) await browser.close().catch(() => {});
     await stopServer(child);

@@ -577,6 +577,19 @@ pins exact Flutter pixels to
 byte-identical target switching and renderer recovery. Sandbox tokens, inline
 style, collections, and attribute nodes remain separate work.
 
+**Fourth A1 checkpoint:** `HTMLIFrameElement.sandbox` now retains one live
+`DOMTokenList` across external and list-driven `sandbox` mutations, completing
+the three attribute-backed token-list identities currently hosted by the
+runtime. Focused proof retains identity through `setAttribute` and `add`,
+reflects valid ordered sandbox tokens, advances exactly one renderer-source
+generation per write, and recascades token selectors to 140×30. A hidden real
+iframe preserves all earlier exact hashes; `allow-same-origin allow-forms`
+reveals a 120×32 box in the release/AOT corridor, agrees with CDP, and pins
+Flutter pixels to
+`57b9814c22902e40fc38180d79a1a78068f1b15154f4149bef8fbea5b6cf05cb`
+before byte-identical target switching and renderer recovery. Inline style,
+collections, and attribute nodes remain separate work.
+
 **Proof:** script-driven mutation visibly changes the Flutter scene; synchronous
 and asynchronous geometry observe the right commit; CDP and page script inspect
 the same nodes.
