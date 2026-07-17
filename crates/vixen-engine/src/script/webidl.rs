@@ -346,6 +346,8 @@ const WEBIDL_INTERFACES: &[WebIdlInterface] = &[
             "getElementsByClassName",
             "createElement",
             "createElementNS",
+            "createAttribute",
+            "createAttributeNS",
             "createTextNode",
             "createDocumentFragment",
             "createRange",

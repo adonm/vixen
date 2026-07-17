@@ -4402,6 +4402,108 @@ mod tests {
     }
 
     #[test]
+    fn detached_attributes_attach_replace_remove_and_retain_value() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///detached-attributes.html",
+            "<style>\
+               #target[data-layout='tall'] { display: block; width: 140px; height: 30px; }\
+             </style>\
+             <div id='target' data-layout='wide'>target</div>\
+             <div id='other' data-use='locked'>other</div>",
+        )
+        .unwrap();
+
+        let initial_generation = page.renderer_source_generation();
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => {\
+                   const target = document.querySelector('#target');\
+                   const attributes = target.attributes;\
+                   const prior = attributes.getNamedItem('data-layout');\
+                   const detached = document.createAttribute('data-layout');\
+                   detached.value = 'tall';\
+                   globalThis.__detachedAttributes = attributes;\
+                   globalThis.__priorLayoutAttr = prior;\
+                   globalThis.__detachedLayoutAttr = detached;\
+                   const replaced = attributes.setNamedItem(detached);\
+                   return [\
+                     replaced === prior, prior.ownerElement === null, prior.value,\
+                     detached.ownerElement === target, attributes.getNamedItem('data-layout') === detached,\
+                     target.getAttribute('data-layout')\
+                   ].join(':');\
+                 })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:true:wide:true:true:tall".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 1);
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => {\
+                   const removed = __detachedAttributes.removeNamedItem('data-layout');\
+                   return [\
+                     removed === __detachedLayoutAttr, removed.ownerElement === null, removed.value,\
+                     __detachedAttributes.getNamedItem('data-layout') === null\
+                   ].join(':');\
+                 })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:true:tall:true".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 2);
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => {\
+                   const target = document.querySelector('#target');\
+                   const replaced = __detachedAttributes.setNamedItem(__detachedLayoutAttr);\
+                   const inUse = document.querySelector('#other').attributes.getNamedItem('data-use');\
+                   let errorName = '';\
+                   try { __detachedAttributes.setNamedItem(inUse); } catch (error) { errorName = error.name; }\
+                   return [\
+                     replaced === null, __detachedLayoutAttr.ownerElement === target,\
+                     __detachedAttributes.getNamedItem('data-layout') === __detachedLayoutAttr,\
+                     errorName\
+                   ].join(':');\
+                 })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:true:true:InUseAttributeError".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 3);
+
+        let target_id = page.query_selector_all("#target").unwrap()[0].node_id;
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("width".to_owned(), "140px".to_owned()))
+        );
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("height".to_owned(), "30px".to_owned()))
+        );
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => {\
+                   document.querySelector('#target').removeAttribute('data-layout');\
+                   return [\
+                     __detachedLayoutAttr.ownerElement === null, __detachedLayoutAttr.value,\
+                     __detachedAttributes.getNamedItem('data-layout') === null\
+                   ].join(':');\
+                 })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:tall:true".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 4);
+    }
+
+    #[test]
     fn live_structural_collections_retain_identity_and_static_queries_stay_static() {
         let mut rt = JsRuntime::new().expect("engine init");
         let mut page = Page::from_html(

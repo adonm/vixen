@@ -47,9 +47,10 @@ controlled host proof rather than an IME or assistive-technology matrix.
 1. Continue A1 one host family at a time. Stable live `DOMStringMap`, all three
    currently hosted attribute-backed token-list identities (`classList`,
    `relList`, and iframe `sandbox`), and inline `CSSStyleDeclaration` are landed;
-   stable attached `NamedNodeMap`/`Attr` identity is also landed, with detached
-   Attr operations still separate. Structural NodeList/HTMLCollection attributes
-   and `getElementsBy*` queries are live while `querySelectorAll` remains static.
+   the attached and detached `NamedNodeMap`/`Attr` lifecycle is landed, including
+   create/replace/remove/reattach operations. Structural NodeList/HTMLCollection
+   attributes and `getElementsBy*` queries are live while `querySelectorAll`
+   remains static.
    The read-only author CSSOM subset now retains live stylesheet/list/rule/
    declaration identities through style-element writes. Each next slice needs
    one mutation/source revision, synchronous geometry where relevant, CDP

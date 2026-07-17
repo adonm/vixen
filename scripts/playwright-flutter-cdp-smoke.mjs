@@ -20,6 +20,7 @@ const expectedSandboxMutation = '57b9814c22902e40fc38180d79a1a78068f1b15154f4149
 const expectedInlineStyleMutation = 'b4fe0e2cdba9f98193e8dfc7aadb7fa892e508e269a4a94beb9c2970d8ce5096';
 const expectedAttributesMutation = '17cb0de692001fcb97dcab23c870b800e7e7c3b09010e312a0bbc64e496ec1ea';
 const expectedCssomMutation = 'b09bce0ee8acf5ac3b40a2190241a6592880a3e47615c030469b2a887d118f1d';
+const expectedAttributeOperationsMutation = '92181acffcd1e39ac9720c8edeeba2c148034a89f61297652dc948306f3af052';
 
 function fail(message) {
   throw new Error(`playwright-flutter-cdp-smoke: ${message}`);
@@ -675,6 +676,84 @@ async function main() {
       fail('stylesheet mutation did not change the post-attributes exact scene');
     }
 
+    const attributeOperations = await page.evaluate(() => {
+      const target = document.querySelector('#attr-ops-target');
+      const attributes = target.attributes;
+      const prior = attributes.getNamedItem('data-state');
+      const detached = document.createAttribute('data-state');
+      detached.value = 'visible';
+      const replaced = attributes.setNamedItem(detached);
+      const removed = attributes.removeNamedItem('data-state');
+      const emptyAfterRemove = attributes.getNamedItem('data-state') === null;
+      const replacedAfterRemove = attributes.setNamedItem(removed);
+      const inUse = document.querySelector('#attributes-target').attributes.getNamedItem('data-layout');
+      let inUseError = '';
+      try { attributes.setNamedItem(inUse); } catch (error) { inUseError = error.name; }
+      const rect = target.getBoundingClientRect();
+      globalThis.__attributeOperationsMap = attributes;
+      globalThis.__attributeOperationsAttr = removed;
+      return {
+        mapStable: attributes === target.attributes,
+        replacedPrior: replaced === prior,
+        priorDetached: prior.ownerElement === null && prior.value === 'hidden',
+        removedIdentity: removed === detached,
+        removedWasDetached: emptyAfterRemove,
+        reattached: replacedAfterRemove === null
+          && removed.ownerElement === target
+          && attributes.getNamedItem('data-state') === removed,
+        reflectedValue: target.getAttribute('data-state'),
+        inUseError,
+        synchronousRect: { width: rect.width, height: rect.height },
+      };
+    });
+    if (!attributeOperations.mapStable
+        || !attributeOperations.replacedPrior
+        || !attributeOperations.priorDetached
+        || !attributeOperations.removedIdentity
+        || !attributeOperations.removedWasDetached
+        || !attributeOperations.reattached
+        || attributeOperations.reflectedValue !== 'visible'
+        || attributeOperations.inUseError !== 'InUseAttributeError'
+        || attributeOperations.synchronousRect.width !== 120
+        || attributeOperations.synchronousRect.height !== 32) {
+      fail(`detached attribute operations were ${JSON.stringify(attributeOperations)}`);
+    }
+    const attributeOperationsNode = await firstSession.send('DOM.querySelector', {
+      nodeId: document.root.nodeId,
+      selector: '#attr-ops-target',
+    });
+    const attributeOperationsAttributes = await firstSession.send('DOM.getAttributes', {
+      nodeId: attributeOperationsNode.nodeId,
+    });
+    const attributeOperationsPairs = Object.fromEntries(Array.from(
+      { length: attributeOperationsAttributes.attributes.length / 2 },
+      (_, index) => attributeOperationsAttributes.attributes.slice(index * 2, index * 2 + 2),
+    ));
+    const attributeOperationsModel = await firstSession.send('DOM.getBoxModel', {
+      nodeId: attributeOperationsNode.nodeId,
+    });
+    if (attributeOperationsPairs['data-state'] !== 'visible'
+        || attributeOperationsModel.model.content[2] - attributeOperationsModel.model.content[0] !== 120
+        || attributeOperationsModel.model.content[5] - attributeOperationsModel.model.content[1] !== 32
+        || await page.evaluate(() => __attributeOperationsMap
+          !== document.querySelector('#attr-ops-target').attributes
+          || __attributeOperationsAttr
+            !== document.querySelector('#attr-ops-target').attributes.getNamedItem('data-state'))) {
+      fail(`CDP/page detached attributes diverged: ${JSON.stringify({ attributeOperationsPairs, model: attributeOperationsModel.model })}`);
+    }
+    const afterAttributeOperations = await page.screenshot({ timeout: 20000 });
+    const afterAttributeOperationsInfo = assertCapture(
+      afterAttributeOperations,
+      320,
+      240,
+      [34, 187, 102, 255],
+      'post-attribute-operations',
+      expectedAttributeOperationsMutation,
+    );
+    if (afterAttributeOperationsInfo.hash === afterCssomInfo.hash) {
+      fail('detached attribute attachment did not change the post-CSSOM exact scene');
+    }
+
     const second = await context.newPage();
     await second.setViewportSize({ width: 480, height: 300 });
     await second.setContent(`<!doctype html><style>
@@ -688,7 +767,7 @@ async function main() {
     });
     const secondPng = await second.screenshot({ timeout: 20000 });
     const secondInfo = assertCapture(secondPng, 480, 300, [202, 36, 104, 255], 'second target');
-    if (secondInfo.hash === afterCssomInfo.hash) fail('independent target captures were identical');
+    if (secondInfo.hash === afterAttributeOperationsInfo.hash) fail('independent target captures were identical');
     const secondBox = await second.locator('#second').boundingBox({ timeout: 20000 });
     if (!secondBox) fail('second target has no Flutter commit geometry');
     await second.mouse.click(secondBox.x + 5, secondBox.y + 5);
@@ -701,18 +780,18 @@ async function main() {
 
     const firstAgain = await page.screenshot({ timeout: 20000 });
     const firstAgainInfo = assertCapture(firstAgain, 320, 240, [34, 187, 102, 255], 'first target restored');
-    if (firstAgainInfo.hash !== afterCssomInfo.hash) {
+    if (firstAgainInfo.hash !== afterAttributeOperationsInfo.hash) {
       fail('switching targets changed the first target exact scene');
     }
 
     await firstSession.send('Vixen.resetRenderer');
     const recovered = await page.screenshot({ timeout: 20000 });
     const recoveredInfo = assertCapture(recovered, 320, 240, [34, 187, 102, 255], 'renderer-loss recovery');
-    if (recoveredInfo.hash !== afterCssomInfo.hash) {
+    if (recoveredInfo.hash !== afterAttributeOperationsInfo.hash) {
       fail('renderer-loss full resync did not recover the exact scene');
     }
 
-    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} classList=${afterClickInfo.hash} relList=${afterRelListInfo.hash} sandbox=${afterSandboxInfo.hash} style=${afterInlineStyleInfo.hash} attributes=${afterAttributesInfo.hash} cssom=${afterCssomInfo.hash} second=${secondInfo.hash}`);
+    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} classList=${afterClickInfo.hash} relList=${afterRelListInfo.hash} sandbox=${afterSandboxInfo.hash} style=${afterInlineStyleInfo.hash} attributes=${afterAttributesInfo.hash} cssom=${afterCssomInfo.hash} attributeOperations=${afterAttributeOperationsInfo.hash} second=${secondInfo.hash}`);
   } finally {
     if (browser) await browser.close().catch(() => {});
     await stopServer(child);

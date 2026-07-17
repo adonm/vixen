@@ -169,7 +169,8 @@ across external attribute replacement and declaration API writes, using the same
 authoritative mutation/cascade path.
 `Element.attributes` now retains a live `NamedNodeMap`, and attached `Attr`
 objects retain identity, reflect external writes, and write through `Attr.value`.
-Detached Attr lifecycle and `setNamedItem`/`removeNamedItem` remain incomplete.
+Detached Attr values, `Document.createAttribute`, replacement, removal,
+reattachment, and in-use rejection now share that same authoritative path.
 Structural `childNodes`/`children`, document/form/select/table collections, and
 `getElementsBy*` results are retained live objects; `querySelectorAll` remains a
 static result by design.
@@ -223,6 +224,9 @@ The eighth extension retains the author stylesheet/list/rule/declaration object
 graph across every earlier stage, then reflects one style-element rewrite in
 Stylo, synchronous geometry, CDP, and exact Flutter pixels at
 `b09bce0ee8acf5ac3b40a2190241a6592880a3e47615c030469b2a887d118f1d`.
+The ninth extension exercises detached Attr replacement/removal/reattachment,
+in-use rejection, synchronous geometry, CDP agreement, and exact Flutter pixels
+at `92181acffcd1e39ac9720c8edeeba2c148034a89f61297652dc948306f3af052`.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,

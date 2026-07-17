@@ -2124,6 +2124,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     const oldSerialized = serializeElementRecord(record);
     const oldValue = recordAttr(record, name);
     const attrName = setRecordAttr(record, name, value);
+    syncCachedAttribute(nodeId, attrName, String(value), false);
     queueAttributeMutation(wrapElementByNodeId(nodeId), attrName, oldValue);
     propagateSerializedChange(record, oldSerialized);
     if (nodeId > 0) {
@@ -2139,6 +2140,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     const oldSerialized = serializeElementRecord(record);
     const oldValue = recordAttr(record, name);
     const attrName = removeRecordAttr(record, name);
+    if (oldValue !== null) syncCachedAttribute(nodeId, attrName, oldValue, true);
     if (oldValue !== null) queueAttributeMutation(wrapElementByNodeId(nodeId), attrName, oldValue);
     propagateSerializedChange(record, oldSerialized);
     if (nodeId > 0) {
@@ -2774,21 +2776,43 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   class VixenAttr {
-    constructor(ownerElement, name) {
+    constructor(ownerElement, name, value = '') {
       Object.defineProperties(this, {
-        __vixenOwner: { value: ownerElement, enumerable: false },
+        __vixenOwner: { value: ownerElement, writable: true, enumerable: false },
         __vixenName: { value: String(name), enumerable: false },
+        __vixenValue: {
+          value: ownerElement === null ? String(value) : elementAttribute(ownerElement.__vixenNodeId, name) || '',
+          writable: true,
+          enumerable: false,
+        },
       });
     }
     get ownerElement() { return this.__vixenOwner; }
     get name() { return this.__vixenName; }
     get localName() { return this.__vixenName; }
-    get value() { return elementAttribute(this.__vixenOwner.__vixenNodeId, this.__vixenName) || ''; }
+    get value() {
+      if (this.__vixenOwner !== null) {
+        const current = elementAttribute(this.__vixenOwner.__vixenNodeId, this.__vixenName);
+        if (current === null) this.__vixenOwner = null;
+        else this.__vixenValue = current;
+      }
+      return this.__vixenValue;
+    }
     set value(value) {
-      setElementAttribute(this.__vixenOwner.__vixenNodeId, this.__vixenName, String(value));
+      const next = String(value);
+      if (this.__vixenOwner === null) this.__vixenValue = next;
+      else setElementAttribute(this.__vixenOwner.__vixenNodeId, this.__vixenName, next);
     }
     get namespaceURI() { return null; }
     get prefix() { return null; }
+    __vixenAttach(ownerElement) {
+      this.__vixenOwner = ownerElement;
+      this.__vixenValue = elementAttribute(ownerElement.__vixenNodeId, this.__vixenName) || '';
+    }
+    __vixenDetach(value = this.__vixenValue) {
+      this.__vixenValue = String(value);
+      this.__vixenOwner = null;
+    }
   }
 
   class VixenNamedNodeMap {
@@ -2830,7 +2854,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
     get __vixenPairs() { return elementRecord(this.__vixenOwner).attributes; }
     __vixenAttribute(name) {
       let attr = this.__vixenAttributeObjects.get(name);
-      if (attr === undefined) {
+      if (attr === undefined || attr.ownerElement !== this.__vixenOwner) {
         attr = new VixenAttr(this.__vixenOwner, name);
         this.__vixenAttributeObjects.set(name, attr);
       }
@@ -2846,6 +2870,56 @@ const DOM_API_BOOTSTRAP: &str = r#"
       const value = String(name);
       const pair = this.__vixenPairs.find(([attr]) => attr === value || attr.toLowerCase() === value.toLowerCase());
       return pair === undefined ? null : this.__vixenAttribute(pair[0]);
+    }
+    setNamedItem(attribute) {
+      if (!(attribute instanceof VixenAttr)) throw new TypeError('setNamedItem expects an Attr');
+      const owner = attribute.ownerElement;
+      if (owner !== null && owner !== this.__vixenOwner) {
+        const error = new Error('The attribute is already in use by another element');
+        error.name = 'InUseAttributeError';
+        throw error;
+      }
+      const name = attribute.name;
+      const existing = this.getNamedItem(name);
+      if (existing === attribute) return attribute;
+      const value = attribute.value;
+      if (existing !== null) {
+        existing.__vixenDetach(existing.value);
+        this.__vixenAttributeObjects.delete(existing.name);
+      }
+      setElementAttribute(this.__vixenOwner.__vixenNodeId, name, value);
+      attribute.__vixenAttach(this.__vixenOwner);
+      this.__vixenAttributeObjects.set(name, attribute);
+      return existing;
+    }
+    removeNamedItem(name) {
+      const attribute = this.getNamedItem(name);
+      if (attribute === null) {
+        const error = new Error('The attribute was not found');
+        error.name = 'NotFoundError';
+        throw error;
+      }
+      const value = attribute.value;
+      removeElementAttribute(this.__vixenOwner.__vixenNodeId, attribute.name);
+      attribute.__vixenDetach(value);
+      this.__vixenAttributeObjects.delete(attribute.name);
+      return attribute;
+    }
+    getNamedItemNS(_namespace, localName) { return this.getNamedItem(localName); }
+    setNamedItemNS(attribute) { return this.setNamedItem(attribute); }
+    removeNamedItemNS(_namespace, localName) { return this.removeNamedItem(localName); }
+  }
+
+  function syncCachedAttribute(nodeId, name, value, detach) {
+    const element = elementObjects.get(nodeId);
+    if (!element || !Object.prototype.hasOwnProperty.call(element, '__vixenAttributes')) return;
+    const attributes = element.__vixenAttributes;
+    const attr = attributes.__vixenAttributeObjects.get(name);
+    if (attr === undefined) return;
+    attr.__vixenValue = String(value);
+    if (detach) {
+      attr.__vixenOwner = null;
+      attributes.__vixenAttributeObjects.delete(name);
     }
   }
 
@@ -6695,6 +6769,13 @@ const DOM_API_BOOTSTRAP: &str = r#"
       return makeElementObject(record);
     }
     createElementNS(_namespace, qualifiedName) { return this.createElement(String(qualifiedName).split(':').pop()); }
+    createAttribute(name) { return new VixenAttr(null, normalizeAttributeName(name), ''); }
+    createAttributeNS(namespace, qualifiedName) {
+      if (namespace !== null && namespace !== undefined && String(namespace) !== '') {
+        throw new TypeError('Namespaced attributes are not implemented by Vixen yet');
+      }
+      return this.createAttribute(String(qualifiedName).split(':').pop());
+    }
     createTextNode(data) { return new VixenText(String(data)); }
     createDocumentFragment() { return new VixenDocumentFragment(); }
     createRange() { return new VixenRange(); }

@@ -642,8 +642,21 @@ changes one dedicated author rule, observes 120×32 synchronously and through
 the retained CSSOM plus CDP, and pins exact Flutter pixels to
 `b09bce0ee8acf5ac3b40a2190241a6592880a3e47615c030469b2a887d118f1d`
 before target switching and byte-identical renderer recovery. CSS rule mutation
-APIs, detached Attr operations, and parser-module/task scheduling remain
-separate work.
+APIs and parser-module/task scheduling remain separate work.
+
+**Ninth A1 checkpoint:** `Document.createAttribute`, detached `Attr.value`, and
+`NamedNodeMap.setNamedItem`/`removeNamedItem` now complete the hosted attribute
+lifecycle. Attaching preserves the supplied Attr identity, replacement and
+removal return the prior object detached with its value intact, direct
+`removeAttribute` detaches cached nodes, and attaching an Attr still owned by a
+different element fails closed. Focused proof covers replace/remove/reattach/
+external-remove transitions, Stylo recascade, and exactly one renderer-source
+generation per actual mutation. The release/AOT corridor repeats replacement,
+removal, reattachment, and in-use rejection in one retained map, observes
+120×32 synchronously and through CDP, and pins exact Flutter pixels to
+`92181acffcd1e39ac9720c8edeeba2c148034a89f61297652dc948306f3af052`
+before target switching and byte-identical renderer recovery. Parser-module/task
+scheduling and remaining plausible runtime shims are the next A1 boundary.
 
 **Proof:** script-driven mutation visibly changes the Flutter scene; synchronous
 and asynchronous geometry observe the right commit; CDP and page script inspect

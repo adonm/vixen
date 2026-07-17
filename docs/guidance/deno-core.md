@@ -63,8 +63,9 @@ Current state:
   hosted by the runtime. `HTMLElement.style` also retains one live inline
   `CSSStyleDeclaration` across external and declaration-API writes.
   `Element.attributes` retains a live `NamedNodeMap` and stable attached `Attr`
-  nodes whose values read and write the same Page state; detached Attr operations
-  remain separate work. Structural Node/Element/document/form/select/table
+  nodes whose values read and write the same Page state. Detached Attr values and
+  create/replace/remove/reattach operations preserve identity and join the same
+  mutation path. Structural Node/Element/document/form/select/table
   collections use retained resolver-backed `NodeList`/`HTMLCollection` objects;
   selector-all results intentionally remain static. Element geometry reads
   (`getBoundingClientRect()` / `getClientRects()` / `getBoxQuads()`), Range
