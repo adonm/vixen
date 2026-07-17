@@ -15,16 +15,16 @@ import {
   workspaceRoot,
 } from './baseline-common.mjs';
 
-const DEFAULT_APP = 'flutter/vixen_shell/build/linux/x64/release/bundle/vixen_shell';
-const DEFAULT_LIBRARY = 'flutter/vixen_shell/build/linux/x64/release/bundle/lib/libvixen_ffi.so';
+const DEFAULT_APP = 'flutter/vixen_shell/build/linux-gtk4/x64/release/bundle/vixen_shell';
+const DEFAULT_LIBRARY = 'flutter/vixen_shell/build/linux-gtk4/x64/release/bundle/lib/libvixen_ffi.so';
 const FIXTURE = 'fixtures/dom/basic.html';
 const INTERACTION_FIXTURE = 'fixtures/cdp/playwright-smoke.html';
 const VIEWPORT = { width: 320, height: 240 };
 const INTERACTION_MUTATIONS = 8;
 const FRAME_TIMING_LIMIT = 32;
 const MEASUREMENT_PREFIX = 'Vixen measurement ';
-const EXPECTED_CAPTURE_SHA256 = '34ff6e88553c9396587d64131f48fa8e7d4579eccdc252398aa20d54472a42fb';
-const EXPECTED_HARDWARE_CAPTURE_SHA256 = 'd29624bf78207e6e2056742b1d6c242515f8411dd5097af7aec4baaf6cb0b152';
+const EXPECTED_CAPTURE_SHA256 = '500ddde8c74f57dcd04d6d29388246a5ce82fc12cc20232ac024fb21a41f564d';
+const EXPECTED_HARDWARE_CAPTURE_SHA256 = 'c6e6580f9f307415849046ebee7526244668304ea50b562fd7e456430fcc4101';
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const DEFAULT_RUNS = 5;
 const DEFAULT_WARMUPS = 1;

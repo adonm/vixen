@@ -98,12 +98,11 @@ def named_accessible(process_id: int, name: str) -> Atspi.Accessible | None:
     return None
 
 
-def accessible_action_evidence(
+def accessible_evidence(
     node: Atspi.Accessible,
     *,
     role,
     required_states: tuple,
-    action_name: str,
 ):
     if node.get_role() != role:
         raise ValueError(
@@ -121,32 +120,15 @@ def accessible_action_evidence(
         or rect.height <= 0
     ):
         raise ValueError(f"AT-SPI bounds are not finite and positive: {bounds!r}")
-    action = node.get_action_iface()
-    actions = [
-        action.get_action_name(index) for index in range(action.get_n_actions())
-    ]
-    expected = action_name.casefold()
-    index = next(
-        (
-            index
-            for index, name in enumerate(actions)
-            if isinstance(name, str) and name.casefold() == expected
-        ),
-        None,
-    )
-    if index is None:
-        raise ValueError(
-            f"AT-SPI action {action_name!r} is missing from {actions!r}"
-        )
-    return action, index, bounds
+    return bounds
 
 
-def named_accessible_action(process_id: int, name: str, action_name: str):
+def named_accessible_evidence(process_id: int, name: str):
     node = named_accessible(process_id, name)
     if node is None:
         return None
     try:
-        action, index, bounds = accessible_action_evidence(
+        bounds = accessible_evidence(
             node,
             role=Atspi.Role.TEXT,
             required_states=(
@@ -154,9 +136,8 @@ def named_accessible_action(process_id: int, name: str, action_name: str):
                 Atspi.StateType.VISIBLE,
                 Atspi.StateType.SHOWING,
             ),
-            action_name=action_name,
         )
-        return node, action, index, bounds
+        return node, bounds
     except (Exception, ValueError):
         return None
 
@@ -499,7 +480,7 @@ def main() -> int:
     env.update(
         {
             "GDK_BACKEND": "wayland",
-            "GTK_A11Y": "1",
+            "GTK_A11Y": "atspi",
             "NO_AT_BRIDGE": "0",
             "LIBGL_ALWAYS_SOFTWARE": "1",
             "GTK_IM_MODULE": "ibus",
@@ -605,18 +586,24 @@ def main() -> int:
             "quiescent pre-AT-SPI Flutter renderer commit",
             after_commit=initial_commit[2],
         )
-        _, atspi_action, atspi_action_index, atspi_bounds = wait_for(
+        _, atspi_bounds = wait_for(
             process,
             10,
-            "native editor AT-SPI role/state/bounds/focus action",
-            lambda: named_accessible_action(process.pid, "Native editor", "Focus"),
+            "native editor AT-SPI role/state/bounds",
+            lambda: named_accessible_evidence(process.pid, "Native editor"),
         )
-        if not atspi_action.do_action(atspi_action_index):
-            raise SystemExit("native editor AT-SPI Focus action was rejected")
+        focus_with_pointer(
+            args,
+            process,
+            "editor",
+            candidates=[
+                (x, y) for x in (80, 160, 240) for y in range(180, 351, 15)
+            ],
+        )
         atspi_status = wait_for(
             process,
             10,
-            "AT-SPI focus DOM effect",
+            "native pointer editor focus DOM effect",
             lambda: (
                 status
                 if (status := current_status(process.pid))
@@ -638,7 +625,9 @@ def main() -> int:
                 f"{before_atspi_commit!r} -> {after_atspi_commit!r}"
             )
         if status_fields(atspi_status).get("focus") != "editor":
-            raise SystemExit(f"AT-SPI focus did not reach the DOM: {atspi_status}")
+            raise SystemExit(
+                f"native pointer editor focus did not reach the DOM: {atspi_status}"
+            )
         time.sleep(1)
         ime_input(args, "3042")
         time.sleep(1)

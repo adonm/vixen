@@ -4,8 +4,8 @@ publish_to: 'none'
 version: 0.1.0+1
 
 environment:
-  sdk: ^3.13.0-0
-  flutter: '>=3.47.0-0.1.pre'
+  sdk: ^3.14.0-28.0.dev
+  flutter: '>=3.47.0-1.0.pre-160'
 
 dependencies:
   flutter:
@@ -17,4 +17,6 @@ dev_dependencies:
   flutter_lints: ^6.0.0
 
 flutter:
+  config:
+    linux-gtk-default: gtk4
   uses-material-design: true

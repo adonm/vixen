@@ -133,9 +133,9 @@ git clone --depth 1 --filter=blob:none --sparse --branch master https://github.c
 git -C ladybird sparse-checkout set Libraries/LibWeb Libraries/LibGfx
 git -C ladybird checkout 0de15a5dd2a9
 
-git clone --depth 1 --filter=blob:none --sparse --branch beta https://github.com/flutter/flutter.git
+git clone --depth 1 --filter=blob:none --sparse --branch issue-94804-gtk4-linux https://github.com/adonm/flutter.git
 git -C flutter sparse-checkout set packages/flutter packages/flutter_test packages/flutter_tools/templates/app/linux.tmpl engine/src/flutter/lib/ui engine/src/flutter/flow engine/src/flutter/impeller examples
-git -C flutter checkout bd1e75d918605c91b411e8789fb911e6c9a84534
+git -C flutter checkout 328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188
 
 git clone --depth 1 --filter=blob:none --sparse --branch main https://gitlab.gnome.org/GNOME/epiphany.git gnome-web
 git -C gnome-web sparse-checkout set data flatpak

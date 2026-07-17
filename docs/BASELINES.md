@@ -77,16 +77,15 @@ just size-flutter-linux-json     # controlled build and JSON report
 just size-flutter-linux-existing # analyze existing release bundles only
 ```
 
-The current report uses the exact pinned Flutter 3.47.0-0.1.pre beta.
-`fixtures/artifact-size/flutter_hello` uses Material plus the standard Linux
-runner without Vixen code. The local build uses the GNOME 50 builder image, its
-CMake/Ninja/GTK toolchain, the mise Rust/Flutter toolchains, locked Cargo/Pub
-dependencies, and the SHA-256-pinned rusty_v8 archive. The mutable builder-image
-tag remains a limitation until the release path pins an immutable digest.
-The Vixen dependency graph now also includes locked Yaru 10.2.0 and its native
-window plugins.
-Both controlled runners and any bundled plugin ELFs are stripped with the same
-policy before comparison.
+The accepted report below is historical GTK3 evidence from the exact pinned
+Flutter 3.47.0-0.1.pre beta. The current release path uses the immutable
+flutter-dev `3.47.0-1.0.pre-160` GTK4 SDK, Dart 3.14, and a digest-pinned GNOME
+50 builder. A 2026-07-18 migration check measured 21,384,740 logical bytes for
+the hello bundle and 85,283,280 for Vixen, a 63,898,540-byte delta with no
+native plugin ELFs; it remains an unaccepted dirty-worktree candidate until a
+clean revision report is checked in. `fixtures/artifact-size/flutter_hello`
+uses Material plus the standard GTK4 Linux runner without Vixen code. Both
+controlled runners are stripped with the same policy.
 
 The analyzer requires release bundle structure (`libapp.so`, Flutter engine,
 and ICU), requires exactly one `libvixen_ffi.so` only in Vixen, rejects debug and
@@ -96,7 +95,7 @@ The native Vixen library remains an aggregate because stripped static
 BrowserCore/V8 attribution needs separate linker-map evidence. The recorded
 pre-R7 artifact also includes now-deleted renderer code.
 
-## Recorded post-R7/Yaru Flutter raw-bundle reference
+## Historical post-R7/Yaru GTK3 raw-bundle reference
 
 [`baselines/flutter-linux-x64-raw-2026-07-16.json`](baselines/flutter-linux-x64-raw-2026-07-16.json)
 was produced from clean revision `4a12d26` with `just

@@ -24,17 +24,23 @@ dependencies are supplied through Flathub.
 
 The release archive uses:
 
-- Flutter `3.47.0-0.1.pre` beta from the official Linux x64 archive declared in
-  `.mise.toml`;
-- Flutter revision `bd1e75d918605c91b411e8789fb911e6c9a84534`;
-- engine revision `bbd15867c003dc66e678cb3c218649fa8bf914f2`;
+- Flutter `3.47.0-1.0.pre-160` from the checksum-pinned flutter-dev Linux x64
+  archive declared in `.mise.toml`;
+- Flutter revision `328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188`;
+- engine revision `fc1ad955f16467c959e3cd8079b760d5af0984aa` and immutable
+  engine content hash `469f2b34de41cab5f677ba84d6e9099c0e682d1e`;
+- SDK archive SHA-256
+  `b6e95c97348bebd1f129db1f1cbfb7a4a8f6481839ebe80d3eb746e102336bb9`;
+- GNOME 50 Linux builder image digest
+  `sha256:a2b78890f165cd5b5c6a8629c5f6cb293e64d1bf523ca6662fac8ca8e247f8b0`;
 - Rust `1.96.1`;
 - `Cargo.lock` and `flutter/vixen_shell/pubspec.lock`; and
 - rusty_v8 `v149.4.0` archive SHA-256
   `aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53`.
 
-The Linux runner explicitly enables Impeller. A beta version alone is not
-accepted as runtime evidence.
+The Linux runner explicitly enables Impeller and links
+`libflutter_linux_gtk4.so`; archive validation rejects GTK3 and checks the exact
+engine library hash. A version string alone is not runtime evidence.
 
 ## Local build and smoke
 
@@ -43,18 +49,22 @@ build the exact release archive:
 
 ```sh
 mise install
-just flutter-builder-update
+just docker-builder-pull
 just linux-release-prefetch
 just linux-release-smoke
 ```
 
-The host needs Cage with wlroots' headless backend; the packaged Linux GUI
-supports native Wayland only.
+The host needs Docker plus Cage with wlroots' headless backend; the packaged
+Linux GUI supports native Wayland only. The script pulls/inspects/runs the
+existing image and does not build a custom image. Prefetch is network-capable;
+the release build runs with `--network=none` from workspace-local caches.
 
 `linux-release-smoke`:
 
 - builds Flutter in release/AOT mode;
 - builds the BrowserCore-backed `libvixen_ffi.so` through the Flutter runner;
+- verifies GTK4 linkage, absence of GTK3 linkage, and the immutable GTK4 engine
+  hash;
 - creates a deterministic archive with normalized ownership and timestamps;
 - extracts that exact archive into a clean directory;
 - launches it under Cage's headless Wayland backend on the Linux host;
@@ -74,11 +84,12 @@ build tools, caches, JIT snapshots, and debug payloads.
 
 ## CI and tagged releases
 
-The `Linux release archive` CI job performs the same logical build on Ubuntu
-24.04 with the mise-managed Rust and Flutter beta. It creates the archive twice
-and byte-compares the outputs, extracts and launch-smokes the exact archive,
-and uploads it as a workflow artifact. On a tag, the release job attaches the
-archive and checksum to the GitHub Release.
+The `Linux release archive` CI job invokes the same digest-pinned, offline
+Docker build recipe as local development. Ubuntu 24.04 owns only the host smoke
+environment. CI creates the archive twice and byte-compares the outputs,
+extracts and launch-smokes the exact archive, and uploads it as a workflow
+artifact. On a tag, the release job attaches the archive and checksum to the
+GitHub Release.
 
 A release is not ready merely because the archive exists. The framework and
 engine revisions, native layout, deterministic archive, bounded launch, and

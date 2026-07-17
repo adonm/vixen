@@ -6,9 +6,9 @@ bounds, and scene capture. R7 removed every native rendering fallback.
 
 ## Composition
 
-The Linux application is rooted at `BrowserShell` and uses the locked
-Yaru/Adwaita-blue chrome. The page body is `BrowserContentSurface`, which paints
-only a current `FormatterCommitView` through `RenderCommitPainter`.
+The Linux application is rooted at `BrowserShell` and uses locked pure-Dart
+Yaru/Adwaita-blue styling. The page body is `BrowserContentSurface`, which
+paints only a current `FormatterCommitView` through `RenderCommitPainter`.
 
 A missing, stale, retired, hidden, or viewport-mismatched commit displays the
 explicit `Renderer commit unavailable` surface. It does not request native
@@ -17,11 +17,13 @@ pixels or create a texture fallback.
 The Linux runner:
 
 - requires native Wayland and rejects X11/XWayland;
-- uses Flutter's GTK embedder but owns no second Rust/GTK browser widget tree;
+- uses Flutter's GTK4 embedder but owns no second Rust/GTK browser widget tree;
+- owns the native GTK4 header bar/window controls while Flutter owns the tab
+  strip and all browser chrome below it;
+- does not register the GTK3-only `gtk`, `screen_retriever_linux`,
+  `window_manager`, or `yaru_window_linux` plugins;
 - has no pixel-buffer texture channel, native frame pool, EGL surface, or
-  compositor-specific web-content path; and
-- keeps the native GTK headerbar only as a startup fallback until the Flutter
-  titlebar is ready.
+  compositor-specific web-content path.
 
 ## Browser bridge
 
@@ -80,11 +82,15 @@ semantic bounds. Stale action generations and stale commits fail closed.
 Accessibility metadata refresh is independent of scene capture. There is no
 frame/Semantics pairing or BrowserCore layout bbox fallback.
 
-The pinned Flutter 3.47 GTK3 bridge recursively asks its non-component
-`FlViewAccessible` root for `Component` extents. The Linux runner terminates only
-that root walk with view-local bounds; descendant transforms and sizes remain
-the displayed Flutter semantics geometry, and Flutter's native semantic-action
-dispatch remains unchanged.
+The GTK3 `FlViewAccessible` recursion guard is deleted. The pinned GTK4 engine
+publishes a native tree that the release harness observes by process id and
+checks for role, editable/visible/showing state, names, and finite positive
+local bounds; `/proc/<pid>/maps` must contain GTK4 and no GTK3. This engine
+revision does not expose semantic nodes through AT-SPI Action and reports local
+rather than transformed screen-coordinate origins, so the controlled
+interaction corridor uses those nodes as semantic/bounds evidence and drives
+focus through a native Wayland pointer. Do not restore the GTK3 ATK hook or
+claim an AT-SPI action until a newer immutable engine proves it.
 
 ## Lifecycle and recovery
 

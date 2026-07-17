@@ -9,6 +9,15 @@ set(BINARY_NAME "vixen_hello")
 # https://wiki.gnome.org/HowDoI/ChooseApplicationID
 set(APPLICATION_ID "org.vixen.vixen_hello")
 
+if(NOT DEFINED LINUX_GTK_VARIANT)
+  set(LINUX_GTK_VARIANT "gtk4")
+endif()
+set(LINUX_GTK_VARIANT "${LINUX_GTK_VARIANT}" CACHE STRING
+  "Linux GTK runner variant" FORCE)
+if(NOT LINUX_GTK_VARIANT STREQUAL "gtk4")
+  message(FATAL_ERROR "The controlled Flutter peer requires GTK4")
+endif()
+
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
 cmake_policy(SET CMP0063 NEW)
@@ -52,7 +61,7 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 
 # System-level dependencies.
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk+-3.0)
+pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk4)
 
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")

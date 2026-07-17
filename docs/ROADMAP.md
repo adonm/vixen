@@ -522,6 +522,17 @@ passed the process-filtered name gate. This closes R8; it is one controlled
 Linux/IBus/Mozc/AT-SPI proof, not an IME, assistive-technology, compositor, or
 device matrix.
 
+**GTK4 toolchain migration checkpoint:** on 2026-07-18 the release runner moved
+to the immutable flutter-dev `328b829d35` SDK, Dart `3.14.0-28.0.dev`, and
+`libflutter_linux_gtk4.so`. The GTK3 ATK guard and GTK3-only Yaru/window plugins
+were removed. Fresh GTK4 evidence observes BrowserCore names, text role,
+editable/visible/showing states, and positive local `(0, 0, 40, 20)` bounds,
+while `/proc` proves GTK4 is loaded and GTK3 is not. The deterministic
+headless-window interaction run advances `atspi=21>24` and
+`commits=3>37>40>46>51` through native IME and pointer input. The pinned GTK4
+engine does not expose AT-SPI Action or transformed screen-coordinate origins;
+those old GTK3 properties remain historical evidence, not current GTK4 claims.
+
 **Exit:** the controlled Linux corridor uses no transitional renderer component,
 all renderer failure modes are bounded, and the next compatibility failure can be
 reduced directly against the final architecture.
@@ -866,9 +877,10 @@ Work top-to-bottom and finish/document/commit each slice:
    shared ids, policy, cancellation, diagnostics, and profile behavior first;
    module dependency imports are the first explicit fail-closed candidate.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
-   AT-SPI role/state/bounds/action → DOM → newer-commit evidence green while
-   widening shared-core behavior; do not replace it with injected text or
-   BrowserCore geometry.
+   AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →
+   newer-commit evidence green while widening shared-core behavior; do not
+   replace it with injected text or BrowserCore geometry. Restore an AT-SPI
+   Action claim only after a newer immutable GTK4 engine provides it.
 
 Do not reintroduce native layout/paint/frame ownership while stabilizing. A
 security, data-loss, or release-blocking regression may preempt the queue.

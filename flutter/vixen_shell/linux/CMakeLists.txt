@@ -9,6 +9,15 @@ set(BINARY_NAME "vixen_shell")
 # https://wiki.gnome.org/HowDoI/ChooseApplicationID
 set(APPLICATION_ID "dev.adonm.vixen")
 
+if(NOT DEFINED LINUX_GTK_VARIANT)
+  set(LINUX_GTK_VARIANT "gtk4")
+endif()
+set(LINUX_GTK_VARIANT "${LINUX_GTK_VARIANT}" CACHE STRING
+  "Linux GTK runner variant" FORCE)
+if(NOT LINUX_GTK_VARIANT STREQUAL "gtk4")
+  message(FATAL_ERROR "Vixen requires the GTK4 Flutter embedder")
+endif()
+
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
 cmake_policy(SET CMP0063 NEW)
@@ -41,7 +50,11 @@ if(NOT CARGO_EXECUTABLE)
   message(FATAL_ERROR "cargo is required to build libvixen_ffi.so")
 endif()
 set(VIXEN_WORKSPACE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../..")
-set(VIXEN_CARGO_TARGET_DIR "${CMAKE_BINARY_DIR}/vixen-cargo-target")
+if(DEFINED ENV{VIXEN_CARGO_TARGET_DIR})
+  set(VIXEN_CARGO_TARGET_DIR "$ENV{VIXEN_CARGO_TARGET_DIR}")
+else()
+  set(VIXEN_CARGO_TARGET_DIR "${CMAKE_BINARY_DIR}/vixen-cargo-target")
+endif()
 set(VIXEN_CARGO_ARGUMENTS
   build
   --locked
@@ -56,6 +69,10 @@ else()
 endif()
 set(VIXEN_FFI_LIBRARY
   "${VIXEN_CARGO_TARGET_DIR}/${VIXEN_CARGO_PROFILE_DIR}/libvixen_ffi.so")
+set(VIXEN_CARGO_ENV "CARGO_TARGET_DIR=${VIXEN_CARGO_TARGET_DIR}")
+if(DEFINED ENV{VIXEN_CARGO_HOME})
+  list(APPEND VIXEN_CARGO_ENV "CARGO_HOME=$ENV{VIXEN_CARGO_HOME}")
+endif()
 file(GLOB_RECURSE VIXEN_RUST_SOURCES CONFIGURE_DEPENDS
   "${VIXEN_WORKSPACE_DIR}/crates/*.rs"
   "${VIXEN_WORKSPACE_DIR}/crates/*/Cargo.toml"
@@ -63,7 +80,7 @@ file(GLOB_RECURSE VIXEN_RUST_SOURCES CONFIGURE_DEPENDS
 add_custom_command(
   OUTPUT "${VIXEN_FFI_LIBRARY}"
   COMMAND "${CMAKE_COMMAND}" -E env
-    "CARGO_TARGET_DIR=${VIXEN_CARGO_TARGET_DIR}"
+    ${VIXEN_CARGO_ENV}
     "${CARGO_EXECUTABLE}" ${VIXEN_CARGO_ARGUMENTS}
   WORKING_DIRECTORY "${VIXEN_WORKSPACE_DIR}"
   DEPENDS
@@ -94,7 +111,7 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 
 # System-level dependencies.
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk+-3.0)
+pkg_check_modules(GTK REQUIRED IMPORTED_TARGET gtk4)
 
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")

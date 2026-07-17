@@ -79,6 +79,14 @@ Pre-v1.0. The current integrated vertical includes:
   `just gate-r7` composes all prior rendered product evidence, while the R8
   checkpoints add compatibility/release/frame/GPU rebaselines and a passing
   real Mozc plus native AT-SPI interaction corridor.
+- The x86_64 Linux release now uses the checksum-pinned flutter-dev GTK4 SDK,
+  Dart 3.14, and `libflutter_linux_gtk4.so`. GTK3-only Yaru window plugins are
+  excluded while pure-Dart Yaru styling remains. The GTK4 AT-SPI corridor
+  observes BrowserCore names, roles, states, and positive local bounds and
+  verifies from `/proc` that the process loads GTK4 but not GTK3. The current
+  custom engine does not yet expose its semantic nodes through AT-SPI Action or
+  transformed screen-coordinate bounds; native Wayland input remains the
+  interaction path until that upstream surface advances.
 
 The project is not yet a daily-driver browser. Remaining work is product breadth:
 standards compatibility, accessibility/IME/device matrices, performance and size,
@@ -133,7 +141,7 @@ Common recipes:
 | `just flutter-size-prefetch` | Network-capable staging for pinned Linux Flutter size inputs; not evidence |
 | `just size-flutter-linux` / `just size-flutter-linux-json` | Release/AOT hello-Flutter versus Flutter+Vixen raw-bundle comparison |
 | `just baseline-beta` | Run the local headless, profile-growth, and headless-size measurement batch |
-| `just flutter-builder-update` | Pull the pinned GNOME 50 local release-builder image |
+| `just docker-builder-pull` | Pull the digest-pinned GNOME 50 release-builder image |
 | `just linux-release-prefetch` | Stage locked release inputs and the pinned rusty_v8 archive |
 | `just linux-release-smoke` | Build, archive, extract, and Impeller-smoke the official Linux release |
 
@@ -145,9 +153,9 @@ baselines. See
 [`docs/BASELINES.md`](docs/BASELINES.md).
 
 The Flutter release and size recipes use a controlled checked-in hello
-application, the GNOME 50 builder image, the mise-pinned Rust/Flutter
-toolchains, locked dependencies, and a separately staged pinned rusty_v8
-archive. The first clean measurement-only x86_64 reference is recorded in
+application, the digest-pinned GNOME 50 Docker builder, checksum-pinned
+Rust/Flutter toolchains, locked dependencies, and a separately staged pinned
+rusty_v8 archive. The first clean measurement-only x86_64 reference is recorded in
 [`docs/BASELINES.md`](docs/BASELINES.md).
 
 `mise bootstrap` and recipes run from a mise-active shell use
@@ -156,10 +164,13 @@ tooling stay inside the workspace (see
 [`docs/guidance/cargo-home.md`](docs/guidance/cargo-home.md)).
 
 **The GNOME 50 SDK is not installed on the host.** Local Linux release builds
-run in the pinned builder image:
+run with plain `docker pull`, `docker image inspect`, and `docker run` against
+the pinned builder image. The network-capable prefetch fills workspace-local
+toolchain/package caches; release compilation runs with `--network=none` and
+does not mount a host Flutter or Rust installation:
 
 ```sh
-just flutter-builder-update
+just docker-builder-pull
 just linux-release-prefetch
 just linux-release-smoke
 ```
@@ -176,7 +187,7 @@ basic-browser gate in `docs/ROADMAP.md` passes.
 See [`docs/guidance/flatpark-release.md`](docs/guidance/flatpark-release.md)
 for the full workflow. Headless/CI hosts that only build `vixen-api` /
 `vixen-net` / `vixen-store` need neither the GNOME SDK nor the container.
-`mise install` now provisions the pinned Flutter beta as a project dependency,
+`mise install` now provisions the pinned flutter-dev SDK as a project dependency,
 but `just check` does not execute it.
 
 See [`.mise.toml`](.mise.toml) and the
@@ -233,7 +244,8 @@ Update both when resolving.
 ## Working assumptions
 
 - Primary GUI targets: **Linux, macOS, Windows, Android, and Apple Silicon iOS
-  Simulator** through the pinned Flutter 3.47.0-0.1.pre beta. Each remains
+  Simulator** through the pinned Flutter `3.47.0-1.0.pre-160` flutter-dev SDK
+  (framework `328b829d35`, Dart `3.14.0-28.0.dev`). Each remains
   evidence-gated; the Linux Flutter renderer/shell and deterministic release
   path are implemented, while non-Linux runners remain open. Validation tracks
   each target's latest stable major OS release at

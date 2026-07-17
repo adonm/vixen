@@ -2,7 +2,7 @@
 # docs/MILESTONES.md, and docs/ACCEPTANCE.md: `check-all-host`, `test-host`,
 # `gate-*`, release, size, and Flutter run commands.
 #
-# Linux release bundles are built in the pinned GNOME builder image. FlatPark
+# Linux release bundles are built in the pinned GNOME SDK builder image. FlatPark
 # repackages the official GitHub Release archive as a signed Flatpak.
 #
 # Tool ownership is intentionally split: mise pins versions and environment;
@@ -17,18 +17,19 @@ alias webidl := gate-webidl
 alias hooks := hooks-install
 alias docs := book-build
 
-# Container runtime + GNOME 50 image used for local release builds.
-CONTAINER             := env_var_or_default("CONTAINER", "podman")
-FLUTTER_BUILDER_IMAGE := "ghcr.io/flathub-infra/flatpak-github-actions:gnome-50"
-FLUTTER_VERSION       := "3.47.0-0.1.pre"
-FLUTTER_REVISION      := "bd1e75d918605c91b411e8789fb911e6c9a84534"
-FLUTTER_ENGINE        := "bbd15867c003dc66e678cb3c218649fa8bf914f2"
-FLUTTER_HELLO         := "fixtures/artifact-size/flutter_hello"
-RUSTY_V8_ARCHIVE      := ".tmp/linux-release/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
-RUSTY_V8_SHA256       := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"
-LINUX_RELEASE_BUNDLE  := "flutter/vixen_shell/build/linux/x64/release/bundle"
+# Docker + immutable GNOME SDK image and flutter-dev GTK4 SDK used for builds.
+DOCKER := env_var_or_default("DOCKER", "docker")
+FLUTTER_BUILDER_IMAGE := "ghcr.io/flathub-infra/flatpak-github-actions@sha256:a2b78890f165cd5b5c6a8629c5f6cb293e64d1bf523ca6662fac8ca8e247f8b0"
+FLUTTER_VERSION := "3.47.0-1.0.pre-160"
+FLUTTER_REVISION := "328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188"
+FLUTTER_ENGINE := "fc1ad955f16467c959e3cd8079b760d5af0984aa"
+FLUTTER_ENGINE_CONTENT := "469f2b34de41cab5f677ba84d6e9099c0e682d1e"
+FLUTTER_HELLO := "fixtures/artifact-size/flutter_hello"
+RUSTY_V8_ARCHIVE := ".tmp/linux-release/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
+RUSTY_V8_SHA256 := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"
+LINUX_RELEASE_BUNDLE := "flutter/vixen_shell/build/linux-gtk4/x64/release/bundle"
 LINUX_RELEASE_ARCHIVE := ".tmp/release/vixen-linux-x86_64.tar.gz"
-WTYPE                 := env_var_or_default("WTYPE", "wtype")
+WTYPE := env_var_or_default("WTYPE", "wtype")
 
 # Default recipe: explain yourself.
 default:
@@ -56,14 +57,14 @@ setup-dev-tools:
     cargo binstall --no-confirm cargo-deny || cargo install cargo-deny || true
     cargo binstall --no-confirm cargo-fuzz || cargo install cargo-fuzz || true
 
-# Install the exact official Flutter beta archive declared as a mise tool.
+# Install the exact flutter-dev SDK archive declared as a mise tool.
 setup-flutter:
-    mise install http:flutter-beta
+    mise install http:flutter
     mise x -- flutter --version
 
 _flutter-sdk-present:
-    command -v flutter >/dev/null || { printf '%s\n' "mise Flutter beta missing from PATH; activate mise and run 'just setup-flutter'" >&2; exit 1; }
-    test "$(flutter --version --machine | python3 -c 'import json, sys; value = json.load(sys.stdin); print(value["frameworkRevision"], value["engineRevision"])')" = "{{FLUTTER_REVISION}} {{FLUTTER_ENGINE}}" || { printf '%s\n' "Flutter beta revision mismatch; run 'mise install http:flutter-beta'" >&2; exit 1; }
+    command -v flutter >/dev/null || { printf '%s\n' "mise Flutter SDK missing from PATH; activate mise and run 'just setup-flutter'" >&2; exit 1; }
+    test "$(flutter --version --machine | python3 -c 'import json, sys; value = json.load(sys.stdin); print(value["frameworkRevision"], value["engineRevision"], value["engineContentHash"])')" = "{{ FLUTTER_REVISION }} {{ FLUTTER_ENGINE }} {{ FLUTTER_ENGINE_CONTENT }}" || { printf '%s\n' "Flutter SDK revision mismatch; run 'mise install http:flutter'" >&2; exit 1; }
 
 # --- Build / check -----------------------------------------------------------
 
@@ -114,10 +115,10 @@ test-flutter-formatter-impeller: _flutter-sdk-present
 gate-flutter-shell: _flutter-sdk-present gate-native-abi test-flutter-formatter-impeller
     cd flutter/vixen_shell && dart format --output=none --set-exit-if-changed lib test
     cd flutter/vixen_shell && flutter analyze
-    cd flutter/vixen_shell && VIXEN_FFI_LIBRARY="{{justfile_directory()}}/target/debug/libvixen_ffi.so" flutter test
+    cd flutter/vixen_shell && VIXEN_FFI_LIBRARY="{{ justfile_directory() }}/target/debug/libvixen_ffi.so" flutter test
 
 # Build the relocatable Linux bundle, including libvixen_ffi.so. Requires the
-# normal Flutter Linux prerequisites: CMake, Ninja, pkg-config, and GTK 3 headers.
+# normal Flutter Linux prerequisites: CMake, Ninja, pkg-config, and GTK4 headers.
 build-flutter-linux: _flutter-sdk-present
     cd flutter/vixen_shell && flutter build linux --debug
 
@@ -129,65 +130,44 @@ run-flutter: _flutter-sdk-present
 run-flutter-cage: _flutter-sdk-present
     command -v cage >/dev/null || { printf '%s\n' "cage is required for local headless Wayland testing" >&2; exit 1; }
     rm -rf .tmp/wayland-run && mkdir -m 700 -p .tmp/wayland-run
-    XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/wayland-run" GDK_BACKEND=wayland \
+    XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/wayland-run" GDK_BACKEND=wayland \
         WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
-        LIBGL_ALWAYS_SOFTWARE=1 cage -- sh -c 'cd {{justfile_directory()}}/flutter/vixen_shell && exec flutter run -d linux'
+        LIBGL_ALWAYS_SOFTWARE=1 cage -- sh -c 'cd {{ justfile_directory() }}/flutter/vixen_shell && exec flutter run -d linux'
 
-# Stage locked application/Cargo inputs and the exact rusty_v8 archive. This is
-# network-capable setup, not release evidence.
-linux-release-prefetch: _flutter-sdk-present
-    mkdir -p "$(dirname {{RUSTY_V8_ARCHIVE}})"
-    test -f {{RUSTY_V8_ARCHIVE}} || curl -L --fail --output {{RUSTY_V8_ARCHIVE}} https://github.com/denoland/rusty_v8/releases/download/v149.4.0/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz
-    printf '%s  %s\n' {{RUSTY_V8_SHA256}} {{RUSTY_V8_ARCHIVE}} | sha256sum --check
-    cargo fetch --locked
-    cd {{FLUTTER_HELLO}} && flutter pub get --enforce-lockfile
-    cd flutter/vixen_shell && flutter pub get --enforce-lockfile
+# Stage the exact SDK/toolchain and locked application/Cargo inputs in
+# workspace-local Docker caches. This is network-capable setup, not release evidence.
+linux-release-prefetch:
+    DOCKER={{ DOCKER }} bash scripts/docker-flutter.sh prefetch
 
 # Backward-compatible staging name used by the size workflow.
 flutter-size-prefetch: linux-release-prefetch
 
-linux-release-check-inputs: _flutter-sdk-present
-    {{CONTAINER}} image exists {{FLUTTER_BUILDER_IMAGE}} || { printf '%s\n' "GNOME builder image missing; run 'just flutter-builder-update'" >&2; exit 1; }
-    test -d "$RUSTUP_HOME" && test -x "$HOME/.cargo/bin/rustc" && test -d "$HOME/.pub-cache" || { printf '%s\n' "mise Rust and Flutter tool caches are required" >&2; exit 1; }
-    test -f {{RUSTY_V8_ARCHIVE}} || { printf '%s\n' "rusty_v8 archive missing; run 'just linux-release-prefetch'" >&2; exit 1; }
-    printf '%s  %s\n' {{RUSTY_V8_SHA256}} {{RUSTY_V8_ARCHIVE}} | sha256sum --check
+docker-builder-check:
+    DOCKER={{ DOCKER }} bash scripts/docker-flutter.sh check
+
+linux-release-check-inputs: docker-builder-check
+    test -f {{ RUSTY_V8_ARCHIVE }} || { printf '%s\n' "rusty_v8 archive missing; run 'just linux-release-prefetch'" >&2; exit 1; }
+    printf '%s  %s\n' {{ RUSTY_V8_SHA256 }} {{ RUSTY_V8_ARCHIVE }} | sha256sum --check
 
 # Build the official release/AOT bundle consumed unchanged by FlatPark. Flutter
 # does not strip bundled Linux plugin ELFs, so strip those beside the runner.
 build-flutter-release-linux: linux-release-check-inputs
-    cd flutter/vixen_shell && flutter clean
-    mkdir -p .tmp/linux-release/bin && ln -sf /usr/sbin/g++ .tmp/linux-release/bin/clang++ && ln -sf /usr/sbin/gcc .tmp/linux-release/bin/clang
-    {{CONTAINER}} run --rm --security-opt label=disable \
-        -v {{justfile_directory()}}:/workspace \
-        -v "$(readlink -f "$RUSTUP_HOME")":/host-rustup:ro \
-        -v "$(readlink -f "$HOME/.cargo/bin")":/host-cargo-bin:ro \
-        -v "$(readlink -f "$HOME/.pub-cache")":"$HOME/.pub-cache" \
-        -v "$(readlink -f "$(mise where http:flutter-beta)")":/opt/flutter-tool \
-        -w /workspace -e HOME="$HOME" -e RUSTUP_HOME=/host-rustup -e RUSTUP_TOOLCHAIN=1.96.1 \
-        -e CARGO_HOME=/workspace/.cargo -e PUB_CACHE="$HOME/.pub-cache" \
-        -e CARGO_NET_OFFLINE=true -e RUSTY_V8_ARCHIVE=/workspace/{{RUSTY_V8_ARCHIVE}} \
-        -e FLUTTER_SUPPRESS_ANALYTICS=true {{FLUTTER_BUILDER_IMAGE}} sh -lc \
-        'export PATH=/workspace/.tmp/linux-release/bin:/opt/flutter-tool/flutter/bin:/host-cargo-bin:/usr/sbin:/usr/bin; \
-         cd /workspace/flutter/vixen_shell && flutter pub get --enforce-lockfile && flutter build linux --release --no-pub'
-    cd flutter/vixen_shell && flutter pub get --offline --enforce-lockfile
-    strip --strip-unneeded {{LINUX_RELEASE_BUNDLE}}/vixen_shell
-    find {{LINUX_RELEASE_BUNDLE}}/lib -maxdepth 1 -type f -name '*_plugin.so' \
-        -exec strip --strip-unneeded {} +
+    DOCKER={{ DOCKER }} bash scripts/docker-flutter.sh release
 
 # Deterministic upstream archive for GitHub Releases and FlatPark extra-data.
 linux-release-archive: build-flutter-release-linux
-    rm -f {{LINUX_RELEASE_ARCHIVE}} {{LINUX_RELEASE_ARCHIVE}}.sha256
-    python3 scripts/package-linux-release.py {{LINUX_RELEASE_BUNDLE}} {{LINUX_RELEASE_ARCHIVE}}
-    cd "$(dirname {{LINUX_RELEASE_ARCHIVE}})" && sha256sum "$(basename {{LINUX_RELEASE_ARCHIVE}})" > "$(basename {{LINUX_RELEASE_ARCHIVE}}).sha256"
+    rm -f {{ LINUX_RELEASE_ARCHIVE }} {{ LINUX_RELEASE_ARCHIVE }}.sha256
+    python3 scripts/package-linux-release.py {{ LINUX_RELEASE_BUNDLE }} {{ LINUX_RELEASE_ARCHIVE }}
+    cd "$(dirname {{ LINUX_RELEASE_ARCHIVE }})" && sha256sum "$(basename {{ LINUX_RELEASE_ARCHIVE }})" > "$(basename {{ LINUX_RELEASE_ARCHIVE }}).sha256"
 
 # Extract and launch the exact archive in a headless Wayland compositor. The
 # runner must survive to the timeout and report an Impeller backend.
 linux-release-smoke: linux-release-archive
     rm -rf .tmp/linux-release/smoke && mkdir -p .tmp/linux-release/smoke
-    tar -xzf {{LINUX_RELEASE_ARCHIVE}} -C .tmp/linux-release/smoke
+    tar -xzf {{ LINUX_RELEASE_ARCHIVE }} -C .tmp/linux-release/smoke
     command -v cage >/dev/null || { printf '%s\n' "cage is required for the Wayland release smoke" >&2; exit 1; }
     rm -rf .tmp/linux-release/wayland && mkdir -m 700 -p .tmp/linux-release/wayland
-    sh -c 'set +e; XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/linux-release/wayland" GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 timeout 15s cage -- .tmp/linux-release/smoke/vixen/vixen_shell > .tmp/linux-release-smoke.log 2>&1; status=$?; set -e; cat .tmp/linux-release-smoke.log; test "$status" -eq 124; grep -Eq "Using the Impeller rendering backend \\((Vulkan|OpenGLES|VulkanSDF|OpenGLESSDF)\\)\\." .tmp/linux-release-smoke.log'
+    sh -c 'set +e; XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/linux-release/wayland" GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 timeout 15s cage -- .tmp/linux-release/smoke/vixen/vixen_shell > .tmp/linux-release-smoke.log 2>&1; status=$?; set -e; cat .tmp/linux-release-smoke.log; test "$status" -eq 124; grep -Eq "Using the Impeller rendering backend \\((Vulkan|OpenGLES|VulkanSDF|OpenGLESSDF)\\)\\." .tmp/linux-release-smoke.log'
 
 # Launch the real release bundle on an isolated Wayland compositor and require
 # BrowserCore-projected fixture semantics to appear through native AT-SPI.
@@ -196,44 +176,36 @@ linux-at-spi-smoke: build-flutter-release-linux
     test -n "$DBUS_SESSION_BUS_ADDRESS" || { printf '%s\n' "an active user D-Bus/AT-SPI session is required" >&2; exit 1; }
     python3 -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi'
     rm -rf .tmp/linux-at-spi-wayland && mkdir -m 700 -p .tmp/linux-at-spi-wayland
-    XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/linux-at-spi-wayland" GDK_BACKEND=wayland \
+    XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/linux-at-spi-wayland" GDK_BACKEND=wayland \
         WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
         LIBGL_ALWAYS_SOFTWARE=1 cage -- python3 scripts/flutter-at-spi-smoke.py \
-        --app {{LINUX_RELEASE_BUNDLE}}/vixen_shell \
-        --library {{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so \
-        --url file://{{justfile_directory()}}/fixtures/dom/basic.html \
+        --app {{ LINUX_RELEASE_BUNDLE }}/vixen_shell \
+        --library {{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so \
+        --url file://{{ justfile_directory() }}/fixtures/dom/basic.html \
         --expect "DOM Basic"
 
 _build-wayland-virtual-pointer: linux-release-check-inputs
-    rm -rf .tmp/wayland-virtual-pointer && mkdir -p .tmp/wayland-virtual-pointer
-    {{CONTAINER}} run --rm --security-opt label=disable \
-        -v {{justfile_directory()}}:/workspace -w /workspace \
-        {{FLUTTER_BUILDER_IMAGE}} sh -lc \
-        'set -eu; wayland-scanner client-header scripts/protocols/wlr-virtual-pointer-unstable-v1.xml .tmp/wayland-virtual-pointer/wlr-virtual-pointer-unstable-v1-client-protocol.h; \
-         wayland-scanner private-code scripts/protocols/wlr-virtual-pointer-unstable-v1.xml .tmp/wayland-virtual-pointer/wlr-virtual-pointer-unstable-v1-protocol.c; \
-         cc -std=c11 -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror \
-           -I.tmp/wayland-virtual-pointer scripts/wayland-virtual-pointer.c \
-           .tmp/wayland-virtual-pointer/wlr-virtual-pointer-unstable-v1-protocol.c \
-           $(pkg-config --cflags --libs wayland-client) -lm \
-           -o .tmp/wayland-virtual-pointer/wayland-virtual-pointer'
+    DOCKER={{ DOCKER }} bash scripts/docker-flutter.sh wayland-driver
 
 # Real Wayland basic-navigation/input evidence: physical chrome URL entry,
 # back/forward/reload/active stop with restored scrolling, IBus/GTK preedit+
 # commit, and nested/root wheel routing in the release process.
 linux-interaction-smoke: build-flutter-release-linux _build-wayland-virtual-pointer
-    test -x "{{WTYPE}}" || command -v "{{WTYPE}}" >/dev/null || { printf '%s\n' "wtype is required for native Wayland keyboard input" >&2; exit 1; }
+    test -x "{{ WTYPE }}" || command -v "{{ WTYPE }}" >/dev/null || { printf '%s\n' "wtype is required for native Wayland keyboard input" >&2; exit 1; }
     command -v ibus >/dev/null && ibus list-engine | grep -q '^  mozc-jp -' || { printf '%s\n' "IBus Mozc is required for native preedit evidence" >&2; exit 1; }
     test -n "$DBUS_SESSION_BUS_ADDRESS" || { printf '%s\n' "an active user D-Bus/AT-SPI session is required" >&2; exit 1; }
     python3 -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi'
     rm -rf .tmp/linux-interaction-wayland .tmp/interaction-profile && mkdir -m 700 -p .tmp/linux-interaction-wayland
-    IBUS_ADDRESS="$(ibus address)" XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/linux-interaction-wayland" \
+    IBUS_ADDRESS="$(ibus address)" XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/linux-interaction-wayland" \
         GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
         WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 timeout 120s cage -- \
         python3 scripts/flutter-interaction-smoke.py \
-        --app {{LINUX_RELEASE_BUNDLE}}/vixen_shell \
-        --library {{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so \
-        --url file://{{justfile_directory()}}/fixtures/events/linux-interaction-qa.html \
-        --wtype "{{WTYPE}}" \
+        --app {{ LINUX_RELEASE_BUNDLE }}/vixen_shell \
+        --library {{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so \
+        --url file://{{ justfile_directory() }}/fixtures/events/linux-interaction-qa.html \
+        --app-headless-window \
+        --app-viewport 1280x720 \
+        --wtype "{{ WTYPE }}" \
         --pointer .tmp/wayland-virtual-pointer/wayland-virtual-pointer
 
 # First R5 rendered-automation checkpoint: launch the same release bundle in
@@ -241,41 +213,29 @@ linux-interaction-smoke: build-flutter-release-linux _build-wayland-virtual-poin
 linux-automation-smoke: build-flutter-release-linux
     command -v cage >/dev/null || { printf '%s\n' "cage is required for the Wayland automation smoke" >&2; exit 1; }
     rm -rf .tmp/linux-automation-wayland .tmp/linux-automation && mkdir -m 700 -p .tmp/linux-automation-wayland && mkdir -p .tmp/linux-automation
-    XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/linux-automation-wayland" \
+    XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/linux-automation-wayland" \
         GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
         WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 timeout 210s cage -- \
         python3 scripts/flutter-automation-smoke.py \
-        --app {{LINUX_RELEASE_BUNDLE}}/vixen_shell \
-        --library {{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so \
-        --url file://{{justfile_directory()}}/fixtures/dom/basic.html \
+        --app {{ LINUX_RELEASE_BUNDLE }}/vixen_shell \
+        --library {{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so \
+        --url file://{{ justfile_directory() }}/fixtures/dom/basic.html \
         --output-dir .tmp/linux-automation
 
 flutter-size-check-inputs: linux-release-check-inputs
 
 # Add the controlled hello peer for the raw release-bundle size comparison.
 build-flutter-size-linux: build-flutter-release-linux
-    cd {{FLUTTER_HELLO}} && flutter clean
-    {{CONTAINER}} run --rm --security-opt label=disable \
-        -v {{justfile_directory()}}:/workspace \
-        -v "$(readlink -f "$(mise where http:flutter-beta)")":/opt/flutter-tool \
-        -v "$(readlink -f "$HOME/.pub-cache")":"$HOME/.pub-cache" \
-        -w /workspace -e HOME="$HOME" -e PUB_CACHE="$HOME/.pub-cache" \
-        -e FLUTTER_SUPPRESS_ANALYTICS=true {{FLUTTER_BUILDER_IMAGE}} sh -lc \
-        'export PATH=/workspace/.tmp/linux-release/bin:/opt/flutter-tool/flutter/bin:/usr/sbin:/usr/bin; \
-         cd /workspace/{{FLUTTER_HELLO}} && flutter pub get --enforce-lockfile && flutter build linux --release --no-pub'
-    cd {{FLUTTER_HELLO}} && flutter pub get --offline --enforce-lockfile
-    strip --strip-unneeded {{FLUTTER_HELLO}}/build/linux/x64/release/bundle/vixen_hello
-    find {{FLUTTER_HELLO}}/build/linux/x64/release/bundle/lib -maxdepth 1 -type f -name '*_plugin.so' \
-        -exec strip --strip-unneeded {} +
+    DOCKER={{ DOCKER }} bash scripts/docker-flutter.sh hello
 
 size-flutter-linux: build-flutter-size-linux
-    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{ FLUTTER_HELLO }}/build/linux-gtk4/x64/release/bundle --vixen-bundle {{ LINUX_RELEASE_BUNDLE }}
 
 size-flutter-linux-json: build-flutter-size-linux
-    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle --json
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{ FLUTTER_HELLO }}/build/linux-gtk4/x64/release/bundle --vixen-bundle {{ LINUX_RELEASE_BUNDLE }} --json
 
 size-flutter-linux-existing:
-    node scripts/flutter-artifact-size.mjs --hello-bundle {{FLUTTER_HELLO}}/build/linux/x64/release/bundle --vixen-bundle flutter/vixen_shell/build/linux/x64/release/bundle
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{ FLUTTER_HELLO }}/build/linux-gtk4/x64/release/bundle --vixen-bundle {{ LINUX_RELEASE_BUNDLE }}
 
 # ADR-017 ownership vertical: production BrowserCore transport, context/runtime
 # generations, bounded events, profile/session partitioning, and headless adapter.
@@ -303,12 +263,12 @@ _node-deps:
 flutter-cdp-playwright-smoke: build-flutter-release-linux _node-deps
     command -v cage >/dev/null || { printf '%s\n' "cage is required for rendered CDP smoke" >&2; exit 1; }
     rm -rf .tmp/flutter-cdp-wayland .tmp/flutter-cdp-profile && mkdir -m 700 -p .tmp/flutter-cdp-wayland .tmp/flutter-cdp-profile
-    XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/flutter-cdp-wayland" \
+    XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/flutter-cdp-wayland" \
         GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
         WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 \
-        VIXEN_CDP_APP="{{justfile_directory()}}/{{LINUX_RELEASE_BUNDLE}}/vixen_shell" \
-        VIXEN_FFI_LIBRARY="{{justfile_directory()}}/{{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so" \
-        VIXEN_PROFILE_PATH="{{justfile_directory()}}/.tmp/flutter-cdp-profile/profile.redb" \
+        VIXEN_CDP_APP="{{ justfile_directory() }}/{{ LINUX_RELEASE_BUNDLE }}/vixen_shell" \
+        VIXEN_FFI_LIBRARY="{{ justfile_directory() }}/{{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so" \
+        VIXEN_PROFILE_PATH="{{ justfile_directory() }}/.tmp/flutter-cdp-profile/profile.redb" \
         timeout 180s cage -- mise x node@24 -- npm run cdp:flutter-smoke
 
 # Full R5 product gate: execute all manifest checks in order through one
@@ -317,12 +277,12 @@ flutter-cdp-playwright-smoke: build-flutter-release-linux _node-deps
 flutter-fixture-manifest: build-flutter-release-linux _node-deps
     command -v cage >/dev/null || { printf '%s\n' "cage is required for the Flutter fixture manifest" >&2; exit 1; }
     rm -rf .tmp/flutter-manifest-wayland .tmp/flutter-manifest-profile && mkdir -m 700 -p .tmp/flutter-manifest-wayland .tmp/flutter-manifest-profile
-    XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/flutter-manifest-wayland" \
+    XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/flutter-manifest-wayland" \
         GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
         WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 \
-        VIXEN_CDP_APP="{{justfile_directory()}}/{{LINUX_RELEASE_BUNDLE}}/vixen_shell" \
-        VIXEN_FFI_LIBRARY="{{justfile_directory()}}/{{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so" \
-        VIXEN_PROFILE_PATH="{{justfile_directory()}}/.tmp/flutter-manifest-profile/profile.redb" \
+        VIXEN_CDP_APP="{{ justfile_directory() }}/{{ LINUX_RELEASE_BUNDLE }}/vixen_shell" \
+        VIXEN_FFI_LIBRARY="{{ justfile_directory() }}/{{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so" \
+        VIXEN_PROFILE_PATH="{{ justfile_directory() }}/.tmp/flutter-manifest-profile/profile.redb" \
         timeout 420s cage -- mise x node@24 -- npm run fixtures:flutter-manifest
 
 gate-r5: linux-automation-smoke flutter-cdp-playwright-smoke flutter-fixture-manifest
@@ -374,7 +334,7 @@ book-build:
     mdbook build
 
 book-serve *ARGS:
-    mdbook serve --open {{ARGS}}
+    mdbook serve --open {{ ARGS }}
 
 # --- Executable gates --------------------------------------------------------
 # These are current, runnable milestone gates. They complement (not replace)
@@ -408,7 +368,7 @@ gate-phase1: test-net test-store audit fuzz-security
 
 # Phase 2 vertical gate: engine tests plus deno_core eval through headless.
 gate-phase2: test-engine gate-webidl
-    test "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/dom/basic.html --eval '1+2')" = "3"
+    test "$(cargo run -q -p vixen-headless -- --url file://{{ justfile_directory() }}/fixtures/dom/basic.html --eval '1+2')" = "3"
 
 # Phase 3 current gate: DOM parse + Stylo selector matching through the shared
 # Page facade and the WPT fixture runner. Full computed cascade extends this.
@@ -422,7 +382,7 @@ gate-phase3:
 # Run a committed external-WPT profile against an ignored upstream checkout.
 # Example: `just wpt-profile fixtures/wpt-profiles/layout.json .tmp/wpt`.
 wpt-profile profile root=".tmp/wpt":
-    VIXEN_WPT_PROFILE="{{profile}}" VIXEN_WPT_ROOT="{{root}}" cargo test -p vixen-headless --test wpt_profile_runner -- --nocapture
+    VIXEN_WPT_PROFILE="{{ profile }}" VIXEN_WPT_ROOT="{{ root }}" cargo test -p vixen-headless --test wpt_profile_runner -- --nocapture
 
 # Reproduce the compatibility counts published in docs/COMPAT.md.
 compat-report:
@@ -431,7 +391,7 @@ compat-report:
 # WebIDL/runtime host gate: generated constructor/prototype coverage plus the
 # user-visible headless/CDP seams that consume those bindings.
 gate-webidl: test-script test-headless-runtime
-    test "$(cargo run -q -p vixen-headless -- --url file://{{justfile_directory()}}/fixtures/dom/basic.html --eval 'globalThis.__vixenWebidl.interfaceNames().includes("HTMLDialogElement") && HTMLElement.prototype instanceof Element')" = "true"
+    test "$(cargo run -q -p vixen-headless -- --url file://{{ justfile_directory() }}/fixtures/dom/basic.html --eval 'globalThis.__vixenWebidl.interfaceNames().includes("HTMLDialogElement") && HTMLElement.prototype instanceof Element')" = "true"
 
 # Phase 6 current gate: full engine host-family coverage plus WebIDL runtime
 # seams. `test-engine` is intentionally cheaper and less fragile than a long
@@ -456,15 +416,15 @@ fuzz-init: fuzz-security
 
 # Hermetic local scenarios. Example: `just baseline-headless 9 2`.
 baseline-headless runs="5" warmups="1": build-release
-    node scripts/headless-baseline.mjs --binary target/release/vixen-headless --suite fixtures/performance/headless-local.json --runs {{runs}} --warmups {{warmups}}
+    node scripts/headless-baseline.mjs --binary target/release/vixen-headless --suite fixtures/performance/headless-local.json --runs {{ runs }} --warmups {{ warmups }}
 
 # Same scenarios as JSON for an accepted-report candidate.
 baseline-headless-json runs="5" warmups="1": build-release
-    node scripts/headless-baseline.mjs --binary target/release/vixen-headless --suite fixtures/performance/headless-local.json --runs {{runs}} --warmups {{warmups}} --json
+    node scripts/headless-baseline.mjs --binary target/release/vixen-headless --suite fixtures/performance/headless-local.json --runs {{ runs }} --warmups {{ warmups }} --json
 
 # Temporary explicit profile; N controls repeated and unique visits (1-50).
 baseline-profile-growth runs="5": build-release
-    node scripts/profile-growth-baseline.mjs --binary target/release/vixen-headless --runs {{runs}}
+    node scripts/profile-growth-baseline.mjs --binary target/release/vixen-headless --runs {{ runs }}
 
 # Headless-only structured artifact accounting; no Flatpak build required.
 size-headless: build-release
@@ -472,47 +432,47 @@ size-headless: build-release
 
 # Hermetic beta measurement foundation; intentionally not part of gate-push.
 baseline-beta runs="5" warmups="1": build-release
-    node scripts/headless-baseline.mjs --binary target/release/vixen-headless --suite fixtures/performance/headless-local.json --runs {{runs}} --warmups {{warmups}}
-    node scripts/profile-growth-baseline.mjs --binary target/release/vixen-headless --runs {{runs}}
+    node scripts/headless-baseline.mjs --binary target/release/vixen-headless --suite fixtures/performance/headless-local.json --runs {{ runs }} --warmups {{ warmups }}
+    node scripts/profile-growth-baseline.mjs --binary target/release/vixen-headless --runs {{ runs }}
     node scripts/artifact-size.mjs --headless target/release/vixen-headless
 
 # Release/AOT Flutter-only renderer measurement under headless Wayland. This
 # records exact-commit startup, capture, and app-process memory without budgets.
 baseline-flutter-linux runs="5" warmups="1":
-    just _baseline-flutter-linux {{runs}} {{warmups}} false software
+    just _baseline-flutter-linux {{ runs }} {{ warmups }} false software
 
 baseline-flutter-linux-json runs="5" warmups="1":
-    just _baseline-flutter-linux {{runs}} {{warmups}} true software
+    just _baseline-flutter-linux {{ runs }} {{ warmups }} true software
 
 baseline-flutter-linux-hardware runs="5" warmups="1":
-    just _baseline-flutter-linux {{runs}} {{warmups}} false hardware
+    just _baseline-flutter-linux {{ runs }} {{ warmups }} false hardware
 
 baseline-flutter-linux-hardware-json runs="5" warmups="1":
-    just _baseline-flutter-linux {{runs}} {{warmups}} true hardware
+    just _baseline-flutter-linux {{ runs }} {{ warmups }} true hardware
 
 _baseline-flutter-linux runs warmups json renderer: build-flutter-release-linux _node-deps
     command -v cage >/dev/null || { printf '%s\n' "cage is required for the Flutter Linux baseline" >&2; exit 1; }
     rm -rf .tmp/flutter-baseline-wayland && mkdir -m 700 -p .tmp/flutter-baseline-wayland
-    json_flag=""; if [ "{{json}}" = true ]; then json_flag="--json"; fi; \
-        if [ "{{renderer}}" = software ]; then export LIBGL_ALWAYS_SOFTWARE=1; else unset LIBGL_ALWAYS_SOFTWARE; fi; \
-        XDG_RUNTIME_DIR="{{justfile_directory()}}/.tmp/flutter-baseline-wayland" \
+    json_flag=""; if [ "{{ json }}" = true ]; then json_flag="--json"; fi; \
+        if [ "{{ renderer }}" = software ]; then export LIBGL_ALWAYS_SOFTWARE=1; else unset LIBGL_ALWAYS_SOFTWARE; fi; \
+        XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/flutter-baseline-wayland" \
         GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
         WLR_RENDERER=gles2 cage -- mise x node@24 -- \
         node scripts/flutter-linux-baseline.mjs \
-        --app {{LINUX_RELEASE_BUNDLE}}/vixen_shell \
-        --library {{LINUX_RELEASE_BUNDLE}}/lib/libvixen_ffi.so \
-        --runs {{runs}} --warmups {{warmups}} --renderer {{renderer}} $json_flag
+        --app {{ LINUX_RELEASE_BUNDLE }}/vixen_shell \
+        --library {{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so \
+        --runs {{ runs }} --warmups {{ warmups }} --renderer {{ renderer }} $json_flag
 
 build-release:
     cargo build --locked --release -p vixen-headless --bin vixen-headless
 
-# --- Local GNOME release builder ---------------------------------------------
+# --- Docker GNOME SDK release builder ----------------------------------------
 
-flutter-builder-update:
-    {{CONTAINER}} pull {{FLUTTER_BUILDER_IMAGE}}
+docker-builder-pull:
+    DOCKER={{ DOCKER }} bash scripts/docker-flutter.sh pull
 
-flutter-builder-shell:
-    {{CONTAINER}} run --rm -it -v {{justfile_directory()}}:/workspace:z -w /workspace {{FLUTTER_BUILDER_IMAGE}}
+docker-builder-shell:
+    DOCKER={{ DOCKER }} bash scripts/docker-flutter.sh shell
 
 # --- Audit (docs/ACCEPTANCE.md hard gate) ------------------------------------
 

@@ -278,16 +278,10 @@ final class BrowserWindowTitleBar extends StatelessWidget
 
   @override
   Widget build(BuildContext context) {
-    return YaruWindowTitleBar(
+    return Material(
       key: const Key('window-title-bar'),
-      style: YaruTitleBarStyle.normal,
-      centerTitle: false,
-      titleSpacing: 0,
-      closeSemanticLabel: 'Close Vixen',
-      maximizeSemanticLabel: 'Maximize Vixen',
-      minimizeSemanticLabel: 'Minimize Vixen',
-      restoreSemanticLabel: 'Restore Vixen',
-      title: _TabStrip(coordinator: coordinator),
+      color: Theme.of(context).colorScheme.surface,
+      child: _TabStrip(coordinator: coordinator),
     );
   }
 }

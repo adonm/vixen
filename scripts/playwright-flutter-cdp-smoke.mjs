@@ -12,16 +12,17 @@ const app = process.env.VIXEN_CDP_APP;
 const port = Number(process.env.VIXEN_CDP_PORT || 9323);
 const endpoint = `ws://127.0.0.1:${port}`;
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-const expectedDatasetBaseline = '08ad4b805cd6d2be56fae95dc70660206cdac94b1c0776d52b1d0eb03bd32dce';
-const expectedDatasetMutation = '4b8654191f7e9f4eb95486eb34bbb689d2153f4d2484cfaa617d2fb7075b1a24';
-const expectedClassListMutation = '5633ca7a032c8c6a1582f5389b6b4a594b91d99e89784683fbf3679f18639f95';
-const expectedRelListMutation = '7ae6e6d8f650d733922b1af018dfdcac310bdcbb4f14537cdb20500c44da3c04';
-const expectedSandboxMutation = '57b9814c22902e40fc38180d79a1a78068f1b15154f4149bef8fbea5b6cf05cb';
-const expectedInlineStyleMutation = 'b4fe0e2cdba9f98193e8dfc7aadb7fa892e508e269a4a94beb9c2970d8ce5096';
-const expectedAttributesMutation = '17cb0de692001fcb97dcab23c870b800e7e7c3b09010e312a0bbc64e496ec1ea';
-const expectedCssomMutation = 'b09bce0ee8acf5ac3b40a2190241a6592880a3e47615c030469b2a887d118f1d';
-const expectedAttributeOperationsMutation = '92181acffcd1e39ac9720c8edeeba2c148034a89f61297652dc948306f3af052';
-const expectedParserModuleMutation = 'faa3c863350c742bdeb38338bca09307a4db49e6f7bb7a3f4e6d73eef60ae2fa';
+const expectedDatasetBaseline = '83a8f12990f99d495a3fa21070a856b4e0d4f247403b259c7333e0dac28bddc0';
+const expectedDatasetMutation = '542850c1153039c63b6503809099ebf4ab2bc27f8d849e66a8d21ec214f316a9';
+const expectedClassListMutation = '4df77bd14e3e7174904c5f3faa4a586966cee1dbf391c45ae7f20b5d7fb7ac8b';
+const expectedRelListMutation = '273afffce9e38708ed239f5fe4f72af843fe44f052b78d37653a898a808a8d28';
+const expectedSandboxMutation = '93bfc5ab33599fa58d087276cc35767e706e63852326f0e38e96b88bac87e9e0';
+const expectedInlineStyleMutation = '722b3b2fd139c1f32f6b597a9c77349d49d7abd6d1b518be11bb2261a2b38465';
+const expectedAttributesMutation = '65d43a893b65c418b145527cdd50e997a6486fb0bb476efa482e19fb1c1f7537';
+const expectedCssomMutation = 'f9c7fa43801a53626e87329b48df74418380fd3bc353df3ea5f5309656de459e';
+const expectedAttributeOperationsMutation = '9d313fb1a05e2c77dc09a9082ecf960be5416ecd0e285e47667d954706796e45';
+const expectedParserModuleMutation = 'f018c2ca45f78b5e5c59d58dc35703e245d9466c80a1389c4275339f9017747d';
+const expectedSecondTarget = '2a61af752d0748bf9bfef7c7fa44cd815692faea06882cf65066cba739a5857a';
 
 function fail(message) {
   throw new Error(`playwright-flutter-cdp-smoke: ${message}`);
@@ -846,7 +847,14 @@ async function main() {
       });
     });
     const secondPng = await second.screenshot({ timeout: 20000 });
-    const secondInfo = assertCapture(secondPng, 480, 300, [202, 36, 104, 255], 'second target');
+    const secondInfo = assertCapture(
+      secondPng,
+      480,
+      300,
+      [202, 36, 104, 255],
+      'second target',
+      expectedSecondTarget,
+    );
     if (secondInfo.hash === afterParserModuleInfo.hash) fail('independent target captures were identical');
     const secondBox = await second.locator('#second').boundingBox({ timeout: 20000 });
     if (!secondBox) fail('second target has no Flutter commit geometry');

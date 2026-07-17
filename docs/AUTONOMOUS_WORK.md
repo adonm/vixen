@@ -40,8 +40,10 @@ The checked-in Linux Flutter slice uses an exact ignored SDK checkout and
 Rust/GTK checks as Flutter proof, or Dart/widget checks as Linux package proof.
 Platform work follows `ROADMAP.md` and `FLUTTER_SHELL.md`: ADR-022 R1–R8 are
 complete. Post-R7 compatibility/release/frame/GPU checkpoints and the real Linux
-Mozc plus AT-SPI role/state/bounds/action corridor are recorded. Keep those gates
-intact while A1 shared-core reductions proceed one proven host family at a time
+Mozc corridor are recorded. The GTK4 migration preserves process-filtered
+AT-SPI names/roles/states/positive local bounds and native-pointer focus, but the
+pinned engine exposes no AT-SPI Action interface. Keep the executable gates
+intact while shared-core reductions proceed one proven host family at a time
 before broader shell/platform expansion.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk

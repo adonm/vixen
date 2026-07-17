@@ -29,7 +29,7 @@ void main() {
     expect(find.byKey(const Key('reload-stop')), findsOneWidget);
     expect(find.byKey(const Key('new-tab')), findsOneWidget);
     expect(find.byKey(const Key('address-field')), findsOneWidget);
-    expect(find.byType(YaruWindowTitleBar), findsOneWidget);
+    expect(find.byKey(const Key('window-title-bar')), findsOneWidget);
     expect(find.byType(YaruIconButton), findsWidgets);
     expect(find.byKey(const Key('content-surface')), findsOneWidget);
     expect(find.text('Renderer commit unavailable'), findsOneWidget);

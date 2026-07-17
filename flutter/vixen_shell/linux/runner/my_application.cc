@@ -2,11 +2,10 @@
 
 #include <flutter_linux/flutter_linux.h>
 
-#include <atk/atk.h>
 #include <cstdio>
 
 #ifdef GDK_WINDOWING_WAYLAND
-#include <gdk/gdkwayland.h>
+#include <gdk/wayland/gdkwayland.h>
 #endif
 
 #include "flutter/generated_plugin_registrant.h"
@@ -15,63 +14,6 @@ namespace {
 
 constexpr int64_t kMaxDimension = 4096;
 constexpr size_t kMaxViewportBytes = 64U * 1024U * 1024U;
-
-FlView* accessibility_view = nullptr;
-decltype(AtkComponentIface::get_extents) flutter_node_get_extents = nullptr;
-
-void FlutterNodeGetExtents(AtkComponent* component,
-                           gint* x,
-                           gint* y,
-                           gint* width,
-                           gint* height,
-                           AtkCoordType coord_type) {
-  AtkObject* parent = atk_object_get_parent(ATK_OBJECT(component));
-  if (parent != nullptr &&
-      g_str_equal(G_OBJECT_TYPE_NAME(parent), "FlViewAccessible")) {
-    // Flutter 3.47 asks its non-component AtkPlug root for extents here. That
-    // re-enters the AT-SPI bridge and never returns, so terminate the recursive
-    // walk at the view-local root while retaining Flutter's descendant bounds.
-    if (x != nullptr) {
-      *x = 0;
-    }
-    if (y != nullptr) {
-      *y = 0;
-    }
-    if (width != nullptr) {
-      *width = accessibility_view == nullptr
-                   ? 0
-                   : gtk_widget_get_allocated_width(
-                         GTK_WIDGET(accessibility_view));
-    }
-    if (height != nullptr) {
-      *height = accessibility_view == nullptr
-                    ? 0
-                    : gtk_widget_get_allocated_height(
-                          GTK_WIDGET(accessibility_view));
-    }
-    return;
-  }
-  flutter_node_get_extents(component, x, y, width, height, coord_type);
-}
-
-void PatchFlutterNodeExtents(FlEngine*, gpointer, gpointer) {
-  GType accessible_type = g_type_from_name("FlAccessibleNode");
-  if (accessible_type == G_TYPE_INVALID) {
-    g_warning("Flutter node accessibility type is unavailable");
-    return;
-  }
-  gpointer accessible_class = g_type_class_ref(accessible_type);
-  auto* component_interface = static_cast<AtkComponentIface*>(
-      g_type_interface_peek(accessible_class, ATK_TYPE_COMPONENT));
-  if (component_interface == nullptr ||
-      component_interface->get_extents == nullptr) {
-    g_warning("Flutter node accessibility component is unavailable");
-  } else if (component_interface->get_extents != FlutterNodeGetExtents) {
-    flutter_node_get_extents = component_interface->get_extents;
-    component_interface->get_extents = FlutterNodeGetExtents;
-  }
-  g_type_class_unref(accessible_class);
-}
 
 bool HasDartArgument(char** arguments, const char* expected) {
   if (arguments == nullptr) {
@@ -126,7 +68,10 @@ G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
-  gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+  GtkRoot* root = gtk_widget_get_root(GTK_WIDGET(view));
+  if (root != nullptr) {
+    gtk_window_present(GTK_WINDOW(root));
+  }
 }
 
 // Implements GApplication::activate.
@@ -151,36 +96,29 @@ static void my_application_activate(GApplication* application) {
       gtk_window_set_default_size(window, width, height);
     }
   } else {
-    // Yaru hides this host header after its in-scene title bar initializes. Keep
-    // it as a native fallback if Dart or plugin startup fails.
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
-    gtk_widget_show(GTK_WIDGET(header_bar));
-    gtk_header_bar_set_title(header_bar, "Vixen");
-    gtk_header_bar_set_show_close_button(header_bar, TRUE);
+    gtk_header_bar_set_show_title_buttons(header_bar, TRUE);
+    gtk_header_bar_set_title_widget(header_bar, gtk_label_new("Vixen"));
     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
+    gtk_window_set_title(window, "Vixen");
     gtk_window_set_default_size(window, 1100, 820);
   }
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
-  // Flutter 3.47 beta contains Linux Impeller but its project default remains
-  // false in this release tag. Enable it explicitly for packaged and local
-  // runner launches rather than relying on a flutter-tool-only run flag.
   fl_dart_project_set_enable_impeller(project, TRUE);
   fl_dart_project_set_dart_entrypoint_arguments(
       project, self->dart_entrypoint_arguments);
 
   self->view = fl_view_new(project);
-  accessibility_view = self->view;
-  g_signal_connect(fl_view_get_engine(self->view), "update-semantics",
-                   G_CALLBACK(PatchFlutterNodeExtents), nullptr);
   fl_register_plugins(FL_PLUGIN_REGISTRY(self->view));
   GdkRGBA background_color;
   // Background defaults to black, override it here if necessary, e.g. #00000000
   // for transparent.
   gdk_rgba_parse(&background_color, "#000000");
   fl_view_set_background_color(self->view, &background_color);
-  gtk_widget_show(GTK_WIDGET(self->view));
-  gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(self->view));
+  gtk_widget_set_focusable(GTK_WIDGET(self->view), TRUE);
+  gtk_widget_set_visible(GTK_WIDGET(self->view), TRUE);
+  gtk_window_set_child(window, GTK_WIDGET(self->view));
 
   // Show the window when Flutter renders.
   // Requires the view to be realized so we can start rendering.
@@ -243,7 +181,6 @@ static void my_application_shutdown(GApplication* application) {
 // Implements GObject::dispose.
 static void my_application_dispose(GObject* object) {
   MyApplication* self = MY_APPLICATION(object);
-  accessibility_view = nullptr;
   g_clear_pointer(&self->dart_entrypoint_arguments, g_strfreev);
   G_OBJECT_CLASS(my_application_parent_class)->dispose(object);
 }

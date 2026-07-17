@@ -32,6 +32,7 @@
 # installed binaries reachable from `just audit` / `just fuzz-security`.
 [env]
 CARGO_HOME = "{{ config_root }}/.cargo"
+FLUTTER_PREBUILT_ENGINE_VERSION = "469f2b34de41cab5f677ba84d6e9099c0e682d1e"
 HK_MISE = "1"
 # `_.path` is mise's dedicated PATH-prepend directive. Each entry is pushed
 # in front of the inherited PATH, so the workspace's binstalled tooling
@@ -55,19 +56,16 @@ cargo-binstall = "1.20.1"
 # browser binaries are downloaded; the script connects to Vixen's CDP endpoint.
 node = "24.18.0"
 
-# Latest Flutter beta with Linux Impeller support. This deliberately uses the
-# official Linux x64 archive rather than mise's stable-only Flutter registry.
-[tools."http:flutter-beta"]
-version = "3.47.0-0.1.pre"
-strip_components = 0
-bin_path = "flutter/bin"
+# Immutable flutter-dev SDK with the GTK4 Linux embedder and Dart 3.14.
+[tools."http:flutter"]
+version = "3.47.0-1.0.pre-160"
 
-[tools."http:flutter-beta".platforms]
-linux-x64 = { url = "https://storage.googleapis.com/flutter_infra_release/releases/beta/linux/flutter_linux_3.47.0-0.1.pre-beta.tar.xz", checksum = "sha256:2cf72c1bc8571f406dfb7a0b3d8128abd4f43d2c335d2ed76249fe492c0d7c34", size = "1569091352" }
+[tools."http:flutter".platforms]
+linux-x64 = { url = "https://github.com/adonm/flutter-dev/releases/download/flutter-sdk-328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188/flutter-linux-x64-328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188.tar.xz", checksum = "sha256:b6e95c97348bebd1f129db1f1cbfb7a4a8f6481839ebe80d3eb746e102336bb9" }
 
 # --- Linux release builder --------------------------------------------------
-# The host does not need GNOME development packages. Local release builds use
-# the pinned GNOME 50 builder image (`just flutter-builder-update`), and
+# The host does not need GTK4 development packages. Local and CI release builds
+# use the pinned Docker image (`just docker-builder-pull`), and
 # FlatPark repackages the resulting official GitHub Release archive.
 
 # --- Imperative project bootstrap -------------------------------------------

@@ -1,7 +1,6 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:yaru/yaru.dart';
 
 import 'src/app/vixen_app.dart';
 import 'src/automation/automation_app.dart';
@@ -57,7 +56,6 @@ Future<void> main(List<String> arguments) async {
     );
     return;
   }
-  await YaruWindowTitleBar.ensureInitialized();
   runApp(
     VixenApp(
       coordinator: ShellCoordinator(

@@ -14,8 +14,8 @@ import {
 
 test('Flutter Linux baseline arguments are bounded', () => {
   assert.deepEqual(parseFlutterLinuxBaselineArgs([]), {
-    app: 'flutter/vixen_shell/build/linux/x64/release/bundle/vixen_shell',
-    library: 'flutter/vixen_shell/build/linux/x64/release/bundle/lib/libvixen_ffi.so',
+    app: 'flutter/vixen_shell/build/linux-gtk4/x64/release/bundle/vixen_shell',
+    library: 'flutter/vixen_shell/build/linux-gtk4/x64/release/bundle/lib/libvixen_ffi.so',
     runs: 5,
     warmups: 1,
     port: 9324,

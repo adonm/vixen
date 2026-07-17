@@ -85,10 +85,10 @@ calling that single recipe.
 ### GUI shell environment blockers
 
 The Linux Flutter project and focused gate are checked in. Install the exact
-Flutter 3.47.0-0.1.pre beta archive declared in `.mise.toml`, then run its gate.
-The beta pin is deliberate for required Linux Impeller support; do not replace it
-with a stable SDK or accept a Skia-backed smoke without updating the renderer
-decision and evidence:
+Flutter `3.47.0-1.0.pre-160` flutter-dev archive declared in `.mise.toml`, then
+run its gate. The pin supplies Dart 3.14, the GTK4 Linux embedder, and required
+Linux Impeller support; do not replace it with another SDK or accept a
+Skia-backed smoke without updating the renderer decision and evidence:
 
 ```sh
 just setup-flutter
@@ -96,37 +96,42 @@ just gate-flutter-shell
 ```
 
 `just build-flutter-linux` and `just run-flutter` additionally need CMake, Ninja,
-pkg-config, and GTK 3 development headers. Missing host packages are an
+pkg-config, and GTK4 development headers. Missing host packages are an
 environment limitation; they do not turn Rust or Dart-only checks into Linux
 bundle proof. The debug bundle has been reproduced in a Fedora 43 container.
 The Linux runner requires native Wayland. `just run-flutter-cage` additionally
 uses Cage with wlroots' headless backend for isolated local Wayland testing;
 X11 and XWayland are intentionally unsupported.
 
-The released Linux shell is Flutter. Local release builds use **Podman + the
-pinned GNOME builder image**; CI builds the same release shape on Ubuntu 24.04.
+The released Linux shell is Flutter. Local and CI release builds use the same
+plain Docker workflow and digest-pinned GNOME builder image. CI runs host-only
+Wayland, IME, AT-SPI, and archive smoke checks on Ubuntu 24.04.
 Flutter is the sole rendered frontend target; the Rust workspace has no GTK4/
 libadwaita/Relm4 feature or fallback GUI. `just check` and `just clippy` cover
 every Rust target and feature without GNOME development packages. Verify Linux
 Flutter release changes with:
 
 ```sh
-just flutter-builder-update
+just docker-builder-pull
 just linux-release-prefetch
 just linux-release-smoke
 just linux-at-spi-smoke
 just linux-interaction-smoke
 ```
 
-Native GTK3 development packages are needed only for direct host Flutter Linux
+Native GTK4 development packages are needed only for direct host Flutter Linux
 builds; the pinned release container supplies them for official archive work.
+`scripts/docker-flutter.sh` uses only `docker pull`, `docker image inspect`, and
+`docker run`: prefetch is network-capable, release/size builds use
+`--network=none`, the source mount is read-only, and no host Flutter/Rust
+toolchain is mounted.
 
 GitHub Releases publish the deterministic x86_64 archive built with the
-SHA-256-pinned official Flutter 3.47.0-0.1.pre beta, locked application/Cargo
-dependencies, and pinned rusty_v8 input. FlatPark repackages those bytes as a
-signed convenience Flatpak. Flutter's Linux embedder uses GTK, so migration
-does not imply a GTK-free runtime; direct GTK code remains limited to Flutter's
-native runner boundary.
+SHA-256-pinned flutter-dev GTK4 SDK, locked application/Cargo dependencies, and
+pinned rusty_v8 input. FlatPark repackages those bytes as a signed convenience
+Flatpak. The release validator rejects GTK3 linkage and verifies the immutable
+GTK4 engine hash; direct GTK code remains limited to Flutter's native runner
+boundary.
 
 The safe Rust controller and handwritten C ABI can be developed without Flutter
 installed:

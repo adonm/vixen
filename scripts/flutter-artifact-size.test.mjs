@@ -13,7 +13,7 @@ async function writeBundle(root, { vixen = false, engine = 'engine', forbidden =
   await mkdir(join(root, 'lib'), { recursive: true });
   await mkdir(join(root, 'data', 'flutter_assets'), { recursive: true });
   await writeFile(join(root, vixen ? 'vixen_shell' : 'vixen_hello'), 'runner');
-  await writeFile(join(root, 'lib', 'libflutter_linux_gtk.so'), engine);
+  await writeFile(join(root, 'lib', 'libflutter_linux_gtk4.so'), engine);
   await writeFile(join(root, 'lib', 'libapp.so'), vixen ? 'vixen-aot' : 'hello-aot');
   await writeFile(join(root, 'data', 'icudtl.dat'), 'icu');
   await writeFile(join(root, 'data', 'flutter_assets', 'AssetManifest.bin'), 'assets');
@@ -61,7 +61,7 @@ test('release bundle comparison attributes a deterministic hello delta', async (
 
 test('comparison rejects mismatched shared Flutter artifacts', async (t) => {
   const { hello, vixen } = await fixture(t);
-  await writeFile(join(vixen, 'lib', 'libflutter_linux_gtk.so'), 'different');
+  await writeFile(join(vixen, 'lib', 'libflutter_linux_gtk4.so'), 'different');
   await assert.rejects(
     analyzeFlutterBundles({ helloBundle: hello, vixenBundle: vixen, metadata }),
     /shared Flutter artifact differs/,
