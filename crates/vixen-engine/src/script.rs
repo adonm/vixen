@@ -28,6 +28,7 @@ use crate::storage_key::{StorageKind, StoragePartition};
 mod cssom;
 mod dom;
 mod encoding;
+mod module_loader;
 mod runtime;
 mod webapi;
 mod webidl;
@@ -48,6 +49,7 @@ pub struct JsRuntime {
     permission_overrides: webapi::PermissionOverrides,
     runtime_network_state: webapi::RuntimeNetworkState,
     runtime_interrupt: RuntimeInterruptHandle,
+    module_loader: module_loader::PageModuleLoader,
     runtime: Option<deno_core::JsRuntime>,
     dom_mutations: Option<dom::DomMutationSink>,
     synchronous_layout: Option<SynchronousLayoutConfig>,
@@ -69,6 +71,16 @@ pub(crate) struct SynchronousLayoutConfig {
     document_id: vixen_api::DocumentId,
     view: Rc<Cell<RenderViewState>>,
     renderer: std::sync::Arc<dyn crate::browser::SynchronousRenderer>,
+}
+
+struct JsRuntimeStorageConfig<'a> {
+    storage_temp_path: Option<PathBuf>,
+    storage_session_id: Option<String>,
+    record_visits_on_realm: bool,
+    initial_page: Option<&'a Page>,
+    synchronous_layout: Option<SynchronousLayoutConfig>,
+    module_request_ids: Option<crate::browser::SharedRequestIdAllocator>,
+    module_executor: Option<std::sync::Arc<tokio::runtime::Runtime>>,
 }
 
 impl SynchronousLayoutConfig {
@@ -102,7 +114,10 @@ pub(crate) struct PageScriptRunner {
 pub(crate) enum PreparedPageScript {
     Skip,
     Inline(String),
-    InlineModule { source: String, specifier: url::Url },
+    InlineModule {
+        source: String,
+        request: ExternalPageScript,
+    },
     External(ExternalPageScript),
 }
 
@@ -151,6 +166,35 @@ impl ExternalPageScript {
 
     pub(crate) fn is_module(&self) -> bool {
         self.module
+    }
+
+    pub(crate) fn with_url(&self, url: url::Url) -> Self {
+        let mut request = self.clone();
+        request.url = url;
+        request
+    }
+
+    fn module_dependency(&self, url: url::Url) -> Result<Self, &'static str> {
+        if !self.module {
+            return Err("module-policy");
+        }
+        let request = Self {
+            url,
+            csp: self.csp.clone(),
+            origin: self.origin.clone(),
+            nonce: None,
+            context_trustworthy: self.context_trustworthy,
+            module: true,
+        };
+        if let Some(reason) = request.blocked_reason(&request.url) {
+            return Err(reason);
+        }
+        let same_origin = vixen_net::Origin::from_url(&request.url) == self.origin;
+        let same_file_origin = self.url.scheme() == "file" && request.url.scheme() == "file";
+        if !same_origin && !same_file_origin {
+            return Err("cors");
+        }
+        Ok(request)
     }
 }
 
@@ -318,11 +362,15 @@ impl JsRuntime {
         Self::with_storage_backend(
             network_config,
             storage_backend,
-            storage_temp_path,
-            None,
-            true,
-            None,
-            None,
+            JsRuntimeStorageConfig {
+                storage_temp_path,
+                storage_session_id: None,
+                record_visits_on_realm: true,
+                initial_page: None,
+                synchronous_layout: None,
+                module_request_ids: None,
+                module_executor: None,
+            },
         )
     }
 
@@ -354,11 +402,15 @@ impl JsRuntime {
         Self::with_storage_backend(
             network_config,
             storage_backend,
-            None,
-            None,
-            true,
-            None,
-            None,
+            JsRuntimeStorageConfig {
+                storage_temp_path: None,
+                storage_session_id: None,
+                record_visits_on_realm: true,
+                initial_page: None,
+                synchronous_layout: None,
+                module_request_ids: None,
+                module_executor: None,
+            },
         )
     }
 
@@ -370,15 +422,21 @@ impl JsRuntime {
         store: std::sync::Arc<vixen_store::Store>,
         storage_session_id: String,
         page: &Page,
+        module_request_ids: crate::browser::SharedRequestIdAllocator,
+        module_executor: std::sync::Arc<tokio::runtime::Runtime>,
     ) -> Result<Self, EngineError> {
         Self::with_storage_backend(
             network_config,
             webapi::WebStorageBackend::from_store(store),
-            None,
-            Some(storage_session_id),
-            false,
-            Some(page),
-            None,
+            JsRuntimeStorageConfig {
+                storage_temp_path: None,
+                storage_session_id: Some(storage_session_id),
+                record_visits_on_realm: false,
+                initial_page: Some(page),
+                synchronous_layout: None,
+                module_request_ids: Some(module_request_ids),
+                module_executor: Some(module_executor),
+            },
         )
     }
 
@@ -387,29 +445,40 @@ impl JsRuntime {
         store: std::sync::Arc<vixen_store::Store>,
         storage_session_id: String,
         synchronous_layout: SynchronousLayoutConfig,
+        module_request_ids: crate::browser::SharedRequestIdAllocator,
+        module_executor: std::sync::Arc<tokio::runtime::Runtime>,
     ) -> Result<Self, EngineError> {
         let page = Rc::clone(&synchronous_layout.page);
         let page_ref = page.borrow();
         Self::with_storage_backend(
             network_config,
             webapi::WebStorageBackend::from_store(store),
-            None,
-            Some(storage_session_id),
-            false,
-            Some(&page_ref),
-            Some(synchronous_layout),
+            JsRuntimeStorageConfig {
+                storage_temp_path: None,
+                storage_session_id: Some(storage_session_id),
+                record_visits_on_realm: false,
+                initial_page: Some(&page_ref),
+                synchronous_layout: Some(synchronous_layout),
+                module_request_ids: Some(module_request_ids),
+                module_executor: Some(module_executor),
+            },
         )
     }
 
     fn with_storage_backend(
         network_config: vixen_net::NetworkConfig,
         storage_backend: webapi::WebStorageBackend,
-        storage_temp_path: Option<PathBuf>,
-        storage_session_id: Option<String>,
-        record_visits_on_realm: bool,
-        initial_page: Option<&Page>,
-        synchronous_layout: Option<SynchronousLayoutConfig>,
+        config: JsRuntimeStorageConfig<'_>,
     ) -> Result<Self, EngineError> {
+        let JsRuntimeStorageConfig {
+            storage_temp_path,
+            storage_session_id,
+            record_visits_on_realm,
+            initial_page,
+            synchronous_layout,
+            module_request_ids,
+            module_executor,
+        } = config;
         let storage_session_id = storage_session_id.unwrap_or_else(next_storage_session_id);
         let storage_opaque_serial = 1;
         let extra_http_headers = webapi::ExtraHttpHeaders::default();
@@ -417,6 +486,14 @@ impl JsRuntime {
         let permission_overrides = webapi::PermissionOverrides::default();
         let runtime_network_state = webapi::RuntimeNetworkState::default();
         let runtime_interrupt = RuntimeInterruptHandle::default();
+        let module_loader = module_loader::PageModuleLoader::new(
+            network_config.clone(),
+            storage_backend.clone(),
+            runtime_network_state.clone(),
+            cache_disabled.clone(),
+            module_request_ids,
+            module_executor,
+        );
         let init = runtime::new_deno_runtime(
             initial_page,
             runtime::DenoRuntimeConfig {
@@ -433,6 +510,7 @@ impl JsRuntime {
                 permission_overrides: permission_overrides.clone(),
                 interrupt: runtime_interrupt.clone(),
                 synchronous_layout: synchronous_layout.clone(),
+                module_loader: module_loader.clone(),
             },
         )?;
         let realm_key = initial_page
@@ -451,6 +529,7 @@ impl JsRuntime {
             permission_overrides,
             runtime_network_state,
             runtime_interrupt,
+            module_loader,
             runtime: Some(init.runtime),
             dom_mutations: init.dom_mutations,
             synchronous_layout,
@@ -548,11 +627,11 @@ impl JsRuntime {
     fn evaluate_module_with_page_mut(
         &mut self,
         source: &str,
-        specifier: &url::Url,
+        request: &ExternalPageScript,
         page: &mut Page,
     ) -> Result<(), EngineError> {
         self.ensure_realm(Some(&*page))?;
-        if let Err(error) = self.execute_module_in_current_realm(source, specifier) {
+        if let Err(error) = self.execute_module_in_current_realm(source, request) {
             self.discard_dom_mutations();
             return Err(error);
         }
@@ -624,14 +703,14 @@ impl JsRuntime {
     pub(crate) fn evaluate_module_with_shared_page_mut(
         &mut self,
         source: &str,
-        specifier: &url::Url,
+        request: &ExternalPageScript,
         page: &Rc<RefCell<Page>>,
     ) -> Result<(), EngineError> {
         {
             let page = page.borrow();
             self.ensure_realm(Some(&page))?;
         }
-        if let Err(error) = self.execute_module_in_current_realm(source, specifier) {
+        if let Err(error) = self.execute_module_in_current_realm(source, request) {
             self.discard_dom_mutations();
             return Err(error);
         }
@@ -746,17 +825,16 @@ impl JsRuntime {
                     self.evaluate_with_page_mut(&source, page)?;
                     executed += 1;
                 }
-                PreparedPageScript::InlineModule { source, specifier } => {
-                    self.evaluate_module_with_page_mut(&source, &specifier, page)?;
+                PreparedPageScript::InlineModule { source, request } => {
+                    self.evaluate_module_with_page_mut(&source, &request, page)?;
                     executed += 1;
                 }
                 PreparedPageScript::External(request) => {
                     let module = request.is_module();
-                    let specifier = request.url().clone();
                     if let Some(source) = load_external_page_script(&self.network_config, &request)?
                     {
                         if module {
-                            self.evaluate_module_with_page_mut(&source, &specifier, page)?;
+                            self.evaluate_module_with_page_mut(&source, &request, page)?;
                         } else {
                             self.evaluate_with_page_mut(&source, page)?;
                         }
@@ -894,8 +972,12 @@ impl JsRuntime {
 
     /// Drain fetch() network lifecycle events recorded in the current realm.
     pub fn drain_network_events(&mut self) -> Result<Vec<JsNetworkEvent>, EngineError> {
+        let mut events = self
+            .module_loader
+            .drain_events()
+            .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
         let Some(runtime) = self.runtime.as_mut() else {
-            return Ok(Vec::new());
+            return Ok(events);
         };
         let result = runtime::execute_script_immediate(
             runtime,
@@ -904,8 +986,11 @@ impl JsRuntime {
             &self.runtime_interrupt,
         )?;
         match runtime::js_value_from_global(runtime, result)? {
-            JsValue::String(json) => parse_network_events(&json),
-            _ => Ok(Vec::new()),
+            JsValue::String(json) => {
+                events.extend(parse_network_events(&json)?);
+                Ok(events)
+            }
+            _ => Ok(events),
         }
     }
 
@@ -960,12 +1045,15 @@ impl JsRuntime {
     fn execute_module_in_current_realm(
         &mut self,
         source: &str,
-        specifier: &url::Url,
+        request: &ExternalPageScript,
     ) -> Result<(), EngineError> {
+        self.module_loader
+            .begin_graph(request.clone())
+            .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
         let runtime = self.runtime.as_mut().expect("realm initialised");
         runtime::execute_module(
             runtime,
-            specifier.clone(),
+            request.url().clone(),
             source.to_owned(),
             &self.runtime_interrupt,
         )
@@ -996,6 +1084,7 @@ impl JsRuntime {
                     permission_overrides: self.permission_overrides.clone(),
                     interrupt: self.runtime_interrupt.clone(),
                     synchronous_layout: self.synchronous_layout.clone(),
+                    module_loader: self.module_loader.clone(),
                 },
             )?;
             self.runtime = Some(init.runtime);
@@ -1188,7 +1277,19 @@ impl PageScriptRunner {
                     )));
                     PreparedPageScript::InlineModule {
                         source: script.source,
-                        specifier,
+                        request: ExternalPageScript {
+                            url: specifier,
+                            csp: (!self.bypass_csp).then(|| self.csp.clone()),
+                            origin: self.origin.clone(),
+                            nonce: None,
+                            context_trustworthy: url::Url::parse(page.url())
+                                .ok()
+                                .as_ref()
+                                .is_some_and(
+                                    vixen_net::referrer_policy::is_potentially_trustworthy,
+                                ),
+                            module: true,
+                        },
                     }
                 }
                 DocumentScriptItem::ExternalModuleScript(script) => {
@@ -1831,6 +1932,7 @@ impl Default for JsRuntime {
 impl Drop for JsRuntime {
     fn drop(&mut self) {
         self.runtime = None;
+        self.module_loader.shutdown();
         self.storage_backend = webapi::WebStorageBackend::memory();
         if let Some(path) = self.storage_temp_path.take() {
             let _ = std::fs::remove_file(path);
@@ -5476,6 +5578,92 @@ mod tests {
         );
         assert_eq!(
             rt.evaluate_with_page("1 + 1", &unresolved).unwrap(),
+            JsValue::Int32(2)
+        );
+    }
+
+    #[test]
+    fn static_module_dependencies_use_bounded_file_graph_loader() {
+        let directory = std::env::temp_dir().join(format!(
+            "vixen-module-graph-{}-{}",
+            std::process::id(),
+            next_storage_session_id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("nested.js"),
+            "globalThis.__moduleLoads = (globalThis.__moduleLoads || 0) + 1; export const value = 41;",
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("dependency.js"),
+            "import { value } from './nested.js'; export const answer = value + 1;",
+        )
+        .unwrap();
+        let page_url = url::Url::from_file_path(directory.join("page.html"))
+            .unwrap()
+            .to_string();
+        let mut page = Page::from_html(
+            page_url,
+            "<title>initial</title><script type='module'>import { answer } from './dependency.js'; globalThis.__moduleAnswer = answer; document.title = `module-${answer}`;</script>",
+        )
+        .unwrap();
+        let mut runtime = JsRuntime::new().unwrap();
+
+        assert_eq!(runtime.execute_page_scripts(&mut page).unwrap(), 1);
+        assert_eq!(
+            runtime
+                .evaluate_with_page("`${__moduleAnswer}:${__moduleLoads}`", &page)
+                .unwrap(),
+            JsValue::String("42:1".to_owned())
+        );
+        assert_eq!(page.document().title().as_deref(), Some("module-42"));
+        let events = runtime.drain_network_events().unwrap();
+        let request_ids = events
+            .iter()
+            .filter_map(|event| match event {
+                JsNetworkEvent::Request { request_id, .. } => Some(request_id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(request_ids.len(), 2);
+        assert_ne!(request_ids[0], request_ids[1]);
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, JsNetworkEvent::Response { status: 200, .. }))
+                .count(),
+            2
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn cross_origin_module_dependency_fails_closed_with_network_diagnostic() {
+        let mut page = Page::from_html(
+            "https://module-origin.example/page.html",
+            "<script type='module' nonce='allowed'>import 'https://cross-origin.example/dependency.js';</script>",
+        )
+        .unwrap();
+        let mut runtime = JsRuntime::new().unwrap();
+
+        assert_eq!(
+            runtime.execute_page_scripts(&mut page).unwrap_err().code(),
+            codes::SCRIPT_EVAL
+        );
+        assert!(runtime.drain_network_events().unwrap().iter().any(|event| {
+            matches!(
+                event,
+                JsNetworkEvent::Failure {
+                    url,
+                    blocked_reason: Some(reason),
+                    ..
+                } if url == "https://cross-origin.example/dependency.js" && reason == "cors"
+            )
+        }));
+        assert_eq!(
+            runtime.evaluate_with_page("1 + 1", &page).unwrap(),
             JsValue::Int32(2)
         );
     }

@@ -197,6 +197,9 @@ explicit until promoted by measured tests.
 
 - `vixen-net` policy and transport tests are green, including URL/private-host,
   cookies, CSP, CORS, mixed content, referrer, integrity, nosniff, and cache rules.
+- Static ES-module dependencies use the shared external-resource boundary with
+  BrowserCore request ids, redirects/final URLs, policy, profile cookies/cache,
+  bounded diagnostics, graph limits, and cancellation before V8 evaluation.
 - Policy runs before resource bytes/handles cross to Flutter.
 - redb profile tables preserve partitioning, bounds, recovery, clear-data, and
   reopen behavior.

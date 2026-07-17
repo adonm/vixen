@@ -232,8 +232,13 @@ classics with per-script/module/task microtask checkpoints, top-level await,
 bounded real task queues, cancellation, and post-load pumping. Its module-owned
 120×32 target agrees with CDP and exact Flutter pixels at
 `faa3c863350c742bdeb38338bca09307a4db49e6f7bb7a3f4e6d73eef60ae2fa`.
-Unresolved module imports fail closed until A2 owns dependency loading. Child
-frame globals/documents remain unavailable rather than fabricated until A3.
+The first A2 extension imports a real file dependency in that same rendered
+corridor. Same-origin/file static dependency graphs now share BrowserCore
+request ids, redirect/final-URL policy, profile cookies/cache writes, bounded
+diagnostics, and stop cancellation while preserving the exact scene hash.
+Cross-origin CORS graphs, cache reads/revalidation, import maps, dynamic
+`import()`, and import attributes still fail closed. Child frame globals and
+documents remain unavailable rather than fabricated until A3.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,

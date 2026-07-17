@@ -44,7 +44,9 @@ Mozc corridor are recorded. The GTK4 migration preserves process-filtered
 AT-SPI names/roles/states/positive local bounds and native-pointer focus, but the
 pinned engine exposes no AT-SPI Action interface. Keep the executable gates
 intact while shared-core reductions proceed one proven host family at a time
-before broader shell/platform expansion.
+before broader shell/platform expansion. A2 static same-origin/file module
+dependency graphs now use the shared resource loader; continue that family with
+cross-origin CORS, cache reads/revalidation, import maps, and dynamic imports.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

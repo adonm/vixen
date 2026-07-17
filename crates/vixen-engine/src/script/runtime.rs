@@ -4,6 +4,7 @@
 
 use std::future::Future;
 use std::pin::Pin;
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Waker};
@@ -40,6 +41,7 @@ pub(super) struct DenoRuntimeConfig {
     pub(super) permission_overrides: webapi::PermissionOverrides,
     pub(super) interrupt: RuntimeInterruptHandle,
     pub(super) synchronous_layout: Option<super::SynchronousLayoutConfig>,
+    pub(super) module_loader: super::module_loader::PageModuleLoader,
 }
 
 #[derive(Clone, Default)]
@@ -202,6 +204,7 @@ pub(super) fn new_deno_runtime(
 
     let runtime = DenoJsRuntime::try_new(RuntimeOptions {
         extensions,
+        module_loader: Some(Rc::new(config.module_loader)),
         ..Default::default()
     })
     .map_err(|err| EngineError::Other {

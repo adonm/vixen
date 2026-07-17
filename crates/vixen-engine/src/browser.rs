@@ -662,7 +662,7 @@ struct BrowserCore {
     network_config: NetworkConfig,
     network: Network,
     cookies: CookieJar,
-    network_runtime: Option<tokio::runtime::Runtime>,
+    network_runtime: Option<Arc<tokio::runtime::Runtime>>,
     pending_load_starts: Vec<tokio::sync::oneshot::Sender<()>>,
     pending_navigation_work: VecDeque<(BrowsingContextId, NavigationId)>,
     document_overrides: BTreeMap<String, String>,
@@ -827,14 +827,48 @@ enum NavigationTerminal {
     },
 }
 
-#[derive(Default)]
 struct IdAllocator {
     next_context: u64,
     next_frame: u64,
     next_navigation: u64,
     next_document: u64,
-    next_request: u64,
+    request: SharedRequestIdAllocator,
     next_runtime: u64,
+}
+
+#[derive(Clone)]
+pub(crate) struct SharedRequestIdAllocator(Arc<AtomicU64>);
+
+impl SharedRequestIdAllocator {
+    fn new() -> Self {
+        Self(Arc::new(AtomicU64::new(1)))
+    }
+
+    pub(crate) fn next_string(&self) -> Result<String, String> {
+        self.request()
+            .map(|request_id| request_id.to_string())
+            .map_err(|error| error.to_string())
+    }
+
+    fn request(&self) -> Result<RequestId, BrowserError> {
+        let raw = self
+            .0
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| {
+                BrowserError::new(
+                    browser_error_codes::ID_EXHAUSTED,
+                    "browser request id space is exhausted",
+                )
+            })?;
+        RequestId::new(raw).ok_or_else(|| {
+            BrowserError::new(
+                browser_error_codes::ID_EXHAUSTED,
+                "browser request id allocation produced zero",
+            )
+        })
+    }
 }
 
 impl IdAllocator {
@@ -844,7 +878,7 @@ impl IdAllocator {
             next_frame: 1,
             next_navigation: 1,
             next_document: 1,
-            next_request: 1,
+            request: SharedRequestIdAllocator::new(),
             next_runtime: 1,
         }
     }
@@ -865,8 +899,8 @@ impl IdAllocator {
         next_typed_id(&mut self.next_document, DocumentId::new)
     }
 
-    fn request(&mut self) -> Result<RequestId, BrowserError> {
-        next_typed_id(&mut self.next_request, RequestId::new)
+    fn request(&self) -> Result<RequestId, BrowserError> {
+        self.request.request()
     }
 
     fn runtime(&mut self) -> Result<RuntimeContextId, BrowserError> {
@@ -943,7 +977,7 @@ struct ExternalImageLoadCompletion {
     cookie_delta: CookieJarDelta,
 }
 
-enum LoadedExternalResource {
+pub(crate) enum LoadedExternalResource {
     File {
         final_url: url::Url,
         body: Vec<u8>,
@@ -954,14 +988,14 @@ enum LoadedExternalResource {
     },
 }
 
-struct ExternalResourceLoadFailure {
-    error: BrowserError,
-    url: String,
-    events: Vec<NetworkEvent>,
-    blocked_reason: &'static str,
+pub(crate) struct ExternalResourceLoadFailure {
+    pub(crate) error: BrowserError,
+    pub(crate) url: String,
+    pub(crate) events: Vec<NetworkEvent>,
+    pub(crate) blocked_reason: &'static str,
 }
 
-trait ExternalResourceRequest: Clone + Send + 'static {
+pub(crate) trait ExternalResourceRequest: Clone + Send + 'static {
     fn url(&self) -> &url::Url;
     fn blocked_reason(&self, url: &url::Url) -> Option<&'static str>;
     fn is_cross_site(&self, url: &url::Url) -> bool;
@@ -1031,7 +1065,9 @@ impl Drop for BrowserCore {
         while let Some(slot) = self.runtime_slots.pop() {
             drop(slot);
         }
-        if let Some(runtime) = self.network_runtime.take() {
+        if let Some(runtime) = self.network_runtime.take()
+            && let Ok(runtime) = Arc::try_unwrap(runtime)
+        {
             runtime.shutdown_timeout(Duration::from_secs(1));
         }
     }
@@ -1092,7 +1128,7 @@ impl BrowserCore {
             network_config: config.network,
             network,
             cookies: CookieJar::default(),
-            network_runtime: Some(network_runtime),
+            network_runtime: Some(Arc::new(network_runtime)),
             pending_load_starts: Vec::new(),
             pending_navigation_work: VecDeque::new(),
             document_overrides: config.document_overrides,
@@ -1678,6 +1714,12 @@ impl BrowserCore {
                     Rc::clone(&render_view),
                     renderer,
                 ),
+                self.ids.request.clone(),
+                Arc::clone(
+                    self.network_runtime
+                        .as_ref()
+                        .expect("source runtime is available"),
+                ),
             )
         } else {
             JsRuntime::with_browser_storage(
@@ -1685,6 +1727,12 @@ impl BrowserCore {
                 Arc::clone(&self.store),
                 format!("context-{}", context_id.get()),
                 &page.borrow(),
+                self.ids.request.clone(),
+                Arc::clone(
+                    self.network_runtime
+                        .as_ref()
+                        .expect("source runtime is available"),
+                ),
             )
         }
         .map_err(engine_error)?;
@@ -2151,6 +2199,12 @@ impl BrowserCore {
                     Rc::clone(&render_view),
                     renderer,
                 ),
+                self.ids.request.clone(),
+                Arc::clone(
+                    self.network_runtime
+                        .as_ref()
+                        .expect("source runtime is available"),
+                ),
             )
         } else {
             JsRuntime::with_browser_storage(
@@ -2158,6 +2212,12 @@ impl BrowserCore {
                 Arc::clone(&self.store),
                 format!("context-{}", context_id.get()),
                 &page.borrow(),
+                self.ids.request.clone(),
+                Arc::clone(
+                    self.network_runtime
+                        .as_ref()
+                        .expect("source runtime is available"),
+                ),
             )
         };
         let mut runtime = match runtime_result {
@@ -2581,7 +2641,6 @@ impl BrowserCore {
             );
             return;
         };
-
         let commit_result = persist_profile_cookies(&self.store, &requested_urls, &cookie_delta)
             .map_err(script_error)
             .and_then(|()| {
@@ -3069,10 +3128,10 @@ impl BrowserCore {
                         ),
                         NavigationScriptStep::Author(PreparedPageScript::InlineModule {
                             source,
-                            specifier,
+                            request,
                         }) => Some(runtime.evaluate_module_with_shared_page_mut(
                             &source,
-                            &specifier,
+                            &request,
                             &context.page,
                         )),
                         NavigationScriptStep::Author(PreparedPageScript::Skip) => Some(Ok(())),
@@ -3261,17 +3320,24 @@ impl BrowserCore {
             network: external_resource_network_events(key.request_id, &request_url, &result),
             ..RuntimeEffects::default()
         };
-        let (source, blocked, requested_urls, cache_response) = match result {
+        let (source, source_url, blocked, requested_urls, cache_response) = match result {
             Ok(LoadedExternalResource::File { final_url, body }) => {
                 if pending.request.allows_url(&final_url) {
                     (
                         Some(String::from_utf8_lossy(&body).into_owned()),
+                        Some(final_url),
                         None,
                         Vec::new(),
                         None,
                     )
                 } else {
-                    (None, Some((final_url.to_string(), "csp")), Vec::new(), None)
+                    (
+                        None,
+                        None,
+                        Some((final_url.to_string(), "csp")),
+                        Vec::new(),
+                        None,
+                    )
                 }
             }
             Ok(LoadedExternalResource::Http {
@@ -3285,12 +3351,14 @@ impl BrowserCore {
                 {
                     (
                         None,
+                        None,
                         Some((response.final_url, "csp")),
                         requested_urls,
                         None,
                     )
                 } else if !script_response_allowed_bytes(&response) {
                     (
+                        None,
                         None,
                         Some((response.final_url, "response-policy")),
                         requested_urls,
@@ -3299,13 +3367,14 @@ impl BrowserCore {
                 } else {
                     (
                         Some(String::from_utf8_lossy(&response.body).into_owned()),
+                        final_url,
                         None,
                         requested_urls,
                         Some(response),
                     )
                 }
             }
-            Err(_) => (None, None, Vec::new(), None),
+            Err(_) => (None, None, None, Vec::new(), None),
         };
         if let Some((url, blocked_reason)) = blocked {
             effects.network.push(RuntimeNetworkEvent::Failure {
@@ -3334,6 +3403,11 @@ impl BrowserCore {
             );
             return;
         };
+        if pending.request.is_module()
+            && let Some(source_url) = source_url
+        {
+            pending.request = pending.request.with_url(source_url);
+        }
         if let Err(error) = persist_profile_cookies(&self.store, &requested_urls, &cookie_delta) {
             effects.exceptions.push(RuntimeExceptionEvent {
                 error: script_error(error),
@@ -3407,7 +3481,7 @@ impl BrowserCore {
                     let item_result = if pending.request.is_module() {
                         runtime.evaluate_module_with_shared_page_mut(
                             &source,
-                            pending.request.url(),
+                            &pending.request,
                             &context.page,
                         )
                     } else {
@@ -4944,15 +5018,15 @@ async fn load_source(
     }
 }
 
-struct ExternalResourceLoadInput<'a, R> {
-    store: &'a Store,
-    profile_baseline: &'a mut Vec<vixen_net::CookieSnapshot>,
-    request: R,
-    max_body_bytes: u64,
-    max_redirects: usize,
+pub(crate) struct ExternalResourceLoadInput<'a, R> {
+    pub(crate) store: &'a Store,
+    pub(crate) profile_baseline: &'a mut Vec<vixen_net::CookieSnapshot>,
+    pub(crate) request: R,
+    pub(crate) max_body_bytes: u64,
+    pub(crate) max_redirects: usize,
 }
 
-async fn load_external_resource<R: ExternalResourceRequest>(
+pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
     network: &mut Network,
     cookies: &mut CookieJar,
     input: ExternalResourceLoadInput<'_, R>,
@@ -5542,7 +5616,7 @@ fn image_response_allowed(response: &ByteResponse) -> bool {
             .is_some_and(|mime| mime.eq_ignore_ascii_case("image/png"))
 }
 
-fn persist_external_resource_cache(
+pub(crate) fn persist_external_resource_cache(
     store: &Store,
     response: &ByteResponse,
 ) -> Result<(), BrowserError> {
@@ -8989,6 +9063,288 @@ mod tests {
 
         server.join();
         drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn redirected_module_resolves_dependencies_from_accepted_final_url() {
+        let server = GatedHttpServer::start(3);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/redirected-module-page");
+        config.document_overrides.insert(
+            page_url.clone(),
+            "<!doctype html><title>initial</title><script type='module' src='/entry.js'></script>"
+                .to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &page_url);
+        let initial = server.request();
+        assert_eq!(initial.path, "/entry.js");
+        initial
+            .respond
+            .send(redirect_response_with_cookie(
+                "/modules/final.js",
+                "redirect_module=accepted; Path=/",
+            ))
+            .unwrap();
+        initial
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("module redirect response watchdog");
+
+        let final_module = server.request();
+        assert_eq!(final_module.path, "/modules/final.js");
+        assert!(
+            final_module
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("redirect_module=accepted")
+        );
+        final_module
+            .respond
+            .send(script_response(
+                "import { value } from './dependency.js'; document.title = `redirect-${value}`;",
+                None,
+            ))
+            .unwrap();
+        final_module
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("final module response watchdog");
+
+        let dependency = server.request();
+        assert_eq!(dependency.path, "/modules/dependency.js");
+        assert!(
+            dependency
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("redirect_module=accepted")
+        );
+        dependency
+            .respond
+            .send(script_response("export const value = 42;", None))
+            .unwrap();
+        dependency
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("redirected module dependency watchdog");
+
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("redirect-42")
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn module_dependency_graph_shares_request_ids_cookies_cache_and_page_realm() {
+        let server = GatedHttpServer::start(3);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let graph_url = server.url("/module-graph-page");
+        let profile_url = server.url("/module-profile-page");
+        config.document_overrides.insert(
+            graph_url.clone(),
+            "<!doctype html><title>initial</title><script type='module'>import { answer } from './dependency.js'; globalThis.__moduleOrder.push('root'); document.title = `${__moduleOrder.join(':')}:${answer}`;</script>".to_owned(),
+        );
+        config.document_overrides.insert(
+            profile_url.clone(),
+            "<!doctype html><title>initial</title><script type='module'>import { cookie } from './profile-read.js'; document.title = cookie;</script>".to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let graph_context = create(&mut handle);
+        let profile_context = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, graph_context, &graph_url);
+        let dependency = server.request();
+        assert_eq!(dependency.path, "/dependency.js");
+        dependency
+            .respond
+            .send(script_response(
+                "import { value } from './nested.js'; globalThis.__moduleOrder.push('dependency'); export const answer = value + 1;",
+                Some("module_cookie=accepted; Path=/"),
+            ))
+            .unwrap();
+        dependency
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("module dependency response watchdog");
+
+        let nested = server.request();
+        assert_eq!(nested.path, "/nested.js");
+        assert!(
+            nested
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("module_cookie=accepted")
+        );
+        nested
+            .respond
+            .send(script_response(
+                "globalThis.__moduleOrder = globalThis.__moduleOrder || []; globalThis.__moduleOrder.push('nested'); export const value = 41;",
+                None,
+            ))
+            .unwrap();
+        nested
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("nested module response watchdog");
+
+        let events = wait_for_navigation(&mut handle, graph_context, navigation_id).unwrap();
+        let settled = state(&mut handle, graph_context);
+        assert_eq!(settled.title.as_deref(), Some("nested:dependency:root:42"));
+        let request_ids = events
+            .iter()
+            .filter_map(|event| match event {
+                BrowserEvent::RuntimeEffects { effects, .. } => Some(&effects.network),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|event| match event {
+                RuntimeNetworkEvent::Request { request_id, .. } => Some(request_id.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(request_ids.len(), 2);
+        assert_ne!(request_ids[0], request_ids[1]);
+        assert!(
+            request_ids
+                .iter()
+                .all(|request_id| request_id.parse::<u64>().is_ok())
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        let profile_navigation = dispatch_navigation(&mut handle, profile_context, &profile_url);
+        let profile_read = server.request();
+        assert_eq!(profile_read.path, "/profile-read.js");
+        assert!(
+            profile_read
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("module_cookie=accepted")
+        );
+        profile_read
+            .respond
+            .send(script_response(
+                "export const cookie = 'profile-cookie-shared';",
+                None,
+            ))
+            .unwrap();
+        profile_read
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("profile module response watchdog");
+        wait_for_navigation(&mut handle, profile_context, profile_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, profile_context).title.as_deref(),
+            Some("profile-cookie-shared")
+        );
+
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        for module_url in [
+            url::Url::parse(&graph_url)
+                .unwrap()
+                .join("dependency.js")
+                .unwrap(),
+            url::Url::parse(&graph_url)
+                .unwrap()
+                .join("nested.js")
+                .unwrap(),
+            url::Url::parse(&profile_url)
+                .unwrap()
+                .join("profile-read.js")
+                .unwrap(),
+        ] {
+            let origin_key = vixen_net::Origin::from_url(&module_url).partition_key();
+            assert!(
+                store
+                    .get_cache(&origin_key, module_url.as_str())
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn stop_aborts_module_dependency_without_late_profile_or_runtime_effects() {
+        let server = GatedHttpServer::start_with_disconnect_detection(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/module-stop-page");
+        let dependency_url = url::Url::parse(&page_url)
+            .unwrap()
+            .join("stopped-dependency.js")
+            .unwrap();
+        config.document_overrides.insert(
+            page_url.clone(),
+            "<!doctype html><title>committed</title><script type='module'>import './stopped-dependency.js'; globalThis.moduleDone = true; document.title = 'late';</script>".to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/stopped-dependency.js");
+        assert_eq!(
+            handle
+                .dispatch(BrowserCommand::Stop { context_id })
+                .unwrap(),
+            BrowserCommandResult::Accepted
+        );
+        request
+            .disconnected
+            .recv_timeout(Duration::from_secs(10))
+            .expect("module dependency cancellation watchdog");
+        let events = drain_events(&mut handle);
+        let stopped = state(&mut handle, context_id);
+
+        assert_eq!(stopped.active_navigation_id, None);
+        assert_eq!(stopped.title.as_deref(), Some("committed"));
+        assert_eq!(
+            eval(&mut handle, &stopped, "typeof moduleDone"),
+            ScriptValue::String("undefined".to_owned())
+        );
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Stopped,
+        );
+        assert_no_lifecycle_success(&events, navigation_id);
+
+        drop(request.respond);
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        let origin_key = vixen_net::Origin::from_url(&dependency_url).partition_key();
+        assert!(
+            store
+                .get_cache(&origin_key, dependency_url.as_str())
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
         let _ = std::fs::remove_file(profile_path);
     }
 

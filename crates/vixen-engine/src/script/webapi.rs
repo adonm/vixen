@@ -218,7 +218,7 @@ impl CacheDisabledFlag {
         }
     }
 
-    fn snapshot(&self) -> bool {
+    pub(super) fn snapshot(&self) -> bool {
         self.value.lock().map(|guard| *guard).unwrap_or(false)
     }
 }
@@ -360,6 +360,13 @@ impl WebStorageBackend {
 
     pub(super) fn from_store(store: Arc<Store>) -> Self {
         Self::Store(store)
+    }
+
+    pub(super) fn store(&self) -> Option<Arc<Store>> {
+        match self {
+            Self::Store(store) => Some(Arc::clone(store)),
+            Self::Memory(_) => None,
+        }
     }
 }
 

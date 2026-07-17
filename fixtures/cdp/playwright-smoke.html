@@ -111,6 +111,8 @@
   }, 0);
 </script>
 <script type="module">
+  import { parserDependency } from './module-dependency.js';
+  globalThis.__parserDependency = parserDependency;
   __parserOrder.push('module');
   queueMicrotask(() => __parserOrder.push('module-microtask'));
   await Promise.resolve();

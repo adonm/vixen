@@ -682,7 +682,7 @@ task owner replaces Promise-backed timer shims with bounded timeout, interval,
 animation-frame, cancellation, and post-load/automation pumps. CSP, mixed
 content, response policy, cancellation, and stale document/runtime rejection
 remain on the existing BrowserCore external-script boundary. Unresolved module
-imports fail closed pending A2's unified dependency loader. Focused runtime and
+imports were left fail closed for A2's unified dependency loader. Focused runtime and
 production-navigation proofs pin classic → microtask → deferred module → module
 microtask/await → load → task ordering, task cancellation, one interval turn,
 animation-frame delivery, post-load tasks, realm reuse after failure, exactly
@@ -704,8 +704,9 @@ retires the old realm, and two contexts retain isolated runtimes/session state.
 Vixen still does not fabricate child-frame realms: `contentWindow` and
 `contentDocument` remain null until A3 establishes same-origin access and
 cross-origin wrappers, preserving the frame boundary without an inert fake.
-Module dependency graphs remain A2 loader work, and broader CSSOM/DOM/Web API
-surface remains compatibility breadth rather than an A1 ownership blocker.
+Static module dependency graphs moved to A2's first loader checkpoint; broader
+CSSOM/DOM/Web API surface remains compatibility breadth rather than an A1
+ownership blocker.
 
 **Proof:** script-driven mutation visibly changes the Flutter scene; synchronous
 and asynchronous geometry observe the right commit; CDP and page script inspect
@@ -713,12 +714,32 @@ the same nodes.
 
 ### A2. Unified loader and profile policy
 
+**Status: in progress (started 2026-07-18).** Converge one resource family at a
+time without moving network or profile ownership into V8 or Flutter.
+
 - Finish one resource loader for documents, scripts, styles, images, fonts,
   fetch/XHR, frames, and downloads with shared request ids, redirect/policy,
   cookies/cache, priorities, cancellation, and diagnostics.
 - Complete streaming/abort/progress behavior and policy-before-renderer exposure.
 - Integrate profile state, partition keys, cert/proxy/path/portal host services,
   and a real bounded download lifecycle.
+
+**First A2 checkpoint:** parser-discovered inline and external ES modules now
+load nested static dependencies through the same bounded external-resource
+loader as parser scripts, stylesheets, and images. V8 discovers and evaluates
+the graph, while BrowserCore supplies shared numeric request ids, redirect and
+final-URL resolution, CSP/mixed-content checks, strict JavaScript response MIME,
+profile cookies and cache writes, bounded network diagnostics, and graph/event
+limits before source reaches V8. File and same-origin HTTP graphs execute in the
+persistent page realm; redirected roots resolve relative imports from the
+accepted final URL. Stop aborts the in-flight transport and rejects late module,
+DOM, cookie, cache, and lifecycle effects. Focused tests prove nested execution,
+cross-context profile cookies, cache records, distinct request ids,
+cross-origin fail-closed diagnostics, final-URL resolution, and transport
+disconnect on cancellation. The existing release/AOT Playwright fixture now
+imports a real dependency before producing the unchanged module-owned Flutter
+scene. Cross-origin CORS graphs, cache reads/revalidation, import maps, dynamic
+`import()`, and import attributes remain explicit next work.
 
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
@@ -873,9 +894,10 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Start A2 unified loader convergence:** take one resource family through
-   shared ids, policy, cancellation, diagnostics, and profile behavior first;
-   module dependency imports are the first explicit fail-closed candidate.
+1. **Continue the A2 module family:** add cross-origin CORS graph loading and
+   profile-cache reads/revalidation, then import-map resolution and dynamic
+   `import()` without weakening the landed static graph limits, request ids,
+   policy, cancellation, diagnostics, or profile behavior.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →
    newer-commit evidence green while widening shared-core behavior; do not

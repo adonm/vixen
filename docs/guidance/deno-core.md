@@ -83,8 +83,12 @@ Current state:
 - Parser classics and modules share the persistent document realm. Modules use
   V8's native module evaluator, defer after parser classics, and checkpoint
   microtasks before the next script. BrowserCore pumps a bounded document task
-  queue after load and automation turns; unresolved imports fail closed until
-  the A2 loader supplies dependency modules.
+  queue after load and automation turns. A2's first loader checkpoint lets V8
+  discover same-origin/file static dependency graphs while BrowserCore's shared
+  resource boundary owns request ids, redirects, CSP/mixed-content and response
+  policy, profile cookie/cache writes, diagnostics, limits, and cancellation.
+  Cross-origin CORS graphs, import maps, dynamic imports, import attributes, and
+  cache reads/revalidation remain fail closed.
 
 Rules:
 
