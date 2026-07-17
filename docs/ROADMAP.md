@@ -629,6 +629,22 @@ rendered `#dynamic.badge` afterward through the same objects, matches the
 authoritative CDP node, and keeps the pinned classList scene hash byte-identical.
 Detached Attr operations and live CSSOM/script scheduling remain separate work.
 
+**Eighth A1 checkpoint:** `document.styleSheets` now retains one live
+`StyleSheetList`, each author `<style>` resolves to the same stable
+`CSSStyleSheet`, and retained `CSSRuleList`, `CSSStyleRule`, and rule
+`CSSStyleDeclaration` objects resolve refreshed BrowserCore CSS after an
+external style-element mutation. The CSSOM resource refreshes even when a
+same-task synchronous geometry query consumed the pending mutation before the
+ordinary runtime drain. Focused proof retains every identity, advances exactly
+one renderer-source generation, and observes Stylo's 140×30 result. The
+release/AOT corridor retains the objects across all seven earlier stages,
+changes one dedicated author rule, observes 120×32 synchronously and through
+the retained CSSOM plus CDP, and pins exact Flutter pixels to
+`b09bce0ee8acf5ac3b40a2190241a6592880a3e47615c030469b2a887d118f1d`
+before target switching and byte-identical renderer recovery. CSS rule mutation
+APIs, detached Attr operations, and parser-module/task scheduling remain
+separate work.
+
 **Proof:** script-driven mutation visibly changes the Flutter scene; synchronous
 and asynchronous geometry observe the right commit; CDP and page script inspect
 the same nodes.

@@ -3659,6 +3659,10 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   function makeStyleSheetObject(ownerNode) {
+    if (typeof globalThis.__vixenCssomSheetForOwner === 'function') {
+      const sheet = globalThis.__vixenCssomSheetForOwner(ownerNode, true);
+      if (sheet !== null) return sheet;
+    }
     const ctor = webidl.interfaceConstructor('CSSStyleSheet');
     const sheet = Object.create(ctor.prototype);
     Object.defineProperties(sheet, {

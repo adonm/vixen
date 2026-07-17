@@ -104,8 +104,8 @@ focus, and active-element shape included), op-backed in-memory Web Storage
 mutation with key/value validation and quota errors,
 `Event`/`CustomEvent`/`dispatchEvent()` smoke, the pinned
 `focusout` → `focusin` → `blur` → `focus` transition with `relatedTarget`,
-Page-owned active-element restore, CSSOM `CSS.supports()` /
-`document.styleSheets` plus CSSStyleRule / CSSStyleDeclaration read-only shape,
+Page-owned active-element restore, CSSOM `CSS.supports()` plus retained live
+`document.styleSheets` / CSSStyleRule / CSSStyleDeclaration read-only objects,
 viewport/window state, DOMRect geometry via `getBoundingClientRect()` /
 `getClientRects()`, client/offset/scroll metrics, `getBoxQuads()`, Range
 rectangles, Geometry
@@ -219,6 +219,10 @@ renderer reset.
 The seventh extension retains empty structural collections across the rendered
 click mutation, observes the same dynamic node through live indexed/named access
 and CDP, and preserves the existing exact click hash.
+The eighth extension retains the author stylesheet/list/rule/declaration object
+graph across every earlier stage, then reflects one style-element rewrite in
+Stylo, synchronous geometry, CDP, and exact Flutter pixels at
+`b09bce0ee8acf5ac3b40a2190241a6592880a3e47615c030469b2a887d118f1d`.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,

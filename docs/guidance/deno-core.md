@@ -71,9 +71,11 @@ Current state:
   rectangles, and client/offset/scroll metrics now cross a DOM rect op and
   materialize Web-shaped rect/list/quad objects on generated WebIDL prototypes.
 - `cssom.rs` registers the focused read-only CSSOM extension. `CSS.supports`,
-  `getComputedStyle`, and `document.styleSheets`/CSSRule smoke data now cross
-  explicit CSSOM ops and attach to generated CSSOM prototypes instead of being
-  synthesized by the headless/Page string projection.
+  `getComputedStyle`, and retained live `document.styleSheets`/CSSRule objects
+  cross explicit CSSOM ops and attach to generated CSSOM prototypes instead of
+  being synthesized by the headless/Page string projection. The resource
+  refreshes after ordinary mutation drains and same-task synchronous-layout
+  flushes.
 - `just gate-webidl` is the focused regression gate for this layer: generated
   interface/prototype coverage, `JsRuntime` eval, headless `--eval`, and CDP
   `Runtime.evaluate` must stay green together.

@@ -1,8 +1,8 @@
 //! CSSOM/computed-style host extension for the JS runtime.
 //!
-//! The extension keeps the current read-only Phase 6 CSSOM smoke surface behind
-//! explicit `deno_core` ops while the full WebIDL binding layer is still
-//! landing.
+//! Retained CSSOM host objects resolve current stylesheet rules and computed
+//! values through explicit `deno_core` ops. Rule mutation APIs remain outside
+//! this read-only CSSOM subset.
 
 #![forbid(unsafe_code)]
 
@@ -20,6 +20,7 @@ struct CssomHost(Arc<CssomHostState>);
 
 struct CssomHostState {
     style_sheet_count: usize,
+    style_sheets: Vec<Vec<CssomRuleRecord>>,
     rules: Vec<CssomRuleRecord>,
     computed_styles: Vec<ComputedStyleRecord>,
 }
@@ -85,6 +86,9 @@ fn op_vixen_cssom_snapshot(state: &mut OpState) -> deno_core::serde_json::Value 
     let host = state.borrow::<CssomHost>();
     json!({
         "styleSheetCount": host.0.style_sheet_count,
+        "styleSheets": host.0.style_sheets.iter().map(|rules| {
+            rules.iter().map(cssom_rule_value).collect::<Vec<_>>()
+        }).collect::<Vec<_>>(),
         "rules": host.0.rules.iter().map(cssom_rule_value).collect::<Vec<_>>(),
     })
 }
@@ -126,6 +130,15 @@ fn cssom_host_state(page: &Page) -> Result<CssomHostState, String> {
     let rules = (0..stylesheet.rule_count())
         .filter_map(|index| stylesheet.rule(index).map(cssom_rule_record))
         .collect::<Vec<_>>();
+    let style_sheets = style_blocks
+        .iter()
+        .map(|block| {
+            let sheet = AuthorStylesheet::from_blocks(std::slice::from_ref(block));
+            (0..sheet.rule_count())
+                .filter_map(|index| sheet.rule(index).map(cssom_rule_record))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
     let computed_styles = page
         .query_selector_all("*")?
         .into_iter()
@@ -137,6 +150,7 @@ fn cssom_host_state(page: &Page) -> Result<CssomHostState, String> {
 
     Ok(CssomHostState {
         style_sheet_count: style_blocks.len(),
+        style_sheets,
         rules,
         computed_styles,
     })
@@ -203,8 +217,17 @@ const CSSOM_API_BOOTSTRAP: &str = r#"
   } = Deno.core.ops;
   const webidl = globalThis.__vixenWebidl;
 
-  const snapshot = op_vixen_cssom_snapshot();
   let styleSheets;
+  const styleSheetByOwner = new WeakMap();
+
+  function cssomSnapshot() {
+    return op_vixen_cssom_snapshot();
+  }
+
+  function sheetRecords(index) {
+    const sheets = cssomSnapshot().styleSheets || [];
+    return sheets[index] || [];
+  }
 
   function unwrapCssomOp(result) {
     if (!result.ok) throw new TypeError(result.message);
@@ -279,18 +302,33 @@ const CSSOM_API_BOOTSTRAP: &str = r#"
 
   class VixenCSSStyleDeclaration {
     constructor(declarations) {
-      Object.defineProperty(this, '__vixenDeclarations', {
-        value: Object.freeze(declarations.map(([name, value]) => Object.freeze([name, value]))),
+      const resolve = typeof declarations === 'function' ? declarations : (() => declarations);
+      Object.defineProperty(this, '__vixenResolveDeclarations', {
+        value: () => resolve().map(([name, value]) => [String(name), String(value)]),
         enumerable: false,
       });
-      for (let i = 0; i < this.__vixenDeclarations.length; i++) {
-        Object.defineProperty(this, String(i), {
-          value: this.__vixenDeclarations[i][0],
-          enumerable: true,
-          configurable: true,
-        });
-      }
+      return new Proxy(this, {
+        get(target, property, receiver) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            return target.item(Number(property));
+          }
+          return Reflect.get(target, property, receiver);
+        },
+        ownKeys(target) {
+          const indexed = Array.from({ length: target.length }, (_, index) => String(index));
+          return [...indexed, ...Reflect.ownKeys(target)];
+        },
+        getOwnPropertyDescriptor(target, property) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            const name = target.item(Number(property));
+            if (name === '') return undefined;
+            return { value: name, writable: false, enumerable: true, configurable: true };
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      });
     }
+    get __vixenDeclarations() { return this.__vixenResolveDeclarations(); }
     get length() { return this.__vixenDeclarations.length; }
     item(index) {
       const n = Number(index);
@@ -321,16 +359,25 @@ const CSSOM_API_BOOTSTRAP: &str = r#"
   }
 
   class VixenCSSStyleRule {
-    constructor(record) {
-      Object.defineProperty(this, '__vixenRecord', {
-        value: record,
-        enumerable: false,
+    constructor(sheet, ruleIndex) {
+      Object.defineProperties(this, {
+        __vixenSheet: { value: sheet, enumerable: false },
+        __vixenRuleIndex: { value: ruleIndex, enumerable: false },
+        style: {
+          value: new VixenCSSStyleDeclaration(
+            () => this.__vixenRecord.declarations || [],
+          ),
+          enumerable: true,
+          configurable: true,
+        },
       });
-      Object.defineProperty(this, 'style', {
-        value: new VixenCSSStyleDeclaration(record.declarations),
-        enumerable: true,
-        configurable: true,
-      });
+    }
+    get __vixenRecord() {
+      return sheetRecords(this.__vixenSheet.__vixenIndex)[this.__vixenRuleIndex] || {
+        selectorText: '',
+        cssText: '',
+        declarations: [],
+      };
     }
     get selectorText() { return this.__vixenRecord.selectorText; }
     get cssText() { return this.__vixenRecord.cssText; }
@@ -339,79 +386,151 @@ const CSSOM_API_BOOTSTRAP: &str = r#"
   webidl.adoptInterface('CSSStyleRule', VixenCSSStyleRule);
 
   class VixenCSSRuleList {
-    constructor(records) {
-      const rules = records.map((record) => new VixenCSSStyleRule(record));
-      Object.defineProperty(this, '__vixenRules', {
-        value: Object.freeze(rules),
-        enumerable: false,
+    constructor(sheet) {
+      Object.defineProperties(this, {
+        __vixenSheet: { value: sheet, enumerable: false },
+        __vixenRuleObjects: { value: new Map(), enumerable: false },
       });
-      for (let i = 0; i < rules.length; i++) {
-        Object.defineProperty(this, String(i), {
-          value: rules[i],
-          enumerable: true,
-          configurable: true,
-        });
-      }
+      return new Proxy(this, {
+        get(target, property, receiver) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            return target.item(Number(property));
+          }
+          return Reflect.get(target, property, receiver);
+        },
+        ownKeys(target) {
+          const indexed = Array.from({ length: target.length }, (_, index) => String(index));
+          return [...indexed, ...Reflect.ownKeys(target)];
+        },
+        getOwnPropertyDescriptor(target, property) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            const rule = target.item(Number(property));
+            if (rule === null) return undefined;
+            return { value: rule, writable: false, enumerable: true, configurable: true };
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      });
     }
-    get length() { return this.__vixenRules.length; }
+    get length() { return sheetRecords(this.__vixenSheet.__vixenIndex).length; }
     item(index) {
       const n = Number(index);
-      return Number.isInteger(n) && n >= 0 && n < this.__vixenRules.length ? this.__vixenRules[n] : null;
+      if (!Number.isInteger(n) || n < 0 || n >= this.length) return null;
+      if (!this.__vixenRuleObjects.has(n)) {
+        this.__vixenRuleObjects.set(n, new VixenCSSStyleRule(this.__vixenSheet, n));
+      }
+      return this.__vixenRuleObjects.get(n);
     }
   }
 
   webidl.adoptInterface('CSSRuleList', VixenCSSRuleList);
 
-  function makeRuleList(records) {
-    return new VixenCSSRuleList(records);
-  }
-
   class VixenCSSStyleSheet {
-    constructor(index) {
-      const rules = index === 0 ? snapshot.rules : [];
+    constructor(index, ownerNode = null) {
       Object.defineProperties(this, {
-        disabled: { value: false, enumerable: true, configurable: true },
-        href: { value: null, enumerable: true, configurable: true },
-        ownerNode: { value: { tagName: 'STYLE' }, enumerable: true, configurable: true },
-        cssRules: { value: makeRuleList(rules), enumerable: true, configurable: true },
+        __vixenIndex: { value: index, writable: true, enumerable: false },
+        __vixenOwnerNode: { value: ownerNode, enumerable: false },
+        __vixenDisabled: { value: false, writable: true, enumerable: false },
       });
+      Object.defineProperty(this, 'cssRules', {
+        value: new VixenCSSRuleList(this),
+        enumerable: true,
+        configurable: true,
+      });
+    }
+    get disabled() { return this.__vixenDisabled; }
+    set disabled(value) { this.__vixenDisabled = Boolean(value); }
+    get href() { return null; }
+    get ownerNode() {
+      if (this.__vixenOwnerNode !== null) return this.__vixenOwnerNode;
+      const document = globalThis.document;
+      if (!document || typeof document.querySelectorAll !== 'function') return null;
+      return document.querySelectorAll('style, link[rel~="stylesheet"]').item(this.__vixenIndex);
     }
   }
 
   webidl.adoptInterface('CSSStyleSheet', VixenCSSStyleSheet);
 
-  function makeStyleSheet(index) {
-    return new VixenCSSStyleSheet(index);
+  function styleSheetOwner(index) {
+    const document = globalThis.document;
+    if (!document || typeof document.querySelectorAll !== 'function') return null;
+    return document.querySelectorAll('style').item(index);
+  }
+
+  function styleSheetForOwner(ownerNode, create) {
+    if (!ownerNode || (typeof ownerNode !== 'object' && typeof ownerNode !== 'function')) return null;
+    let index = -1;
+    const document = globalThis.document;
+    if (document && typeof document.querySelectorAll === 'function') {
+      const owners = document.querySelectorAll('style');
+      for (let candidate = 0; candidate < owners.length; candidate++) {
+        if (owners.item(candidate) === ownerNode) {
+          index = candidate;
+          break;
+        }
+      }
+    }
+    let sheet = styleSheetByOwner.get(ownerNode);
+    if (sheet) {
+      if (index >= 0) sheet.__vixenIndex = index;
+      return sheet;
+    }
+    if (!create) return null;
+    sheet = new VixenCSSStyleSheet(index, ownerNode);
+    styleSheetByOwner.set(ownerNode, sheet);
+    return sheet;
   }
 
   class VixenStyleSheetList {
-    constructor(count) {
-      const sheets = [];
-      for (let i = 0; i < count; i++) sheets.push(makeStyleSheet(i));
-      Object.defineProperty(this, '__vixenSheets', {
-        value: Object.freeze(sheets),
+    constructor() {
+      Object.defineProperty(this, '__vixenSheetObjects', {
+        value: new Map(),
         enumerable: false,
       });
-      for (let i = 0; i < sheets.length; i++) {
-        Object.defineProperty(this, String(i), {
-          value: sheets[i],
-          enumerable: true,
-          configurable: true,
-        });
-      }
+      return new Proxy(this, {
+        get(target, property, receiver) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            return target.item(Number(property));
+          }
+          return Reflect.get(target, property, receiver);
+        },
+        ownKeys(target) {
+          const indexed = Array.from({ length: target.length }, (_, index) => String(index));
+          return [...indexed, ...Reflect.ownKeys(target)];
+        },
+        getOwnPropertyDescriptor(target, property) {
+          if (typeof property === 'string' && /^(0|[1-9]\d*)$/.test(property)) {
+            const sheet = target.item(Number(property));
+            if (sheet === null) return undefined;
+            return { value: sheet, writable: false, enumerable: true, configurable: true };
+          }
+          return Reflect.getOwnPropertyDescriptor(target, property);
+        },
+      });
     }
-    get length() { return this.__vixenSheets.length; }
+    get length() { return cssomSnapshot().styleSheetCount; }
     item(index) {
       const n = Number(index);
-      return Number.isInteger(n) && n >= 0 && n < this.__vixenSheets.length ? this.__vixenSheets[n] : null;
+      if (!Number.isInteger(n) || n < 0 || n >= this.length) return null;
+      const owner = styleSheetOwner(n);
+      if (owner !== null) return styleSheetForOwner(owner, true);
+      if (!this.__vixenSheetObjects.has(n)) {
+        this.__vixenSheetObjects.set(n, new VixenCSSStyleSheet(n));
+      }
+      return this.__vixenSheetObjects.get(n);
     }
   }
 
   webidl.adoptInterface('StyleSheetList', VixenStyleSheetList);
 
   function makeStyleSheets() {
-    return new VixenStyleSheetList(snapshot.styleSheetCount);
+    return new VixenStyleSheetList();
   }
+
+  Object.defineProperty(globalThis, '__vixenCssomSheetForOwner', {
+    value(ownerNode, create = false) { return styleSheetForOwner(ownerNode, Boolean(create)); },
+    configurable: true,
+  });
 
   function getComputedStyle(element) {
     if (!element || typeof element.__vixenNodeId !== 'number') {

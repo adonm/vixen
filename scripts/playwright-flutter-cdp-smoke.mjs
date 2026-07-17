@@ -19,6 +19,7 @@ const expectedRelListMutation = '7ae6e6d8f650d733922b1af018dfdcac310bdcbb4f14537
 const expectedSandboxMutation = '57b9814c22902e40fc38180d79a1a78068f1b15154f4149bef8fbea5b6cf05cb';
 const expectedInlineStyleMutation = 'b4fe0e2cdba9f98193e8dfc7aadb7fa892e508e269a4a94beb9c2970d8ce5096';
 const expectedAttributesMutation = '17cb0de692001fcb97dcab23c870b800e7e7c3b09010e312a0bbc64e496ec1ea';
+const expectedCssomMutation = 'b09bce0ee8acf5ac3b40a2190241a6592880a3e47615c030469b2a887d118f1d';
 
 function fail(message) {
   throw new Error(`playwright-flutter-cdp-smoke: ${message}`);
@@ -150,6 +151,30 @@ async function main() {
       'baseline',
       expectedDatasetBaseline,
     );
+    const cssomBeforeMutation = await page.evaluate(() => {
+      const owner = document.querySelector('#cssom-sheet');
+      globalThis.__styleSheetList = document.styleSheets;
+      globalThis.__cssomSheet = document.styleSheets[1];
+      globalThis.__cssomRules = __cssomSheet.cssRules;
+      globalThis.__cssomRule = __cssomRules[0];
+      globalThis.__cssomDeclarations = __cssomRule.style;
+      return {
+        sheetCount: __styleSheetList.length,
+        owner: __cssomSheet.ownerNode === owner,
+        ownerSheet: owner.sheet === __cssomSheet,
+        ruleCount: __cssomRules.length,
+        selector: __cssomRule.selectorText,
+        display: __cssomDeclarations.getPropertyValue('display'),
+      };
+    });
+    if (cssomBeforeMutation.sheetCount !== 2
+        || !cssomBeforeMutation.owner
+        || !cssomBeforeMutation.ownerSheet
+        || cssomBeforeMutation.ruleCount !== 1
+        || cssomBeforeMutation.selector !== '#cssom-target'
+        || cssomBeforeMutation.display !== 'none') {
+      fail(`initial live CSSOM was ${JSON.stringify(cssomBeforeMutation)}`);
+    }
 
     const datasetEvidence = await page.evaluate(() => {
       const target = document.querySelector('#dataset-target');
@@ -584,6 +609,72 @@ async function main() {
       fail('attributes mutation did not change the post-inline-style exact scene');
     }
 
+    const cssomMutation = await page.evaluate(() => {
+      const owner = document.querySelector('#cssom-sheet');
+      owner.textContent = '#cssom-target { display: block; width: 120px; height: 32px; background: #8b3f91; color: white; }';
+      const rect = document.querySelector('#cssom-target').getBoundingClientRect();
+      return {
+        listStable: __styleSheetList === document.styleSheets,
+        sheetStable: __cssomSheet === document.styleSheets[1] && __cssomSheet === owner.sheet,
+        rulesStable: __cssomRules === __cssomSheet.cssRules,
+        ruleStable: __cssomRule === __cssomRules[0],
+        declarationsStable: __cssomDeclarations === __cssomRule.style,
+        synchronousRect: { width: rect.width, height: rect.height },
+      };
+    });
+    if (!cssomMutation.listStable
+        || !cssomMutation.sheetStable
+        || !cssomMutation.rulesStable
+        || !cssomMutation.ruleStable
+        || !cssomMutation.declarationsStable
+        || cssomMutation.synchronousRect.width !== 120
+        || cssomMutation.synchronousRect.height !== 32) {
+      fail(`live CSSOM mutation was ${JSON.stringify(cssomMutation)}`);
+    }
+    const cssomReflection = await page.evaluate(() => ({
+      listStable: __styleSheetList === document.styleSheets,
+      sheetStable: __cssomSheet === document.styleSheets[1],
+      ruleStable: __cssomRule === __cssomRules[0],
+      selector: __cssomRule.selectorText,
+      width: __cssomDeclarations.getPropertyValue('width'),
+      height: __cssomDeclarations.getPropertyValue('height'),
+      computedWidth: getComputedStyle(document.querySelector('#cssom-target')).width,
+      computedHeight: getComputedStyle(document.querySelector('#cssom-target')).height,
+    }));
+    if (!cssomReflection.listStable
+        || !cssomReflection.sheetStable
+        || !cssomReflection.ruleStable
+        || cssomReflection.selector !== '#cssom-target'
+        || cssomReflection.width !== '120px'
+        || cssomReflection.height !== '32px'
+        || cssomReflection.computedWidth !== '120px'
+        || cssomReflection.computedHeight !== '32px') {
+      fail(`refreshed live CSSOM was ${JSON.stringify(cssomReflection)}`);
+    }
+    const cssomTargetNode = await firstSession.send('DOM.querySelector', {
+      nodeId: document.root.nodeId,
+      selector: '#cssom-target',
+    });
+    const cssomTargetModel = await firstSession.send('DOM.getBoxModel', {
+      nodeId: cssomTargetNode.nodeId,
+    });
+    if (cssomTargetModel.model.content[2] - cssomTargetModel.model.content[0] !== 120
+        || cssomTargetModel.model.content[5] - cssomTargetModel.model.content[1] !== 32) {
+      fail(`CDP DOM did not agree with live CSSOM: ${JSON.stringify(cssomTargetModel.model)}`);
+    }
+    const afterCssom = await page.screenshot({ timeout: 20000 });
+    const afterCssomInfo = assertCapture(
+      afterCssom,
+      320,
+      240,
+      [34, 187, 102, 255],
+      'post-cssom',
+      expectedCssomMutation,
+    );
+    if (afterCssomInfo.hash === afterAttributesInfo.hash) {
+      fail('stylesheet mutation did not change the post-attributes exact scene');
+    }
+
     const second = await context.newPage();
     await second.setViewportSize({ width: 480, height: 300 });
     await second.setContent(`<!doctype html><style>
@@ -597,7 +688,7 @@ async function main() {
     });
     const secondPng = await second.screenshot({ timeout: 20000 });
     const secondInfo = assertCapture(secondPng, 480, 300, [202, 36, 104, 255], 'second target');
-    if (secondInfo.hash === afterAttributesInfo.hash) fail('independent target captures were identical');
+    if (secondInfo.hash === afterCssomInfo.hash) fail('independent target captures were identical');
     const secondBox = await second.locator('#second').boundingBox({ timeout: 20000 });
     if (!secondBox) fail('second target has no Flutter commit geometry');
     await second.mouse.click(secondBox.x + 5, secondBox.y + 5);
@@ -610,18 +701,18 @@ async function main() {
 
     const firstAgain = await page.screenshot({ timeout: 20000 });
     const firstAgainInfo = assertCapture(firstAgain, 320, 240, [34, 187, 102, 255], 'first target restored');
-    if (firstAgainInfo.hash !== afterAttributesInfo.hash) {
+    if (firstAgainInfo.hash !== afterCssomInfo.hash) {
       fail('switching targets changed the first target exact scene');
     }
 
     await firstSession.send('Vixen.resetRenderer');
     const recovered = await page.screenshot({ timeout: 20000 });
     const recoveredInfo = assertCapture(recovered, 320, 240, [34, 187, 102, 255], 'renderer-loss recovery');
-    if (recoveredInfo.hash !== afterAttributesInfo.hash) {
+    if (recoveredInfo.hash !== afterCssomInfo.hash) {
       fail('renderer-loss full resync did not recover the exact scene');
     }
 
-    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} classList=${afterClickInfo.hash} relList=${afterRelListInfo.hash} sandbox=${afterSandboxInfo.hash} style=${afterInlineStyleInfo.hash} attributes=${afterAttributesInfo.hash} second=${secondInfo.hash}`);
+    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} classList=${afterClickInfo.hash} relList=${afterRelListInfo.hash} sandbox=${afterSandboxInfo.hash} style=${afterInlineStyleInfo.hash} attributes=${afterAttributesInfo.hash} cssom=${afterCssomInfo.hash} second=${secondInfo.hash}`);
   } finally {
     if (browser) await browser.close().catch(() => {});
     await stopServer(child);

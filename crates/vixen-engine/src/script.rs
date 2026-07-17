@@ -875,9 +875,15 @@ impl JsRuntime {
         };
         let mutations = sink.take();
         if mutations.is_empty() {
+            if let Some(runtime) = self.runtime.as_mut() {
+                cssom::refresh(runtime, page)?;
+            }
             return Ok(false);
         }
         apply_dom_mutation_list(page, mutations)?;
+        if let Some(runtime) = self.runtime.as_mut() {
+            cssom::refresh(runtime, page)?;
+        }
         self.realm_key = RealmKey::Page(page_realm_key(page));
         Ok(true)
     }
@@ -4510,6 +4516,7 @@ mod tests {
                  let loaded = false;
                  style.onload = () => { loaded = true; };
                  document.head.appendChild(style);
+                 globalThis.__dynamicStyleSheet = style.sheet;
                  String(!!style.sheet) + ':' + loaded + ':' + getComputedStyle(document.querySelector('#target')).width",
                 &mut page,
             )
@@ -4519,6 +4526,82 @@ mod tests {
         let target = page.query_selector_all("#target").unwrap()[0].node_id;
         let computed = page.computed_style(target);
         assert!(computed.contains(&("width".to_owned(), "123px".to_owned())));
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "[\
+                   __dynamicStyleSheet === document.styleSheets[0],\
+                   __dynamicStyleSheet === document.querySelector('style').sheet,\
+                   __dynamicStyleSheet.cssRules.length,\
+                   __dynamicStyleSheet.cssRules[0].style.getPropertyValue('width')\
+                 ].join(':')",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:true:1:123px".to_owned())
+        );
+    }
+
+    #[test]
+    fn live_cssom_objects_retain_identity_and_reflect_style_element_mutation() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///live-cssom.html",
+            "<html><head><style id='author'>#target { display: block; width: 80px; }</style></head>\
+             <body><div id='target'>target</div></body></html>",
+        )
+        .unwrap();
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => {\
+                   globalThis.__styleSheets = document.styleSheets;\
+                   globalThis.__authorSheet = document.styleSheets[0];\
+                   globalThis.__authorRules = __authorSheet.cssRules;\
+                   globalThis.__authorRule = __authorRules[0];\
+                   globalThis.__authorDeclarations = __authorRule.style;\
+                   return document.querySelector('#author').sheet === __authorSheet;\
+                 })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+
+        let initial_generation = page.renderer_source_generation();
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "document.querySelector('#author').textContent =\
+                   '#target { display: block; width: 140px; height: 30px; }'",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("#target { display: block; width: 140px; height: 30px; }".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 1);
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "[\
+                   __styleSheets === document.styleSheets,\
+                   __authorSheet === document.styleSheets[0],\
+                   __authorSheet === document.querySelector('#author').sheet,\
+                   __authorRules === __authorSheet.cssRules,\
+                   __authorRule === __authorRules[0],\
+                   __authorDeclarations === __authorRule.style,\
+                   __authorRule.selectorText,\
+                   __authorDeclarations.getPropertyValue('width'),\
+                   __authorDeclarations.getPropertyValue('height'),\
+                   getComputedStyle(document.querySelector('#target')).width,\
+                   getComputedStyle(document.querySelector('#target')).height\
+                 ].join(':')",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String(
+                "true:true:true:true:true:true:#target:140px:30px:140px:30px".to_owned()
+            )
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 1);
     }
 
     #[test]
