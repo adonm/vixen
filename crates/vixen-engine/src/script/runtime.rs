@@ -283,6 +283,64 @@ pub(super) fn execute_script(
     Ok(value)
 }
 
+pub(super) fn execute_module(
+    runtime: &mut DenoJsRuntime,
+    specifier: deno_core::ModuleSpecifier,
+    source: String,
+    interrupt: &RuntimeInterruptHandle,
+) -> Result<(), EngineError> {
+    let deadline = RuntimeDeadline::start(runtime, SCRIPT_EXECUTION_TIMEOUT, interrupt.clone());
+    let timeout = Box::pin(DeadlineFuture {
+        state: deadline.state.clone(),
+    });
+    let operation = Box::pin(async {
+        let module_id = runtime
+            .load_side_es_module_from_code(&specifier, source)
+            .await
+            .map_err(|error| error.to_string())?;
+        let evaluation = runtime.mod_evaluate(module_id);
+        runtime
+            .run_event_loop(PollEventLoopOptions::default())
+            .await
+            .map_err(|error| error.to_string())?;
+        evaluation.await.map_err(|error| error.to_string())
+    });
+    let outcome = match deno_core::futures::executor::block_on(select(operation, timeout)) {
+        Either::Left((result, timeout)) => {
+            drop(timeout);
+            Some(result)
+        }
+        Either::Right(((), operation)) => {
+            drop(operation);
+            None
+        }
+    };
+
+    let Some(outcome) = outcome else {
+        return Err(termination_error(
+            deadline
+                .finish(runtime)
+                .unwrap_or(TerminationReason::Timeout),
+        ));
+    };
+    if let Err(error) = outcome {
+        return Err(deadline.finish(runtime).map_or_else(
+            || {
+                EngineError::script(
+                    codes::SCRIPT_EVAL,
+                    format!("module evaluation raised an exception: {error}"),
+                )
+            },
+            termination_error,
+        ));
+    }
+    runtime.v8_isolate().perform_microtask_checkpoint();
+    if let Some(reason) = deadline.finish(runtime) {
+        return Err(termination_error(reason));
+    }
+    Ok(())
+}
+
 pub(super) fn execute_script_immediate(
     runtime: &mut DenoJsRuntime,
     name: &'static str,

@@ -21,6 +21,7 @@ const expectedInlineStyleMutation = 'b4fe0e2cdba9f98193e8dfc7aadb7fa892e508e269a
 const expectedAttributesMutation = '17cb0de692001fcb97dcab23c870b800e7e7c3b09010e312a0bbc64e496ec1ea';
 const expectedCssomMutation = 'b09bce0ee8acf5ac3b40a2190241a6592880a3e47615c030469b2a887d118f1d';
 const expectedAttributeOperationsMutation = '92181acffcd1e39ac9720c8edeeba2c148034a89f61297652dc948306f3af052';
+const expectedParserModuleMutation = 'faa3c863350c742bdeb38338bca09307a4db49e6f7bb7a3f4e6d73eef60ae2fa';
 
 function fail(message) {
   throw new Error(`playwright-flutter-cdp-smoke: ${message}`);
@@ -152,6 +153,26 @@ async function main() {
       'baseline',
       expectedDatasetBaseline,
     );
+    const parserModuleBeforeReveal = await page.evaluate(() => ({
+      order: globalThis.__parserOrder,
+      revealType: typeof globalThis.__revealModuleTarget,
+      moduleState: document.querySelector('#module-target').getAttribute('data-module'),
+      revealState: document.querySelector('#module-target').getAttribute('data-reveal'),
+    }));
+    if (JSON.stringify(parserModuleBeforeReveal.order) !== JSON.stringify([
+      'classic-before',
+      'classic-microtask',
+      'classic-after',
+      'module',
+      'module-microtask',
+      'module-await',
+      'document-task',
+    ])
+        || parserModuleBeforeReveal.revealType !== 'function'
+        || parserModuleBeforeReveal.moduleState !== 'ready'
+        || parserModuleBeforeReveal.revealState !== null) {
+      fail(`parser module/task ordering was ${JSON.stringify(parserModuleBeforeReveal)}`);
+    }
     const cssomBeforeMutation = await page.evaluate(() => {
       const owner = document.querySelector('#cssom-sheet');
       globalThis.__styleSheetList = document.styleSheets;
@@ -754,6 +775,65 @@ async function main() {
       fail('detached attribute attachment did not change the post-CSSOM exact scene');
     }
 
+    const parserModuleMutation = await page.evaluate(() => {
+      globalThis.__revealModuleTarget();
+      const target = document.querySelector('#module-target');
+      const rect = target.getBoundingClientRect();
+      return {
+        order: globalThis.__parserOrder,
+        moduleState: target.getAttribute('data-module'),
+        revealState: target.getAttribute('data-reveal'),
+        synchronousRect: { width: rect.width, height: rect.height },
+      };
+    });
+    if (JSON.stringify(parserModuleMutation.order) !== JSON.stringify([
+      'classic-before',
+      'classic-microtask',
+      'classic-after',
+      'module',
+      'module-microtask',
+      'module-await',
+      'document-task',
+    ])
+        || parserModuleMutation.moduleState !== 'ready'
+        || parserModuleMutation.revealState !== 'yes'
+        || parserModuleMutation.synchronousRect.width !== 120
+        || parserModuleMutation.synchronousRect.height !== 32) {
+      fail(`parser module reveal was ${JSON.stringify(parserModuleMutation)}`);
+    }
+    const parserModuleNode = await firstSession.send('DOM.querySelector', {
+      nodeId: document.root.nodeId,
+      selector: '#module-target',
+    });
+    const parserModuleAttributes = await firstSession.send('DOM.getAttributes', {
+      nodeId: parserModuleNode.nodeId,
+    });
+    const parserModulePairs = Object.fromEntries(Array.from(
+      { length: parserModuleAttributes.attributes.length / 2 },
+      (_, index) => parserModuleAttributes.attributes.slice(index * 2, index * 2 + 2),
+    ));
+    const parserModuleModel = await firstSession.send('DOM.getBoxModel', {
+      nodeId: parserModuleNode.nodeId,
+    });
+    if (parserModulePairs['data-module'] !== 'ready'
+        || parserModulePairs['data-reveal'] !== 'yes'
+        || parserModuleModel.model.content[2] - parserModuleModel.model.content[0] !== 120
+        || parserModuleModel.model.content[5] - parserModuleModel.model.content[1] !== 32) {
+      fail(`CDP DOM did not agree with parser modules: ${JSON.stringify({ parserModulePairs, model: parserModuleModel.model })}`);
+    }
+    const afterParserModule = await page.screenshot({ timeout: 20000 });
+    const afterParserModuleInfo = assertCapture(
+      afterParserModule,
+      320,
+      240,
+      [34, 187, 102, 255],
+      'post-parser-module',
+      expectedParserModuleMutation,
+    );
+    if (afterParserModuleInfo.hash === afterAttributeOperationsInfo.hash) {
+      fail('parser module mutation did not change the post-attribute exact scene');
+    }
+
     const second = await context.newPage();
     await second.setViewportSize({ width: 480, height: 300 });
     await second.setContent(`<!doctype html><style>
@@ -767,7 +847,7 @@ async function main() {
     });
     const secondPng = await second.screenshot({ timeout: 20000 });
     const secondInfo = assertCapture(secondPng, 480, 300, [202, 36, 104, 255], 'second target');
-    if (secondInfo.hash === afterAttributeOperationsInfo.hash) fail('independent target captures were identical');
+    if (secondInfo.hash === afterParserModuleInfo.hash) fail('independent target captures were identical');
     const secondBox = await second.locator('#second').boundingBox({ timeout: 20000 });
     if (!secondBox) fail('second target has no Flutter commit geometry');
     await second.mouse.click(secondBox.x + 5, secondBox.y + 5);
@@ -780,18 +860,18 @@ async function main() {
 
     const firstAgain = await page.screenshot({ timeout: 20000 });
     const firstAgainInfo = assertCapture(firstAgain, 320, 240, [34, 187, 102, 255], 'first target restored');
-    if (firstAgainInfo.hash !== afterAttributeOperationsInfo.hash) {
+    if (firstAgainInfo.hash !== afterParserModuleInfo.hash) {
       fail('switching targets changed the first target exact scene');
     }
 
     await firstSession.send('Vixen.resetRenderer');
     const recovered = await page.screenshot({ timeout: 20000 });
     const recoveredInfo = assertCapture(recovered, 320, 240, [34, 187, 102, 255], 'renderer-loss recovery');
-    if (recoveredInfo.hash !== afterAttributeOperationsInfo.hash) {
+    if (recoveredInfo.hash !== afterParserModuleInfo.hash) {
       fail('renderer-loss full resync did not recover the exact scene');
     }
 
-    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} classList=${afterClickInfo.hash} relList=${afterRelListInfo.hash} sandbox=${afterSandboxInfo.hash} style=${afterInlineStyleInfo.hash} attributes=${afterAttributesInfo.hash} cssom=${afterCssomInfo.hash} attributeOperations=${afterAttributeOperationsInfo.hash} second=${secondInfo.hash}`);
+    console.log(`playwright-flutter-cdp-smoke ok baseline=${baselineInfo.hash} dataset=${afterDatasetInfo.hash} classList=${afterClickInfo.hash} relList=${afterRelListInfo.hash} sandbox=${afterSandboxInfo.hash} style=${afterInlineStyleInfo.hash} attributes=${afterAttributesInfo.hash} cssom=${afterCssomInfo.hash} attributeOperations=${afterAttributeOperationsInfo.hash} parserModule=${afterParserModuleInfo.hash} second=${secondInfo.hash}`);
   } finally {
     if (browser) await browser.close().catch(() => {});
     await stopServer(child);

@@ -528,10 +528,15 @@ reduced directly against the final architecture.
 
 ## Alpha — converge live browser state on render commits
 
-R8 is complete. Continue shared-core convergence in this order without
+R8 and A1 are complete. Continue shared-core convergence in this order without
 reintroducing native renderer ownership or weakening the landed host gates.
 
 ### A1. Live document/runtime convergence
+
+**Status: complete (2026-07-17).** The mutable surface Vixen currently claims is
+live and Page-backed. Bounded op snapshots remain transport read models; they no
+longer stand in for mutable host-object ownership. APIs outside the claimed
+subset fail explicitly rather than presenting plausible inert behavior.
 
 - Replace remaining Page/runtime compatibility snapshots with live
   Node/Element/Document, CSSOM, events, focus, selection, forms, history, and
@@ -657,6 +662,39 @@ removal, reattachment, and in-use rejection in one retained map, observes
 `92181acffcd1e39ac9720c8edeeba2c148034a89f61297652dc948306f3af052`
 before target switching and byte-identical renderer recovery. Parser-module/task
 scheduling and remaining plausible runtime shims are the next A1 boundary.
+
+**Tenth A1 checkpoint:** parser-discovered inline and external ES modules now use
+V8's native module parser/evaluator in the document realm. Modules defer until
+parser classics finish, top-level await and exports execute, and each classic,
+module, and document task receives its own microtask checkpoint. The document
+task owner replaces Promise-backed timer shims with bounded timeout, interval,
+animation-frame, cancellation, and post-load/automation pumps. CSP, mixed
+content, response policy, cancellation, and stale document/runtime rejection
+remain on the existing BrowserCore external-script boundary. Unresolved module
+imports fail closed pending A2's unified dependency loader. Focused runtime and
+production-navigation proofs pin classic → microtask → deferred module → module
+microtask/await → load → task ordering, task cancellation, one interval turn,
+animation-frame delivery, post-load tasks, realm reuse after failure, exactly
+one renderer-source generation for the module mutation, and external module
+loading. The release/AOT fixture preserves every earlier exact hash, proves the
+same parser order, reveals a module-owned 120×32 target synchronously and through
+CDP, and pins exact Flutter pixels to
+`faa3c863350c742bdeb38338bca09307a4db49e6f7bb7a3f4e6d73eef60ae2fa`
+before target switching and byte-identical renderer recovery. The obsolete
+non-page inert history object and fallback inert stylesheet object were deleted.
+
+**A1 exit:** live Node/Element/Document mutations, author CSSOM objects, events,
+focus, selection, forms, history, and profile/context-partitioned storage all
+share the BrowserCore page realm and render-source path. Every mutation vertical
+above proves authoritative Page state, explicit geometry invalidation, CDP
+agreement, and Flutter pixels. Parser classics, modules, microtasks, and bounded
+document tasks have production lifecycle ordering; cross-document navigation
+retires the old realm, and two contexts retain isolated runtimes/session state.
+Vixen still does not fabricate child-frame realms: `contentWindow` and
+`contentDocument` remain null until A3 establishes same-origin access and
+cross-origin wrappers, preserving the frame boundary without an inert fake.
+Module dependency graphs remain A2 loader work, and broader CSSOM/DOM/Web API
+surface remains compatibility breadth rather than an A1 ownership blocker.
 
 **Proof:** script-driven mutation visibly changes the Flutter scene; synchronous
 and asynchronous geometry observe the right commit; CDP and page script inspect
@@ -824,10 +862,10 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue A1 live document convergence:** use the landed live `dataset`
-   vertical as the pattern; take the next snapshot/shim family only with one
-   mutation/revision, synchronous geometry, CDP, and exact Flutter-pixel proof.
-2. **Preserve the R8 host corridor:** keep real Mozc preedit/commit and native
+1. **Start A2 unified loader convergence:** take one resource family through
+   shared ids, policy, cancellation, diagnostics, and profile behavior first;
+   module dependency imports are the first explicit fail-closed candidate.
+2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/bounds/action → DOM → newer-commit evidence green while
    widening shared-core behavior; do not replace it with injected text or
    BrowserCore geometry.

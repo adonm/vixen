@@ -31,7 +31,7 @@ The current ownership contract is specified in `ARCHITECTURE.md`, the renderer
 and shell contract in `FLUTTER_SHELL.md`, acceptance in `ACCEPTANCE.md`, and
 compatibility evidence in `COMPAT.md`.
 
-## Immediate queue: A1 convergence after R8
+## Immediate queue: A2 after A1 convergence
 
 The complete 270-fixture Flutter manifest, external rendered Playwright/CDP,
 release archive/size, startup/capture/memory, profile growth, 45-frame software
@@ -44,19 +44,14 @@ AT-SPI bounds, native `Focus` → DOM focus → newer same-document commit evide
 and the remaining interaction corridor. Keep that gate intact; it is one
 controlled host proof rather than an IME or assistive-technology matrix.
 
-1. Continue A1 one host family at a time. Stable live `DOMStringMap`, all three
-   currently hosted attribute-backed token-list identities (`classList`,
-   `relList`, and iframe `sandbox`), and inline `CSSStyleDeclaration` are landed;
-   the attached and detached `NamedNodeMap`/`Attr` lifecycle is landed, including
-   create/replace/remove/reattach operations. Structural NodeList/HTMLCollection
-   attributes and `getElementsBy*` queries are live while `querySelectorAll`
-   remains static.
-   The read-only author CSSOM subset now retains live stylesheet/list/rule/
-   declaration identities through style-element writes. Each next slice needs
-   one mutation/source revision, synchronous geometry where relevant, CDP
-   agreement, and exact Flutter pixels.
-2. Preserve the complete R8 compatibility, release, renderer, and native-host
-   gates while widening standards behavior or product breadth.
+1. A1 completed on 2026-07-17. The claimed mutable DOM/CSSOM/events/focus/
+   selection/forms/history/storage surface is live; attached/detached attributes,
+   structural collections, parser classics/modules, microtasks, and bounded
+   document tasks have focused and release/AOT proof. Cross-document realm
+   teardown and context isolation remain pinned. Unsupported child-frame realms
+   stay fail-closed for A3; unresolved module imports stay fail-closed for A2.
+2. Start A2 at the shared resource-loader boundary without weakening A1 or the
+   complete R8 compatibility, release, renderer, and native-host gates.
 
 ## Post-stabilization priorities
 

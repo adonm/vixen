@@ -92,14 +92,17 @@ impl SynchronousLayoutConfig {
 /// Persistent parser-discovered script state advanced one item at a time.
 pub(crate) struct PageScriptRunner {
     items: std::vec::IntoIter<DocumentScriptItem>,
+    deferred_modules: std::collections::VecDeque<PreparedPageScript>,
     csp: vixen_net::csp::ContentSecurityPolicy,
     origin: vixen_net::Origin,
     bypass_csp: bool,
+    next_inline_module: u64,
 }
 
 pub(crate) enum PreparedPageScript {
     Skip,
     Inline(String),
+    InlineModule { source: String, specifier: url::Url },
     External(ExternalPageScript),
 }
 
@@ -110,6 +113,7 @@ pub(crate) struct ExternalPageScript {
     origin: vixen_net::Origin,
     nonce: Option<String>,
     context_trustworthy: bool,
+    module: bool,
 }
 
 impl ExternalPageScript {
@@ -143,6 +147,10 @@ impl ExternalPageScript {
 
     pub(crate) fn is_cross_site(&self, url: &url::Url) -> bool {
         !vixen_net::is_same_site(&self.origin, &vixen_net::Origin::from_url(url))
+    }
+
+    pub(crate) fn is_module(&self) -> bool {
+        self.module
     }
 }
 
@@ -536,6 +544,39 @@ impl JsRuntime {
         ))
     }
 
+    #[cfg(test)]
+    fn evaluate_module_with_page_mut(
+        &mut self,
+        source: &str,
+        specifier: &url::Url,
+        page: &mut Page,
+    ) -> Result<(), EngineError> {
+        self.ensure_realm(Some(&*page))?;
+        if let Err(error) = self.execute_module_in_current_realm(source, specifier) {
+            self.discard_dom_mutations();
+            return Err(error);
+        }
+        if !self.apply_dom_mutations(page)? {
+            return Ok(());
+        }
+        const MAX_SCROLL_SYNC_ROUNDS: usize = 8;
+        for _ in 0..MAX_SCROLL_SYNC_ROUNDS {
+            let source = dom::element_scroll_state_source(page, true);
+            if let Err(error) = self.evaluate_with_page_context(&source, Some(&*page)) {
+                self.discard_dom_mutations();
+                return Err(error);
+            }
+            if !self.apply_dom_mutations(page)? {
+                return Ok(());
+            }
+        }
+        self.discard_dom_mutations();
+        Err(EngineError::script(
+            codes::SCRIPT_EVAL,
+            "element scroll synchronization exceeded the mutation round limit",
+        ))
+    }
+
     pub(crate) fn evaluate_with_shared_page_mut(
         &mut self,
         src: &str,
@@ -570,6 +611,47 @@ impl JsRuntime {
             if !self.apply_dom_mutations(&mut page)? {
                 self.realm_key = RealmKey::Page(page_realm_key(&page));
                 return Ok(value);
+            }
+            self.realm_key = RealmKey::Page(page_realm_key(&page));
+        }
+        self.discard_dom_mutations();
+        Err(EngineError::script(
+            codes::SCRIPT_EVAL,
+            "element scroll synchronization exceeded the mutation round limit",
+        ))
+    }
+
+    pub(crate) fn evaluate_module_with_shared_page_mut(
+        &mut self,
+        source: &str,
+        specifier: &url::Url,
+        page: &Rc<RefCell<Page>>,
+    ) -> Result<(), EngineError> {
+        {
+            let page = page.borrow();
+            self.ensure_realm(Some(&page))?;
+        }
+        if let Err(error) = self.execute_module_in_current_realm(source, specifier) {
+            self.discard_dom_mutations();
+            return Err(error);
+        }
+        {
+            let mut page = page.borrow_mut();
+            self.apply_dom_mutations(&mut page)?;
+            self.realm_key = RealmKey::Page(page_realm_key(&page));
+        }
+
+        const MAX_SCROLL_SYNC_ROUNDS: usize = 8;
+        for _ in 0..MAX_SCROLL_SYNC_ROUNDS {
+            let source = dom::element_scroll_state_source(&page.borrow(), true);
+            if let Err(error) = self.execute_in_current_realm(&source) {
+                self.discard_dom_mutations();
+                return Err(error);
+            }
+            let mut page = page.borrow_mut();
+            if !self.apply_dom_mutations(&mut page)? {
+                self.realm_key = RealmKey::Page(page_realm_key(&page));
+                return Ok(());
             }
             self.realm_key = RealmKey::Page(page_realm_key(&page));
         }
@@ -629,7 +711,7 @@ impl JsRuntime {
             .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))
     }
 
-    /// Execute classic page scripts in document order, using the persistent
+    /// Execute parser classics followed by deferred modules in the persistent
     /// page realm for `page`.
     ///
     /// This is the page-script trust boundary: response-header CSP is active
@@ -643,7 +725,7 @@ impl JsRuntime {
         self.execute_page_scripts_with_csp_bypass(page, false)
     }
 
-    /// Execute classic page scripts with an explicit inspector/CDP CSP override.
+    /// Execute parser classic/module scripts with an explicit inspector/CDP CSP override.
     ///
     /// The default product path must call [`Self::execute_page_scripts`] so CSP
     /// remains fail-closed. CDP `Page.setBypassCSP` uses this method for the
@@ -658,15 +740,73 @@ impl JsRuntime {
         let mut runner = PageScriptRunner::new(page, bypass_csp);
         let mut executed = 0;
         while let Some(item) = runner.prepare_next(page) {
-            let source = match item {
-                PreparedPageScript::Skip => None,
-                PreparedPageScript::Inline(source) => Some(source),
-                PreparedPageScript::External(request) => {
-                    load_external_page_script(&self.network_config, &request)?
+            match item {
+                PreparedPageScript::Skip => {}
+                PreparedPageScript::Inline(source) => {
+                    self.evaluate_with_page_mut(&source, page)?;
+                    executed += 1;
                 }
-            };
-            if let Some(source) = source {
-                self.evaluate_with_page_mut(&source, page)?;
+                PreparedPageScript::InlineModule { source, specifier } => {
+                    self.evaluate_module_with_page_mut(&source, &specifier, page)?;
+                    executed += 1;
+                }
+                PreparedPageScript::External(request) => {
+                    let module = request.is_module();
+                    let specifier = request.url().clone();
+                    if let Some(source) = load_external_page_script(&self.network_config, &request)?
+                    {
+                        if module {
+                            self.evaluate_module_with_page_mut(&source, &specifier, page)?;
+                        } else {
+                            self.evaluate_with_page_mut(&source, page)?;
+                        }
+                        executed += 1;
+                    }
+                }
+            }
+        }
+        self.run_document_tasks_with_page_mut(page)?;
+        Ok(executed)
+    }
+
+    #[cfg(test)]
+    fn run_document_tasks_with_page_mut(&mut self, page: &mut Page) -> Result<usize, EngineError> {
+        let ids = document_task_ids(self.evaluate_with_page_mut(
+            "JSON.stringify(globalThis.__vixenReadyDocumentTaskIds ? globalThis.__vixenReadyDocumentTaskIds(64) : [])",
+            page,
+        )?)?;
+        let mut executed = 0;
+        for id in ids {
+            if self.evaluate_with_page_mut(
+                &format!(
+                    "globalThis.__vixenRunDocumentTask ? globalThis.__vixenRunDocumentTask({id}) : false"
+                ),
+                page,
+            )? == JsValue::Bool(true)
+            {
+                executed += 1;
+            }
+        }
+        Ok(executed)
+    }
+
+    pub(crate) fn run_document_tasks_with_shared_page_mut(
+        &mut self,
+        page: &Rc<RefCell<Page>>,
+    ) -> Result<usize, EngineError> {
+        let ids = document_task_ids(self.evaluate_with_shared_page_mut(
+            "JSON.stringify(globalThis.__vixenReadyDocumentTaskIds ? globalThis.__vixenReadyDocumentTaskIds(64) : [])",
+            page,
+        )?)?;
+        let mut executed = 0;
+        for id in ids {
+            if self.evaluate_with_shared_page_mut(
+                &format!(
+                    "globalThis.__vixenRunDocumentTask ? globalThis.__vixenRunDocumentTask({id}) : false"
+                ),
+                page,
+            )? == JsValue::Bool(true)
+            {
                 executed += 1;
             }
         }
@@ -815,6 +955,20 @@ impl JsRuntime {
             &self.runtime_interrupt,
         )?;
         runtime::js_value_from_global(runtime, result)
+    }
+
+    fn execute_module_in_current_realm(
+        &mut self,
+        source: &str,
+        specifier: &url::Url,
+    ) -> Result<(), EngineError> {
+        let runtime = self.runtime.as_mut().expect("realm initialised");
+        runtime::execute_module(
+            runtime,
+            specifier.clone(),
+            source.to_owned(),
+            &self.runtime_interrupt,
+        )
     }
 
     fn ensure_realm(&mut self, page: Option<&Page>) -> Result<(), EngineError> {
@@ -989,57 +1143,98 @@ impl PageScriptRunner {
     pub(crate) fn new(page: &Page, bypass_csp: bool) -> Self {
         Self {
             items: page.document().script_execution_items().into_iter(),
+            deferred_modules: std::collections::VecDeque::new(),
             csp: page.csp().clone(),
             origin: page_origin(page),
             bypass_csp,
+            next_inline_module: 0,
         }
     }
 
     /// Prepare one parser-discovered item without loading external resources.
     /// `None` means the sequence is complete.
     pub(crate) fn prepare_next(&mut self, page: &Page) -> Option<PreparedPageScript> {
-        let item = self.items.next()?;
-        Some(match item {
-            DocumentScriptItem::CspMeta(policy) => {
-                if !self.bypass_csp {
-                    self.csp.add_header(&policy);
-                }
-                PreparedPageScript::Skip
-            }
-            DocumentScriptItem::InlineClassicScript(script) => {
-                if self.bypass_csp
-                    || self.csp.allows_inline_script(
-                        &self.origin,
-                        Some(&script.source),
-                        script.nonce.as_deref(),
-                    )
-                {
-                    PreparedPageScript::Inline(script.source)
-                } else {
-                    PreparedPageScript::Skip
-                }
-            }
-            DocumentScriptItem::ExternalClassicScript(script) => {
-                let Some(url) = resolve_external_script_url(page, &script.src) else {
+        loop {
+            let Some(item) = self.items.next() else {
+                return self.deferred_modules.pop_front();
+            };
+            let prepared = match item {
+                DocumentScriptItem::CspMeta(policy) => {
+                    if !self.bypass_csp {
+                        self.csp.add_header(&policy);
+                    }
                     return Some(PreparedPageScript::Skip);
-                };
-                let request = ExternalPageScript {
-                    url,
-                    csp: (!self.bypass_csp).then(|| self.csp.clone()),
-                    origin: self.origin.clone(),
-                    nonce: script.nonce,
-                    context_trustworthy: url::Url::parse(page.url())
-                        .ok()
-                        .as_ref()
-                        .is_some_and(vixen_net::referrer_policy::is_potentially_trustworthy),
-                };
-                if request.allows_url(request.url()) {
-                    PreparedPageScript::External(request)
-                } else {
-                    PreparedPageScript::Skip
                 }
+                DocumentScriptItem::InlineClassicScript(script) => {
+                    if self.inline_allowed(&script) {
+                        return Some(PreparedPageScript::Inline(script.source));
+                    }
+                    return Some(PreparedPageScript::Skip);
+                }
+                DocumentScriptItem::ExternalClassicScript(script) => {
+                    return Some(self.prepare_external(page, script, false));
+                }
+                DocumentScriptItem::InlineModuleScript(script) => {
+                    if !self.inline_allowed(&script) {
+                        continue;
+                    }
+                    self.next_inline_module = self.next_inline_module.saturating_add(1);
+                    let mut specifier = url::Url::parse(page.url()).unwrap_or_else(|_| {
+                        url::Url::parse("about:blank").expect("static module base URL")
+                    });
+                    specifier.set_fragment(Some(&format!(
+                        "vixen-inline-module-{}",
+                        self.next_inline_module
+                    )));
+                    PreparedPageScript::InlineModule {
+                        source: script.source,
+                        specifier,
+                    }
+                }
+                DocumentScriptItem::ExternalModuleScript(script) => {
+                    self.prepare_external(page, script, true)
+                }
+            };
+            if !matches!(prepared, PreparedPageScript::Skip) {
+                self.deferred_modules.push_back(prepared);
             }
-        })
+        }
+    }
+
+    fn inline_allowed(&self, script: &crate::doc::InlineScript) -> bool {
+        self.bypass_csp
+            || self.csp.allows_inline_script(
+                &self.origin,
+                Some(&script.source),
+                script.nonce.as_deref(),
+            )
+    }
+
+    fn prepare_external(
+        &self,
+        page: &Page,
+        script: crate::doc::ExternalScript,
+        module: bool,
+    ) -> PreparedPageScript {
+        let Some(url) = resolve_external_script_url(page, &script.src) else {
+            return PreparedPageScript::Skip;
+        };
+        let request = ExternalPageScript {
+            url,
+            csp: (!self.bypass_csp).then(|| self.csp.clone()),
+            origin: self.origin.clone(),
+            nonce: script.nonce,
+            context_trustworthy: url::Url::parse(page.url())
+                .ok()
+                .as_ref()
+                .is_some_and(vixen_net::referrer_policy::is_potentially_trustworthy),
+            module,
+        };
+        if request.allows_url(request.url()) {
+            PreparedPageScript::External(request)
+        } else {
+            PreparedPageScript::Skip
+        }
     }
 }
 
@@ -1055,6 +1250,28 @@ fn parse_console_events(json: &str) -> Result<Vec<JsConsoleEvent>, EngineError> 
         return Ok(Vec::new());
     };
     Ok(events.iter().map(parse_console_event).collect())
+}
+
+fn document_task_ids(value: JsValue) -> Result<Vec<u64>, EngineError> {
+    let JsValue::String(json) = value else {
+        return Err(EngineError::script(
+            codes::SCRIPT_EVAL,
+            "document task queue did not return JSON",
+        ));
+    };
+    let ids = deno_core::serde_json::from_str::<Vec<u64>>(&json).map_err(|error| {
+        EngineError::script(
+            codes::SCRIPT_EVAL,
+            format!("document task queue parse failed: {error}"),
+        )
+    })?;
+    if ids.len() > 64 {
+        return Err(EngineError::script(
+            codes::SCRIPT_EVAL,
+            "document task queue exceeded its bounded batch",
+        ));
+    }
+    Ok(ids)
 }
 
 fn parse_console_event(value: &deno_core::serde_json::Value) -> JsConsoleEvent {
@@ -3966,6 +4183,55 @@ mod tests {
     }
 
     #[test]
+    fn realm_teardown_discards_tasks_and_frame_globals_stay_fail_closed() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page_one = Page::from_html(
+            "https://frames.test/one",
+            "<iframe id='same' srcdoc='<p>same</p>'></iframe>\
+             <iframe id='cross' src='https://other.test/frame'></iframe>",
+        )
+        .unwrap();
+        let mut page_two =
+            Page::from_html("https://frames.test/two", "<p>replacement</p>").unwrap();
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => {\
+                   globalThis.__oldRealm = true;\
+                   setTimeout(() => { globalThis.__staleTaskRan = true; }, 0);\
+                   const same = document.querySelector('#same');\
+                   const cross = document.querySelector('#cross');\
+                   return [\
+                     same.contentWindow === null, same.contentDocument === null,\
+                     cross.contentWindow === null, cross.contentDocument === null\
+                   ].join(':');\
+                 })()",
+                &mut page_one,
+            )
+            .unwrap(),
+            JsValue::String("true:true:true:true".to_owned())
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "typeof __oldRealm + ':' + typeof __staleTaskRan",
+                &mut page_two,
+            )
+            .unwrap(),
+            JsValue::String("undefined:undefined".to_owned())
+        );
+        assert_eq!(
+            rt.run_document_tasks_with_page_mut(&mut page_two).unwrap(),
+            0
+        );
+        assert_eq!(
+            rt.evaluate_with_page("typeof __staleTaskRan", &page_two)
+                .unwrap(),
+            JsValue::String("undefined".to_owned())
+        );
+    }
+
+    #[test]
     fn page_text_content_mutation_updates_page_and_renderer_source() {
         let mut rt = JsRuntime::new().expect("engine init");
         let mut page = Page::from_html(
@@ -5138,6 +5404,102 @@ mod tests {
                 .unwrap(),
             JsValue::String("undefined".to_owned())
         );
+    }
+
+    #[test]
+    fn parser_modules_defer_after_classics_and_checkpoint_microtasks() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///parser-modules.html",
+            "<style>#target[data-module='done'] { display: block; width: 140px; height: 30px; }</style>\
+             <div id='target'>target</div>\
+             <script>\
+               globalThis.__moduleOrder = ['classic-before'];\
+               queueMicrotask(() => __moduleOrder.push('classic-microtask'));\
+               setTimeout(() => {\
+                 __moduleOrder.push('classic-timer');\
+                 queueMicrotask(() => __moduleOrder.push('classic-timer-microtask'));\
+               }, 0);\
+               const cancelledTimer = setTimeout(() => __moduleOrder.push('cancelled-timer'), 0);\
+               clearTimeout(cancelledTimer);\
+               const interval = setInterval(() => {\
+                 __moduleOrder.push('interval');\
+                 clearInterval(interval);\
+               }, 0);\
+               requestAnimationFrame((timestamp) => __moduleOrder.push(Number.isFinite(timestamp) ? 'animation-frame' : 'bad-frame'));\
+               const cancelledFrame = requestAnimationFrame(() => __moduleOrder.push('cancelled-frame'));\
+               cancelAnimationFrame(cancelledFrame);\
+             </script>\
+             <script type='module'>\
+               __moduleOrder.push('module-one');\
+               queueMicrotask(() => __moduleOrder.push('module-one-microtask'));\
+               await Promise.resolve();\
+               __moduleOrder.push('module-one-await');\
+               setTimeout(() => __moduleOrder.push('module-timer'), 0);\
+               document.querySelector('#target').setAttribute('data-module', 'done');\
+               export const one = 1;\
+             </script>\
+             <script>__moduleOrder.push('classic-after');</script>\
+             <script type='module'>__moduleOrder.push('module-two'); export const two = 2;</script>",
+        )
+        .unwrap();
+
+        let initial_generation = page.renderer_source_generation();
+        assert_eq!(rt.execute_page_scripts(&mut page).unwrap(), 4);
+        assert_eq!(
+            rt.evaluate_with_page("__moduleOrder.join(',')", &page)
+                .unwrap(),
+            JsValue::String(
+                "classic-before,classic-microtask,classic-after,module-one,module-one-microtask,module-one-await,module-two,classic-timer,classic-timer-microtask,interval,animation-frame,module-timer"
+                    .to_owned()
+            )
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 1);
+        let target_id = page.query_selector_all("#target").unwrap()[0].node_id;
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("width".to_owned(), "140px".to_owned()))
+        );
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("height".to_owned(), "30px".to_owned()))
+        );
+
+        let mut unresolved = Page::from_html(
+            "file:///unresolved-module.html",
+            "<script type='module'>import './missing.js';</script>",
+        )
+        .unwrap();
+        assert_eq!(
+            rt.execute_page_scripts(&mut unresolved).unwrap_err().code(),
+            codes::SCRIPT_EVAL
+        );
+        assert_eq!(
+            rt.evaluate_with_page("1 + 1", &unresolved).unwrap(),
+            JsValue::Int32(2)
+        );
+    }
+
+    #[test]
+    fn external_parser_module_uses_script_policy_and_document_realm() {
+        let (base_url, network_config, server) = spawn_script_server(
+            "vixen-module-success.com",
+            "globalThis.__externalModule = 'ran'; export const answer = 42;",
+            &[("Content-Type", "text/javascript; charset=utf-8")],
+        );
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let html = format!(
+            "<script>globalThis.__externalModule = 'classic';</script>\
+             <script type='module' src='{base_url}/module.js'></script>"
+        );
+        let mut page = Page::from_html(format!("{base_url}/page.html"), &html).unwrap();
+
+        assert_eq!(rt.execute_page_scripts(&mut page).unwrap(), 2);
+        assert_eq!(
+            rt.evaluate_with_page("__externalModule", &page).unwrap(),
+            JsValue::String("ran".to_owned())
+        );
+        server.join().unwrap();
     }
 
     #[test]

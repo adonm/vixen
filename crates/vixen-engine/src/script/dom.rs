@@ -3733,22 +3733,10 @@ const DOM_API_BOOTSTRAP: &str = r#"
   }
 
   function makeStyleSheetObject(ownerNode) {
-    if (typeof globalThis.__vixenCssomSheetForOwner === 'function') {
-      const sheet = globalThis.__vixenCssomSheetForOwner(ownerNode, true);
-      if (sheet !== null) return sheet;
+    if (typeof globalThis.__vixenCssomSheetForOwner !== 'function') {
+      throw new TypeError('Vixen CSSOM owner is unavailable');
     }
-    const ctor = webidl.interfaceConstructor('CSSStyleSheet');
-    const sheet = Object.create(ctor.prototype);
-    Object.defineProperties(sheet, {
-      disabled: { value: false, writable: true, enumerable: true, configurable: true },
-      href: { value: null, enumerable: true, configurable: true },
-      ownerNode: { value: ownerNode, enumerable: true, configurable: true },
-      cssRules: { value: [], enumerable: true, configurable: true },
-      rules: { value: [], enumerable: true, configurable: true },
-      insertRule: { value: function () { return 0; }, writable: true, enumerable: true, configurable: true },
-      deleteRule: { value: function () {}, writable: true, enumerable: true, configurable: true },
-    });
-    return sheet;
+    return globalThis.__vixenCssomSheetForOwner(ownerNode, true);
   }
 
   function isDescendantOf(nodeId, ancestorId) {

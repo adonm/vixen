@@ -3067,6 +3067,14 @@ impl BrowserCore {
                                 .evaluate_with_shared_page_mut(&source, &context.page)
                                 .map(|_| ()),
                         ),
+                        NavigationScriptStep::Author(PreparedPageScript::InlineModule {
+                            source,
+                            specifier,
+                        }) => Some(runtime.evaluate_module_with_shared_page_mut(
+                            &source,
+                            &specifier,
+                            &context.page,
+                        )),
                         NavigationScriptStep::Author(PreparedPageScript::Skip) => Some(Ok(())),
                         NavigationScriptStep::Complete => None,
                         NavigationScriptStep::Author(PreparedPageScript::External(_)) => {
@@ -3396,9 +3404,17 @@ impl BrowserCore {
             runtime_slots[runtime_slot]
                 .runtime
                 .with_entered_isolate(|runtime| {
-                    let item_result = runtime
-                        .evaluate_with_shared_page_mut(&source, &context.page)
-                        .map(|_| ());
+                    let item_result = if pending.request.is_module() {
+                        runtime.evaluate_module_with_shared_page_mut(
+                            &source,
+                            pending.request.url(),
+                            &context.page,
+                        )
+                    } else {
+                        runtime
+                            .evaluate_with_shared_page_mut(&source, &context.page)
+                            .map(|_| ())
+                    };
                     let interrupted = item_result.as_ref().is_err_and(is_script_interrupted);
                     let (effects, actions) = if interrupted {
                         discard_runtime_outputs(runtime);
@@ -3521,6 +3537,76 @@ impl BrowserCore {
                 );
             }
             LifecycleStage::Settle => {
+                let runtime_slot = self
+                    .context(context_id)
+                    .expect("lifecycle context was checked")
+                    .runtime_slot;
+                let document_url = self
+                    .context(context_id)
+                    .expect("lifecycle context was checked")
+                    .page()
+                    .url()
+                    .to_owned();
+                let (task_result, effects_result, actions_result) = {
+                    let (contexts, runtime_slots) = (&mut self.contexts, &mut self.runtime_slots);
+                    let context = contexts
+                        .get_mut(&context_id)
+                        .expect("lifecycle context was checked");
+                    runtime_slots[runtime_slot]
+                        .runtime
+                        .with_entered_isolate(|runtime| {
+                            let task_result =
+                                runtime.run_document_tasks_with_shared_page_mut(&context.page);
+                            let interrupted =
+                                task_result.as_ref().is_err_and(is_script_interrupted);
+                            let (effects, task_actions) = if interrupted {
+                                discard_runtime_outputs(runtime);
+                                (Ok(RuntimeEffects::default()), Ok(Vec::new()))
+                            } else {
+                                (
+                                    drain_runtime_effects(runtime),
+                                    runtime.drain_navigation_actions(),
+                                )
+                            };
+                            (task_result, effects, task_actions)
+                        })
+                };
+                let mut effects = RuntimeEffects::default();
+                if let Err(error) = task_result
+                    && !is_script_interrupted(&error)
+                {
+                    effects.exceptions.push(RuntimeExceptionEvent {
+                        error: script_error(error),
+                    });
+                }
+                match effects_result {
+                    Ok(task_effects) => effects.extend(task_effects),
+                    Err(error) => effects.exceptions.push(RuntimeExceptionEvent {
+                        error: script_error(error),
+                    }),
+                }
+                let mut actions = actions;
+                match actions_result {
+                    Ok(task_actions) => {
+                        append_navigation_actions_bounded(&mut actions, task_actions)
+                    }
+                    Err(error) => effects.exceptions.push(RuntimeExceptionEvent {
+                        error: script_error(error),
+                    }),
+                }
+                if !effects.is_empty() {
+                    self.emit(BrowserEvent::RuntimeEffects {
+                        context_id,
+                        frame_id,
+                        document_id,
+                        runtime_context_id: self
+                            .context(context_id)
+                            .expect("lifecycle context was checked")
+                            .runtime_context_id,
+                        url: document_url,
+                        effects,
+                    });
+                }
                 if matches!(
                     self.finish_navigation(
                         context_id,
@@ -3811,10 +3897,24 @@ impl BrowserCore {
                         return Err(error);
                     }
                 }
+                let task_error = runtime
+                    .run_document_tasks_with_shared_page_mut(&context.page)
+                    .err();
+                if task_error.as_ref().is_some_and(is_script_interrupted) {
+                    discard_runtime_outputs(runtime);
+                    return Err(task_error.expect("interrupted task error was present"));
+                }
                 let effects = drain_runtime_effects(runtime);
                 let actions = runtime.drain_navigation_actions();
                 match (effects, actions) {
-                    (Ok(effects), Ok(actions)) => Ok((value, effects, actions)),
+                    (Ok(mut effects), Ok(actions)) => {
+                        if let Some(error) = task_error {
+                            effects.exceptions.push(RuntimeExceptionEvent {
+                                error: script_error(error),
+                            });
+                        }
+                        Ok((value, effects, actions))
+                    }
                     (Err(error), _) | (_, Err(error)) => {
                         discard_runtime_outputs(runtime);
                         Err(error)
@@ -8518,6 +8618,64 @@ mod tests {
     }
 
     #[test]
+    fn parser_modules_defer_after_classics_in_production_navigation() {
+        let (mut core, events, command_rx, profile_path) = direct_core();
+        let context_id = direct_create(&mut core);
+        drain_direct_events(&events);
+
+        let navigation_id =
+            direct_begin_navigation(&mut core, context_id, "https://same.test/module-order");
+        direct_complete_source(
+            &mut core,
+            context_id,
+            navigation_id,
+            "https://same.test/module-order",
+            "<!doctype html><title>initial</title>\
+             <script type='module'>__order.push('module-one'); export const one = 1;</script>\
+             <script>\
+               globalThis.__order = ['classic'];\
+               queueMicrotask(() => __order.push('classic-microtask'));\
+               setTimeout(() => { __order.push('timer'); document.title = __order.join(':'); }, 0);\
+             </script>\
+             <script type='module'>await Promise.resolve(); __order.push('module-two'); document.title = __order.join(':'); export const two = 2;</script>"
+                .to_owned(),
+        );
+        direct_drive_to_scripts(&mut core, context_id, navigation_id);
+
+        assert!(core.advance_navigation_work());
+        assert!(core.advance_navigation_work());
+        assert!(core.advance_navigation_work());
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("classic:classic-microtask:module-one:module-two")
+        );
+
+        direct_drive_navigation(&mut core, context_id, navigation_id);
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("classic:classic-microtask:module-one:module-two:timer")
+        );
+        assert_eq!(
+            direct_eval(
+                &mut core,
+                context_id,
+                "setTimeout(() => { __order.push('post-load-task'); document.title = __order.join(':'); }, 0); document.title",
+            ),
+            ScriptValue::String("classic:classic-microtask:module-one:module-two:timer".to_owned())
+        );
+        assert_eq!(
+            core.context_state(context_id).unwrap().title.as_deref(),
+            Some("classic:classic-microtask:module-one:module-two:timer:post-load-task")
+        );
+        let events = drain_direct_events(&events);
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        drop(core);
+        drop(command_rx);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
     fn gated_external_script_executes_in_order_and_navigation_settles() {
         let server = GatedHttpServer::start(1);
         let mut config = test_config();
@@ -8778,6 +8936,56 @@ mod tests {
             .recv_timeout(Duration::from_secs(10))
             .expect("mixed-content probe watchdog");
         wait_for_navigation(&mut handle, context_id, probe_navigation).unwrap();
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn gated_external_module_defers_executes_and_navigation_settles() {
+        let server = GatedHttpServer::start(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = "http://same.test/gated-module-success";
+        config.document_overrides.insert(
+            page_url.to_owned(),
+            format!(
+                "<!doctype html><title>initial</title>\
+                 <script>globalThis.order = 'before'</script>\
+                 <script type='module' src='{}'></script>\
+                 <script>globalThis.order += ':after'</script>",
+                server.url("/ordered-module.js")
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/ordered-module.js");
+        request
+            .respond
+            .send(script_response(
+                "globalThis.order += ':module'; document.title = order; export const loaded = true;",
+                None,
+            ))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("external module response watchdog");
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        let settled = state(&mut handle, context_id);
+
+        assert_eq!(settled.title.as_deref(), Some("before:after:module"));
+        assert_eq!(
+            eval(&mut handle, &settled, "order"),
+            ScriptValue::String("before:after:module".to_owned())
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
 
         server.join();
         drop(handle);

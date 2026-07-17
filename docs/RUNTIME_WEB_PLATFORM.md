@@ -86,6 +86,8 @@ runtime work should deepen correctness and converge state:
 
 - move backend-backed APIs from stubs/smoke shape to Rust-backed behavior,
 - replace transitional runtime/document snapshots with live page-backed resources,
+- preserve parser classics and deferred V8 modules with per-turn microtask
+  checkpoints and bounded post-load/automation document tasks,
 - import focused WPT cases for each widened API family,
 - keep generated WebIDL prototype inheritance intact,
 - keep CDP and headless `--eval` consuming the same runtime path.

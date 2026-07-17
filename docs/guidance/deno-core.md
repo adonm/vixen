@@ -80,6 +80,11 @@ Current state:
 - `just gate-webidl` is the focused regression gate for this layer: generated
   interface/prototype coverage, `JsRuntime` eval, headless `--eval`, and CDP
   `Runtime.evaluate` must stay green together.
+- Parser classics and modules share the persistent document realm. Modules use
+  V8's native module evaluator, defer after parser classics, and checkpoint
+  microtasks before the next script. BrowserCore pumps a bounded document task
+  queue after load and automation turns; unresolved imports fail closed until
+  the A2 loader supplies dependency modules.
 
 Rules:
 

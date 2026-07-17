@@ -120,6 +120,7 @@ impl TestRepo {
                 "user.email=vixen-wpt@example.invalid",
                 "commit",
                 "--quiet",
+                "--no-verify",
                 "-m",
                 "test fixture",
             ],

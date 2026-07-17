@@ -4196,23 +4196,56 @@ const WEB_API_BOOTSTRAP: &str = r#"
   }
 
   let nextTimerId = 1;
-  function runSoon(callback, args) {
+  const documentTasks = new Map();
+  function scheduleDocumentTask(callback, timeout, args, interval, animationFrame) {
     const id = nextTimerId++;
-    if (typeof callback === 'function') {
-      Promise.resolve().then(() => callback(...args));
-    } else {
-      Promise.resolve().then(() => globalThis.eval(String(callback)));
-    }
+    const delay = Math.max(0, Number(timeout) || 0);
+    documentTasks.set(id, {
+      callback,
+      args,
+      delay,
+      due: performance.now() + delay,
+      interval,
+      animationFrame,
+    });
     return id;
   }
-  function setTimeoutShim(callback, timeout = 0, ...args) { return runSoon(callback, args); }
-  function clearTimeoutShim(id) {}
-  function setIntervalShim(callback, timeout = 0, ...args) { return runSoon(callback, args); }
-  function clearIntervalShim(id) {}
-  function requestAnimationFrameShim(callback) {
-    return runSoon((cb) => cb(performance.now()), [callback]);
+  function setTimeoutShim(callback, timeout = 0, ...args) {
+    return scheduleDocumentTask(callback, timeout, args, false, false);
   }
-  function cancelAnimationFrameShim(id) {}
+  function clearTimeoutShim(id) { documentTasks.delete(Number(id)); }
+  function setIntervalShim(callback, timeout = 0, ...args) {
+    return scheduleDocumentTask(callback, timeout, args, true, false);
+  }
+  function clearIntervalShim(id) { clearTimeoutShim(id); }
+  function requestAnimationFrameShim(callback) {
+    if (typeof callback !== 'function') throw new TypeError('requestAnimationFrame callback must be a function');
+    return scheduleDocumentTask(callback, 0, [], false, true);
+  }
+  function cancelAnimationFrameShim(id) { clearTimeoutShim(id); }
+
+  function readyDocumentTaskIds(limit = 64) {
+    const maximum = Math.min(64, Math.max(0, Number(limit) || 0));
+    const now = performance.now();
+    const ready = [];
+    for (const [id, task] of documentTasks) {
+      if (task.due <= now) ready.push(id);
+      if (ready.length >= maximum) break;
+    }
+    return ready;
+  }
+
+  function runDocumentTask(id) {
+    const taskId = Number(id);
+    const task = documentTasks.get(taskId);
+    if (!task) return false;
+    if (task.interval) task.due = performance.now() + Math.max(1, task.delay);
+    else documentTasks.delete(taskId);
+    if (task.animationFrame) task.callback(performance.now());
+    else if (typeof task.callback === 'function') task.callback(...task.args);
+    else globalThis.eval(String(task.callback));
+    return true;
+  }
 
   webidl.adoptInterface('Performance', VixenPerformance);
   webidl.adoptInterface('Storage', VixenStorage);
@@ -4229,7 +4262,6 @@ const WEB_API_BOOTSTRAP: &str = r#"
   defineGlobal('crypto', new VixenCrypto());
   defineGlobal('localStorage', new VixenStorage('local'));
   defineGlobal('sessionStorage', new VixenStorage('session'));
-  defineGlobal('history', { length: 1, state: null, scrollRestoration: 'auto', go() {}, back() {}, forward() {}, pushState() {}, replaceState() {} });
   defineGlobal('screen', { width: 800, height: 600, availWidth: 800, availHeight: 600, colorDepth: 24, pixelDepth: 24 });
   defineGlobal('visualViewport', { offsetLeft: 0, offsetTop: 0, pageLeft: 0, pageTop: 0, width: 800, height: 600, scale: 1 });
   defineGlobal('matchMedia', matchMedia);
@@ -4239,6 +4271,8 @@ const WEB_API_BOOTSTRAP: &str = r#"
   defineGlobal('clearInterval', clearIntervalShim);
   defineGlobal('requestAnimationFrame', requestAnimationFrameShim);
   defineGlobal('cancelAnimationFrame', cancelAnimationFrameShim);
+  defineGlobal('__vixenReadyDocumentTaskIds', readyDocumentTaskIds);
+  defineGlobal('__vixenRunDocumentTask', runDocumentTask);
   Object.defineProperties(globalThis, {
     innerWidth: { value: 800, writable: true, configurable: true },
     innerHeight: { value: 600, writable: true, configurable: true },

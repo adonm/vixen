@@ -67,7 +67,7 @@ pub struct ExternalScript {
     pub nonce: Option<String>,
 }
 
-/// Document-ordered events relevant to classic script execution.
+/// Document-ordered events relevant to classic and module script execution.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DocumentScriptItem {
     /// `<meta http-equiv="Content-Security-Policy" content="...">`.
@@ -76,6 +76,10 @@ pub enum DocumentScriptItem {
     InlineClassicScript(InlineScript),
     /// External classic `<script src>` with a JavaScript type.
     ExternalClassicScript(ExternalScript),
+    /// Inline deferred `<script type="module">`.
+    InlineModuleScript(InlineScript),
+    /// External deferred `<script type="module" src>`.
+    ExternalModuleScript(ExternalScript),
 }
 
 /// Document-ordered author-style items used by the core resource loader and
@@ -322,26 +326,29 @@ impl Document {
             .into_iter()
             .filter_map(|item| match item {
                 DocumentScriptItem::InlineClassicScript(script) => Some(script),
-                DocumentScriptItem::CspMeta(_) | DocumentScriptItem::ExternalClassicScript(_) => {
-                    None
-                }
+                DocumentScriptItem::CspMeta(_)
+                | DocumentScriptItem::ExternalClassicScript(_)
+                | DocumentScriptItem::InlineModuleScript(_)
+                | DocumentScriptItem::ExternalModuleScript(_) => None,
             })
             .collect()
     }
 
-    /// True when the document contains an inline or external classic script.
-    pub fn has_classic_scripts(&self) -> bool {
+    /// True when the document contains an executable classic or module script.
+    pub fn has_scripts(&self) -> bool {
         self.script_execution_items().into_iter().any(|item| {
             matches!(
                 item,
                 DocumentScriptItem::InlineClassicScript(_)
                     | DocumentScriptItem::ExternalClassicScript(_)
+                    | DocumentScriptItem::InlineModuleScript(_)
+                    | DocumentScriptItem::ExternalModuleScript(_)
             )
         })
     }
 
-    /// Document-ordered CSP-meta and classic-script items. Callers run through
-    /// this sequence to apply meta CSP before later scripts.
+    /// Document-ordered CSP-meta and classic/module script items. Callers apply
+    /// meta CSP at discovery time before later scripts.
     pub fn script_execution_items(&self) -> Vec<DocumentScriptItem> {
         let mut out = Vec::new();
         walk(&self.dom.document, &mut |node| {
@@ -385,7 +392,7 @@ impl Document {
                         .iter()
                         .find(|attr| attr.name.local.as_ref() == "type")
                         .map(|attr| attr.value.to_string());
-                    if is_classic_script_type(script_type.as_deref()) {
+                    if script_kind(script_type.as_deref()).is_some() {
                         let nonce = attrs
                             .iter()
                             .find(|attr| attr.name.local.as_ref() == "nonce")
@@ -396,16 +403,35 @@ impl Document {
                     }
                 };
                 if let Some((src, nonce)) = script_item {
-                    if let Some(src) = src {
-                        out.push(DocumentScriptItem::ExternalClassicScript(ExternalScript {
-                            src,
-                            nonce,
-                        }));
-                    } else {
-                        out.push(DocumentScriptItem::InlineClassicScript(InlineScript {
-                            source: text_content_of(node),
-                            nonce,
-                        }));
+                    let module = attrs.borrow().iter().any(|attr| {
+                        attr.name.local.as_ref() == "type"
+                            && attr.value.trim().eq_ignore_ascii_case("module")
+                    });
+                    match (module, src) {
+                        (false, Some(src)) => {
+                            out.push(DocumentScriptItem::ExternalClassicScript(ExternalScript {
+                                src,
+                                nonce,
+                            }))
+                        }
+                        (false, None) => {
+                            out.push(DocumentScriptItem::InlineClassicScript(InlineScript {
+                                source: text_content_of(node),
+                                nonce,
+                            }))
+                        }
+                        (true, Some(src)) => {
+                            out.push(DocumentScriptItem::ExternalModuleScript(ExternalScript {
+                                src,
+                                nonce,
+                            }))
+                        }
+                        (true, None) => {
+                            out.push(DocumentScriptItem::InlineModuleScript(InlineScript {
+                                source: text_content_of(node),
+                                nonce,
+                            }))
+                        }
                     }
                 }
             }
@@ -776,9 +802,15 @@ fn text_content_of(node: &Handle) -> String {
     buf
 }
 
-fn is_classic_script_type(script_type: Option<&str>) -> bool {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ScriptKind {
+    Classic,
+    Module,
+}
+
+fn script_kind(script_type: Option<&str>) -> Option<ScriptKind> {
     let Some(script_type) = script_type else {
-        return true;
+        return Some(ScriptKind::Classic);
     };
     let essence = script_type
         .split(';')
@@ -787,7 +819,10 @@ fn is_classic_script_type(script_type: Option<&str>) -> bool {
         .trim()
         .to_ascii_lowercase();
     if essence.is_empty() {
-        return true;
+        return Some(ScriptKind::Classic);
+    }
+    if essence == "module" {
+        return Some(ScriptKind::Module);
     }
     matches!(
         essence.as_str(),
@@ -808,6 +843,7 @@ fn is_classic_script_type(script_type: Option<&str>) -> bool {
             | "text/x-ecmascript"
             | "text/x-javascript"
     )
+    .then_some(ScriptKind::Classic)
 }
 
 fn children_of(node: &Handle) -> Ref<'_, Vec<Handle>> {
@@ -1054,7 +1090,7 @@ mod tests {
 
         let items = doc.script_execution_items();
         assert_eq!(items.len(), 4);
-        assert!(doc.has_classic_scripts());
+        assert!(doc.has_scripts());
         assert!(matches!(
             &items[0],
             DocumentScriptItem::InlineClassicScript(script) if script.source.contains("before")
@@ -1072,6 +1108,30 @@ mod tests {
             &items[3],
             DocumentScriptItem::InlineClassicScript(script)
                 if script.source.contains("after") && script.nonce.as_deref() == Some("n")
+        ));
+    }
+
+    #[test]
+    fn script_execution_items_include_inline_and_external_modules() {
+        let doc = Document::parse(
+            "<script type='module'>export const inline = true;</script>\
+             <script type='module' src='/module.js' nonce='module-nonce'></script>\
+             <script type='importmap'>{}</script>",
+        )
+        .unwrap();
+
+        let items = doc.script_execution_items();
+        assert_eq!(items.len(), 2);
+        assert!(matches!(
+            &items[0],
+            DocumentScriptItem::InlineModuleScript(script)
+                if script.source.contains("export const inline")
+        ));
+        assert!(matches!(
+            &items[1],
+            DocumentScriptItem::ExternalModuleScript(script)
+                if script.src == "/module.js"
+                    && script.nonce.as_deref() == Some("module-nonce")
         ));
     }
 

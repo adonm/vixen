@@ -124,7 +124,7 @@ media element state (`HTMLMediaElement`/audio/video constants included),
 resource element reflection (`link`/`style`/`script`/`source`), single-range
 `Range`/`Selection` state with Page-owned element-boundary restore, direction,
 point queries, same-container clone/extract/delete/insert/surround operations,
-and `selectionchange` delivery, read-only `history` accessors,
+and `selectionchange` delivery, live `history` accessors/actions,
 details/dialog open-state reflection,
 miscellaneous HTML reflected attributes for lists, quotes, embedded content, and
 table cells,
@@ -227,6 +227,13 @@ Stylo, synchronous geometry, CDP, and exact Flutter pixels at
 The ninth extension exercises detached Attr replacement/removal/reattachment,
 in-use rejection, synchronous geometry, CDP agreement, and exact Flutter pixels
 at `92181acffcd1e39ac9720c8edeeba2c148034a89f61297652dc948306f3af052`.
+The tenth extension executes parser-discovered inline/external modules after
+classics with per-script/module/task microtask checkpoints, top-level await,
+bounded real task queues, cancellation, and post-load pumping. Its module-owned
+120×32 target agrees with CDP and exact Flutter pixels at
+`faa3c863350c742bdeb38338bca09307a4db49e6f7bb7a3f4e6d73eef60ae2fa`.
+Unresolved module imports fail closed until A2 owns dependency loading. Child
+frame globals/documents remain unavailable rather than fabricated until A3.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,
