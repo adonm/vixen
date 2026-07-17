@@ -14,6 +14,7 @@ const endpoint = `ws://127.0.0.1:${port}`;
 const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const expectedDatasetBaseline = '08ad4b805cd6d2be56fae95dc70660206cdac94b1c0776d52b1d0eb03bd32dce';
 const expectedDatasetMutation = '4b8654191f7e9f4eb95486eb34bbb689d2153f4d2484cfaa617d2fb7075b1a24';
+const expectedClassListMutation = '5633ca7a032c8c6a1582f5389b6b4a594b91d99e89784683fbf3679f18639f95';
 
 function fail(message) {
   throw new Error(`playwright-flutter-cdp-smoke: ${message}`);
@@ -213,6 +214,12 @@ async function main() {
       fail('dataset mutation did not change exact Flutter pixels');
     }
 
+    const classListBeforeClick = await page.evaluate(() => {
+      const status = document.querySelector('#status');
+      globalThis.__classListObject = status.classList;
+      return status.classList === globalThis.__classListObject;
+    });
+    if (!classListBeforeClick) fail('classList identity was not stable before input');
     const hitBox = await page.locator('#hit').boundingBox({ timeout: 20000 });
     if (!hitBox || hitBox.x !== 0 || hitBox.y !== 0 || hitBox.width !== 120 || hitBox.height < 40) {
       fail(`Flutter commit geometry for #hit was ${JSON.stringify(hitBox)}`);
@@ -221,8 +228,51 @@ async function main() {
     if (await page.locator('#status').textContent() !== 'clicked:1') {
       fail('Flutter-routed click did not mutate the initial target');
     }
+    const classListEvidence = await page.evaluate(() => {
+      const status = document.querySelector('#status');
+      const rect = status.getBoundingClientRect();
+      return {
+        stable: globalThis.__classListObject === status.classList,
+        reflectedAttribute: status.getAttribute('class'),
+        reflectedToken: globalThis.__classListObject.contains('clicked'),
+        tokens: Array.from(status.classList),
+        synchronousWidth: rect.width,
+      };
+    });
+    if (!classListEvidence.stable
+        || classListEvidence.reflectedAttribute !== 'clicked'
+        || !classListEvidence.reflectedToken
+        || JSON.stringify(classListEvidence.tokens) !== JSON.stringify(['clicked'])
+        || classListEvidence.synchronousWidth !== 140) {
+      fail(`live classList evidence was ${JSON.stringify(classListEvidence)}`);
+    }
+    const statusNode = await firstSession.send('DOM.querySelector', {
+      nodeId: document.root.nodeId,
+      selector: '#status',
+    });
+    const statusAttributes = await firstSession.send('DOM.getAttributes', {
+      nodeId: statusNode.nodeId,
+    });
+    const statusAttributePairs = Object.fromEntries(Array.from(
+      { length: statusAttributes.attributes.length / 2 },
+      (_, index) => statusAttributes.attributes.slice(index * 2, index * 2 + 2),
+    ));
+    const statusModel = await firstSession.send('DOM.getBoxModel', {
+      nodeId: statusNode.nodeId,
+    });
+    if (statusAttributePairs.class !== 'clicked'
+        || statusModel.model.content[2] - statusModel.model.content[0] !== 140) {
+      fail(`CDP DOM did not agree with classList: ${JSON.stringify({ statusAttributePairs, model: statusModel.model })}`);
+    }
     const afterClick = await page.screenshot({ timeout: 20000 });
-    const afterClickInfo = assertCapture(afterClick, 320, 240, [34, 187, 102, 255], 'post-click');
+    const afterClickInfo = assertCapture(
+      afterClick,
+      320,
+      240,
+      [34, 187, 102, 255],
+      'post-click',
+      expectedClassListMutation,
+    );
     if (afterClickInfo.hash === afterDatasetInfo.hash) {
       fail('click mutation did not change the post-dataset exact scene');
     }

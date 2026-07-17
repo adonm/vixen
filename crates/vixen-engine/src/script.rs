@@ -4121,6 +4121,61 @@ mod tests {
     }
 
     #[test]
+    fn live_class_list_reflects_attributes_and_advances_one_source_revision_per_write() {
+        let mut rt = JsRuntime::new().expect("engine init");
+        let mut page = Page::from_html(
+            "file:///class-list-mutate.html",
+            "<html><head><style>\
+               body { margin: 0; }\
+               #target { display: block; width: 80px; height: 20px; }\
+               #target.wide { width: 140px; }\
+               #target.tall { height: 30px; }\
+             </style></head><body>\
+               <div id='target' class='compact'>target</div>\
+             </body></html>",
+        )
+        .unwrap();
+
+        let initial_generation = page.renderer_source_generation();
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 globalThis.__liveClassList = target.classList;\
+                 target.setAttribute('class', 'wide');\
+                 return String(__liveClassList === target.classList) + ':' +\
+                   __liveClassList.value + ':' + __liveClassList.contains('wide'); })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("true:wide:true".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 1);
+        let target_id = page.query_selector_all("#target").unwrap()[0].node_id;
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("width".to_owned(), "140px".to_owned()))
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(
+                "(() => { const target = document.querySelector('#target');\
+                 __liveClassList.add('tall');\
+                 return target.getAttribute('class') + ':' +\
+                   String(__liveClassList === target.classList) + ':' +\
+                   Array.from(target.classList).join(','); })()",
+                &mut page,
+            )
+            .unwrap(),
+            JsValue::String("wide tall:true:wide,tall".to_owned())
+        );
+        assert_eq!(page.renderer_source_generation(), initial_generation + 2);
+        assert!(
+            page.computed_style(target_id)
+                .contains(&("height".to_owned(), "30px".to_owned()))
+        );
+    }
+
+    #[test]
     fn page_dynamic_inline_script_elements_execute_when_inserted() {
         let mut rt = JsRuntime::new().expect("engine init");
         let mut page = Page::from_html(

@@ -2042,7 +2042,7 @@ const DOM_API_BOOTSTRAP: &str = r#"
   function invalidateElementCaches(nodeId) {
     const element = elementObjects.get(nodeId);
     if (!element) return;
-    for (const key of ['__vixenAttributes', '__vixenClassList', '__vixenRelList', '__vixenSandboxList', '__vixenStyle']) {
+    for (const key of ['__vixenAttributes', '__vixenRelList', '__vixenSandboxList', '__vixenStyle']) {
       if (Object.prototype.hasOwnProperty.call(element, key)) delete element[key];
     }
   }

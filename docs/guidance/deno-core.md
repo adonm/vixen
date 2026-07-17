@@ -55,7 +55,10 @@ Current state:
   focused DOM ops. `HTMLElement.dataset` is the first host-family convergence:
   one stable Proxy-backed `DOMStringMap` reflects live attributes and routes
   assignment/deletion through the shared Rust name conversion and normal Page
-  mutation path. Element geometry reads
+  mutation path. `Element.classList` is the second convergence slice: its stable
+  `DOMTokenList` identity reads the current `class` attribute and writes through
+  the same Page mutation path instead of being discarded after each mutation.
+  Element geometry reads
   (`getBoundingClientRect()` / `getClientRects()` / `getBoxQuads()`), Range
   rectangles, and client/offset/scroll metrics now cross a DOM rect op and
   materialize Web-shaped rect/list/quad objects on generated WebIDL prototypes.

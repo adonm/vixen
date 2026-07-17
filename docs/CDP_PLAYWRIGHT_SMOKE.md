@@ -20,17 +20,20 @@ The smoke proves:
 4. One stable live `DOMStringMap` write reflects to `data-layout-mode`, advances
 the normal mutation/cascade path, returns 140×32 synchronous page geometry,
 then matches CDP DOM attributes/geometry and a pinned distinct Flutter PNG.
-5. Pointer input uses the displayed commit's Flutter hit-test handle and target;
+5. One retained live `classList` survives the pointer-driven `class` mutation,
+   reflects `clicked`, agrees with 140px synchronous/CDP geometry, and produces
+   a second pinned exact Flutter PNG.
+6. Pointer input uses the displayed commit's Flutter hit-test handle and target;
    the C ABI has no raw coordinate command.
-6. Later DOM/style mutation produces a new source revision and distinct exact scene.
-7. `Page.captureScreenshot` and high-level screenshot return direct Flutter scene
+7. Later DOM/style mutation produces a new source revision and distinct exact scene.
+8. `Page.captureScreenshot` and high-level screenshot return direct Flutter scene
    PNGs without browser/compositor chrome.
-8. Simultaneous 320×240 and 480×300 targets keep source, viewport, input, and
+9. Simultaneous 320×240 and 480×300 targets keep source, viewport, input, and
    scene state independent.
-9. Switching targets does not lose presentation state.
-10. Forced renderer reset requests a full snapshot and recovers a byte-identical
+10. Switching targets does not lose presentation state.
+11. Forced renderer reset requests a full snapshot and recovers a byte-identical
    scene.
-11. Runtime, network, permissions, tracing, history, dialog, form/text input, and
+12. Runtime, network, permissions, tracing, history, dialog, form/text input, and
     stable protocol-error slices remain available through the shared CDP core.
 
 Native `vixen-headless --cdp` is text/runtime-only. Screenshot, layout geometry,

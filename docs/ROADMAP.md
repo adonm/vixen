@@ -552,6 +552,19 @@ dataset write, observes 140×32 geometry synchronously in that task, reads the
 same attribute/node/geometry through CDP, and pins different before/after exact
 Flutter PNGs. This is one live host-family vertical, not completion of A1.
 
+**Second A1 checkpoint:** `Element.classList` now retains one live
+`DOMTokenList` identity across external and list-driven `class` mutations rather
+than discarding the wrapper after every attribute write. Focused runtime proof
+retains the object through `setAttribute`, reflects current tokens, advances
+exactly one renderer-source generation per write, and recascades `.wide` and
+`.tall` selectors to 140×30. The release/AOT Playwright corridor retains the
+same object through Flutter-routed input, observes `clicked` and 140px geometry
+in the page task and CDP, and pins the resulting exact Flutter PNG to
+`5633ca7a032c8c6a1582f5389b6b4a594b91d99e89784683fbf3679f18639f95` before
+byte-identical target switching and renderer recovery. This converges one more
+attribute-backed host object; other token lists, inline style, collections, and
+attribute nodes remain separate work.
+
 **Proof:** script-driven mutation visibly changes the Flutter scene; synchronous
 and asynchronous geometry observe the right commit; CDP and page script inspect
 the same nodes.
