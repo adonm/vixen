@@ -126,13 +126,12 @@ impl CorsResponseHeaders {
             let name = name.as_ref();
             let value = value.as_ref();
             match name.to_ascii_lowercase().as_str() {
-                "access-control-allow-origin" => {
+                "access-control-allow-origin" if out.allow_origin.is_none() => {
                     // Multiple Allow-Origin values are invalid (the response
                     // would be a network error); browsers take the first.
-                    if out.allow_origin.is_none() {
-                        out.allow_origin = Some(value.trim().to_owned());
-                    }
+                    out.allow_origin = Some(value.trim().to_owned());
                 }
+                "access-control-allow-origin" => {}
                 "access-control-allow-credentials" => {
                     // Fetch § 3.2.1: only the literal `true` (case-insensitive)
                     // enables credentials; anything else is `false`.
