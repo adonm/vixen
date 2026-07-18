@@ -409,10 +409,8 @@ pub fn detach_transferred(value: &mut StructuredCloneValue, transfer: &[Transfer
 
 fn detach_inner(value: &mut StructuredCloneValue, to_detach: &HashSet<u64>) {
     match value {
-        StructuredCloneValue::ArrayBuffer(buf) => {
-            if to_detach.contains(&buf.id) {
-                buf.detached = true;
-            }
+        StructuredCloneValue::ArrayBuffer(buf) if to_detach.contains(&buf.id) => {
+            buf.detached = true;
         }
         StructuredCloneValue::Array(items) => {
             for v in items {
