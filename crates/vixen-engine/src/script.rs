@@ -2704,6 +2704,67 @@ mod tests {
         )
     }
 
+    fn spawn_expires_revalidation_server(
+        host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, SystemTime};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = std::sync::Arc::new(AtomicUsize::new(0));
+        let server_requests = requests.clone();
+        let date = httpdate::fmt_http_date(SystemTime::now());
+        let expires = httpdate::fmt_http_date(SystemTime::now() + Duration::from_secs(600));
+        let handle = std::thread::spawn(move || {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                server_requests.fetch_add(1, Ordering::SeqCst);
+                let mut request = [0_u8; 2048];
+                let read = stream.read(&mut request).unwrap_or_default();
+                let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+                if index == 0 {
+                    let body = "expires-v1";
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nDate: {date}\r\nExpires: {expires}\r\nETag: \"expires-v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    stream.write_all(response.as_bytes()).unwrap();
+                } else if request.contains("\r\ncache-control: no-cache\r\n")
+                    && request.contains("\r\nif-none-match: \"expires-v1\"\r\n")
+                {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 304 Not Modified\r\nETag: \"expires-v1\"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                } else {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                }
+            }
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            requests,
+            handle,
+        )
+    }
+
     fn spawn_fresh_vary_server(
         host: &str,
     ) -> (
@@ -7183,6 +7244,44 @@ mod tests {
     }
 
     #[test]
+    fn fetch_expires_freshness_and_request_no_cache_share_profile_decision() {
+        use std::sync::atomic::Ordering;
+
+        let (url, network_config, requests, server) =
+            spawn_expires_revalidation_server("vixen-fetch-expires.com");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-fetch-expires-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
+            .expect("engine init");
+        let default_fetch = format!("fetch({url:?}).then((response) => response.text())");
+
+        assert_eq!(
+            rt.evaluate(&default_fetch).unwrap(),
+            JsValue::String("expires-v1".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate(&default_fetch).unwrap(),
+            JsValue::String("expires-v1".to_owned())
+        );
+        let revalidate = format!(
+            "fetch({url:?}, {{ headers: {{ 'Cache-Control': 'no-cache' }} }}).then((response) => response.text())"
+        );
+        assert_eq!(
+            rt.evaluate(&revalidate).unwrap(),
+            JsValue::String("expires-v1".to_owned())
+        );
+
+        server.join().unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        drop(rt);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn fetch_default_reuses_fresh_vary_match_without_network() {
         use std::sync::atomic::Ordering;
 
@@ -7288,6 +7387,38 @@ mod tests {
 
         server.join().unwrap();
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fetch_request_no_store_directive_skips_profile_cache_entry() {
+        let (url, network_config, server) =
+            spawn_fetch_server("vixen-fetch-request-no-store.com", "uncached body");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-fetch-request-no-store-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+
+        {
+            let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
+                .expect("engine init");
+            let expression = format!(
+                "fetch({url:?}, {{ headers: {{ 'Cache-Control': 'no-store' }} }}).then((response) => response.text())"
+            );
+            assert_eq!(
+                rt.evaluate(&expression).unwrap(),
+                JsValue::String("uncached body".to_owned())
+            );
+        }
+
+        let parsed = url::Url::parse(&url).unwrap();
+        let origin_key = vixen_net::Origin::from_url(&parsed).partition_key();
+        let store = vixen_store::Store::open(&path).unwrap();
+        assert!(store.cache_variants(&origin_key, &url).unwrap().is_empty());
+
+        server.join().unwrap();
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

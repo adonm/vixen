@@ -4,6 +4,7 @@
 #![forbid(unsafe_code)]
 
 use std::collections::{BTreeMap, HashSet};
+use std::time::UNIX_EPOCH;
 
 use vixen_store::CacheEntry;
 
@@ -24,24 +25,61 @@ pub(crate) fn cache_use(
     now_unix: i64,
     max_body_bytes: u64,
 ) -> CacheUse {
+    let request_cache_control = map_header(request_headers, "cache-control");
     if !(200..300).contains(&entry.status)
         || entry.body.len() as u64 > max_body_bytes
         || cache_control_has(&entry.headers, "no-store")
+        || request_cache_control.is_some_and(|value| directive(value, "no-store").is_some())
         || !vary_matches(entry, request_headers)
     {
         return CacheUse::Unusable;
     }
-    if cache_control_has(&entry.headers, "no-cache") {
+    if cache_control_has(&entry.headers, "no-cache")
+        || request_cache_control.is_some_and(|value| directive(value, "no-cache").is_some())
+        || request_cache_control.is_none()
+            && map_header(request_headers, "pragma")
+                .is_some_and(|value| directive(value, "no-cache").is_some())
+    {
         return CacheUse::Stale;
     }
-    let Some(max_age) = cache_control_seconds(&entry.headers, "max-age") else {
+    let date_value = header(&entry.headers, "date")
+        .and_then(http_date_unix)
+        .unwrap_or(entry.fetched_unix);
+    let apparent_age = entry.fetched_unix.saturating_sub(date_value).max(0) as u64;
+    let age_value = header(&entry.headers, "age")
+        .map(|value| value.trim().parse::<u64>().unwrap_or(u64::MAX))
+        .unwrap_or_default();
+    let current_age = apparent_age
+        .max(age_value)
+        .saturating_add(now_unix.saturating_sub(entry.fetched_unix).max(0) as u64);
+    let freshness_lifetime =
+        match seconds_directive(header(&entry.headers, "cache-control"), "max-age") {
+            SecondsDirective::Value(seconds) => Some(seconds),
+            SecondsDirective::Absent => header(&entry.headers, "expires")
+                .and_then(http_date_unix)
+                .map(|expires| expires.saturating_sub(date_value).max(0) as u64),
+            SecondsDirective::Invalid => None,
+        };
+    let Some(freshness_lifetime) = freshness_lifetime else {
         return CacheUse::Stale;
     };
-    let age = header(&entry.headers, "age")
-        .and_then(|value| value.trim().parse::<u64>().ok())
-        .unwrap_or_default();
-    let resident = now_unix.saturating_sub(entry.fetched_unix).max(0) as u64;
-    if age.saturating_add(resident) < max_age {
+
+    let request_max_age = seconds_directive(request_cache_control, "max-age");
+    if matches!(request_max_age, SecondsDirective::Invalid)
+        || matches!(request_max_age, SecondsDirective::Value(limit) if current_age >= limit)
+    {
+        return CacheUse::Stale;
+    }
+    let request_min_fresh = seconds_directive(request_cache_control, "min-fresh");
+    if matches!(request_min_fresh, SecondsDirective::Invalid)
+        || matches!(request_min_fresh, SecondsDirective::Value(required) if current_age.saturating_add(required) >= freshness_lifetime)
+    {
+        return CacheUse::Stale;
+    }
+    let reusable = current_age < freshness_lifetime
+        || !cache_control_has(&entry.headers, "must-revalidate")
+            && max_stale_allows(request_cache_control, current_age - freshness_lifetime);
+    if reusable {
         CacheUse::Fresh
     } else {
         CacheUse::Stale
@@ -55,7 +93,11 @@ pub(crate) fn cache_entry(
     request_headers: &BTreeMap<String, String>,
     fetched_unix: i64,
 ) -> Option<CacheEntry> {
-    if !(200..300).contains(&status) || cache_control_has_map(headers, "no-store") {
+    if !(200..300).contains(&status)
+        || cache_control_has_map(headers, "no-store")
+        || map_header(request_headers, "cache-control")
+            .is_some_and(|value| directive(value, "no-store").is_some())
+    {
         return None;
     }
     let vary_headers = capture_vary(headers.get("vary").map(String::as_str), request_headers)?;
@@ -189,9 +231,66 @@ fn cache_control_has_map(headers: &BTreeMap<String, String>, wanted: &str) -> bo
         .is_some_and(|value| directive(value, wanted).is_some())
 }
 
-fn cache_control_seconds(headers: &[(String, String)], wanted: &str) -> Option<u64> {
-    directive(header(headers, "cache-control")?, wanted)?
-        .and_then(|value| value.trim_matches('"').parse().ok())
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SecondsDirective {
+    Absent,
+    Value(u64),
+    Invalid,
+}
+
+fn seconds_directive(value: Option<&str>, wanted: &str) -> SecondsDirective {
+    let Some(value) = value else {
+        return SecondsDirective::Absent;
+    };
+    let mut found = None;
+    for item in value.split(',') {
+        let (name, value) = item
+            .split_once('=')
+            .map_or((item.trim(), None), |(name, value)| {
+                (name.trim(), Some(value.trim()))
+            });
+        if !name.eq_ignore_ascii_case(wanted) {
+            continue;
+        }
+        let Some(seconds) = value
+            .map(|value| value.trim_matches('"'))
+            .and_then(|value| value.parse::<u64>().ok())
+        else {
+            return SecondsDirective::Invalid;
+        };
+        if found.is_some_and(|previous| previous != seconds) {
+            return SecondsDirective::Invalid;
+        }
+        found = Some(seconds);
+    }
+    found.map_or(SecondsDirective::Absent, SecondsDirective::Value)
+}
+
+fn max_stale_allows(cache_control: Option<&str>, staleness: u64) -> bool {
+    let Some(cache_control) = cache_control else {
+        return false;
+    };
+    let mut found = false;
+    let mut maximum = None;
+    for item in cache_control.split(',') {
+        let (name, value) = item
+            .split_once('=')
+            .map_or((item.trim(), None), |(name, value)| {
+                (name.trim(), Some(value.trim()))
+            });
+        if !name.eq_ignore_ascii_case("max-stale") {
+            continue;
+        }
+        found = true;
+        let Some(value) = value else {
+            return true;
+        };
+        let Ok(seconds) = value.trim_matches('"').parse::<u64>() else {
+            return false;
+        };
+        maximum = Some(maximum.map_or(seconds, |current: u64| current.min(seconds)));
+    }
+    found && maximum.is_some_and(|maximum| staleness <= maximum)
 }
 
 fn directive<'a>(value: &'a str, wanted: &str) -> Option<Option<&'a str>> {
@@ -210,6 +309,23 @@ fn header<'a>(headers: &'a [(String, String)], wanted: &str) -> Option<&'a str> 
         .iter()
         .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
         .map(|(_, value)| value.as_str())
+}
+
+fn map_header<'a>(headers: &'a BTreeMap<String, String>, wanted: &str) -> Option<&'a str> {
+    headers
+        .iter()
+        .find(|(name, _)| name.eq_ignore_ascii_case(wanted))
+        .map(|(_, value)| value.as_str())
+}
+
+fn http_date_unix(value: &str) -> Option<i64> {
+    let time = httpdate::parse_http_date(value).ok()?;
+    match time.duration_since(UNIX_EPOCH) {
+        Ok(duration) => i64::try_from(duration.as_secs()).ok(),
+        Err(error) => i64::try_from(error.duration().as_secs())
+            .ok()
+            .and_then(i64::checked_neg),
+    }
 }
 
 #[cfg(test)]
@@ -243,6 +359,109 @@ mod tests {
                 &entry(&[("cache-control", "no-cache, max-age=60")], Vec::new()),
                 &request,
                 100,
+                1024
+            ),
+            CacheUse::Stale
+        );
+    }
+
+    #[test]
+    fn expires_and_age_bound_freshness() {
+        let date = "Sun, 06 Nov 1994 08:49:37 GMT";
+        let date_unix = http_date_unix(date).unwrap();
+        let mut cached = entry(
+            &[
+                ("date", date),
+                ("expires", "Sun, 06 Nov 1994 08:50:37 GMT"),
+                ("age", "10"),
+            ],
+            Vec::new(),
+        );
+        cached.fetched_unix = date_unix + 5;
+
+        assert_eq!(
+            cache_use(&cached, &BTreeMap::new(), date_unix + 54, 1024),
+            CacheUse::Fresh
+        );
+        assert_eq!(
+            cache_use(&cached, &BTreeMap::new(), date_unix + 55, 1024),
+            CacheUse::Stale
+        );
+
+        cached
+            .headers
+            .push(("cache-control".to_owned(), "max-age=5".to_owned()));
+        assert_eq!(
+            cache_use(&cached, &BTreeMap::new(), date_unix + 5, 1024),
+            CacheUse::Stale
+        );
+        cached.headers.last_mut().unwrap().1 = "max-age=invalid".to_owned();
+        assert_eq!(
+            cache_use(&cached, &BTreeMap::new(), date_unix + 5, 1024),
+            CacheUse::Stale
+        );
+    }
+
+    #[test]
+    fn request_directives_constrain_reuse_and_storage() {
+        let cached = entry(&[("cache-control", "max-age=60")], Vec::new());
+        for (value, expected) in [
+            ("no-cache", CacheUse::Stale),
+            ("max-age=0", CacheUse::Stale),
+            ("max-age=10", CacheUse::Stale),
+            ("max-age=11", CacheUse::Fresh),
+            ("min-fresh=50", CacheUse::Stale),
+            ("min-fresh=49", CacheUse::Fresh),
+            ("max-age=invalid", CacheUse::Stale),
+        ] {
+            assert_eq!(
+                cache_use(
+                    &cached,
+                    &BTreeMap::from([("cache-control".to_owned(), value.to_owned())]),
+                    110,
+                    1024
+                ),
+                expected,
+                "request Cache-Control: {value}"
+            );
+        }
+        assert_eq!(
+            cache_use(
+                &cached,
+                &BTreeMap::from([("pragma".to_owned(), "no-cache".to_owned())]),
+                100,
+                1024
+            ),
+            CacheUse::Stale
+        );
+        let no_store = BTreeMap::from([("cache-control".to_owned(), "no-store".to_owned())]);
+        assert_eq!(cache_use(&cached, &no_store, 100, 1024), CacheUse::Unusable);
+        assert!(cache_entry(200, &BTreeMap::new(), b"body".to_vec(), &no_store, 100).is_none());
+    }
+
+    #[test]
+    fn max_stale_does_not_override_revalidation_requirements() {
+        let request = BTreeMap::from([("cache-control".to_owned(), "max-stale=5".to_owned())]);
+        let cached = entry(&[("cache-control", "max-age=10")], Vec::new());
+        assert_eq!(cache_use(&cached, &request, 115, 1024), CacheUse::Fresh);
+        assert_eq!(cache_use(&cached, &request, 116, 1024), CacheUse::Stale);
+        assert_eq!(
+            cache_use(
+                &entry(
+                    &[("cache-control", "max-age=10, must-revalidate")],
+                    Vec::new()
+                ),
+                &request,
+                115,
+                1024
+            ),
+            CacheUse::Stale
+        );
+        assert_eq!(
+            cache_use(
+                &entry(&[("cache-control", "max-age=10, no-cache")], Vec::new()),
+                &BTreeMap::from([("cache-control".to_owned(), "max-stale".to_owned())]),
+                115,
                 1024
             ),
             CacheUse::Stale

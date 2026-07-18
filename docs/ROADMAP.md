@@ -870,8 +870,25 @@ select the newest matching usable variant through one shared decision before
 rerunning current policy. Store tests prove two variants survive, selector order
 does not create a duplicate, legacy migration works, and bounds count rows. The
 runtime `en` → `fr` → `en` proof performs exactly two transport requests and
-returns the first English representation on the third fetch. `Expires`/request
-directives and redirect aliases remain the next cache breadth.
+returns the first English representation on the third fetch. At this
+checkpoint, `Expires`/request directives and redirect aliases remained the next
+cache breadth.
+
+**Tenth A2 checkpoint:** the shared cache decision now computes current age from
+strict HTTP `Date`, `Age`, stored time, and resident time, then uses response
+`max-age` or `Expires` for explicit freshness. Malformed `max-age`/`Age` is
+stale, while invalid `Date`/`Expires` is ignored rather than guessed. Effective
+request `no-store` bypasses
+reuse and insertion; `no-cache`/legacy `Pragma: no-cache`, `max-age`, and
+`min-fresh` force revalidation when required. Bounded or valueless `max-stale`
+may reuse an expired response but cannot override response `no-cache` or
+`must-revalidate`. Numeric overflow and conflicting duplicate directives do not
+become permissive. Unit boundaries pin age/freshness equality, contradictory
+`max-age`/`Expires`, malformed values, request constraints, and stale allowance.
+An end-to-end page test performs one `Expires`-fresh cache hit, then sends author
+`Cache-Control: no-cache` and proves validator/304 revalidation with exactly two
+transport requests; a separate profile test proves request `no-store` persists
+no representation. Heuristic freshness and redirect aliases remain cache breadth.
 
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
@@ -1030,8 +1047,7 @@ Work top-to-bottom and finish/document/commit each slice:
    transfer into policy-safe head and bounded body ownership so `fetch()` may
    resolve before body completion while stream reads, cancellation, integrity,
    cache commit, and CDP progress retain one terminal lifecycle. Then extend the
-   cache checkpoint with `Expires`/request-directive freshness and redirect
-   aliases. Keep direct
+   cache checkpoint with redirect aliases. Keep direct
    classic/automation dynamic imports and module import attributes fail-closed
    until they can carry exact source URL, policy, and lifecycle provenance.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
