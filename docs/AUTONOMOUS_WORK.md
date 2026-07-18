@@ -52,10 +52,14 @@ import map now resolves through the same policy-bound loader. Page-module
 dynamic imports retain bounded graph provenance and cancellation across later
 roots/tasks. A shared bounded private-cache decision now gives page fetch/XHR and
 module loads `max-age`/`Age` freshness plus exact single-representation `Vary`
-matching. Continue A2 with fetch/XHR transfer streaming, signal-driven abort,
-progress, and diagnostics, then simultaneous variants, `Expires`, request cache
-directives, and redirect aliases; keep direct classic/automation dynamic imports
-and import attributes fail-closed meanwhile.
+matching. The transport now performs bounded incremental body reads and
+publishes progress/completion through ReadableStream, XHR, BrowserCore/C ABI, and
+CDP. Continue A2 by moving page fetch/XHR onto asynchronous loader ownership so
+active `AbortSignal` cancellation drops transport and policy-safe responses may
+resolve before completion; do not misreport the current buffer-before-resolution
+stream as online consumption. Then add simultaneous cache variants, `Expires`,
+request directives, and redirect aliases. Keep direct classic/automation dynamic
+imports and import attributes fail-closed meanwhile.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

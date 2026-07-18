@@ -267,6 +267,17 @@ CORS/integrity/status/MIME/body policy still runs before exposure. Simultaneous
 variants, `Expires`/heuristic freshness, request cache directives, and redirect
 aliases remain unsupported.
 
+HTTP bodies are now read incrementally with the configured cap checked before
+buffer growth. Ordered response/progress/completed diagnostics include exact
+chunk/cumulative/final bytes and reach BrowserCore, C ABI output, module events,
+and CDP `Network.dataReceived`/`loadingFinished`. `Response.body` and Blob expose
+bounded `ReadableStream` readers with one-shot body-use behavior; XHR emits typed
+upload/download progress and terminal events. Pre-aborted fetch rejects with the
+first signal reason without network I/O. Fetch still resolves only after the
+bounded text body completes, and active page `AbortSignal` does not yet cancel
+transport; BrowserCore stop/navigation cancellation remains the active-transport
+cancellation path.
+
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,
 generation-checked, and directly cancellable; deterministic stop/supersede,

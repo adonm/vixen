@@ -6191,18 +6191,35 @@ fn network_fetch_notifications(
             request_id,
             url,
             status,
-        } => vec![
-            network_fetch_response_received_notification(
-                &request_id,
-                &url,
-                status,
-                frame_id,
-                loader_id,
-                timestamp,
-                session_id,
-            ),
-            network_fetch_loading_finished_notification(&request_id, timestamp, session_id),
-        ],
+        } => vec![network_fetch_response_received_notification(
+            &request_id,
+            &url,
+            status,
+            frame_id,
+            loader_id,
+            timestamp,
+            session_id,
+        )],
+        RuntimeNetworkEvent::Progress {
+            request_id,
+            chunk_bytes,
+            ..
+        } => vec![network_fetch_data_received_notification(
+            &request_id,
+            chunk_bytes,
+            timestamp,
+            session_id,
+        )],
+        RuntimeNetworkEvent::Completed {
+            request_id,
+            body_bytes,
+            ..
+        } => vec![network_fetch_loading_finished_notification(
+            &request_id,
+            body_bytes,
+            timestamp,
+            session_id,
+        )],
         RuntimeNetworkEvent::Failure {
             request_id,
             url,
@@ -6256,6 +6273,7 @@ fn network_fetch_response_received_notification(
 
 fn network_fetch_loading_finished_notification(
     request_id: &str,
+    body_bytes: u64,
     timestamp: u64,
     session_id: Option<&str>,
 ) -> String {
@@ -6264,7 +6282,25 @@ fn network_fetch_loading_finished_notification(
         json!({
             "requestId": request_id,
             "timestamp": timestamp,
-            "encodedDataLength": 0,
+            "encodedDataLength": body_bytes,
+        }),
+        session_id,
+    )
+}
+
+fn network_fetch_data_received_notification(
+    request_id: &str,
+    chunk_bytes: u64,
+    timestamp: u64,
+    session_id: Option<&str>,
+) -> String {
+    notification(
+        "Network.dataReceived",
+        json!({
+            "requestId": request_id,
+            "timestamp": timestamp,
+            "dataLength": chunk_bytes,
+            "encodedDataLength": chunk_bytes,
         }),
         session_id,
     )
@@ -7940,11 +7976,20 @@ mod tests {
         assert_eq!(response["params"]["type"], "Fetch");
         assert_eq!(response["params"]["response"]["status"], 200);
 
+        let data = notifications
+            .iter()
+            .find(|event| event["method"] == "Network.dataReceived")
+            .expect("fetch dataReceived event");
+        assert_eq!(data["params"]["requestId"], "fetch-1");
+        assert_eq!(data["params"]["dataLength"], 8);
+        assert_eq!(data["params"]["encodedDataLength"], 8);
+
         let finished = notifications
             .iter()
             .find(|event| event["method"] == "Network.loadingFinished")
             .expect("fetch loadingFinished event");
         assert_eq!(finished["params"]["requestId"], "fetch-1");
+        assert_eq!(finished["params"]["encodedDataLength"], 8);
         server.join().unwrap();
     }
 

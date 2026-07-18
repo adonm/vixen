@@ -28,6 +28,9 @@ pub const DEFAULT_MAX_BODY_BYTES: u64 = 8 * 1024 * 1024;
 /// Default redirect cap. Browsers use ~20; navigation rarely needs more than
 /// a handful.
 pub const DEFAULT_MAX_REDIRECTS: usize = 10;
+/// Maximum retained/callback body-progress records per response. Chunks below
+/// the per-request reporting quantum are coalesced before crossing this seam.
+pub const MAX_BODY_PROGRESS_EVENTS: u64 = 256;
 
 /// Errors that can arise during a fetch. Each variant is reachable from
 /// tests (docs/PLAN.md Phase 1: "every error variant of NetworkError").
@@ -350,7 +353,7 @@ impl Network {
             if let Some(body) = &body {
                 req = req.body(body.clone());
             }
-            let resp = req.send().await.map_err(map_reqwest_error)?;
+            let mut resp = req.send().await.map_err(map_reqwest_error)?;
 
             // Collect Set-Cookie into the jar (best-effort; a malformed
             // cookie is dropped, not fatal — RFC 6265 §5.3 step 1).
@@ -372,6 +375,14 @@ impl Network {
                     NetworkEvent::Response {
                         url: current.to_string(),
                         status,
+                    },
+                    &mut on_progress,
+                );
+                record_progress(
+                    &mut events,
+                    NetworkEvent::Completed {
+                        url: current.to_string(),
+                        body_bytes: 0,
                     },
                     &mut on_progress,
                 );
@@ -444,7 +455,8 @@ impl Network {
             );
 
             // Body-size guard: prefer Content-Length, then the actual bytes.
-            if let Some(cl) = resp.content_length()
+            let total_bytes = resp.content_length();
+            if let Some(cl) = total_bytes
                 && cl > limit
             {
                 return Err(NetworkError::BodyTooLarge {
@@ -453,19 +465,66 @@ impl Network {
                     url: current.to_string(),
                 });
             }
-            // Capture headers before `bytes()` consumes the response.
+            // Capture headers before incrementally consuming the response.
             let headers = flatten_headers(resp.headers());
-            let bytes = resp.bytes().await.map_err(map_reqwest_error)?;
-            if (bytes.len() as u64) > limit {
-                return Err(NetworkError::BodyTooLarge {
-                    limit,
-                    actual: bytes.len() as u64,
-                    url: current.to_string(),
-                });
+            let capacity =
+                usize::try_from(total_bytes.unwrap_or_default().min(limit)).unwrap_or_default();
+            let mut body = Vec::with_capacity(capacity);
+            let mut loaded_bytes = 0_u64;
+            let mut pending_progress_bytes = 0_u64;
+            let progress_quantum = body_progress_quantum(limit);
+            while let Some(chunk) = resp.chunk().await.map_err(map_reqwest_error)? {
+                let chunk_bytes = chunk.len() as u64;
+                let actual = loaded_bytes.saturating_add(chunk_bytes);
+                if actual > limit {
+                    return Err(NetworkError::BodyTooLarge {
+                        limit,
+                        actual,
+                        url: current.to_string(),
+                    });
+                }
+                body.extend_from_slice(&chunk);
+                loaded_bytes = actual;
+                pending_progress_bytes = pending_progress_bytes.saturating_add(chunk_bytes);
+                if pending_progress_bytes >= progress_quantum
+                    || total_bytes.is_some_and(|total| loaded_bytes == total)
+                {
+                    record_progress(
+                        &mut events,
+                        NetworkEvent::BodyProgress {
+                            url: current.to_string(),
+                            chunk_bytes: pending_progress_bytes,
+                            loaded_bytes,
+                            total_bytes,
+                        },
+                        &mut on_progress,
+                    );
+                    pending_progress_bytes = 0;
+                }
             }
+            if pending_progress_bytes > 0 {
+                record_progress(
+                    &mut events,
+                    NetworkEvent::BodyProgress {
+                        url: current.to_string(),
+                        chunk_bytes: pending_progress_bytes,
+                        loaded_bytes,
+                        total_bytes,
+                    },
+                    &mut on_progress,
+                );
+            }
+            record_progress(
+                &mut events,
+                NetworkEvent::Completed {
+                    url: current.to_string(),
+                    body_bytes: loaded_bytes,
+                },
+                &mut on_progress,
+            );
 
             return Ok(ByteResponse {
-                body: bytes.to_vec(),
+                body,
                 headers,
                 status,
                 final_url: current.to_string(),
@@ -533,6 +592,10 @@ fn request_host(url: &Url) -> Option<String> {
         Some(port) => format!("{host}:{port}"),
         None => host.to_owned(),
     })
+}
+
+fn body_progress_quantum(limit: u64) -> u64 {
+    limit.div_ceil(MAX_BODY_PROGRESS_EVENTS).max(1)
 }
 
 fn record_progress<F>(events: &mut Vec<NetworkEvent>, event: NetworkEvent, on_progress: &mut F)
@@ -712,6 +775,15 @@ mod tests {
     }
 
     #[test]
+    fn body_progress_quantum_bounds_retained_diagnostics() {
+        for limit in [0, 1, 255, 256, 257, DEFAULT_MAX_BODY_BYTES] {
+            let quantum = body_progress_quantum(limit);
+            assert!(quantum >= 1);
+            assert!(limit.div_ceil(quantum) <= MAX_BODY_PROGRESS_EVENTS);
+        }
+    }
+
+    #[test]
     fn client_builds_with_rustls() {
         // The reqwest+rustls client must construct (rustls-tls feature on).
         let net = Network::with_defaults().expect("client builds");
@@ -786,6 +858,16 @@ mod tests {
                 url: final_url,
                 status: 200,
             },
+            NetworkEvent::BodyProgress {
+                url: format!("http://{PROGRESS_TEST_HOST}:{}/final", address.port()),
+                chunk_bytes: 2,
+                loaded_bytes: 2,
+                total_bytes: Some(2),
+            },
+            NetworkEvent::Completed {
+                url: format!("http://{PROGRESS_TEST_HOST}:{}/final", address.port()),
+                body_bytes: 2,
+            },
         ];
         assert_eq!(progress, expected);
         assert_eq!(response.events, expected);
@@ -842,7 +924,11 @@ mod tests {
                     url: url.clone(),
                     method: Method::Get,
                 },
-                NetworkEvent::Response { url, status: 302 },
+                NetworkEvent::Response {
+                    url: url.clone(),
+                    status: 302,
+                },
+                NetworkEvent::Completed { url, body_bytes: 0 },
             ]
         );
         server.join().unwrap();
@@ -911,6 +997,75 @@ mod tests {
                     method: Method::Get,
                 },
             ]
+        );
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn incremental_body_limit_fails_before_publishing_oversized_chunk() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let url = format!(
+            "http://{PROGRESS_TEST_HOST}:{}/chunked-limit",
+            address.port()
+        );
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).unwrap();
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n4\r\n1234\r\n",
+                )
+                .unwrap();
+            stream.flush().unwrap();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            stream.write_all(b"4\r\n5678\r\n0\r\n\r\n").unwrap();
+        });
+        let mut config = NetworkConfig::default();
+        config
+            .dns_overrides
+            .push((PROGRESS_TEST_HOST.to_owned(), vec![address]));
+        let mut network = Network::new(config).unwrap();
+        let mut jar = CookieJar::default();
+        let mut progress = Vec::new();
+
+        let error = network
+            .get_bytes_with_cookies_request_with_progress_and_limit(
+                &mut jar,
+                TextRequest {
+                    url: Url::parse(&url).unwrap(),
+                    cross_site: false,
+                    method: Method::Get,
+                    redirect_mode: RedirectMode::Follow,
+                    headers: Vec::new(),
+                    body: None,
+                },
+                6,
+                |event| progress.push(event.clone()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            error,
+            NetworkError::BodyTooLarge {
+                limit: 6,
+                actual: 8,
+                ..
+            }
+        ));
+        assert!(progress.iter().any(|event| matches!(
+            event,
+            NetworkEvent::BodyProgress {
+                loaded_bytes: 4,
+                ..
+            }
+        )));
+        assert!(
+            !progress
+                .iter()
+                .any(|event| matches!(event, NetworkEvent::Completed { .. }))
         );
         server.join().unwrap();
     }

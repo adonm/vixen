@@ -62,6 +62,16 @@ pub enum NetworkEvent {
         url: String,
         status: u16,
     },
+    BodyProgress {
+        url: String,
+        chunk_bytes: u64,
+        loaded_bytes: u64,
+        total_bytes: Option<u64>,
+    },
+    Completed {
+        url: String,
+        body_bytes: u64,
+    },
 }
 
 impl Method {

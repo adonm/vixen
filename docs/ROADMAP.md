@@ -820,6 +820,26 @@ store retains only the latest representation for a URL; simultaneous variants,
 `Expires`/heuristic freshness, request cache directives, and redirect aliases
 remain explicit breadth.
 
+**Seventh A2 checkpoint:** the shared HTTP transport now drains response bodies
+chunk by chunk and checks the destination limit before extending its bounded
+buffer, rather than allocating an unchecked complete body first. Stable
+response/progress/completed events carry chunk, cumulative, optional total, and
+final body bytes through BrowserCore, the C ABI, module diagnostics, and CDP.
+Sub-quantum transport chunks coalesce into at most 256 progress records per
+response before crossing those boundaries; CDP maps them to
+`Network.dataReceived`/`loadingFinished`. Page `Response.body` is a real bounded
+`ReadableStream` over the retained transfer chunks with one-shot `bodyUsed`
+semantics; Blob streams use the same implementation. XHR emits typed upload and
+download `ProgressEvent`s with exact loaded/total values and preserves
+headers-received → progress → loading/done → load/loadend ordering. A pre-aborted
+fetch rejects with the signal's first reason and performs no transport. Focused
+transport, runtime, XHR, CDP, module, and cancellation tests cover the new event
+order and byte counts. The current text/cache/integrity pipeline still buffers
+the bounded response before resolving `fetch()`: active page `AbortSignal`
+cancellation and policy-safe response-before-completion streaming remain the next
+loader boundary, while BrowserCore stop/navigation cancellation continues to
+drop the live reqwest future.
+
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
 
@@ -974,12 +994,13 @@ After v1, prioritize by measured site/user impact:
 Work top-to-bottom and finish/document/commit each slice:
 
 1. **Continue A2 beyond the module vertical:** converge fetch/XHR transfer
-   streaming, signal-driven abort, progress, and bounded diagnostics through the
-   shared loader before moving to frames/downloads. Then extend the landed cache
-   checkpoint with simultaneous variants, `Expires`/request-directive freshness,
-   and redirect aliases. Keep direct classic/automation dynamic imports and
-   module import attributes fail-closed until they can carry exact source URL,
-   policy, and lifecycle provenance.
+   ownership on the asynchronous shared loader so an active page `AbortSignal`
+   cancels transport and policy-safe responses can resolve before body
+   completion. Preserve the landed bounded chunk/progress/CDP diagnostics while
+   doing so. Then extend the cache checkpoint with simultaneous variants,
+   `Expires`/request-directive freshness, and redirect aliases. Keep direct
+   classic/automation dynamic imports and module import attributes fail-closed
+   until they can carry exact source URL, policy, and lifecycle provenance.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →
    newer-commit evidence green while widening shared-core behavior; do not

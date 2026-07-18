@@ -760,6 +760,18 @@ pub enum RuntimeNetworkEvent {
         url: String,
         status: u16,
     },
+    Progress {
+        request_id: String,
+        url: String,
+        chunk_bytes: u64,
+        loaded_bytes: u64,
+        total_bytes: Option<u64>,
+    },
+    Completed {
+        request_id: String,
+        url: String,
+        body_bytes: u64,
+    },
     Failure {
         request_id: String,
         url: String,

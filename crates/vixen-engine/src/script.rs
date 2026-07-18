@@ -342,6 +342,18 @@ pub enum JsNetworkEvent {
         url: String,
         status: u16,
     },
+    Progress {
+        request_id: String,
+        url: String,
+        chunk_bytes: u64,
+        loaded_bytes: u64,
+        total_bytes: Option<u64>,
+    },
+    Completed {
+        request_id: String,
+        url: String,
+        body_bytes: u64,
+    },
     Failure {
         request_id: String,
         url: String,
@@ -1738,6 +1750,20 @@ fn parse_network_event(
                 .unwrap_or_default()
                 .min(u16::MAX as u64) as u16,
         }),
+        "progress" => Ok(JsNetworkEvent::Progress {
+            request_id,
+            url: required_network_event_string(value, "url")?,
+            chunk_bytes: network_event_u64(value, "chunkBytes"),
+            loaded_bytes: network_event_u64(value, "loadedBytes"),
+            total_bytes: value
+                .get("totalBytes")
+                .and_then(deno_core::serde_json::Value::as_u64),
+        }),
+        "completed" => Ok(JsNetworkEvent::Completed {
+            request_id,
+            url: required_network_event_string(value, "url")?,
+            body_bytes: network_event_u64(value, "bodyBytes"),
+        }),
         "failure" => Ok(JsNetworkEvent::Failure {
             request_id,
             url: required_network_event_string(value, "url")?,
@@ -1757,6 +1783,13 @@ fn parse_network_event(
             format!("unsupported network event: {other}"),
         )),
     }
+}
+
+fn network_event_u64(value: &deno_core::serde_json::Value, name: &str) -> u64 {
+    value
+        .get(name)
+        .and_then(deno_core::serde_json::Value::as_u64)
+        .unwrap_or_default()
 }
 
 fn required_network_event_string(
@@ -6400,6 +6433,59 @@ mod tests {
     }
 
     #[test]
+    fn fetch_exposes_a_chunked_readable_stream_and_body_use_state() {
+        let (url, network_config, server) =
+            spawn_fetch_server("vixen-fetch-stream.com", "stream body");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expression = format!(
+            r#"fetch({url:?}).then(async (response) => {{
+              const isStream = response.body instanceof ReadableStream;
+              const reader = response.body.getReader();
+              const chunks = [];
+              for (;;) {{
+                const item = await reader.read();
+                if (item.done) break;
+                chunks.push(item.value);
+              }}
+              const bytes = new Uint8Array(chunks.reduce((sum, chunk) => sum + chunk.length, 0));
+              let offset = 0;
+              for (const chunk of chunks) {{ bytes.set(chunk, offset); offset += chunk.length; }}
+              const secondReadRejected = await response.text().then(() => false, (error) => error instanceof TypeError);
+              return isStream + ':' + response.bodyUsed + ':' + chunks.length + ':' + new TextDecoder().decode(bytes) + ':' + secondReadRejected;
+            }})"#
+        );
+
+        assert_eq!(
+            rt.evaluate(&expression).unwrap(),
+            JsValue::String("true:true:1:stream body:true".to_owned())
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn preaborted_fetch_rejects_without_transport_and_keeps_first_reason() {
+        let mut rt = JsRuntime::new().expect("engine init");
+
+        assert_eq!(
+            rt.evaluate(
+                r#"(() => {
+                  const controller = new AbortController();
+                  let events = 0;
+                  controller.signal.addEventListener('abort', () => events++);
+                  const reason = new Error('first');
+                  controller.abort(reason);
+                  controller.abort(new Error('second'));
+                  return fetch('http://vixen-preaborted-fetch.com/payload', { signal: controller.signal })
+                    .then(() => 'resolved', (error) => [error === reason, controller.signal.reason === reason, events].join(':'));
+                })()"#,
+            )
+            .unwrap(),
+            JsValue::String("true:true:1".to_owned())
+        );
+        assert!(rt.drain_network_events().unwrap().is_empty());
+    }
+
+    #[test]
     fn fetch_records_stable_network_events() {
         let (url, network_config, server) =
             spawn_fetch_server("vixen-fetch-events.com", "event body");
@@ -6411,7 +6497,7 @@ mod tests {
             JsValue::String("event body".to_owned())
         );
         let events = rt.drain_network_events().unwrap();
-        assert_eq!(events.len(), 2);
+        assert_eq!(events.len(), 4);
         assert_eq!(
             events[0],
             JsNetworkEvent::Request {
@@ -6426,6 +6512,24 @@ mod tests {
                 request_id: "fetch-1".to_owned(),
                 url: url.clone(),
                 status: 200,
+            }
+        );
+        assert_eq!(
+            events[2],
+            JsNetworkEvent::Progress {
+                request_id: "fetch-1".to_owned(),
+                url: url.clone(),
+                chunk_bytes: 10,
+                loaded_bytes: 10,
+                total_bytes: Some(10),
+            }
+        );
+        assert_eq!(
+            events[3],
+            JsNetworkEvent::Completed {
+                request_id: "fetch-1".to_owned(),
+                url: url.clone(),
+                body_bytes: 10,
             }
         );
         assert_eq!(rt.drain_network_events().unwrap(), Vec::new());
@@ -6689,6 +6793,30 @@ mod tests {
             JsValue::String(
                 "200:text/plain:1,2,3,4:post:text/plain;charset=utf-8:xhr body".to_owned()
             )
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn xhr_reports_bounded_download_and_upload_progress() {
+        let (url, network_config, server) = spawn_body_echo_server("vixen-xhr-progress.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expression = format!(
+            r#"new Promise((resolve) => {{
+              const xhr = new XMLHttpRequest();
+              const download = [];
+              const upload = [];
+              xhr.onprogress = (event) => download.push([event.lengthComputable, event.loaded, event.total].join('/'));
+              xhr.upload.onprogress = (event) => upload.push([event.lengthComputable, event.loaded, event.total].join('/'));
+              xhr.onloadend = () => resolve(upload.join(',') + ':' + download.join(',') + ':' + xhr.responseText);
+              xhr.open('POST', {url:?});
+              xhr.send('abc');
+            }})"#
+        );
+
+        assert_eq!(
+            rt.evaluate(&expression).unwrap(),
+            JsValue::String("true/3/3:true/33/33:post:text/plain;charset=utf-8:abc".to_owned())
         );
         server.join().unwrap();
     }

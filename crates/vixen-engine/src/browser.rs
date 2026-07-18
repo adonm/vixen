@@ -5348,6 +5348,16 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
                             url: current.to_string(),
                             status: response.status,
                         },
+                        NetworkEvent::BodyProgress {
+                            url: current.to_string(),
+                            chunk_bytes: response.body.len() as u64,
+                            loaded_bytes: response.body.len() as u64,
+                            total_bytes: Some(response.body.len() as u64),
+                        },
+                        NetworkEvent::Completed {
+                            url: current.to_string(),
+                            body_bytes: response.body.len() as u64,
+                        },
                     ];
                     response
                 } else {
@@ -5785,6 +5795,23 @@ fn external_resource_network_events(
                     url: url.clone(),
                     status: *status,
                 },
+                NetworkEvent::BodyProgress {
+                    url,
+                    chunk_bytes,
+                    loaded_bytes,
+                    total_bytes,
+                } => RuntimeNetworkEvent::Progress {
+                    request_id: request_id.clone(),
+                    url: url.clone(),
+                    chunk_bytes: *chunk_bytes,
+                    loaded_bytes: *loaded_bytes,
+                    total_bytes: *total_bytes,
+                },
+                NetworkEvent::Completed { url, body_bytes } => RuntimeNetworkEvent::Completed {
+                    request_id: request_id.clone(),
+                    url: url.clone(),
+                    body_bytes: *body_bytes,
+                },
             })
             .collect(),
         Err(failure) => {
@@ -5807,6 +5834,23 @@ fn external_resource_network_events(
                         request_id: request_id.clone(),
                         url: url.clone(),
                         status: *status,
+                    },
+                    NetworkEvent::BodyProgress {
+                        url,
+                        chunk_bytes,
+                        loaded_bytes,
+                        total_bytes,
+                    } => RuntimeNetworkEvent::Progress {
+                        request_id: request_id.clone(),
+                        url: url.clone(),
+                        chunk_bytes: *chunk_bytes,
+                        loaded_bytes: *loaded_bytes,
+                        total_bytes: *total_bytes,
+                    },
+                    NetworkEvent::Completed { url, body_bytes } => RuntimeNetworkEvent::Completed {
+                        request_id: request_id.clone(),
+                        url: url.clone(),
+                        body_bytes: *body_bytes,
                     },
                 })
                 .collect();
@@ -6073,6 +6117,28 @@ fn drain_runtime_effects(
                 request_id,
                 url,
                 status,
+            },
+            JsNetworkEvent::Progress {
+                request_id,
+                url,
+                chunk_bytes,
+                loaded_bytes,
+                total_bytes,
+            } => RuntimeNetworkEvent::Progress {
+                request_id,
+                url,
+                chunk_bytes,
+                loaded_bytes,
+                total_bytes,
+            },
+            JsNetworkEvent::Completed {
+                request_id,
+                url,
+                body_bytes,
+            } => RuntimeNetworkEvent::Completed {
+                request_id,
+                url,
+                body_bytes,
             },
             JsNetworkEvent::Failure {
                 request_id,
@@ -10031,6 +10097,23 @@ mod tests {
             event,
             RuntimeNetworkEvent::Response { url, status: 200, .. }
                 if url.ends_with("/fresh/dependency.js")
+        )));
+        assert!(network.iter().any(|event| matches!(
+            event,
+            RuntimeNetworkEvent::Progress {
+                url,
+                loaded_bytes,
+                total_bytes: Some(total_bytes),
+                ..
+            } if url.ends_with("/fresh/dependency.js")
+                && *loaded_bytes == DEPENDENCY_SOURCE.len() as u64
+                && *total_bytes == DEPENDENCY_SOURCE.len() as u64
+        )));
+        assert!(network.iter().any(|event| matches!(
+            event,
+            RuntimeNetworkEvent::Completed { url, body_bytes, .. }
+                if url.ends_with("/fresh/dependency.js")
+                    && *body_bytes == DEPENDENCY_SOURCE.len() as u64
         )));
 
         server.join();

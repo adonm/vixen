@@ -731,7 +731,8 @@ fn op_vixen_fetch(
     {
         match cached.clone() {
             Some((mut response, _)) => {
-                response.events = cached_response_events(&url, response.status);
+                response.events =
+                    cached_response_events(&url, response.status, response.body.len());
                 let response = match apply_fetch_integrity(response, &integrity) {
                     Ok(response) => response,
                     Err(message) => {
@@ -759,7 +760,7 @@ fn op_vixen_fetch(
     if cache_mode == FetchCacheMode::Default
         && let Some((mut response, crate::http_cache::CacheUse::Fresh)) = cached.clone()
     {
-        response.events = cached_response_events(&url, response.status);
+        response.events = cached_response_events(&url, response.status, response.body.len());
         let response = match apply_fetch_integrity(response, &integrity) {
             Ok(response) => response,
             Err(message) => return fetch_failure(url.as_str(), method, message, "integrity"),
@@ -1698,8 +1699,8 @@ fn text_response_has_validator(response: &TextResponse) -> bool {
     response.header("etag").is_some() || response.header("last-modified").is_some()
 }
 
-fn cached_response_events(url: &Url, status: u16) -> Vec<NetworkEvent> {
-    vec![
+fn cached_response_events(url: &Url, status: u16, body_bytes: usize) -> Vec<NetworkEvent> {
+    let mut events = vec![
         NetworkEvent::RequestStart {
             url: url.to_string(),
             method: Method::Get,
@@ -1708,7 +1709,20 @@ fn cached_response_events(url: &Url, status: u16) -> Vec<NetworkEvent> {
             url: url.to_string(),
             status,
         },
-    ]
+    ];
+    if body_bytes > 0 {
+        events.push(NetworkEvent::BodyProgress {
+            url: url.to_string(),
+            chunk_bytes: body_bytes as u64,
+            loaded_bytes: body_bytes as u64,
+            total_bytes: Some(body_bytes as u64),
+        });
+    }
+    events.push(NetworkEvent::Completed {
+        url: url.to_string(),
+        body_bytes: body_bytes as u64,
+    });
+    events
 }
 
 fn cookie_record_to_snapshot(record: CookieRecord) -> CookieSnapshot {
@@ -2031,6 +2045,14 @@ fn apply_fetch_visibility(
 }
 
 fn fetch_response(response: TextResponse, response_type: &str) -> deno_core::serde_json::Value {
+    let body_chunks = response
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            NetworkEvent::BodyProgress { chunk_bytes, .. } => Some(*chunk_bytes),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
     json!({
         "ok": true,
         "body": response.body,
@@ -2039,6 +2061,7 @@ fn fetch_response(response: TextResponse, response_type: &str) -> deno_core::ser
         "finalUrl": response.final_url,
         "redirected": response.redirects > 0,
         "responseType": response_type,
+        "bodyChunks": body_chunks,
         "events": response.events.into_iter().map(network_event_value).collect::<Vec<_>>(),
     })
 }
@@ -2060,6 +2083,23 @@ fn network_event_value(event: NetworkEvent) -> deno_core::serde_json::Value {
             "type": "response",
             "url": url,
             "status": status,
+        }),
+        NetworkEvent::BodyProgress {
+            url,
+            chunk_bytes,
+            loaded_bytes,
+            total_bytes,
+        } => json!({
+            "type": "progress",
+            "url": url,
+            "chunkBytes": chunk_bytes,
+            "loadedBytes": loaded_bytes,
+            "totalBytes": total_bytes,
+        }),
+        NetworkEvent::Completed { url, body_bytes } => json!({
+            "type": "completed",
+            "url": url,
+            "bodyBytes": body_bytes,
         }),
     }
 }
@@ -3194,6 +3234,112 @@ const WEB_API_BOOTSTRAP: &str = r#"
     return /^[\x20-\x7e]*$/.test(value) ? value.toLowerCase() : '';
   }
 
+  function splitBodyChunks(bytes, sizes = []) {
+    const chunks = [];
+    let offset = 0;
+    for (const rawSize of Array.from(sizes || [])) {
+      const size = Math.max(0, Math.min(bytes.length - offset, Math.trunc(finiteNumber(rawSize, 0))));
+      if (size === 0) continue;
+      chunks.push(bytes.slice(offset, offset + size));
+      offset += size;
+      if (offset >= bytes.length) break;
+    }
+    if (offset < bytes.length) chunks.push(bytes.slice(offset));
+    return chunks;
+  }
+
+  class VixenReadableStream {
+    constructor(chunks = [], onLock = null) {
+      defineReadonly(this, '__vixenChunks', Array.from(chunks, (chunk) => new Uint8Array(chunk).slice()), false);
+      defineData(this, '__vixenIndex', 0, false);
+      defineData(this, '__vixenLocked', false, false);
+      defineReadonly(this, '__vixenOnLock', typeof onLock === 'function' ? onLock : null, false);
+    }
+    get locked() { return this.__vixenLocked; }
+    cancel() {
+      this.__vixenIndex = this.__vixenChunks.length;
+      return Promise.resolve();
+    }
+    getReader(options = undefined) {
+      if (options && options.mode !== undefined) throw new TypeError('BYOB readers are not supported for this stream');
+      if (this.__vixenLocked) throw new TypeError('ReadableStream is locked');
+      this.__vixenLocked = true;
+      if (this.__vixenOnLock) this.__vixenOnLock();
+      return new VixenReadableStreamDefaultReader(this);
+    }
+    pipeThrough(transform) {
+      this.pipeTo(transform.writable);
+      return transform.readable;
+    }
+    pipeTo(destination) {
+      const reader = this.getReader();
+      const writer = destination && typeof destination.getWriter === 'function' ? destination.getWriter() : destination;
+      const pump = () => reader.read().then((item) => {
+        if (item.done) return writer && typeof writer.close === 'function' ? writer.close() : undefined;
+        const write = writer && typeof writer.write === 'function' ? writer.write(item.value) : undefined;
+        return Promise.resolve(write).then(pump);
+      });
+      return pump();
+    }
+    tee() {
+      if (this.__vixenLocked) throw new TypeError('ReadableStream is locked');
+      const remaining = this.__vixenChunks.slice(this.__vixenIndex);
+      this.__vixenLocked = true;
+      if (this.__vixenOnLock) this.__vixenOnLock();
+      return [new VixenReadableStream(remaining), new VixenReadableStream(remaining)];
+    }
+  }
+
+  class VixenReadableStreamDefaultReader {
+    constructor(stream) {
+      defineData(this, '__vixenStream', stream, false);
+      defineReadonly(this, 'closed', Promise.resolve(), true);
+    }
+    read() {
+      const stream = this.__vixenStream;
+      if (!stream) return Promise.reject(new TypeError('ReadableStream reader is released'));
+      if (stream.__vixenIndex >= stream.__vixenChunks.length) {
+        return Promise.resolve({ value: undefined, done: true });
+      }
+      const value = stream.__vixenChunks[stream.__vixenIndex++].slice();
+      return Promise.resolve({ value, done: false });
+    }
+    cancel(reason = undefined) {
+      const stream = this.__vixenStream;
+      return stream ? stream.cancel(reason) : Promise.resolve();
+    }
+    releaseLock() {
+      if (!this.__vixenStream) return;
+      this.__vixenStream.__vixenLocked = false;
+      this.__vixenStream = null;
+    }
+  }
+
+  function installBody(target, info, chunkSizes = []) {
+    const bytes = bytesFromString(info.text);
+    defineReadonly(target, '__vixenBodyText', info.text, false);
+    defineReadonly(target, '__vixenBodyBytes', bytes, false);
+    defineReadonly(target, '__vixenChunkSizes', Object.freeze(Array.from(chunkSizes || [], (size) => Math.max(0, Math.trunc(finiteNumber(size, 0))))), false);
+    defineData(target, 'bodyUsed', false, true);
+    defineReadonly(target, 'body', info.isNull ? null : new VixenReadableStream(splitBodyChunks(bytes, chunkSizes), () => { target.bodyUsed = true; }), true);
+  }
+
+  function consumeBody(target, convert) {
+    if (target.bodyUsed) return Promise.reject(new TypeError('Body has already been consumed'));
+    if (target.body === null) {
+      target.bodyUsed = true;
+      return Promise.resolve(convert(new Uint8Array(0)));
+    }
+    const reader = target.body.getReader();
+    const chunks = [];
+    const read = () => reader.read().then((item) => {
+      if (item.done) return convert(concatBytes(chunks));
+      chunks.push(item.value);
+      return read();
+    });
+    return read();
+  }
+
   class VixenBlob {
     constructor(parts = [], options = {}) {
       const byteParts = Array.from(parts, bytesFromPart);
@@ -3215,7 +3361,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
     text() { return Promise.resolve(this.__vixenText); }
     arrayBuffer() { return Promise.resolve(this.__vixenBytes.slice().buffer); }
     bytes() { return Promise.resolve(this.__vixenBytes.slice()); }
-    stream() { return null; }
+    stream() { return new VixenReadableStream([this.__vixenBytes]); }
   }
 
   class VixenFile extends VixenBlob {
@@ -3337,6 +3483,9 @@ const WEB_API_BOOTSTRAP: &str = r#"
     if (body === null || body === undefined) return { isNull: true, contentType: '', text: '' };
     if (body instanceof VixenBlob) return { isNull: false, contentType: body.type, text: body.__vixenText };
     if (body instanceof VixenURLSearchParams) return { isNull: false, contentType: 'application/x-www-form-urlencoded;charset=UTF-8', text: body.toString() };
+    if (body instanceof ArrayBuffer || (ArrayBuffer.isView && ArrayBuffer.isView(body))) {
+      return { isNull: false, contentType: '', text: textFromBytes(bytesFromPart(body)) };
+    }
     return { isNull: false, contentType: 'text/plain;charset=UTF-8', text: String(body) };
   }
 
@@ -3345,7 +3494,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
       const source = input instanceof VixenRequest ? input : null;
       const url = source ? source.url : new VixenURL(String(input)).href;
       const method = String((init && init.method) || (source && source.method) || 'GET').toUpperCase();
-      const body = bodyInfo(init && Object.prototype.hasOwnProperty.call(init, 'body') ? init.body : null);
+      const body = bodyInfo(init && Object.prototype.hasOwnProperty.call(init, 'body') ? init.body : (source && source.body !== null ? source.__vixenBodyBytes : null));
       if (!body.isNull && (method === 'GET' || method === 'HEAD')) throw new TypeError('Request GET/HEAD cannot have a body');
       const headers = filteredHeaders((init && init.headers) || (source && source.headers) || undefined, forbiddenRequestHeader);
       if (!body.isNull && body.contentType && !headers.has('content-type')) headers.set('Content-Type', body.contentType);
@@ -3361,18 +3510,19 @@ const WEB_API_BOOTSTRAP: &str = r#"
       defineReadonly(this, 'redirect', init && Object.prototype.hasOwnProperty.call(init, 'redirect') ? init.redirect : (source && source.redirect) || 'follow', true);
       defineReadonly(this, 'integrity', (init && init.integrity) || (source && source.integrity) || '', true);
       defineReadonly(this, 'keepalive', Boolean(init && init.keepalive), true);
-      defineReadonly(this, 'signal', (init && init.signal) || new VixenAbortController().signal, true);
-      defineReadonly(this, '__vixenBodyText', body.text, false);
-      defineReadonly(this, 'body', body.isNull ? null : {}, true);
-      defineReadonly(this, 'bodyUsed', false, true);
+      defineReadonly(this, 'signal', (init && init.signal) || (source && source.signal) || new VixenAbortController().signal, true);
+      installBody(this, body);
     }
-    clone() { return new VixenRequest(this); }
-    text() { return Promise.resolve(this.__vixenBodyText); }
-    json() { return Promise.resolve(this.__vixenBodyText === '' ? null : JSON.parse(this.__vixenBodyText)); }
-    blob() { return Promise.resolve(new VixenBlob([this.__vixenBodyText])); }
-    arrayBuffer() { return Promise.resolve(textEncoder.encode(this.__vixenBodyText).buffer); }
-    bytes() { return Promise.resolve(textEncoder.encode(this.__vixenBodyText)); }
-    formData() { return Promise.resolve(new FormData()); }
+    clone() {
+      if (this.bodyUsed) throw new TypeError('Cannot clone a consumed Request body');
+      return new VixenRequest(this);
+    }
+    text() { return consumeBody(this, textFromBytes); }
+    json() { return this.text().then((text) => text === '' ? null : JSON.parse(text)); }
+    blob() { return consumeBody(this, (bytes) => new VixenBlob([bytes])); }
+    arrayBuffer() { return consumeBody(this, (bytes) => bytes.slice().buffer); }
+    bytes() { return consumeBody(this, (bytes) => bytes.slice()); }
+    formData() { return Promise.reject(new TypeError('multipart body decoding is not supported')); }
   }
 
   class VixenResponse {
@@ -3388,17 +3538,18 @@ const WEB_API_BOOTSTRAP: &str = r#"
       defineReadonly(this, 'ok', status >= 200 && status <= 299, true);
       defineReadonly(this, 'statusText', (init && init.statusText) || '', true);
       defineReadonly(this, 'headers', headers, true);
-      defineReadonly(this, '__vixenBodyText', info.text, false);
-      defineReadonly(this, 'body', info.isNull ? null : {}, true);
-      defineReadonly(this, 'bodyUsed', false, true);
+      installBody(this, info, init && init.bodyChunks);
     }
-    clone() { return new VixenResponse(this.__vixenBodyText, { status: this.status, statusText: this.statusText, type: this.type, headers: this.headers, url: this.url, redirected: this.redirected }); }
-    text() { return Promise.resolve(this.__vixenBodyText); }
-    json() { return Promise.resolve(this.__vixenBodyText === '' ? null : JSON.parse(this.__vixenBodyText)); }
-    blob() { return Promise.resolve(new VixenBlob([this.__vixenBodyText], { type: this.headers.get('content-type') || '' })); }
-    arrayBuffer() { return Promise.resolve(textEncoder.encode(this.__vixenBodyText).buffer); }
-    bytes() { return Promise.resolve(textEncoder.encode(this.__vixenBodyText)); }
-    formData() { return Promise.resolve(new FormData()); }
+    clone() {
+      if (this.bodyUsed) throw new TypeError('Cannot clone a consumed Response body');
+      return new VixenResponse(this.__vixenBodyBytes, { status: this.status, statusText: this.statusText, type: this.type, headers: this.headers, url: this.url, redirected: this.redirected, bodyChunks: this.__vixenChunkSizes });
+    }
+    text() { return consumeBody(this, textFromBytes); }
+    json() { return this.text().then((text) => text === '' ? null : JSON.parse(text)); }
+    blob() { return consumeBody(this, (bytes) => new VixenBlob([bytes], { type: this.headers.get('content-type') || '' })); }
+    arrayBuffer() { return consumeBody(this, (bytes) => bytes.slice().buffer); }
+    bytes() { return consumeBody(this, (bytes) => bytes.slice()); }
+    formData() { return Promise.reject(new TypeError('multipart body decoding is not supported')); }
     static error() {
       const response = new VixenResponse(null, { status: 200 });
       Object.defineProperty(response, 'type', { value: 'error', configurable: true });
@@ -3425,6 +3576,8 @@ const WEB_API_BOOTSTRAP: &str = r#"
   webidl.adoptInterface('DataTransfer', VixenDataTransfer);
   webidl.adoptInterface('Request', VixenRequest);
   webidl.adoptInterface('Response', VixenResponse);
+  webidl.adoptInterface('ReadableStream', VixenReadableStream);
+  webidl.adoptInterface('ReadableStreamDefaultReader', VixenReadableStreamDefaultReader);
 
   function fetch(input, init = {}) {
     let request;
@@ -3432,6 +3585,9 @@ const WEB_API_BOOTSTRAP: &str = r#"
       request = new VixenRequest(input, init);
     } catch (err) {
       return Promise.reject(err);
+    }
+    if (request.signal && request.signal.aborted) {
+      return Promise.reject(request.signal.reason === undefined ? new TypeError('fetch aborted') : request.signal.reason);
     }
     const result = op_vixen_fetch({ url: request.url, method: request.method, mode: request.mode, cache: request.cache, credentials: request.credentials, redirect: request.redirect, referrerPolicy: request.referrerPolicy, integrity: request.integrity, headers: Array.from(request.headers.entries()), body: request.body === null ? null : request.__vixenBodyText });
     recordNetworkEvents(result && result.events);
@@ -3444,6 +3600,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
       headers: result.headers,
       url: result.finalUrl,
       redirected: result.redirected,
+      bodyChunks: result.bodyChunks,
     }));
   }
 
@@ -3454,6 +3611,14 @@ const WEB_API_BOOTSTRAP: &str = r#"
   function fireXhrEvent(target, type) {
     const event = new Event(type);
     target.dispatchEvent(event);
+  }
+
+  function fireXhrProgress(target, type, loaded, total) {
+    target.dispatchEvent(new VixenProgressEvent(type, {
+      lengthComputable: Number.isFinite(total),
+      loaded,
+      total: Number.isFinite(total) ? total : 0,
+    }));
   }
 
   function setXhrReadyState(xhr, readyState) {
@@ -3504,12 +3669,20 @@ const WEB_API_BOOTSTRAP: &str = r#"
       if (this.readyState !== 1) throw new Error('XMLHttpRequest is not open');
       if (!this.__vixenAsync) throw new Error('synchronous XMLHttpRequest is not supported');
       this.__vixenAborted = false;
+      fireXhrProgress(this, 'loadstart', 0, 0);
       const init = {
         method: this.__vixenMethod,
         headers: this.__vixenHeaders,
         credentials: this.withCredentials ? 'include' : 'same-origin',
       };
-      if (body !== null && body !== undefined) init.body = body;
+      if (body !== null && body !== undefined) {
+        init.body = body;
+        const uploadBytes = bytesFromPart(body).length;
+        fireXhrProgress(this.upload, 'loadstart', 0, uploadBytes);
+        fireXhrProgress(this.upload, 'progress', uploadBytes, uploadBytes);
+        fireXhrProgress(this.upload, 'load', uploadBytes, uploadBytes);
+        fireXhrProgress(this.upload, 'loadend', uploadBytes, uploadBytes);
+      }
       fetch(this.__vixenUrl, init).then((res) => {
         if (this.__vixenAborted) return;
         this.status = res.status;
@@ -3517,14 +3690,21 @@ const WEB_API_BOOTSTRAP: &str = r#"
         this.responseURL = res.url || '';
         this.__vixenResponseHeaders = new VixenHeaders(res.headers);
         setXhrReadyState(this, 2);
+        const total = res.__vixenBodyBytes.length;
+        let loaded = 0;
+        for (const chunkSize of res.__vixenChunkSizes) {
+          loaded = Math.min(total, loaded + chunkSize);
+          fireXhrProgress(this, 'progress', loaded, total);
+        }
+        if (loaded < total) fireXhrProgress(this, 'progress', total, total);
         return res.text().then((text) => {
           if (this.__vixenAborted) return;
           this.responseText = text;
           this.response = text;
           setXhrReadyState(this, 3);
           setXhrReadyState(this, 4);
-          fireXhrEvent(this, 'load');
-          fireXhrEvent(this, 'loadend');
+          fireXhrProgress(this, 'load', total, total);
+          fireXhrProgress(this, 'loadend', total, total);
         });
       }).catch((err) => {
         if (this.__vixenAborted) return;
@@ -3568,19 +3748,53 @@ const WEB_API_BOOTSTRAP: &str = r#"
   // Abort, MutationObserver, structuredClone, DOMParser, platform globals
   // -----------------------------------------------------------------------
 
+  function abortReason(name, message) {
+    const error = new Error(message);
+    error.name = name;
+    return error;
+  }
+
   class VixenAbortSignal extends VixenEventTarget {
     constructor(aborted = false, reason = undefined) { super(); defineReadonly(this, '__vixenAbortState', { aborted, reason }, false); }
     get aborted() { return this.__vixenAbortState.aborted; }
     get reason() { return this.__vixenAbortState.reason; }
     throwIfAborted() { if (this.aborted) throw this.reason; }
-    static abort(reason = undefined) { return new VixenAbortSignal(true, reason); }
-    static timeout(_ms) { return new VixenAbortSignal(true, new Error('TimeoutError')); }
-    static any(signals) { return new VixenAbortSignal(Array.from(signals).some((signal) => signal.aborted), undefined); }
+    __vixenAbort(reason = undefined) {
+      if (this.aborted) return;
+      this.__vixenAbortState.aborted = true;
+      this.__vixenAbortState.reason = reason === undefined ? abortReason('AbortError', 'The operation was aborted') : reason;
+      this.dispatchEvent(new VixenEvent('abort'));
+    }
+    static abort(reason = undefined) {
+      const signal = new VixenAbortSignal(false);
+      signal.__vixenAbort(reason);
+      return signal;
+    }
+    static timeout(ms) {
+      const delay = Math.max(0, Math.trunc(finiteNumber(ms, 0)));
+      const signal = new VixenAbortSignal(false);
+      const expire = () => signal.__vixenAbort(abortReason('TimeoutError', 'The operation timed out'));
+      if (delay === 0 || typeof globalThis.setTimeout !== 'function') expire();
+      else globalThis.setTimeout(expire, delay);
+      return signal;
+    }
+    static any(signals) {
+      const signal = new VixenAbortSignal(false);
+      for (const source of Array.from(signals)) {
+        if (!source || typeof source.addEventListener !== 'function') throw new TypeError('AbortSignal.any expects signals');
+        if (source.aborted) {
+          signal.__vixenAbort(source.reason);
+          break;
+        }
+        source.addEventListener('abort', () => signal.__vixenAbort(source.reason), { once: true });
+      }
+      return signal;
+    }
   }
 
   class VixenAbortController {
     constructor() { defineReadonly(this, 'signal', new VixenAbortSignal(false), true); }
-    abort(reason = undefined) { this.signal.__vixenAbortState.aborted = true; this.signal.__vixenAbortState.reason = reason; }
+    abort(reason = undefined) { this.signal.__vixenAbort(reason); }
   }
 
   const mutationObservers = new Set();

@@ -504,6 +504,16 @@ closed. The URL-keyed profile table currently keeps one representation per URL;
 simultaneous variants, `Expires`/heuristic freshness, request directives, and
 redirect aliases remain loader work rather than frontend-specific cache logic.
 
+Transport body reads are incremental and enforce the destination cap before
+buffer growth. Ordered response, chunk progress, and completion records carry
+exact byte counts through BrowserCore, C ABI diagnostics, and CDP. The current
+page text pipeline exposes retained chunks through `ReadableStream` and XHR
+progress only after the bounded response has completed so integrity/cache policy
+cannot be bypassed. BrowserCore lifecycle cancellation already drops the reqwest
+future; page `AbortSignal` cancellation and response-before-completion require
+moving fetch/XHR from its blocking host op to the asynchronous shared-loader
+owner.
+
 Policy failure, transport/TLS failure, protocol failure, decode failure,
 unsupported behavior, and cancellation have distinct stable diagnostics. CDP
 and shell translate the same underlying event; they do not infer failures from

@@ -1884,6 +1884,30 @@ fn network_event_json(event: RuntimeNetworkEvent) -> Value {
             "url": url,
             "status": status,
         }),
+        RuntimeNetworkEvent::Progress {
+            request_id,
+            url,
+            chunk_bytes,
+            loaded_bytes,
+            total_bytes,
+        } => json!({
+            "type": "progress",
+            "request_id": request_id,
+            "url": url,
+            "chunk_bytes": chunk_bytes,
+            "loaded_bytes": loaded_bytes,
+            "total_bytes": total_bytes,
+        }),
+        RuntimeNetworkEvent::Completed {
+            request_id,
+            url,
+            body_bytes,
+        } => json!({
+            "type": "completed",
+            "request_id": request_id,
+            "url": url,
+            "body_bytes": body_bytes,
+        }),
         RuntimeNetworkEvent::Failure {
             request_id,
             url,
@@ -2882,6 +2906,40 @@ mod tests {
                         },
                     },
                 ],
+            })
+        );
+    }
+
+    #[test]
+    fn network_transfer_progress_has_stable_json() {
+        assert_eq!(
+            network_event_json(RuntimeNetworkEvent::Progress {
+                request_id: "fetch-7".to_owned(),
+                url: "https://ffi.test/data".to_owned(),
+                chunk_bytes: 4,
+                loaded_bytes: 9,
+                total_bytes: Some(12),
+            }),
+            json!({
+                "type": "progress",
+                "request_id": "fetch-7",
+                "url": "https://ffi.test/data",
+                "chunk_bytes": 4,
+                "loaded_bytes": 9,
+                "total_bytes": 12,
+            })
+        );
+        assert_eq!(
+            network_event_json(RuntimeNetworkEvent::Completed {
+                request_id: "fetch-7".to_owned(),
+                url: "https://ffi.test/data".to_owned(),
+                body_bytes: 12,
+            }),
+            json!({
+                "type": "completed",
+                "request_id": "fetch-7",
+                "url": "https://ffi.test/data",
+                "body_bytes": 12,
             })
         );
     }

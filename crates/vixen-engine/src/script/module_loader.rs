@@ -793,5 +793,22 @@ fn network_event(request_id: &str, event: &NetworkEvent) -> JsNetworkEvent {
             url: url.clone(),
             status: *status,
         },
+        NetworkEvent::BodyProgress {
+            url,
+            chunk_bytes,
+            loaded_bytes,
+            total_bytes,
+        } => JsNetworkEvent::Progress {
+            request_id: request_id.to_owned(),
+            url: url.clone(),
+            chunk_bytes: *chunk_bytes,
+            loaded_bytes: *loaded_bytes,
+            total_bytes: *total_bytes,
+        },
+        NetworkEvent::Completed { url, body_bytes } => JsNetworkEvent::Completed {
+            request_id: request_id.to_owned(),
+            url: url.clone(),
+            body_bytes: *body_bytes,
+        },
     }
 }
