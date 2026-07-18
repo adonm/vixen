@@ -2855,6 +2855,61 @@ mod tests {
         )
     }
 
+    fn spawn_cacheable_redirect_server(
+        host: &str,
+    ) -> (
+        String,
+        String,
+        vixen_net::NetworkConfig,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = std::sync::Arc::new(AtomicUsize::new(0));
+        let server_requests = requests.clone();
+        let handle = std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (mut stream, _) = listener.accept().unwrap();
+                server_requests.fetch_add(1, Ordering::SeqCst);
+                let mut request = [0_u8; 2048];
+                let read = stream.read(&mut request).unwrap_or_default();
+                let request = String::from_utf8_lossy(&request[..read]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                if path == "/redirect" {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 301 Moved Permanently\r\nLocation: /target\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                        )
+                        .unwrap();
+                } else {
+                    stream
+                        .write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nCache-Control: max-age=600\r\nContent-Length: 12\r\nConnection: close\r\n\r\nalias-target",
+                        )
+                        .unwrap();
+                }
+            }
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/redirect", addr.port()),
+            format!("http://{host}:{}/target", addr.port()),
+            config,
+            requests,
+            handle,
+        )
+    }
+
     fn spawn_cookie_echo_server(
         host: &str,
     ) -> (
@@ -6357,6 +6412,7 @@ mod tests {
             events: Vec::new(),
             request_headers: std::collections::BTreeMap::new(),
             from_cache: false,
+            redirect_aliasable: true,
         };
 
         assert!(!dependency.sends_credentials(dependency.url()));
@@ -7048,6 +7104,41 @@ mod tests {
 
         assert_eq!(rt.evaluate(&expr).unwrap(), JsValue::Bool(true));
         server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_reuses_fresh_permanent_redirect_alias_without_transport() {
+        use std::sync::atomic::Ordering;
+
+        let (url, target_url, network_config, requests, server) =
+            spawn_cacheable_redirect_server("vixen-fetch-cache-alias.com");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-fetch-cache-alias-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
+            .expect("engine init");
+        let expression = format!(
+            "fetch({url:?}).then((response) => response.text().then((body) => response.url + ':' + response.redirected + ':' + body))"
+        );
+        let expected = JsValue::String(format!("{target_url}:true:alias-target"));
+
+        assert_eq!(rt.evaluate(&expression).unwrap(), expected);
+        rt.drain_network_events().unwrap();
+        assert_eq!(rt.evaluate(&expression).unwrap(), expected);
+        let events = rt.drain_network_events().unwrap();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            JsNetworkEvent::Redirect { from, to, status, .. }
+                if from == &url && to == &target_url && *status == 301
+        )));
+
+        server.join().unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        drop(rt);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

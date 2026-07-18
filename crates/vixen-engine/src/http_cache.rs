@@ -6,7 +6,9 @@
 use std::collections::{BTreeMap, HashSet};
 use std::time::UNIX_EPOCH;
 
-use vixen_store::CacheEntry;
+use url::Url;
+use vixen_net::{Method, NetworkEvent, Origin, validate_http_url};
+use vixen_store::{CacheAlias, CacheEntry, CacheRedirectHop, Store};
 
 const MAX_VARY_FIELDS: usize = 32;
 const MAX_VARY_NAME_BYTES: usize = 256;
@@ -17,6 +19,158 @@ pub(crate) enum CacheUse {
     Fresh,
     Stale,
     Unusable,
+}
+
+#[derive(Clone)]
+pub(crate) struct ResolvedCacheAlias {
+    pub(crate) final_url: Url,
+    pub(crate) hops: Vec<CacheRedirectHop>,
+}
+
+impl ResolvedCacheAlias {
+    pub(crate) fn events(
+        &self,
+        original_url: &Url,
+        status: u16,
+        body_bytes: usize,
+    ) -> Vec<NetworkEvent> {
+        let mut events = vec![NetworkEvent::RequestStart {
+            url: original_url.to_string(),
+            method: Method::Get,
+        }];
+        let mut current = original_url.to_string();
+        for hop in &self.hops {
+            events.push(NetworkEvent::Redirect {
+                from: current,
+                to: hop.to.clone(),
+                status: hop.status,
+            });
+            events.push(NetworkEvent::RequestStart {
+                url: hop.to.clone(),
+                method: Method::Get,
+            });
+            current = hop.to.clone();
+        }
+        events.extend([
+            NetworkEvent::Response {
+                url: self.final_url.to_string(),
+                status,
+            },
+            NetworkEvent::BodyProgress {
+                url: self.final_url.to_string(),
+                chunk_bytes: body_bytes as u64,
+                loaded_bytes: body_bytes as u64,
+                total_bytes: Some(body_bytes as u64),
+            },
+            NetworkEvent::Completed {
+                url: self.final_url.to_string(),
+                body_bytes: body_bytes as u64,
+            },
+        ]);
+        events
+    }
+}
+
+pub(crate) fn resolve_redirect_alias(
+    store: &Store,
+    url: &Url,
+) -> Result<Option<ResolvedCacheAlias>, String> {
+    let origin = Origin::from_url(url);
+    let Some(alias) = store
+        .cache_alias(&origin.partition_key(), url.as_str())
+        .map_err(|error| error.to_string())?
+    else {
+        return Ok(None);
+    };
+    let mut visited = HashSet::from([url.to_string()]);
+    let mut current = url.clone();
+    for hop in &alias.hops {
+        if !matches!(hop.status, 301 | 308) {
+            return Ok(None);
+        }
+        let target = Url::parse(&hop.to).map_err(|error| error.to_string())?;
+        if validate_http_url(&target).is_err()
+            || Origin::from_url(&target) != origin
+            || !visited.insert(target.to_string())
+        {
+            return Ok(None);
+        }
+        current = target;
+    }
+    Ok(Some(ResolvedCacheAlias {
+        final_url: current,
+        hops: alias.hops,
+    }))
+}
+
+pub(crate) fn persist_redirect_aliases(
+    store: &Store,
+    original_url: &Url,
+    final_url: &Url,
+    events: &[NetworkEvent],
+    redirect_aliasable: bool,
+    fetched_unix: i64,
+) -> Result<(), String> {
+    let origin = Origin::from_url(original_url);
+    let origin_key = origin.partition_key();
+    let redirects = events
+        .iter()
+        .filter_map(|event| match event {
+            NetworkEvent::Redirect { from, to, status } => Some((
+                from.clone(),
+                CacheRedirectHop {
+                    to: to.clone(),
+                    status: *status,
+                },
+            )),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if redirects.is_empty() {
+        return store
+            .delete_cache_alias(&origin_key, original_url.as_str())
+            .map_err(|error| error.to_string());
+    }
+    let mut current = original_url.to_string();
+    let safe = redirect_aliasable
+        && redirects.iter().all(|(from, hop)| {
+            let target = Url::parse(&hop.to).ok();
+            let valid = from == &current
+                && matches!(hop.status, 301 | 308)
+                && target
+                    .as_ref()
+                    .is_some_and(|target| Origin::from_url(target) == origin);
+            current = hop.to.clone();
+            valid
+        })
+        && current == final_url.as_str();
+    if !safe {
+        for (from, _) in redirects {
+            store
+                .delete_cache_alias(&origin_key, &from)
+                .map_err(|error| error.to_string())?;
+        }
+        return Ok(());
+    }
+    for index in 0..redirects.len() {
+        let (from, _) = &redirects[index];
+        store
+            .put_cache_alias(
+                &origin_key,
+                from,
+                &CacheAlias {
+                    hops: redirects[index..]
+                        .iter()
+                        .map(|(_, hop)| hop.clone())
+                        .collect(),
+                    fetched_unix,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+    }
+    store
+        .delete_cache_alias(&origin_key, final_url.as_str())
+        .map_err(|error| error.to_string())
 }
 
 pub(crate) fn cache_use(
@@ -332,6 +486,20 @@ fn http_date_unix(value: &str) -> Option<i64> {
 mod tests {
     use super::*;
 
+    fn temporary_store() -> (std::path::PathBuf, Store) {
+        let path = std::env::temp_dir().join(format!(
+            "vixen-http-cache-alias-{}-{}.redb",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let store = Store::open(&path).unwrap();
+        (path, store)
+    }
+
     fn entry(headers: &[(&str, &str)], vary_headers: Vec<(String, Option<String>)>) -> CacheEntry {
         CacheEntry {
             status: 200,
@@ -466,6 +634,63 @@ mod tests {
             ),
             CacheUse::Stale
         );
+    }
+
+    #[test]
+    fn redirect_aliases_require_permanent_same_origin_hops() {
+        let (path, store) = temporary_store();
+        let original = Url::parse("https://alias-vixen.com/old").unwrap();
+        let final_url = Url::parse("https://alias-vixen.com/final").unwrap();
+        let redirect = |status, to: &str| {
+            vec![NetworkEvent::Redirect {
+                from: original.to_string(),
+                to: to.to_owned(),
+                status,
+            }]
+        };
+
+        persist_redirect_aliases(
+            &store,
+            &original,
+            &final_url,
+            &redirect(301, final_url.as_str()),
+            true,
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_redirect_alias(&store, &original)
+                .unwrap()
+                .unwrap()
+                .final_url,
+            final_url
+        );
+
+        persist_redirect_aliases(
+            &store,
+            &original,
+            &final_url,
+            &redirect(302, final_url.as_str()),
+            false,
+            101,
+        )
+        .unwrap();
+        assert!(resolve_redirect_alias(&store, &original).unwrap().is_none());
+
+        let cross_origin = Url::parse("https://other-vixen.com/final").unwrap();
+        persist_redirect_aliases(
+            &store,
+            &original,
+            &cross_origin,
+            &redirect(301, cross_origin.as_str()),
+            true,
+            102,
+        )
+        .unwrap();
+        assert!(resolve_redirect_alias(&store, &original).unwrap().is_none());
+
+        drop(store);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

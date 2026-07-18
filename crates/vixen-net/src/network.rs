@@ -326,6 +326,7 @@ impl Network {
         let mut redirects = 0u32;
         let mut visited: HashSet<String> = HashSet::new();
         let mut events = Vec::new();
+        let mut redirect_aliasable = true;
 
         loop {
             visited.insert(current.to_string());
@@ -396,6 +397,7 @@ impl Network {
                     events,
                     request_headers,
                     from_cache: false,
+                    redirect_aliasable: redirect_response_aliasable(status, resp.headers()),
                 });
             }
 
@@ -431,6 +433,7 @@ impl Network {
                 // URL policy re-applied at every fetch boundary (redirects
                 // included).
                 validate_http_url(&next)?;
+                redirect_aliasable &= redirect_response_aliasable(status, resp.headers());
                 record_progress(
                     &mut events,
                     NetworkEvent::Redirect {
@@ -533,6 +536,7 @@ impl Network {
                 events,
                 request_headers,
                 from_cache: false,
+                redirect_aliasable,
             });
         }
     }
@@ -626,6 +630,22 @@ fn is_followable_redirect(status: u16) -> bool {
     matches!(status, 301 | 302 | 303 | 307 | 308)
 }
 
+fn redirect_response_aliasable(status: u16, headers: &reqwest::header::HeaderMap) -> bool {
+    matches!(status, 301 | 308)
+        && !headers
+            .get(reqwest::header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| {
+                value.split(',').any(|directive| {
+                    directive
+                        .split_once('=')
+                        .map_or(directive, |(name, _)| name)
+                        .trim()
+                        .eq_ignore_ascii_case("no-store")
+                })
+            })
+}
+
 fn map_reqwest_error(e: reqwest::Error) -> NetworkError {
     if e.is_timeout() {
         NetworkError::Timeout
@@ -671,6 +691,19 @@ mod tests {
     use std::io::{Read, Write};
 
     use super::*;
+
+    #[test]
+    fn redirect_aliasability_requires_cacheable_permanent_response() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        assert!(redirect_response_aliasable(301, &headers));
+        assert!(redirect_response_aliasable(308, &headers));
+        assert!(!redirect_response_aliasable(302, &headers));
+        headers.insert(
+            reqwest::header::CACHE_CONTROL,
+            reqwest::header::HeaderValue::from_static("private, no-store"),
+        );
+        assert!(!redirect_response_aliasable(301, &headers));
+    }
 
     const PROGRESS_TEST_HOST: &str = "network-progress-vixen.com";
 

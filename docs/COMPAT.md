@@ -267,7 +267,10 @@ proof fetches `en` → `fr` → `en`, performs exactly two network requests, and
 reuses the first representation; a fresh two-context module root/dependency
 graph also reuses the profile cache. Current
 CORS/integrity/status/MIME/body policy still runs before exposure. Heuristic
-freshness and redirect aliases remain unsupported.
+freshness remains unsupported. Fresh cacheable permanent same-origin 301/308
+aliases reuse one final representation while preserving final URL, redirect count, module
+relative-import base, and network diagnostics. Temporary/cross-origin redirects
+remain live-only rather than bypassing response policy.
 
 HTTP bodies are now read incrementally with the configured cap checked before
 buffer growth. Ordered response/progress/completed diagnostics include exact

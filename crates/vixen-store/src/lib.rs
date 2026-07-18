@@ -20,6 +20,8 @@ use serde::{Deserialize, Serialize};
 // serde bytes.
 const COOKIES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("cookies");
 const FETCH_CACHE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("fetch-cache");
+const FETCH_CACHE_ALIASES: TableDefinition<&[u8], &[u8]> =
+    TableDefinition::new("fetch-cache-aliases");
 const HISTORY: TableDefinition<&[u8], &[u8]> = TableDefinition::new("history");
 const SESSION: TableDefinition<&[u8], &[u8]> = TableDefinition::new("session");
 const WEB_STORAGE: TableDefinition<&[u8], &[u8]> = TableDefinition::new("web-storage");
@@ -30,6 +32,8 @@ const SESSION_KEY: &[u8] = b"open-tabs";
 const SESSION_RECORD_KEY: &[u8] = b"session-record-v1";
 pub const MAX_DOWNLOAD_RECORDS: usize = 512;
 pub const MAX_FETCH_CACHE_RECORDS: usize = 512;
+pub const MAX_FETCH_CACHE_ALIASES: usize = 512;
+pub const MAX_FETCH_CACHE_REDIRECTS: usize = 20;
 pub const MAX_SESSION_TABS: usize = 128;
 pub const MAX_SESSION_FORM_CONTROLS: usize = 512;
 const MAX_SESSION_URL_BYTES: usize = 8192;
@@ -148,6 +152,11 @@ pub enum StoreError {
         field: &'static str,
         reason: &'static str,
     },
+    #[error("invalid fetch cache {field}: {reason}")]
+    InvalidFetchCacheInput {
+        field: &'static str,
+        reason: &'static str,
+    },
     #[error("table {0} not found")]
     MissingTable(&'static str),
 }
@@ -195,6 +204,7 @@ impl Store {
         {
             let _ = w.open_table(COOKIES)?;
             let _ = w.open_table(FETCH_CACHE)?;
+            let _ = w.open_table(FETCH_CACHE_ALIASES)?;
             let _ = w.open_table(HISTORY)?;
             let _ = w.open_table(SESSION)?;
             let _ = w.open_table(WEB_STORAGE)?;
@@ -330,6 +340,58 @@ impl Store {
             }
         }
         Ok(entries)
+    }
+
+    pub fn put_cache_alias(&self, origin_key: &str, url: &str, alias: &CacheAlias) -> Result<()> {
+        validate_cache_alias(url, alias)?;
+        let key = namespaced_key(origin_key, url);
+        let value = encode(alias)?;
+        let write = self.db.begin_write()?;
+        {
+            let mut table = write.open_table(FETCH_CACHE_ALIASES)?;
+            table.insert(key.as_slice(), value.as_slice())?;
+            let mut records = Vec::new();
+            for item in table.iter()? {
+                let (key, value) = item?;
+                let alias = decode::<CacheAlias>(value.value())?;
+                records.push((key.value().to_vec(), alias.fetched_unix));
+            }
+            if records.len() > MAX_FETCH_CACHE_ALIASES {
+                records.sort_by(|(key_a, fetched_a), (key_b, fetched_b)| {
+                    fetched_a.cmp(fetched_b).then_with(|| key_a.cmp(key_b))
+                });
+                let remove_count = records.len() - MAX_FETCH_CACHE_ALIASES;
+                for (key, _) in records.into_iter().take(remove_count) {
+                    table.remove(key.as_slice())?;
+                }
+            }
+        }
+        write.commit()?;
+        Ok(())
+    }
+
+    pub fn cache_alias(&self, origin_key: &str, url: &str) -> Result<Option<CacheAlias>> {
+        let read = self.db.begin_read()?;
+        let table = read
+            .open_table(FETCH_CACHE_ALIASES)
+            .map_err(|_| StoreError::MissingTable("fetch-cache-aliases"))?;
+        let key = namespaced_key(origin_key, url);
+        match table.get(key.as_slice())? {
+            Some(value) => Ok(Some(decode(value.value())?)),
+            None => Ok(None),
+        }
+    }
+
+    pub fn delete_cache_alias(&self, origin_key: &str, url: &str) -> Result<()> {
+        let key = namespaced_key(origin_key, url);
+        let write = self.db.begin_write()?;
+        {
+            write
+                .open_table(FETCH_CACHE_ALIASES)?
+                .remove(key.as_slice())?;
+        }
+        write.commit()?;
+        Ok(())
     }
 
     // --- History ------------------------------------------------------------
@@ -509,6 +571,7 @@ impl Store {
         }
         if selection.fetch_cache {
             clear_table(&w, FETCH_CACHE)?;
+            clear_table(&w, FETCH_CACHE_ALIASES)?;
         }
         if selection.history {
             clear_table(&w, HISTORY)?;
@@ -837,6 +900,52 @@ fn validate_storage_input(field: &'static str, value: &str, allow_empty: bool) -
     Ok(())
 }
 
+const MAX_FETCH_CACHE_ALIAS_BYTES: usize = 64 * 1024;
+
+fn validate_cache_alias(url: &str, alias: &CacheAlias) -> Result<()> {
+    if url.is_empty() || url.as_bytes().contains(&0) {
+        return Err(StoreError::InvalidFetchCacheInput {
+            field: "alias-url",
+            reason: "must be non-empty and contain no NUL bytes",
+        });
+    }
+    if alias.hops.is_empty() || alias.hops.len() > MAX_FETCH_CACHE_REDIRECTS {
+        return Err(StoreError::InvalidFetchCacheInput {
+            field: "alias-hops",
+            reason: "must contain between one and twenty redirects",
+        });
+    }
+    let mut total_bytes = 0_usize;
+    for hop in &alias.hops {
+        if !matches!(hop.status, 301 | 308) {
+            return Err(StoreError::InvalidFetchCacheInput {
+                field: "alias-status",
+                reason: "must be a permanent redirect",
+            });
+        }
+        if hop.to.is_empty() || hop.to.as_bytes().contains(&0) {
+            return Err(StoreError::InvalidFetchCacheInput {
+                field: "alias-target",
+                reason: "must be non-empty and contain no NUL bytes",
+            });
+        }
+        total_bytes =
+            total_bytes
+                .checked_add(hop.to.len())
+                .ok_or(StoreError::InvalidFetchCacheInput {
+                    field: "alias-target",
+                    reason: "total target bytes overflow",
+                })?;
+        if total_bytes > MAX_FETCH_CACHE_ALIAS_BYTES {
+            return Err(StoreError::InvalidFetchCacheInput {
+                field: "alias-target",
+                reason: "total target bytes exceed 64 KiB",
+            });
+        }
+    }
+    Ok(())
+}
+
 fn next_web_storage_sequence(
     table: &impl ReadableTable<&'static [u8], &'static [u8]>,
     partition_key: &str,
@@ -1087,6 +1196,18 @@ pub struct CacheEntry {
     pub vary_headers: Vec<(String, Option<String>)>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheAlias {
+    pub hops: Vec<CacheRedirectHop>,
+    pub fetched_unix: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CacheRedirectHop {
+    pub to: String,
+    pub status: u16,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SessionRecord {
     pub tabs: Vec<String>,
@@ -1251,6 +1372,19 @@ mod tests {
             )
             .unwrap();
         store
+            .put_cache_alias(
+                "https://clear.test:443",
+                "https://clear.test/old",
+                &CacheAlias {
+                    hops: vec![CacheRedirectHop {
+                        to: "https://clear.test/page".to_owned(),
+                        status: 301,
+                    }],
+                    fetched_unix: 123,
+                },
+            )
+            .unwrap();
+        store
             .record_visit("https://clear.test:443", "https://clear.test/page", 456)
             .unwrap();
         store
@@ -1405,6 +1539,83 @@ mod tests {
         let current = cache_entry(101);
         store.put_cache(origin, url, &current).unwrap();
         assert_eq!(store.cache_variants(origin, url).unwrap(), vec![current]);
+    }
+
+    #[test]
+    fn fetch_cache_aliases_are_bounded_validated_and_deletable() {
+        let (file, store) = fresh_store();
+        let origin = "https://alias.test:443";
+        let url = "https://alias.test/old";
+        let alias = CacheAlias {
+            hops: vec![
+                CacheRedirectHop {
+                    to: "https://alias.test/moved".to_owned(),
+                    status: 301,
+                },
+                CacheRedirectHop {
+                    to: "https://alias.test/final".to_owned(),
+                    status: 308,
+                },
+            ],
+            fetched_unix: 100,
+        };
+
+        store.put_cache_alias(origin, url, &alias).unwrap();
+        drop(store);
+        let store = Store::open(file.path()).unwrap();
+        assert_eq!(store.cache_alias(origin, url).unwrap(), Some(alias));
+        assert!(
+            store
+                .cache_alias("https://other.test:443", url)
+                .unwrap()
+                .is_none()
+        );
+
+        let invalid = CacheAlias {
+            hops: vec![CacheRedirectHop {
+                to: "https://alias.test/temporary".to_owned(),
+                status: 302,
+            }],
+            fetched_unix: 101,
+        };
+        assert!(matches!(
+            store.put_cache_alias(origin, url, &invalid),
+            Err(StoreError::InvalidFetchCacheInput {
+                field: "alias-status",
+                ..
+            })
+        ));
+
+        store.delete_cache_alias(origin, url).unwrap();
+        assert!(store.cache_alias(origin, url).unwrap().is_none());
+
+        for id in 0..(MAX_FETCH_CACHE_ALIASES + 2) {
+            store
+                .put_cache_alias(
+                    origin,
+                    &format!("https://alias.test/old-{id}"),
+                    &CacheAlias {
+                        hops: vec![CacheRedirectHop {
+                            to: format!("https://alias.test/final-{id}"),
+                            status: 301,
+                        }],
+                        fetched_unix: id as i64,
+                    },
+                )
+                .unwrap();
+        }
+        assert!(
+            store
+                .cache_alias(origin, "https://alias.test/old-0")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .cache_alias(origin, "https://alias.test/old-2")
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
@@ -2044,6 +2255,12 @@ mod tests {
         assert!(
             store
                 .get_cache("https://clear.test:443", "https://clear.test/page")
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            store
+                .cache_alias("https://clear.test:443", "https://clear.test/old")
                 .unwrap()
                 .is_none()
         );

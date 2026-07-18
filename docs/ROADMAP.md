@@ -888,7 +888,29 @@ become permissive. Unit boundaries pin age/freshness equality, contradictory
 An end-to-end page test performs one `Expires`-fresh cache hit, then sends author
 `Cache-Control: no-cache` and proves validator/304 revalidation with exactly two
 transport requests; a separate profile test proves request `no-store` persists
-no representation. Heuristic freshness and redirect aliases remain cache breadth.
+no representation. At this checkpoint heuristic freshness and redirect aliases
+remained cache breadth.
+
+**Eleventh A2 checkpoint:** permanent same-origin redirect aliases now retain
+accepted final-URL identity without duplicating response bodies. A separate
+profile table stores at most 512 aliases, each capped at 20 hops and 64 KiB of
+targets; clear-data removes aliases with representations. Only complete 301/308
+chains without `Cache-Control: no-store` whose hops remain in the original
+origin are persisted. Temporary,
+cross-origin, malformed, looping, over-limit, and policy-blocked aliases fall
+back to live transport; direct or unsafe later responses invalidate the original
+alias. Lookup revalidates URL/CSP/mixed-content policy on every target, computes
+final-hop cookies and `Vary` headers, and reuses aliases only while the final
+representation is fresh. Cached diagnostics replay request/redirect/response/
+progress/completion with the accepted final URL and redirect count. A page
+`fetch()` proof performs the initial redirect plus target requests, then repeats
+the original URL with no transport while preserving `Response.url` and
+`redirected`. A two-context module proof reuses the redirected root and relative
+dependency from the profile, preserving final-URL import resolution and network
+redirect events. Store and decision tests pin eviction, validation, deletion,
+clear-data, legacy safety, and rejection of temporary/cross-origin aliases.
+General redirect-response caching still requires retained redirect response
+headers; this checkpoint deliberately does not treat 302/307 as permanent.
 
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
@@ -1046,8 +1068,7 @@ Work top-to-bottom and finish/document/commit each slice:
 1. **Continue A2 beyond active cancellation:** split the asynchronous page
    transfer into policy-safe head and bounded body ownership so `fetch()` may
    resolve before body completion while stream reads, cancellation, integrity,
-   cache commit, and CDP progress retain one terminal lifecycle. Then extend the
-   cache checkpoint with redirect aliases. Keep direct
+   cache commit, and CDP progress retain one terminal lifecycle. Keep direct
    classic/automation dynamic imports and module import attributes fail-closed
    until they can carry exact source URL, policy, and lifecycle provenance.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native

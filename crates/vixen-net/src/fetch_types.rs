@@ -111,6 +111,8 @@ pub struct ByteResponse {
     /// True only when the body came directly from the profile cache without a
     /// validating transport response.
     pub from_cache: bool,
+    /// True when every followed redirect was a cacheable permanent response.
+    pub redirect_aliasable: bool,
 }
 
 impl ByteResponse {
@@ -149,6 +151,8 @@ pub struct TextResponse {
     pub events: Vec<NetworkEvent>,
     /// Effective headers on the final request, lower-cased and combined.
     pub request_headers: BTreeMap<String, String>,
+    /// True when every followed redirect was a cacheable permanent response.
+    pub redirect_aliasable: bool,
 }
 
 impl From<ByteResponse> for TextResponse {
@@ -162,6 +166,7 @@ impl From<ByteResponse> for TextResponse {
             redirects: response.redirects,
             events: response.events,
             request_headers: response.request_headers,
+            redirect_aliasable: response.redirect_aliasable,
         }
     }
 }

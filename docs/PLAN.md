@@ -71,13 +71,14 @@ controlled host proof rather than an IME or assistive-technology matrix.
    static and dynamic dependency without changing its scene. Page fetch/XHR and
    module resources now also share bounded `Date`/`Age` plus
    `max-age`/`Expires` freshness, request cache directives, and exact simultaneous
-   `Vary` variants. Transport body reads, exact
+   `Vary` variants plus bounded permanent same-origin redirect aliases. Transport
+   body reads, exact
    progress/completion diagnostics through BrowserCore/C ABI/CDP, retained
    `ReadableStream` chunks, XHR upload/download progress, and pre-aborted fetch
    rejection are landed. Page fetch/XHR now have bounded asynchronous ownership
    and active-signal transport cancellation. Continue with policy-safe
    response-before-body completion; the current stream remains
-   buffer-before-resolution. Then add redirect aliases. Direct classic/
+   buffer-before-resolution. Direct classic/
    automation dynamic imports and import attributes stay fail-closed pending
    exact source provenance.
 

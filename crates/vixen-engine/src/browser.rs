@@ -5253,8 +5253,120 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
             })
         }
         "http" | "https" => {
+            if revalidate_profile_cache {
+                let alias =
+                    crate::http_cache::resolve_redirect_alias(store, &url).map_err(|error| {
+                        ExternalResourceLoadFailure {
+                            error: BrowserError::new(
+                                browser_error_codes::PROFILE,
+                                format!(
+                                    "external {resource_kind} cache alias read failed: {error}"
+                                ),
+                            ),
+                            url: url.to_string(),
+                            events: Vec::new(),
+                            blocked_reason: "cache",
+                        }
+                    })?;
+                if let Some(alias) = alias.filter(|alias| alias.hops.len() <= max_redirects) {
+                    for hop in &alias.hops {
+                        let target =
+                            url::Url::parse(&hop.to).expect("validated cache alias target");
+                        if let Some(blocked_reason) = request.blocked_reason(&target) {
+                            return Err(ExternalResourceLoadFailure {
+                                error: BrowserError::new(
+                                    browser_error_codes::NAVIGATION_LOAD,
+                                    format!(
+                                        "external {resource_kind} blocked by {blocked_reason}: {target}"
+                                    ),
+                                ),
+                                url: target.to_string(),
+                                events: Vec::new(),
+                                blocked_reason,
+                            });
+                        }
+                    }
+                    let final_url = alias.final_url.clone();
+                    let send_credentials = request.sends_credentials(&final_url);
+                    if send_credentials {
+                        merge_profile_cookies(store, &final_url, cookies, profile_baseline)
+                            .map_err(|error| ExternalResourceLoadFailure {
+                                error: script_error(error),
+                                url: final_url.to_string(),
+                                events: Vec::new(),
+                                blocked_reason: "load",
+                            })?;
+                    }
+                    let mut credentialless_cookies = CookieJar::default();
+                    let request_cookies = if send_credentials {
+                        &mut *cookies
+                    } else {
+                        &mut credentialless_cookies
+                    };
+                    let cache_request = TextRequest {
+                        url: final_url.clone(),
+                        cross_site: request.is_cross_site(&final_url),
+                        method: Method::Get,
+                        redirect_mode: RedirectMode::Manual,
+                        headers: request.request_headers(&final_url),
+                        body: None,
+                    };
+                    let effective_headers = network
+                        .effective_request_headers(request_cookies, &cache_request)
+                        .map_err(|error| ExternalResourceLoadFailure {
+                            error: BrowserError::new(
+                                browser_error_codes::NAVIGATION_LOAD,
+                                format!("external {resource_kind} request failed: {error}"),
+                            ),
+                            url: final_url.to_string(),
+                            events: Vec::new(),
+                            blocked_reason: "load",
+                        })?;
+                    if let Some((mut response, crate::http_cache::CacheUse::Fresh)) =
+                        external_resource_cache_lookup(
+                            store,
+                            &final_url,
+                            &effective_headers,
+                            max_body_bytes,
+                        )
+                        .map_err(|error| ExternalResourceLoadFailure {
+                            error,
+                            url: final_url.to_string(),
+                            events: Vec::new(),
+                            blocked_reason: "cache",
+                        })?
+                    {
+                        response.final_url = final_url.to_string();
+                        response.redirects = alias.hops.len() as u32;
+                        response.events = alias.events(&url, response.status, response.body.len());
+                        if let Some(blocked_reason) =
+                            request.response_blocked_reason(&final_url, &response)
+                        {
+                            return Err(ExternalResourceLoadFailure {
+                                error: BrowserError::new(
+                                    browser_error_codes::NAVIGATION_LOAD,
+                                    format!(
+                                        "external {resource_kind} blocked by {blocked_reason}: {final_url}"
+                                    ),
+                                ),
+                                url: final_url.to_string(),
+                                events: response.events,
+                                blocked_reason,
+                            });
+                        }
+                        return Ok(LoadedExternalResource::Http {
+                            response,
+                            requested_urls: send_credentials
+                                .then_some(final_url)
+                                .into_iter()
+                                .collect(),
+                        });
+                    }
+                }
+            }
             let mut current = url;
             let mut redirects = 0_u32;
+            let mut redirect_aliasable = true;
             let mut visited = HashSet::new();
             let mut events = Vec::new();
             let mut requested_urls = Vec::new();
@@ -5417,6 +5529,7 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
                 if !is_followable_redirect(response.status) {
                     response.events = events;
                     response.redirects = redirects;
+                    response.redirect_aliasable = redirect_aliasable;
                     return Ok(LoadedExternalResource::Http {
                         response,
                         requested_urls,
@@ -5485,6 +5598,7 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
                         blocked_reason: "load",
                     });
                 }
+                redirect_aliasable &= response.redirect_aliasable;
                 if matches!(
                     events.last(),
                     Some(NetworkEvent::Response { url, status })
@@ -5927,15 +6041,34 @@ pub(crate) fn persist_external_resource_cache(
             format!("external resource returned an invalid final URL: {error}"),
         )
     })?;
+    let original_url = response
+        .events
+        .iter()
+        .find_map(|event| match event {
+            NetworkEvent::RequestStart { url, .. } => url::Url::parse(url).ok(),
+            _ => None,
+        })
+        .unwrap_or_else(|| final_url.clone());
     let origin_key = vixen_net::Origin::from_url(&final_url).partition_key();
+    let fetched_unix = current_unix_timestamp();
     let Some(entry) = crate::http_cache::cache_entry(
         response.status,
         &response.headers,
         response.body.clone(),
         &response.request_headers,
-        current_unix_timestamp(),
+        fetched_unix,
     ) else {
-        return Ok(());
+        return store
+            .delete_cache_alias(
+                &vixen_net::Origin::from_url(&original_url).partition_key(),
+                original_url.as_str(),
+            )
+            .map_err(|error| {
+                BrowserError::new(
+                    browser_error_codes::PROFILE,
+                    format!("external resource cache alias delete failed: {error}"),
+                )
+            });
     };
     store
         .put_cache(&origin_key, &response.final_url, &entry)
@@ -5944,7 +6077,21 @@ pub(crate) fn persist_external_resource_cache(
                 browser_error_codes::PROFILE,
                 format!("external resource cache write failed: {error}"),
             )
-        })
+        })?;
+    crate::http_cache::persist_redirect_aliases(
+        store,
+        &original_url,
+        &final_url,
+        &response.events,
+        response.redirect_aliasable,
+        fetched_unix,
+    )
+    .map_err(|error| {
+        BrowserError::new(
+            browser_error_codes::PROFILE,
+            format!("external resource cache alias write failed: {error}"),
+        )
+    })
 }
 
 fn external_resource_cache_lookup(
@@ -5984,6 +6131,7 @@ fn external_resource_cache_lookup(
         events: Vec::new(),
         request_headers: request_headers.clone(),
         from_cache: true,
+        redirect_aliasable: true,
     };
     Ok(Some((response, cache_use)))
 }
@@ -6028,6 +6176,7 @@ fn revalidated_external_resource_response(
     cached.events = response.events;
     cached.request_headers = response.request_headers;
     cached.from_cache = false;
+    cached.redirect_aliasable = response.redirect_aliasable;
     for (name, value) in response.headers {
         if !matches!(
             name.to_ascii_lowercase().as_str(),
@@ -6891,12 +7040,25 @@ mod tests {
         )
     }
 
+    fn permanent_redirect_response(location: &str) -> String {
+        format!(
+            "HTTP/1.1 301 Moved Permanently\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    }
+
     fn script_response(source: &str, set_cookie: Option<&str>) -> String {
         let cookie = set_cookie
             .map(|value| format!("Set-Cookie: {value}\r\n"))
             .unwrap_or_default();
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\n{cookie}Content-Length: {}\r\nConnection: close\r\n\r\n{source}",
+            source.len()
+        )
+    }
+
+    fn fresh_script_response(source: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nCache-Control: max-age=600\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{source}",
             source.len()
         )
     }
@@ -6978,6 +7140,7 @@ mod tests {
                 events: Vec::new(),
                 request_headers: BTreeMap::new(),
                 from_cache: false,
+                redirect_aliasable: true,
             },
             requested_urls: vec![url::Url::parse(final_url).unwrap()],
         }
@@ -9626,6 +9789,87 @@ mod tests {
         assert_exactly_one_terminal_phase(&events, navigation_id);
 
         server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn fresh_permanent_redirected_module_graph_reuses_profile_alias() {
+        let server = GatedHttpServer::start(3);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/cached-redirected-module-page");
+        config.document_overrides.insert(
+            page_url.clone(),
+            "<!doctype html><title>initial</title><script type='module' src='/entry.js'></script>"
+                .to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let first_context = create(&mut handle);
+        let second_context = create(&mut handle);
+        drain_events(&mut handle);
+
+        let first_navigation = dispatch_navigation(&mut handle, first_context, &page_url);
+        let initial = server.request();
+        assert_eq!(initial.path, "/entry.js");
+        initial
+            .respond
+            .send(permanent_redirect_response("/modules/final.js"))
+            .unwrap();
+        initial
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("permanent module redirect response watchdog");
+
+        let final_module = server.request();
+        assert_eq!(final_module.path, "/modules/final.js");
+        final_module
+            .respond
+            .send(fresh_script_response(
+                "import { value } from './dependency.js'; document.title = `alias-${value}`;",
+            ))
+            .unwrap();
+        final_module
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("fresh final module response watchdog");
+
+        let dependency = server.request();
+        assert_eq!(dependency.path, "/modules/dependency.js");
+        dependency
+            .respond
+            .send(fresh_script_response("export const value = 42;"))
+            .unwrap();
+        dependency
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("fresh redirected dependency response watchdog");
+        wait_for_navigation(&mut handle, first_context, first_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, first_context).title.as_deref(),
+            Some("alias-42")
+        );
+        server.join();
+
+        let second_navigation = dispatch_navigation(&mut handle, second_context, &page_url);
+        let events = wait_for_navigation(&mut handle, second_context, second_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, second_context).title.as_deref(),
+            Some("alias-42")
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Redirect { from, to, status, .. }
+                        if from.ends_with("/entry.js")
+                            && to.ends_with("/modules/final.js")
+                            && *status == 301
+                ))
+        )));
+
         drop(handle);
         let _ = std::fs::remove_file(profile_path);
     }

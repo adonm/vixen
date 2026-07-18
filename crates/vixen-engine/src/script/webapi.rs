@@ -877,6 +877,44 @@ fn perform_fetch(
         }
     }
     let send_credentials = credentials_mode.sends_credentials(cross_origin);
+    let cache_alias = if !cache_disabled
+        && method == Method::Get
+        && redirect_mode == RedirectMode::Follow
+        && matches!(
+            cache_mode,
+            FetchCacheMode::Default | FetchCacheMode::ForceCache | FetchCacheMode::OnlyIfCached
+        ) {
+        match cookie_store
+            .as_deref()
+            .map(|store| crate::http_cache::resolve_redirect_alias(store, &url))
+            .transpose()
+        {
+            Ok(alias) => alias.flatten(),
+            Err(message) => return fetch_failure(url.as_str(), method, message, "cache"),
+        }
+    } else {
+        None
+    };
+    if let Some(alias) = &cache_alias
+        && let Some(policy) = &fetch_policy
+    {
+        for hop in &alias.hops {
+            let target = Url::parse(&hop.to).expect("validated cache alias target");
+            if !policy.allows_connect(&target)
+                || policy.mixed_content_verdict(&target) == MixedContentVerdict::Block
+            {
+                return fetch_failure(
+                    target.as_str(),
+                    method,
+                    "cached redirect target blocked by current fetch policy",
+                    "policy",
+                );
+            }
+        }
+    }
+    let cache_url = cache_alias
+        .as_ref()
+        .map_or_else(|| url.clone(), |alias| alias.final_url.clone());
     let origin_key = cookie_origin_key(&url);
     let origin_host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     let mut request_cookies = if send_credentials {
@@ -888,8 +926,10 @@ fn perform_fetch(
         CookieJar::default()
     };
     let cache_request = TextRequest {
-        url: url.clone(),
-        cross_site: cross_origin,
+        url: cache_url.clone(),
+        cross_site: fetch_policy
+            .as_ref()
+            .is_some_and(|policy| policy.is_cross_origin(&cache_url)),
         method,
         redirect_mode,
         headers: headers.clone(),
@@ -904,6 +944,8 @@ fn perform_fetch(
         match fetch_cache_lookup(
             cookie_store.as_deref(),
             &url,
+            &cache_url,
+            cache_alias.as_ref(),
             &effective_headers,
             network.config().max_body_bytes,
         ) {
@@ -926,9 +968,7 @@ fn perform_fetch(
         )
     {
         match cached.clone() {
-            Some((mut response, _)) => {
-                response.events =
-                    cached_response_events(&url, response.status, response.body.len());
+            Some((response, _)) => {
                 let response = match apply_fetch_integrity(response, &integrity) {
                     Ok(response) => response,
                     Err(message) => {
@@ -954,9 +994,8 @@ fn perform_fetch(
     }
 
     if cache_mode == FetchCacheMode::Default
-        && let Some((mut response, crate::http_cache::CacheUse::Fresh)) = cached.clone()
+        && let Some((response, crate::http_cache::CacheUse::Fresh)) = cached.clone()
     {
-        response.events = cached_response_events(&url, response.status, response.body.len());
         let response = match apply_fetch_integrity(response, &integrity) {
             Ok(response) => response,
             Err(message) => return fetch_failure(url.as_str(), method, message, "integrity"),
@@ -1027,11 +1066,7 @@ fn perform_fetch(
                 && cache_mode != FetchCacheMode::NoStore
                 && response.status != 304
                 && let Err(message) = commit_host_effect(&runtime_interrupt, &cancellation, || {
-                    persist_fetch_cache(
-                        cookie_store.as_deref(),
-                        &cookie_origin_key(&url),
-                        &response,
-                    )
+                    persist_fetch_cache(cookie_store.as_deref(), &url, &response)
                 })
             {
                 return fetch_failure(url.as_str(), method, message, "cache");
@@ -1732,6 +1767,7 @@ fn revalidated_response(response: TextResponse, cached: Option<TextResponse>) ->
     cached.redirects = response.redirects;
     cached.set_cookie = response.set_cookie;
     cached.events = response.events;
+    cached.redirect_aliasable = response.redirect_aliasable;
     for (name, value) in response.headers {
         cached.headers.insert(name, value);
     }
@@ -1853,38 +1889,53 @@ fn persist_cookie_snapshots(
 
 fn persist_fetch_cache(
     store: Option<&Store>,
-    origin_key: &str,
+    original_url: &Url,
     response: &TextResponse,
 ) -> Result<(), String> {
     let Some(store) = store else {
         return Ok(());
     };
+    let final_url = Url::parse(&response.final_url).map_err(|error| error.to_string())?;
+    let fetched_unix = current_unix_timestamp();
     let Some(entry) = crate::http_cache::cache_entry(
         response.status,
         &response.headers,
         response.body.as_bytes().to_vec(),
         &response.request_headers,
-        current_unix_timestamp(),
+        fetched_unix,
     ) else {
-        return Ok(());
+        return store
+            .delete_cache_alias(&cookie_origin_key(original_url), original_url.as_str())
+            .map_err(|error| error.to_string());
     };
+    let origin_key = cookie_origin_key(&final_url);
     store
-        .put_cache(origin_key, &response.final_url, &entry)
-        .map_err(|err| err.to_string())
+        .put_cache(&origin_key, &response.final_url, &entry)
+        .map_err(|err| err.to_string())?;
+    crate::http_cache::persist_redirect_aliases(
+        store,
+        original_url,
+        &final_url,
+        &response.events,
+        response.redirect_aliasable,
+        fetched_unix,
+    )
 }
 
 fn fetch_cache_lookup(
     store: Option<&Store>,
-    url: &Url,
+    original_url: &Url,
+    cache_url: &Url,
+    alias: Option<&crate::http_cache::ResolvedCacheAlias>,
     request_headers: &std::collections::BTreeMap<String, String>,
     max_body_bytes: u64,
 ) -> Result<Option<(TextResponse, crate::http_cache::CacheUse)>, String> {
     let Some(store) = store else {
         return Ok(None);
     };
-    let origin_key = cookie_origin_key(url);
+    let origin_key = cookie_origin_key(cache_url);
     let variants = store
-        .cache_variants(&origin_key, url.as_str())
+        .cache_variants(&origin_key, cache_url.as_str())
         .map_err(|err| err.to_string())?;
     let Some((entry, cache_use)) = crate::http_cache::select_variant(
         variants,
@@ -1894,16 +1945,24 @@ fn fetch_cache_lookup(
     ) else {
         return Ok(None);
     };
+    if alias.is_some() && cache_use != crate::http_cache::CacheUse::Fresh {
+        return Ok(None);
+    }
+    let events = alias.map_or_else(
+        || cached_response_events(original_url, entry.status, entry.body.len()),
+        |alias| alias.events(original_url, entry.status, entry.body.len()),
+    );
     Ok(Some((
         TextResponse {
             body: String::from_utf8_lossy(&entry.body).into_owned(),
             headers: entry.headers.into_iter().collect(),
             status: entry.status,
-            final_url: url.as_str().to_owned(),
+            final_url: cache_url.as_str().to_owned(),
             set_cookie: Vec::new(),
-            redirects: 0,
-            events: Vec::new(),
+            redirects: alias.map_or(0, |alias| alias.hops.len() as u32),
+            events,
             request_headers: request_headers.clone(),
+            redirect_aliasable: true,
         },
         cache_use,
     )))
@@ -4936,6 +4995,7 @@ mod tests {
             redirects: 0,
             events: Vec::new(),
             request_headers: BTreeMap::new(),
+            redirect_aliasable: true,
         };
         let matching = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
 

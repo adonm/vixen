@@ -505,8 +505,17 @@ request `no-store`/`no-cache`/`max-age`/`min-fresh`/`max-stale`, exact
 present/absent variant matching, validator revalidation, body limits, and
 cache-disabled bypass for page fetch/XHR and module resources. Malformed dates,
 numeric directives, wildcard/oversized variants, and conflicting values fail
-closed. Heuristic freshness and redirect aliases remain loader work rather than
-frontend-specific cache logic.
+closed. Heuristic freshness and general redirect-response caching remain loader
+work rather than frontend-specific cache logic.
+
+Cacheable permanent same-origin 301/308 redirect chains use a separate bounded
+alias table so final representations remain single-copy; `no-store` redirects
+are excluded. Aliases are limited to 512 records,
+20 hops, and 64 KiB of target URLs; only a fresh matching final representation
+can satisfy one. Lookup reruns URL and current resource policy for every hop and
+computes cookies/`Vary` at the accepted final URL. Temporary and cross-origin
+redirects remain live-only until redirect response headers and freshness can be
+replayed without weakening policy.
 
 Transport body reads are incremental and enforce the destination cap before
 buffer growth. Ordered response, chunk progress, and completion records carry
@@ -535,6 +544,7 @@ records for:
 profile.redb
   cookies
   fetch-cache
+  fetch-cache-aliases
   history
   session
   web-storage
