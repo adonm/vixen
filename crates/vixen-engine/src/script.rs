@@ -55,6 +55,7 @@ pub struct JsRuntime {
     dom_mutations: Option<dom::DomMutationSink>,
     synchronous_layout: Option<SynchronousLayoutConfig>,
     realm_key: RealmKey,
+    cancelled_module_realm: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -607,6 +608,7 @@ impl JsRuntime {
             dom_mutations: init.dom_mutations,
             synchronous_layout,
             realm_key,
+            cancelled_module_realm: false,
         })
     }
 
@@ -971,9 +973,22 @@ impl JsRuntime {
     /// the previous document cannot leak into the new document, even when the
     /// new URL and DOM snapshot are byte-for-byte identical.
     pub fn reset_realm(&mut self) {
+        self.module_loader.reset_realm();
         self.runtime = None;
         self.dom_mutations = None;
         self.realm_key = RealmKey::NoPage;
+        self.cancelled_module_realm = false;
+    }
+
+    pub(crate) fn recover_cancelled_module_realm(
+        &mut self,
+        page: &Rc<RefCell<Page>>,
+    ) -> Result<(), EngineError> {
+        if !self.cancelled_module_realm {
+            return Ok(());
+        }
+        self.reset_realm();
+        self.ensure_realm(Some(&page.borrow()))
     }
 
     /// Refresh page-backed host snapshots after parser-blocking resources have
@@ -1106,14 +1121,26 @@ impl JsRuntime {
     }
 
     fn execute_in_current_realm(&mut self, src: &str) -> Result<JsValue, EngineError> {
-        let runtime = self.runtime.as_mut().expect("realm initialised");
-        let result = runtime::execute_script(
-            runtime,
-            "inline.js",
-            src.to_owned(),
-            &self.runtime_interrupt,
-        )?;
-        runtime::js_value_from_global(runtime, result)
+        let result = {
+            let runtime = self.runtime.as_mut().expect("realm initialised");
+            runtime::execute_script(
+                runtime,
+                "inline.js",
+                src.to_owned(),
+                &self.runtime_interrupt,
+            )
+            .and_then(|value| runtime::js_value_from_global(runtime, value))
+        };
+        if result.as_ref().is_err_and(|error| {
+            matches!(
+                error.code(),
+                codes::SCRIPT_INTERRUPTED | codes::SCRIPT_TIMEOUT
+            ) && self.module_loader.has_pending_loads()
+        }) {
+            self.module_loader.cancel_pending_loads();
+            self.cancelled_module_realm = true;
+        }
+        result
     }
 
     fn execute_module_in_current_realm(
@@ -1124,13 +1151,25 @@ impl JsRuntime {
         self.module_loader
             .begin_graph(request.clone())
             .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
-        let runtime = self.runtime.as_mut().expect("realm initialised");
-        runtime::execute_module(
-            runtime,
-            request.url().clone(),
-            source.to_owned(),
-            &self.runtime_interrupt,
-        )
+        let result = {
+            let runtime = self.runtime.as_mut().expect("realm initialised");
+            runtime::execute_module(
+                runtime,
+                request.url().clone(),
+                source.to_owned(),
+                &self.runtime_interrupt,
+            )
+        };
+        if result.as_ref().is_err_and(|error| {
+            matches!(
+                error.code(),
+                codes::SCRIPT_INTERRUPTED | codes::SCRIPT_TIMEOUT
+            ) && self.module_loader.has_pending_loads()
+        }) {
+            self.module_loader.cancel_pending_loads();
+            self.cancelled_module_realm = true;
+        }
+        result
     }
 
     fn ensure_realm(&mut self, page: Option<&Page>) -> Result<(), EngineError> {
@@ -1139,6 +1178,7 @@ impl JsRuntime {
             .map(RealmKey::Page)
             .unwrap_or(RealmKey::NoPage);
         if self.realm_key != target || self.runtime.is_none() {
+            self.module_loader.reset_realm();
             self.runtime = None;
             self.storage_opaque_serial = self.storage_opaque_serial.saturating_add(1);
             let storage = web_storage_host(
@@ -5841,6 +5881,138 @@ mod tests {
                 .filter(|event| matches!(event, JsNetworkEvent::Response { status: 200, .. }))
                 .count(),
             2
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn delayed_dynamic_import_uses_retained_graph_and_import_map() {
+        let directory = std::env::temp_dir().join(format!(
+            "vixen-dynamic-import-{}-{}",
+            std::process::id(),
+            next_storage_session_id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("child.js"), "export const child = 41;").unwrap();
+        std::fs::write(
+            directory.join("lazy.js"),
+            "import { child } from './child.js'; globalThis.__dynamicLoads = (globalThis.__dynamicLoads || 0) + 1; export const value = child + 1;",
+        )
+        .unwrap();
+        let page_url = url::Url::from_file_path(directory.join("page.html"))
+            .unwrap()
+            .to_string();
+        let mut page = Page::from_html(
+            page_url,
+            "<title>initial</title>\
+             <script type='importmap'>{\"imports\":{\"lazy\":\"./lazy.js\"}}</script>\
+             <script type='module'>\
+               globalThis.__loadDynamic = () => import('lazy').then(module => module.value);\
+               globalThis.__loadAttributed = () => import('./child.js', { with: { type: 'json' } });\
+             </script>\
+             <script type='module'>globalThis.__laterRoot = true;</script>",
+        )
+        .unwrap();
+        let mut runtime = JsRuntime::new().unwrap();
+        assert_eq!(runtime.execute_page_scripts(&mut page).unwrap(), 2);
+
+        assert_eq!(
+            runtime
+                .evaluate_with_page_mut(
+                    "__loadDynamic().then(value => { document.title = `dynamic-${value}`; return value; })",
+                    &mut page,
+                )
+                .unwrap(),
+            JsValue::Int32(42)
+        );
+        assert_eq!(page.document().title().as_deref(), Some("dynamic-42"));
+        assert_eq!(
+            runtime
+                .evaluate_with_page_mut(
+                    "__loadDynamic().then(value => `${value}:${__dynamicLoads}`)",
+                    &mut page
+                )
+                .unwrap(),
+            JsValue::String("42:1".to_owned())
+        );
+        assert_eq!(
+            runtime
+                .evaluate_with_page_mut(
+                    "__loadAttributed().then(() => false, error => /import attributes/.test(error.message))",
+                    &mut page,
+                )
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            runtime
+                .evaluate_with_page_mut(
+                    "import('./child.js').then(() => false, () => true)",
+                    &mut page,
+                )
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            runtime
+                .drain_network_events()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, JsNetworkEvent::Request { .. }))
+                .count(),
+            2
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn dynamic_imports_share_the_static_graph_load_limit() {
+        let directory = std::env::temp_dir().join(format!(
+            "vixen-dynamic-limit-{}-{}",
+            std::process::id(),
+            next_storage_session_id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        for index in 0..=64 {
+            std::fs::write(
+                directory.join(format!("module-{index}.js")),
+                format!("export const value = {index};"),
+            )
+            .unwrap();
+        }
+        let page_url = url::Url::from_file_path(directory.join("page.html"))
+            .unwrap()
+            .to_string();
+        let mut page = Page::from_html(
+            page_url,
+            "<script type='module'>globalThis.__loadByIndex = index => import(`./module-${index}.js`).then(module => module.value);</script>",
+        )
+        .unwrap();
+        let mut runtime = JsRuntime::new().unwrap();
+        assert_eq!(runtime.execute_page_scripts(&mut page).unwrap(), 1);
+
+        for index in 0..64 {
+            assert_eq!(
+                runtime
+                    .evaluate_with_page_mut(&format!("__loadByIndex({index})"), &mut page)
+                    .unwrap(),
+                JsValue::Int32(index)
+            );
+        }
+        assert_eq!(
+            runtime
+                .evaluate_with_page_mut(
+                    "__loadByIndex(64).then(() => '', error => error.message)",
+                    &mut page,
+                )
+                .unwrap(),
+            JsValue::String("module graph exceeds 64 dependency loads".to_owned())
+        );
+        assert_eq!(
+            runtime.evaluate_with_page("6 * 7", &page).unwrap(),
+            JsValue::Int32(42)
         );
 
         std::fs::remove_dir_all(directory).unwrap();

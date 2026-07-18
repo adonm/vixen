@@ -211,6 +211,11 @@ explicit until promoted by measured tests.
   exact/prefix/URL-like and scoped dependencies through that same policy-bound
   loader; external/multiple/late/integrity maps and import attributes fail
   closed without partial registration.
+- Dynamic imports originating in page modules retain exact graph/import-map/
+  credentials policy across later roots and tasks, share cumulative bounds,
+  resolve redirected children from accepted final URLs, and abort without late
+  DOM/profile/lifecycle effects. Direct classic/automation imports remain
+  unsupported until they carry exact source provenance.
 - Policy runs before resource bytes/handles cross to Flutter.
 - redb profile tables preserve partitioning, bounds, recovery, clear-data, and
   reopen behavior.

@@ -3232,6 +3232,23 @@ impl BrowserCore {
                 })
         };
 
+        let recovery = {
+            let (contexts, runtime_slots) = (&self.contexts, &mut self.runtime_slots);
+            let context = contexts.get(&context_id).expect("context checked");
+            runtime_slots[runtime_slot]
+                .runtime
+                .recover_cancelled_module_realm(&context.page)
+        };
+        if let Err(error) = recovery {
+            let request_id = self
+                .context(context_id)
+                .ok()
+                .and_then(|context| context.active_navigation.as_ref())
+                .map(|active| active.request_id);
+            self.fail_navigation(context_id, navigation_id, request_id, engine_error(error));
+            return;
+        }
+
         let mut effects = RuntimeEffects::default();
         let advanced_item = item_result.is_some();
         if let Some(Err(error)) = item_result
@@ -3592,6 +3609,25 @@ impl BrowserCore {
                 })
         };
 
+        let recovery = {
+            let (contexts, runtime_slots) = (&self.contexts, &mut self.runtime_slots);
+            let context = contexts
+                .get(&key.context_id)
+                .expect("external script context was checked");
+            runtime_slots[runtime_slot]
+                .runtime
+                .recover_cancelled_module_realm(&context.page)
+        };
+        if let Err(error) = recovery {
+            self.fail_navigation(
+                key.context_id,
+                key.navigation_id,
+                Some(key.request_id),
+                engine_error(error),
+            );
+            return;
+        }
+
         if let Err(error) = item_result
             && !is_script_interrupted(&error)
         {
@@ -3734,6 +3770,30 @@ impl BrowserCore {
                             (task_result, effects, task_actions)
                         })
                 };
+                let recovery = {
+                    let (contexts, runtime_slots) = (&self.contexts, &mut self.runtime_slots);
+                    let context = contexts
+                        .get(&context_id)
+                        .expect("lifecycle context was checked");
+                    runtime_slots[runtime_slot]
+                        .runtime
+                        .recover_cancelled_module_realm(&context.page)
+                };
+                if let Err(error) = recovery {
+                    self.fail_navigation(
+                        context_id,
+                        navigation_id,
+                        self.context(context_id)
+                            .ok()
+                            .and_then(|context| context.active_navigation.as_ref())
+                            .map(|active| active.request_id),
+                        engine_error(error),
+                    );
+                    return;
+                }
+                if task_result.as_ref().is_err_and(is_script_interrupted) {
+                    return;
+                }
                 let mut effects = RuntimeEffects::default();
                 if let Err(error) = task_result
                     && !is_script_interrupted(&error)
@@ -6785,6 +6845,12 @@ mod tests {
     fn cors_redirect_response(location: &str, allow_origin: &str) -> String {
         format!(
             "HTTP/1.1 302 Found\r\nLocation: {location}\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+        )
+    }
+
+    fn credentialed_cors_redirect_response(location: &str, allow_origin: &str) -> String {
+        format!(
+            "HTTP/1.1 302 Found\r\nLocation: {location}\r\nAccess-Control-Allow-Origin: {allow_origin}\r\nAccess-Control-Allow-Credentials: true\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
         )
     }
 
@@ -10302,6 +10368,176 @@ mod tests {
     }
 
     #[test]
+    fn delayed_dynamic_import_retains_its_original_graph_policy() {
+        let server = GatedHttpServer::start(5);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = "http://source.test/dynamic-module-policy";
+        let first_root_url = server.url("/dynamic/first-root.js");
+        let second_root_url = server.url("/dynamic/second-root.js");
+        let final_lazy_url = server.url("/dynamic/final/lazy.js");
+        let child_url = server.url("/dynamic/final/child.js");
+        config.document_overrides.insert(
+            page_url.to_owned(),
+            format!(
+                "<!doctype html><title>initial</title>\
+                 <script type='module' src='{first_root_url}' crossorigin='use-credentials'></script>\
+                 <script type='module' src='{second_root_url}'></script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, page_url);
+        let first_root = server.request();
+        assert_eq!(first_root.path, "/dynamic/first-root.js");
+        assert_eq!(first_root.origin.as_deref(), Some("http://source.test"));
+        first_root
+            .respond
+            .send(cors_script_response(
+                "globalThis.__dynamicOrder = ['first-root']; setTimeout(() => { import('./lazy.js').then(module => { __dynamicOrder.push('dynamic'); document.title = `dynamic-${module.value}`; }); }, 0);",
+                "http://source.test",
+                true,
+                Some("first_graph=credentialed; Path=/"),
+            ))
+            .unwrap();
+        first_root
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+
+        let second_root = server.request();
+        assert_eq!(second_root.path, "/dynamic/second-root.js");
+        assert_eq!(second_root.origin.as_deref(), Some("http://source.test"));
+        assert_eq!(second_root.cookie, None);
+        second_root
+            .respond
+            .send(cors_script_response(
+                "__dynamicOrder.push('second-root');",
+                "*",
+                false,
+                None,
+            ))
+            .unwrap();
+        second_root
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+
+        let lazy = server.request();
+        assert_eq!(lazy.path, "/dynamic/lazy.js");
+        assert_eq!(lazy.origin.as_deref(), Some("http://source.test"));
+        assert!(
+            lazy.cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("first_graph=credentialed")
+        );
+        lazy.respond
+            .send(credentialed_cors_redirect_response(
+                "/dynamic/final/lazy.js",
+                "http://source.test",
+            ))
+            .unwrap();
+        lazy.completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+
+        let final_lazy = server.request();
+        assert_eq!(final_lazy.path, "/dynamic/final/lazy.js");
+        assert_eq!(final_lazy.origin.as_deref(), Some("http://source.test"));
+        assert!(
+            final_lazy
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("first_graph=credentialed")
+        );
+        final_lazy
+            .respond
+            .send(cors_script_response(
+                "import { child } from './child.js'; __dynamicOrder.push('lazy'); export const value = child + 1;",
+                "http://source.test",
+                true,
+                None,
+            ))
+            .unwrap();
+        final_lazy
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+
+        let child = server.request();
+        assert_eq!(child.path, "/dynamic/final/child.js");
+        assert_eq!(child.origin.as_deref(), Some("http://source.test"));
+        assert!(
+            child
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("first_graph=credentialed")
+        );
+        child
+            .respond
+            .send(cors_script_response(
+                "__dynamicOrder.push('child'); export const child = 41;",
+                "http://source.test",
+                true,
+                None,
+            ))
+            .unwrap();
+        child
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .unwrap();
+
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        let settled = state(&mut handle, context_id);
+        assert_eq!(settled.title.as_deref(), Some("dynamic-42"));
+        assert_eq!(
+            eval(&mut handle, &settled, "__dynamicOrder.join(',')"),
+            ScriptValue::String("first-root,second-root,child,lazy,dynamic".to_owned())
+        );
+        let request_ids = events
+            .iter()
+            .filter_map(|event| match event {
+                BrowserEvent::RuntimeEffects { effects, .. } => Some(&effects.network),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|event| match event {
+                RuntimeNetworkEvent::Request { request_id, .. } => Some(request_id),
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(request_ids.len(), 4);
+        assert!(
+            request_ids
+                .iter()
+                .all(|request_id| request_id.parse::<u64>().is_ok())
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        for module_url in [final_lazy_url, child_url] {
+            let module_url = url::Url::parse(&module_url).unwrap();
+            let origin_key = vixen_net::Origin::from_url(&module_url).partition_key();
+            assert!(
+                store
+                    .get_cache(&origin_key, module_url.as_str())
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
     fn stop_aborts_module_dependency_without_late_profile_or_runtime_effects() {
         let server = GatedHttpServer::start_with_disconnect_detection(1);
         let mut config = test_config();
@@ -10357,6 +10593,96 @@ mod tests {
         assert!(
             store
                 .get_cache(&origin_key, dependency_url.as_str())
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn stop_aborts_dynamic_module_without_late_profile_or_runtime_effects() {
+        let server = GatedHttpServer::start_with_disconnect_detection(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/dynamic-stop-page");
+        let dynamic_url = server.url("/stopped-dynamic.js");
+        config.document_overrides.insert(
+            page_url.clone(),
+            "<!doctype html><title>committed</title>\
+             <script type='module'>\
+               setTimeout(() => {\
+                 import('./stopped-dynamic.js').then(() => {\
+                   document.cookie = 'dynamic_late=1; Path=/';\
+                   document.title = 'late';\
+                 });\
+               }, 0);\
+             </script>"
+                .to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/stopped-dynamic.js");
+        let started = std::time::Instant::now();
+        assert_eq!(
+            handle
+                .dispatch(BrowserCommand::Stop { context_id })
+                .unwrap(),
+            BrowserCommandResult::Accepted
+        );
+        assert!(
+            started.elapsed() < Duration::from_millis(150),
+            "stop waited for the active dynamic module"
+        );
+        request
+            .disconnected
+            .recv_timeout(Duration::from_secs(10))
+            .expect("dynamic module transport remained connected after stop");
+        let events = drain_events(&mut handle);
+        assert_navigation_cancelled(
+            &events,
+            navigation_id,
+            NavigationCancellationReason::Stopped,
+        );
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::NavigationPhaseChanged {
+                navigation_id: event_navigation_id,
+                phase: NavigationPhase::Settled,
+                ..
+            } if *event_navigation_id == navigation_id
+        )));
+        assert!(!events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.exceptions.iter().any(|exception|
+                    matches!(exception.error.code, crate::engine_error::codes::SCRIPT_INTERRUPTED | crate::engine_error::codes::SCRIPT_TIMEOUT))
+        )));
+        let stopped = state(&mut handle, context_id);
+        assert_eq!(stopped.title.as_deref(), Some("committed"));
+        assert_eq!(
+            eval(&mut handle, &stopped, "20 + 22"),
+            ScriptValue::Int32(42)
+        );
+        let ScriptValue::String(cookie) = eval(&mut handle, &stopped, "document.cookie") else {
+            panic!("document.cookie must be a string");
+        };
+        assert!(!cookie.contains("dynamic_late=1"));
+
+        drop(request.respond);
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        let dynamic_url = url::Url::parse(&dynamic_url).unwrap();
+        let origin_key = vixen_net::Origin::from_url(&dynamic_url).partition_key();
+        assert!(
+            store
+                .get_cache(&origin_key, dynamic_url.as_str())
                 .unwrap()
                 .is_none()
         );

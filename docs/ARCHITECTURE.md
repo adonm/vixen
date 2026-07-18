@@ -337,7 +337,10 @@ JS uses `deno_core` directly:
   lower trust boundaries where necessary;
 - resources carry document/context generations so navigation teardown revokes
   stale handles;
-- parser scripts, modules, tasks, and microtasks join the document lifecycle.
+- parser scripts, static/dynamic module graphs, tasks, and microtasks join the
+  document lifecycle. Every module URL retains its originating bounded graph
+  policy; dynamic descendants cannot inherit whichever root happened to run
+  last, and cancellation generation-checks profile effects.
 
 The obsolete `Page` string-expression and headless classifier shims are deleted;
 all evaluation adapters use `BrowserCore`/`JsRuntime`.

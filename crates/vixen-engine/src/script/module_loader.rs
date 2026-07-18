@@ -1,13 +1,14 @@
-//! Static page-module dependency loading through BrowserCore's shared resource boundary.
+//! Page-module graph loading through BrowserCore's shared resource boundary.
 //!
 //! V8 owns graph discovery and evaluation. This loader resolves static file and
 //! HTTP(S) imports, then delegates bytes, redirects, CORS, CSP/mixed-content
 //! checks, profile credentials/cache writes, and bounded network diagnostics to
 //! the same external-resource loader used by parser scripts, stylesheets, and
-//! images. Dynamic imports, import attributes, and graphs over the explicit
-//! load/event limits fail closed before module evaluation.
+//! images. Static and dynamic imports retain their originating graph policy;
+//! import attributes and graphs over explicit limits fail closed before module
+//! evaluation.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -32,7 +33,12 @@ use crate::browser::{
 };
 
 const MAX_MODULE_GRAPH_LOADS: usize = 64;
+const MAX_MODULE_GRAPH_URLS: usize = 1 + MAX_MODULE_GRAPH_LOADS * 2;
 const MAX_MODULE_NETWORK_EVENTS: usize = 1024;
+const MAX_MODULE_PROVENANCE: usize = 1024;
+
+type PreparedModuleRequest = (String, ExternalPageScript, u64);
+type ModuleRequestError = (Option<String>, &'static str, String);
 
 #[derive(Clone)]
 enum RequestIds {
@@ -54,11 +60,19 @@ impl RequestIds {
     }
 }
 
+struct ModuleGraphContext {
+    request: ExternalPageScript,
+    loads: usize,
+    module_urls: usize,
+}
+
 #[derive(Default)]
 struct LoaderState {
-    request: Option<ExternalPageScript>,
-    graph_loads: usize,
+    modules: BTreeMap<String, Arc<Mutex<ModuleGraphContext>>>,
     events: VecDeque<JsNetworkEvent>,
+    active_tasks: BTreeMap<u64, tokio::task::AbortHandle>,
+    next_task_id: u64,
+    generation: u64,
 }
 
 #[derive(Clone)]
@@ -100,9 +114,51 @@ impl PageModuleLoader {
             .state
             .lock()
             .map_err(|_| "module loader state is poisoned".to_owned())?;
-        state.request = Some(request);
-        state.graph_loads = 0;
+        let root_url = request.url().to_string();
+        if state.modules.contains_key(&root_url) {
+            return Ok(());
+        }
+        if state.modules.len() >= MAX_MODULE_PROVENANCE {
+            return Err(format!(
+                "module provenance exceeds {MAX_MODULE_PROVENANCE} URLs"
+            ));
+        }
+        state.modules.insert(
+            root_url,
+            Arc::new(Mutex::new(ModuleGraphContext {
+                request,
+                loads: 0,
+                module_urls: 1,
+            })),
+        );
         Ok(())
+    }
+
+    pub(super) fn has_pending_loads(&self) -> bool {
+        self.state
+            .lock()
+            .is_ok_and(|state| !state.active_tasks.is_empty())
+    }
+
+    pub(super) fn cancel_pending_loads(&self) {
+        let handles = if let Ok(mut state) = self.state.lock() {
+            state.generation = state.generation.saturating_add(1);
+            std::mem::take(&mut state.active_tasks)
+                .into_values()
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        for handle in handles {
+            handle.abort();
+        }
+    }
+
+    pub(super) fn reset_realm(&self) {
+        self.cancel_pending_loads();
+        if let Ok(mut state) = self.state.lock() {
+            state.modules.clear();
+        }
     }
 
     pub(super) fn drain_events(&self) -> Result<Vec<JsNetworkEvent>, String> {
@@ -114,8 +170,8 @@ impl PageModuleLoader {
     }
 
     pub(super) fn shutdown(&self) {
+        self.reset_realm();
         if let Ok(mut state) = self.state.lock() {
-            state.request = None;
             state.events.clear();
         }
         if let Ok(mut storage) = self.storage.lock() {
@@ -129,35 +185,48 @@ impl PageModuleLoader {
     fn prepare_request(
         &self,
         module_specifier: &ModuleSpecifier,
-    ) -> Result<(String, ExternalPageScript), (Option<String>, &'static str, String)> {
+    ) -> Result<PreparedModuleRequest, ModuleRequestError> {
         let request_id = self
             .request_ids
             .next()
             .map_err(|message| (None, "module-policy", message))?;
-        let mut state = self.state.lock().map_err(|_| {
+        let state = self.state.lock().map_err(|_| {
             (
                 Some(request_id.clone()),
                 "module-policy",
                 "module loader state is poisoned".to_owned(),
             )
         })?;
-        if state.graph_loads >= MAX_MODULE_GRAPH_LOADS {
+        let graph = state
+            .modules
+            .get(module_specifier.as_str())
+            .cloned()
+            .ok_or_else(|| {
+                (
+                    Some(request_id.clone()),
+                    "module-policy",
+                    "module dependency load has no graph provenance".to_owned(),
+                )
+            })?;
+        let generation = state.generation;
+        drop(state);
+        let mut graph = graph.lock().map_err(|_| {
+            (
+                Some(request_id.clone()),
+                "module-policy",
+                "module graph provenance is poisoned".to_owned(),
+            )
+        })?;
+        if graph.loads >= MAX_MODULE_GRAPH_LOADS {
             return Err((
                 Some(request_id),
                 "module-policy",
                 format!("module graph exceeds {MAX_MODULE_GRAPH_LOADS} dependency loads"),
             ));
         }
-        state.graph_loads += 1;
-        let root = state.request.clone().ok_or_else(|| {
-            (
-                Some(request_id.clone()),
-                "module-policy",
-                "module dependency load has no active graph policy".to_owned(),
-            )
-        })?;
-        drop(state);
-        let request = root
+        graph.loads += 1;
+        let request = graph
+            .request
             .module_dependency(module_specifier.clone())
             .map_err(|reason| {
                 (
@@ -166,7 +235,7 @@ impl PageModuleLoader {
                     format!("module dependency blocked by {reason}: {module_specifier}"),
                 )
             })?;
-        Ok((request_id, request))
+        Ok((request_id, request, generation))
     }
 
     fn record_events(&self, events: Vec<JsNetworkEvent>) -> Result<(), String> {
@@ -227,10 +296,85 @@ impl PageModuleLoader {
         Ok(runtime)
     }
 
+    fn register_task(&self, handle: tokio::task::AbortHandle) -> Result<u64, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "module loader state is poisoned".to_owned())?;
+        let task_id = state.next_task_id;
+        state.next_task_id = state
+            .next_task_id
+            .checked_add(1)
+            .ok_or_else(|| "module loader task id space is exhausted".to_owned())?;
+        state.active_tasks.insert(task_id, handle);
+        Ok(task_id)
+    }
+
+    fn unregister_task(&self, task_id: u64) {
+        if let Ok(mut state) = self.state.lock() {
+            state.active_tasks.remove(&task_id);
+        }
+    }
+
+    fn register_module_url(
+        &self,
+        graph: Arc<Mutex<ModuleGraphContext>>,
+        url: &Url,
+    ) -> Result<(), ModuleLoaderError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ModuleLoaderError::generic("module loader state is poisoned"))?;
+        if state.modules.contains_key(url.as_str()) {
+            return Ok(());
+        }
+        if state.modules.len() >= MAX_MODULE_PROVENANCE {
+            return Err(ModuleLoaderError::generic(format!(
+                "module provenance exceeds {MAX_MODULE_PROVENANCE} URLs"
+            )));
+        }
+        let mut context = graph
+            .lock()
+            .map_err(|_| ModuleLoaderError::generic("module graph provenance is poisoned"))?;
+        if context.module_urls >= MAX_MODULE_GRAPH_URLS {
+            return Err(ModuleLoaderError::generic(format!(
+                "module graph exceeds {MAX_MODULE_GRAPH_URLS} provenance URLs"
+            )));
+        }
+        context.module_urls += 1;
+        drop(context);
+        state.modules.insert(url.to_string(), graph);
+        Ok(())
+    }
+
+    fn register_redirect_url(&self, specified: &Url, found: &Url) -> Result<(), String> {
+        if specified == found {
+            return Ok(());
+        }
+        let graph = self
+            .state
+            .lock()
+            .map_err(|_| "module loader state is poisoned".to_owned())?
+            .modules
+            .get(specified.as_str())
+            .cloned()
+            .ok_or_else(|| "redirected module has no graph provenance".to_owned())?;
+        self.register_module_url(graph, found)
+            .map_err(|error| error.to_string())
+    }
+
+    fn generation_is_active(&self, generation: u64) -> Result<bool, String> {
+        self.state
+            .lock()
+            .map(|state| state.generation == generation)
+            .map_err(|_| "module loader state is poisoned".to_owned())
+    }
+
     fn resolve_module_specifier(
         &self,
         specifier: &str,
         referrer: &str,
+        register: bool,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
         if specifier.len() > MAX_MODULE_SPECIFIER_BYTES
             || referrer.len() > MAX_MODULE_SPECIFIER_BYTES
@@ -249,13 +393,19 @@ impl PageModuleLoader {
             return Ok(root);
         }
         let referrer_url = Url::parse(referrer).map_err(ModuleLoaderError::from_err)?;
-        let import_map = self
+        let graph = self
             .state
             .lock()
             .map_err(|_| ModuleLoaderError::generic("module loader state is poisoned"))?
+            .modules
+            .get(referrer_url.as_str())
+            .cloned()
+            .ok_or_else(|| ModuleLoaderError::generic("module referrer has no graph provenance"))?;
+        let import_map = graph
+            .lock()
+            .map_err(|_| ModuleLoaderError::generic("module graph provenance is poisoned"))?
             .request
-            .as_ref()
-            .and_then(ExternalPageScript::import_map);
+            .import_map();
         let resolved = if let Some(import_map) = import_map {
             import_map
                 .resolve(specifier, &referrer_url)
@@ -268,6 +418,9 @@ impl PageModuleLoader {
                 "resolved module URL exceeds the loader limit",
             ));
         }
+        if register {
+            self.register_module_url(graph, &resolved)?;
+        }
         Ok(resolved)
     }
 }
@@ -277,14 +430,9 @@ impl ModuleLoader for PageModuleLoader {
         &self,
         specifier: &str,
         referrer: &str,
-        kind: ResolutionKind,
+        _kind: ResolutionKind,
     ) -> ModuleResolveResponse {
-        if kind == ResolutionKind::DynamicImport {
-            return Err(ModuleLoaderError::generic(
-                "dynamic import is not enabled for page module graphs",
-            ));
-        }
-        self.resolve_module_specifier(specifier, referrer)
+        self.resolve_module_specifier(specifier, referrer, true)
     }
 
     fn resolve_with_scope(
@@ -308,7 +456,7 @@ impl ModuleLoader for PageModuleLoader {
         specifier: &str,
         referrer: &str,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        self.resolve_module_specifier(specifier, referrer)
+        self.resolve_module_specifier(specifier, referrer, false)
     }
 
     fn load(
@@ -317,11 +465,6 @@ impl ModuleLoader for PageModuleLoader {
         _maybe_referrer: Option<&ModuleLoadReferrer>,
         options: ModuleLoadOptions,
     ) -> ModuleLoadResponse {
-        if options.is_dynamic_import {
-            return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
-                "dynamic import is not enabled for page module graphs",
-            )));
-        }
         if options.requested_module_type != RequestedModuleType::None {
             return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
                 "import attributes are not enabled for page module graphs",
@@ -329,7 +472,7 @@ impl ModuleLoader for PageModuleLoader {
         }
 
         let module_specifier = module_specifier.clone();
-        let (request_id, request) = match self.prepare_request(&module_specifier) {
+        let (request_id, request, generation) = match self.prepare_request(&module_specifier) {
             Ok(value) => value,
             Err((request_id, reason, message)) => {
                 if let Some(request_id) = request_id {
@@ -356,18 +499,30 @@ impl ModuleLoader for PageModuleLoader {
             }
         };
         let loader = self.clone();
+        let task = executor.spawn(async move {
+            loader
+                .load_dependency(request_id, request, module_specifier, generation)
+                .await
+        });
+        let task_id = match self.register_task(task.abort_handle()) {
+            Ok(task_id) => task_id,
+            Err(message) => {
+                task.abort();
+                return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(message)));
+            }
+        };
         ModuleLoadResponse::Async(Box::pin(AbortModuleLoad {
-            task: executor.spawn(async move {
-                loader
-                    .load_dependency(request_id, request, module_specifier)
-                    .await
-            }),
+            task,
+            loader: self.clone(),
+            task_id,
         }))
     }
 }
 
 struct AbortModuleLoad {
     task: tokio::task::JoinHandle<Result<ModuleSource, String>>,
+    loader: PageModuleLoader,
+    task_id: u64,
 }
 
 impl Future for AbortModuleLoad {
@@ -375,10 +530,16 @@ impl Future for AbortModuleLoad {
 
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         match Pin::new(&mut self.task).poll(context) {
-            Poll::Ready(Ok(result)) => Poll::Ready(result.map_err(ModuleLoaderError::generic)),
-            Poll::Ready(Err(error)) => Poll::Ready(Err(ModuleLoaderError::generic(format!(
-                "module loader task failed: {error}"
-            )))),
+            Poll::Ready(Ok(result)) => {
+                self.loader.unregister_task(self.task_id);
+                Poll::Ready(result.map_err(ModuleLoaderError::generic))
+            }
+            Poll::Ready(Err(error)) => {
+                self.loader.unregister_task(self.task_id);
+                Poll::Ready(Err(ModuleLoaderError::generic(format!(
+                    "module loader task failed: {error}"
+                ))))
+            }
             Poll::Pending => Poll::Pending,
         }
     }
@@ -387,6 +548,7 @@ impl Future for AbortModuleLoad {
 impl Drop for AbortModuleLoad {
     fn drop(&mut self) {
         self.task.abort();
+        self.loader.unregister_task(self.task_id);
     }
 }
 
@@ -396,6 +558,7 @@ impl PageModuleLoader {
         request_id: String,
         request: ExternalPageScript,
         specified_url: Url,
+        generation: u64,
     ) -> Result<ModuleSource, String> {
         let store = match self
             .storage
@@ -444,6 +607,9 @@ impl PageModuleLoader {
             },
         )
         .await;
+        if !self.generation_is_active(generation)? {
+            return Err("module dependency load was cancelled".to_owned());
+        }
         let cookie_delta = cookies.delta_from_snapshots(&profile_baseline);
         let mut events = module_network_events(&request_id, specified_url.as_str(), &result);
 
@@ -496,34 +662,40 @@ impl PageModuleLoader {
             }
         };
 
-        if let Err(error) = persist_profile_cookies(&store, &requested_urls, &cookie_delta) {
+        if let Err(message) = self.register_redirect_url(&specified_url, &found_url) {
             return self.record_load_failure(
                 events,
                 request_id,
                 found_url.to_string(),
-                "profile",
-                error.to_string(),
+                "module-policy",
+                message,
             );
         }
-        if let Err(message) = self.network_state.apply_cookie_delta(cookie_delta) {
+        let state = self
+            .state
+            .lock()
+            .map_err(|_| "module loader state is poisoned".to_owned())?;
+        if state.generation != generation {
+            return Err("module dependency load was cancelled".to_owned());
+        }
+        let profile_result = persist_profile_cookies(&store, &requested_urls, &cookie_delta)
+            .map_err(|error| error.to_string())
+            .and_then(|()| self.network_state.apply_cookie_delta(cookie_delta))
+            .and_then(|()| {
+                if profile_cache_enabled && let Some(response) = cache_response.as_ref() {
+                    persist_external_resource_cache(&store, response)
+                        .map_err(|error| error.to_string())?;
+                }
+                Ok(())
+            });
+        drop(state);
+        if let Err(message) = profile_result {
             return self.record_load_failure(
                 events,
                 request_id,
                 found_url.to_string(),
                 "profile",
                 message,
-            );
-        }
-        if profile_cache_enabled
-            && let Some(response) = cache_response.as_ref()
-            && let Err(error) = persist_external_resource_cache(&store, response)
-        {
-            return self.record_load_failure(
-                events,
-                request_id,
-                found_url.to_string(),
-                "profile",
-                error.to_string(),
             );
         }
         self.record_events(events)?;

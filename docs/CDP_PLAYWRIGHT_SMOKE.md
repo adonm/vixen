@@ -48,9 +48,9 @@ then matches CDP DOM attributes/geometry and a pinned distinct Flutter PNG.
     `NamedNodeMap`; in-use rejection, 120×32 synchronous/CDP state, stable
     identity, and an eighth pinned exact Flutter PNG agree.
 13. Parser classics, per-script microtasks, a deferred top-level-await module,
-    one real static dependency, and a post-load document task execute in pinned
-    order; the module-owned 120×32 target agrees with CDP and a ninth pinned
-    exact Flutter PNG.
+    one real static dependency, one real dynamic dependency, and a post-load
+    document task execute in pinned order; the module-owned 120×32 target agrees
+    with CDP and a ninth pinned exact Flutter PNG.
 14. Pointer input uses the displayed commit's Flutter hit-test handle and target;
    the C ABI has no raw coordinate command.
 15. Later DOM/style mutation produces a new source revision and distinct exact scene.

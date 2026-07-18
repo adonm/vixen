@@ -157,6 +157,7 @@ async function main() {
     const parserModuleBeforeReveal = await page.evaluate(() => ({
       order: globalThis.__parserOrder,
       dependency: globalThis.__parserDependency,
+      dynamicDependency: globalThis.__parserDynamicDependency,
       revealType: typeof globalThis.__revealModuleTarget,
       moduleState: document.querySelector('#module-target').getAttribute('data-module'),
       revealState: document.querySelector('#module-target').getAttribute('data-reveal'),
@@ -166,12 +167,14 @@ async function main() {
       'classic-microtask',
       'classic-after',
       'module-dependency',
+      'module-dynamic',
       'module',
       'module-microtask',
       'module-await',
       'document-task',
     ])
         || parserModuleBeforeReveal.dependency !== 'loaded'
+        || parserModuleBeforeReveal.dynamicDependency !== 'loaded'
         || parserModuleBeforeReveal.revealType !== 'function'
         || parserModuleBeforeReveal.moduleState !== 'ready'
         || parserModuleBeforeReveal.revealState !== null) {
@@ -795,6 +798,7 @@ async function main() {
       'classic-microtask',
       'classic-after',
       'module-dependency',
+      'module-dynamic',
       'module',
       'module-microtask',
       'module-await',

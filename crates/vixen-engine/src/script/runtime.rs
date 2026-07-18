@@ -241,8 +241,15 @@ pub(super) fn execute_script(
 
     let resolve = runtime.resolve(global);
     let outcome = {
-        let event_loop =
-            Box::pin(runtime.with_event_loop_promise(resolve, PollEventLoopOptions::default()));
+        let event_loop = Box::pin(async {
+            let value = runtime
+                .with_event_loop_promise(resolve, PollEventLoopOptions::default())
+                .await?;
+            runtime
+                .run_event_loop(PollEventLoopOptions::default())
+                .await?;
+            Ok::<_, deno_core::error::CoreError>(value)
+        });
         let timeout = Box::pin(DeadlineFuture {
             state: deadline.state.clone(),
         });

@@ -95,13 +95,20 @@ Current state:
   bounded raw source only after a matching 304, and reruns current
   CORS/status/strict-MIME policy before V8 exposure. Cache-disabled contexts
   bypass reads and writes. Freshness reuse and full `Vary` remain fail closed.
-  The fourth checkpoint uses
-  the Deno-maintained `import_map` crate inside `PageModuleLoader` for one
+  The fourth checkpoint uses the Deno-maintained `import_map` crate inside
+  `PageModuleLoader` for one
   bounded inline map registered before module discovery. Exact, prefix,
   URL-like, null-blocking, and scoped mappings plus `import.meta.resolve()` feed
   the existing resource/policy path; module `src` is not remapped.
-  External/multiple/late/integrity maps, dynamic imports, and import attributes
-  remain fail closed.
+  External/multiple/late/integrity maps remain fail closed. The fifth checkpoint
+  retains a bounded graph context for every specified/final module URL so static
+  and dynamic descendants inherit the originating root's import map, CSP,
+  credentials, request ids, cache/profile path, and cancellation even after a
+  different root executes. Module-owned delayed functions/tasks pump dynamic
+  work to bounded event-loop quiescence; interruption aborts tracked transport,
+  generation-rejects profile effects, and rebuilds the page realm after leaving
+  the entered isolate. Direct classic/automation dynamic imports and import
+  attributes remain fail closed because they lack this source provenance.
 
 Rules:
 

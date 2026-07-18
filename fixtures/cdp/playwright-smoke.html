@@ -112,7 +112,9 @@
 </script>
 <script type="module">
   import { parserDependency } from './module-dependency.js';
+  const { parserDynamicDependency } = await import('./module-dynamic.js');
   globalThis.__parserDependency = parserDependency;
+  globalThis.__parserDynamicDependency = parserDynamicDependency;
   __parserOrder.push('module');
   queueMicrotask(() => __parserOrder.push('module-microtask'));
   await Promise.resolve();

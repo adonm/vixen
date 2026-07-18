@@ -48,9 +48,11 @@ before broader shell/platform expansion. A2 static same-origin/file module
 dependency graphs now use the shared resource loader; continue that family with
 CORS enforced before V8 exposure and eligible HTTP(S) cache entries
 conditionally revalidated under current policy. One bounded pre-module inline
-import map now resolves through
-the same policy-bound loader; continue with dynamic imports without weakening
-graph provenance or cancellation.
+import map now resolves through the same policy-bound loader. Page-module
+dynamic imports retain bounded graph provenance and cancellation across later
+roots/tasks. Continue A2 with fetch/XHR streaming, abort/progress, cache
+freshness/`Vary`, and diagnostics; keep direct classic/automation dynamic imports
+and import attributes fail-closed meanwhile.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

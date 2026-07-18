@@ -782,6 +782,26 @@ cross-origin target. Modern multiple-map merging/resolved-module-set behavior,
 integrity maps, dynamic `import()`, and import attributes remain explicit next
 work.
 
+**Fifth A2 checkpoint:** dynamic `import()` originating in parser-discovered
+page module graphs now extends the same retained graph instead of consulting a
+mutable “last root” policy. Every specified and accepted-final module URL keeps
+its original root's CSP, CORS credentials mode, import map, profile/cache path,
+and shared request-id allocator. Static plus dynamic loads share the existing
+64-load graph cap; per-graph and per-realm provenance maps are separately
+bounded. Dynamic redirects register their accepted URL before child resolution,
+and later module-owned functions/document tasks are driven to bounded event-loop
+quiescence. Stop aborts tracked transport tasks, generation-checks profile
+effects, suppresses stale DOM/cookie/cache/lifecycle effects, and rebuilds the
+cancelled page realm before reuse. Focused tests prove delayed mapped file
+imports, module-map single evaluation, cumulative graph limits, rejected import
+attributes, credential policy retained after a different root runs, redirected
+child resolution, cache records, transport disconnect, and clean subsequent
+evaluation. The release/AOT Playwright corridor now evaluates one real dynamic
+dependency without changing the pinned Flutter scene. Dynamic imports directly
+authored by classic scripts or automation source remain fail-closed until those
+scripts carry an exact URL and graph policy; import attributes, workers, modern
+multiple-map merging, and integrity maps remain explicit breadth.
+
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
 
@@ -935,9 +955,11 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue the A2 module family:** add dynamic `import()` without weakening
-   the landed static graph/cache/import-map limits, request ids,
-   policy, cancellation, diagnostics, or profile behavior.
+1. **Continue A2 beyond the module vertical:** converge fetch/XHR transfer
+   streaming, abort/progress, cache freshness/`Vary`, and diagnostics through
+   the shared loader before moving to frames/downloads. Keep direct classic/
+   automation dynamic imports and module import attributes fail-closed until
+   they can carry exact source URL, policy, and lifecycle provenance.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →
    newer-commit evidence green while widening shared-core behavior; do not
