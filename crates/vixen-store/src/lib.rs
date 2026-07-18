@@ -1048,6 +1048,10 @@ pub struct CacheEntry {
     pub headers: Vec<(String, String)>,
     pub body: Vec<u8>,
     pub fetched_unix: i64,
+    /// Request-header values selected by the response's `Vary` field. Empty
+    /// for responses without `Vary` and legacy profile entries.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub vary_headers: Vec<(String, Option<String>)>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1180,6 +1184,7 @@ mod tests {
             headers: vec![("content-type".into(), "text/html".into())],
             body: format!("<html>{fetched_unix}</html>").into_bytes(),
             fetched_unix,
+            vary_headers: Vec::new(),
         }
     }
 
@@ -1312,6 +1317,17 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn legacy_fetch_cache_entry_defaults_vary_metadata() {
+        let entry: CacheEntry = serde_json::from_str(
+            r#"{"status":200,"headers":[],"body":[111,107],"fetched_unix":123}"#,
+        )
+        .unwrap();
+
+        assert_eq!(entry.body, b"ok");
+        assert!(entry.vary_headers.is_empty());
     }
 
     #[test]

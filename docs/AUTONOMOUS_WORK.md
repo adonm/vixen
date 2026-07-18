@@ -50,8 +50,11 @@ CORS enforced before V8 exposure and eligible HTTP(S) cache entries
 conditionally revalidated under current policy. One bounded pre-module inline
 import map now resolves through the same policy-bound loader. Page-module
 dynamic imports retain bounded graph provenance and cancellation across later
-roots/tasks. Continue A2 with fetch/XHR streaming, abort/progress, cache
-freshness/`Vary`, and diagnostics; keep direct classic/automation dynamic imports
+roots/tasks. A shared bounded private-cache decision now gives page fetch/XHR and
+module loads `max-age`/`Age` freshness plus exact single-representation `Vary`
+matching. Continue A2 with fetch/XHR transfer streaming, signal-driven abort,
+progress, and diagnostics, then simultaneous variants, `Expires`, request cache
+directives, and redirect aliases; keep direct classic/automation dynamic imports
 and import attributes fail-closed meanwhile.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk

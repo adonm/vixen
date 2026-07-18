@@ -802,6 +802,24 @@ authored by classic scripts or automation source remain fail-closed until those
 scripts carry an exact URL and graph policy; import attributes, workers, modern
 multiple-map merging, and integrity maps remain explicit breadth.
 
+**Sixth A2 checkpoint:** page `fetch()`/XHR and parser-module HTTP(S) loads now
+share one bounded private-cache decision module. The transport records the exact
+effective final-hop request headers, including automatic compression, user-agent,
+host, cookie, and body-length fields. Cache records retain at most 32 normalized
+`Vary` names and their exact present/absent values; wildcard, malformed,
+oversized, `no-store`, non-success, mismatched, and legacy `Vary` records are not
+reused. Default requests reuse `max-age` freshness after accounting for `Age`,
+stale/no-cache entries conditionally revalidate only when a validator exists,
+forced cache modes retain their explicit behavior, and cache-disabled contexts
+bypass reads and writes. Cached responses still cross current CORS, integrity,
+status/MIME, graph provenance, and body-size policy before exposure. Focused
+runtime tests prove a fresh exact-language variant performs one transport
+request while a changed value refetches; a two-context module graph proves fresh
+root and dependency reuse through the same profile cache. The current URL-keyed
+store retains only the latest representation for a URL; simultaneous variants,
+`Expires`/heuristic freshness, request cache directives, and redirect aliases
+remain explicit breadth.
+
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
 
@@ -956,10 +974,12 @@ After v1, prioritize by measured site/user impact:
 Work top-to-bottom and finish/document/commit each slice:
 
 1. **Continue A2 beyond the module vertical:** converge fetch/XHR transfer
-   streaming, abort/progress, cache freshness/`Vary`, and diagnostics through
-   the shared loader before moving to frames/downloads. Keep direct classic/
-   automation dynamic imports and module import attributes fail-closed until
-   they can carry exact source URL, policy, and lifecycle provenance.
+   streaming, signal-driven abort, progress, and bounded diagnostics through the
+   shared loader before moving to frames/downloads. Then extend the landed cache
+   checkpoint with simultaneous variants, `Expires`/request-directive freshness,
+   and redirect aliases. Keep direct classic/automation dynamic imports and
+   module import attributes fail-closed until they can carry exact source URL,
+   policy, and lifecycle provenance.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →
    newer-commit evidence green while widening shared-core behavior; do not

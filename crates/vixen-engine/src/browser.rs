@@ -32,7 +32,7 @@ use vixen_net::{
     ByteResponse, CookieJar, CookieJarDelta, Method, Network, NetworkConfig, NetworkEvent,
     RedirectMode, TextRequest,
 };
-use vixen_store::{CacheEntry, ClearDataSelection, SessionRecord, Store};
+use vixen_store::{ClearDataSelection, SessionRecord, Store};
 
 use crate::data_url::parse_data_url;
 use crate::history::{HistoryEntry, ScrollRestoration, SessionHistory};
@@ -5291,59 +5291,104 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
                 } else {
                     &mut credentialless_cookies
                 };
+                let mut headers = request.request_headers(&current);
+                let request_url = current.clone();
+                let request_cross_site = request.is_cross_site(&current);
+                let cache_request = TextRequest {
+                    url: request_url.clone(),
+                    cross_site: request_cross_site,
+                    method: Method::Get,
+                    redirect_mode: RedirectMode::Manual,
+                    headers: headers.clone(),
+                    body: None,
+                };
+                let effective_headers = network
+                    .effective_request_headers(request_cookies, &cache_request)
+                    .map_err(|error| ExternalResourceLoadFailure {
+                        error: BrowserError::new(
+                            browser_error_codes::NAVIGATION_LOAD,
+                            format!("external {resource_kind} request failed: {error}"),
+                        ),
+                        url: current.to_string(),
+                        events: events.clone(),
+                        blocked_reason: "load",
+                    })?;
                 let cached = if revalidate_profile_cache {
-                    external_resource_cache_lookup(store, &current, max_body_bytes).map_err(
-                        |error| ExternalResourceLoadFailure {
-                            error,
-                            url: current.to_string(),
-                            events: events.clone(),
-                            blocked_reason: "cache",
-                        },
-                    )?
+                    external_resource_cache_lookup(
+                        store,
+                        &current,
+                        &effective_headers,
+                        max_body_bytes,
+                    )
+                    .map_err(|error| ExternalResourceLoadFailure {
+                        error,
+                        url: current.to_string(),
+                        events: events.clone(),
+                        blocked_reason: "cache",
+                    })?
                 } else {
                     None
                 };
-                let mut headers = request.request_headers(&current);
-                let revalidating = cached.as_ref().is_some_and(|cached| {
-                    add_external_resource_revalidation_headers(&mut headers, cached)
+                let fresh = cached
+                    .as_ref()
+                    .is_some_and(|(_, cache_use)| *cache_use == crate::http_cache::CacheUse::Fresh);
+                let revalidating = cached.as_ref().is_some_and(|(cached, cache_use)| {
+                    *cache_use == crate::http_cache::CacheUse::Stale
+                        && add_external_resource_revalidation_headers(&mut headers, cached)
                 });
-                let mut hop_events = Vec::new();
-                let response = network
-                    .get_bytes_with_cookies_request_with_progress_and_limit(
-                        request_cookies,
-                        TextRequest {
-                            url: current.clone(),
-                            cross_site: request.is_cross_site(&current),
-                            method: Method::Get,
-                            redirect_mode: RedirectMode::Manual,
-                            headers,
-                            body: None,
-                        },
-                        max_body_bytes,
-                        |event| hop_events.push(event.clone()),
-                    )
-                    .await;
-                let mut response = match response {
-                    Ok(response) => response,
-                    Err(error) => {
-                        events.extend(hop_events);
-                        return Err(ExternalResourceLoadFailure {
-                            error: BrowserError::new(
-                                browser_error_codes::NAVIGATION_LOAD,
-                                format!("external {resource_kind} fetch failed: {error}"),
-                            ),
+                let cached_response = cached.map(|(response, _)| response);
+                let mut response = if fresh {
+                    let mut response = cached_response.expect("fresh cache entry exists");
+                    response.events = vec![
+                        NetworkEvent::RequestStart {
                             url: current.to_string(),
-                            events,
-                            blocked_reason: "load",
-                        });
+                            method: Method::Get,
+                        },
+                        NetworkEvent::Response {
+                            url: current.to_string(),
+                            status: response.status,
+                        },
+                    ];
+                    response
+                } else {
+                    let mut hop_events = Vec::new();
+                    let response = network
+                        .get_bytes_with_cookies_request_with_progress_and_limit(
+                            request_cookies,
+                            TextRequest {
+                                url: request_url,
+                                cross_site: request_cross_site,
+                                method: Method::Get,
+                                redirect_mode: RedirectMode::Manual,
+                                headers,
+                                body: None,
+                            },
+                            max_body_bytes,
+                            |event| hop_events.push(event.clone()),
+                        )
+                        .await;
+                    let response = match response {
+                        Ok(response) => response,
+                        Err(error) => {
+                            events.extend(hop_events);
+                            return Err(ExternalResourceLoadFailure {
+                                error: BrowserError::new(
+                                    browser_error_codes::NAVIGATION_LOAD,
+                                    format!("external {resource_kind} fetch failed: {error}"),
+                                ),
+                                url: current.to_string(),
+                                events,
+                                blocked_reason: "load",
+                            });
+                        }
+                    };
+                    if revalidating {
+                        revalidated_external_resource_response(response, cached_response)
+                    } else {
+                        response
                     }
                 };
                 events.append(&mut response.events);
-                let mut response = if revalidating {
-                    revalidated_external_resource_response(response, cached)
-                } else {
-                    response
-                };
 
                 if let Some(blocked_reason) = request.response_blocked_reason(&current, &response) {
                     return Err(ExternalResourceLoadFailure {
@@ -5471,6 +5516,13 @@ pub(crate) async fn load_external_resource<R: ExternalResourceRequest>(
 
 fn is_followable_redirect(status: u16) -> bool {
     matches!(status, 301 | 302 | 303 | 307 | 308)
+}
+
+fn current_unix_timestamp() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -5822,6 +5874,9 @@ pub(crate) fn persist_external_resource_cache(
     store: &Store,
     response: &ByteResponse,
 ) -> Result<(), BrowserError> {
+    if response.from_cache {
+        return Ok(());
+    }
     let final_url = url::Url::parse(&response.final_url).map_err(|error| {
         BrowserError::new(
             browser_error_codes::NAVIGATION_LOAD,
@@ -5829,25 +5884,17 @@ pub(crate) fn persist_external_resource_cache(
         )
     })?;
     let origin_key = vixen_net::Origin::from_url(&final_url).partition_key();
-    let fetched_unix = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs().min(i64::MAX as u64) as i64)
-        .unwrap_or_default();
+    let Some(entry) = crate::http_cache::cache_entry(
+        response.status,
+        &response.headers,
+        response.body.clone(),
+        &response.request_headers,
+        current_unix_timestamp(),
+    ) else {
+        return Ok(());
+    };
     store
-        .put_cache(
-            &origin_key,
-            &response.final_url,
-            &CacheEntry {
-                status: response.status,
-                headers: response
-                    .headers
-                    .iter()
-                    .map(|(name, value)| (name.clone(), value.clone()))
-                    .collect(),
-                body: response.body.clone(),
-                fetched_unix,
-            },
-        )
+        .put_cache(&origin_key, &response.final_url, &entry)
         .map_err(|error| {
             BrowserError::new(
                 browser_error_codes::PROFILE,
@@ -5859,8 +5906,9 @@ pub(crate) fn persist_external_resource_cache(
 fn external_resource_cache_lookup(
     store: &Store,
     url: &url::Url,
+    request_headers: &BTreeMap<String, String>,
     max_body_bytes: u64,
-) -> Result<Option<ByteResponse>, BrowserError> {
+) -> Result<Option<(ByteResponse, crate::http_cache::CacheUse)>, BrowserError> {
     let origin_key = vixen_net::Origin::from_url(url).partition_key();
     let entry = store
         .get_cache(&origin_key, url.as_str())
@@ -5873,44 +5921,30 @@ fn external_resource_cache_lookup(
     let Some(entry) = entry else {
         return Ok(None);
     };
-    let headers = entry.headers.into_iter().collect::<BTreeMap<_, _>>();
-    let cache_control = headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("cache-control"))
-        .map(|(_, value)| value.as_str());
-    let has_no_store = cache_control.is_some_and(|value| {
-        value.split(',').any(|directive| {
-            directive
-                .split_once('=')
-                .map_or(directive, |(name, _)| name)
-                .trim()
-                .eq_ignore_ascii_case("no-store")
-        })
-    });
-    let has_vary = headers
-        .iter()
-        .find(|(name, _)| name.eq_ignore_ascii_case("vary"))
-        .is_some_and(|(_, value)| !value.trim().is_empty());
-    let has_validator = headers.keys().any(|name| {
-        name.eq_ignore_ascii_case("etag") || name.eq_ignore_ascii_case("last-modified")
-    });
-    if !(200..300).contains(&entry.status)
-        || entry.body.len() as u64 > max_body_bytes
-        || has_no_store
-        || has_vary
-        || !has_validator
+    let cache_use = crate::http_cache::cache_use(
+        &entry,
+        request_headers,
+        current_unix_timestamp(),
+        max_body_bytes,
+    );
+    if cache_use == crate::http_cache::CacheUse::Unusable
+        || cache_use == crate::http_cache::CacheUse::Stale
+            && !crate::http_cache::has_validator(&entry)
     {
         return Ok(None);
     }
-    Ok(Some(ByteResponse {
+    let response = ByteResponse {
         body: entry.body,
-        headers,
+        headers: entry.headers.into_iter().collect(),
         status: entry.status,
         final_url: url.to_string(),
         set_cookie: Vec::new(),
         redirects: 0,
         events: Vec::new(),
-    }))
+        request_headers: request_headers.clone(),
+        from_cache: true,
+    };
+    Ok(Some((response, cache_use)))
 }
 
 fn add_external_resource_revalidation_headers(
@@ -5951,6 +5985,8 @@ fn revalidated_external_resource_response(
     cached.redirects = response.redirects;
     cached.set_cookie = response.set_cookie;
     cached.events = response.events;
+    cached.request_headers = response.request_headers;
+    cached.from_cache = false;
     for (name, value) in response.headers {
         if !matches!(
             name.to_ascii_lowercase().as_str(),
@@ -6877,6 +6913,8 @@ mod tests {
                 set_cookie: Vec::new(),
                 redirects: 0,
                 events: Vec::new(),
+                request_headers: BTreeMap::new(),
+                from_cache: false,
             },
             requested_urls: vec![url::Url::parse(final_url).unwrap()],
         }
@@ -9924,6 +9962,79 @@ mod tests {
             assert_eq!(entry.body, source.as_bytes());
         }
         drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn fresh_module_root_and_dependency_reuse_shared_profile_cache() {
+        const ROOT_SOURCE: &str =
+            "import { value } from './dependency.js'; document.title = `fresh-${value}`;";
+        const DEPENDENCY_SOURCE: &str = "export const value = 42;";
+
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/fresh-module-cache-page");
+        let root_url = server.url("/fresh/root.js");
+        config.document_overrides.insert(
+            page_url.clone(),
+            format!(
+                "<!doctype html><title>initial</title><script type='module' src='{root_url}'></script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let first_context = create(&mut handle);
+        let second_context = create(&mut handle);
+        drain_events(&mut handle);
+
+        let first_navigation = dispatch_navigation(&mut handle, first_context, &page_url);
+        for (path, source) in [
+            ("/fresh/root.js", ROOT_SOURCE),
+            ("/fresh/dependency.js", DEPENDENCY_SOURCE),
+        ] {
+            let request = server.request();
+            assert_eq!(request.path, path);
+            request
+                .respond
+                .send(format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nCache-Control: max-age=600\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{source}",
+                    source.len()
+                ))
+                .unwrap();
+            request
+                .completed
+                .recv_timeout(Duration::from_secs(10))
+                .unwrap();
+        }
+        wait_for_navigation(&mut handle, first_context, first_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, first_context).title.as_deref(),
+            Some("fresh-42")
+        );
+
+        let second_navigation = dispatch_navigation(&mut handle, second_context, &page_url);
+        let events = wait_for_navigation(&mut handle, second_context, second_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, second_context).title.as_deref(),
+            Some("fresh-42")
+        );
+        let network = events
+            .iter()
+            .filter_map(|event| match event {
+                BrowserEvent::RuntimeEffects { effects, .. } => Some(&effects.network),
+                _ => None,
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        assert!(network.iter().any(|event| matches!(
+            event,
+            RuntimeNetworkEvent::Response { url, status: 200, .. }
+                if url.ends_with("/fresh/dependency.js")
+        )));
+
+        server.join();
+        drop(handle);
         let _ = std::fs::remove_file(profile_path);
     }
 

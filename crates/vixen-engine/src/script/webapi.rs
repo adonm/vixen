@@ -29,7 +29,7 @@ use vixen_net::{
     },
     validate_http_url, verify_integrity,
 };
-use vixen_store::{CacheEntry, CookieRecord, PermissionDecision, Store};
+use vixen_store::{CookieRecord, PermissionDecision, Store};
 
 use crate::doc::DocumentScriptItem;
 use crate::headers::is_cors_safelisted_request_header;
@@ -681,18 +681,42 @@ fn op_vixen_fetch(
         }
     }
     let send_credentials = credentials_mode.sends_credentials(cross_origin);
-    let revalidation_candidate =
-        if !cache_disabled && method == Method::Get && cache_mode == FetchCacheMode::NoCache {
-            match fetch_cache_lookup(cookie_store.as_deref(), &url) {
-                Ok(candidate) => candidate,
-                Err(message) => return fetch_failure(url.as_str(), method, message, "cache"),
-            }
-        } else {
-            None
+    let origin_key = cookie_origin_key(&url);
+    let origin_host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let mut request_cookies = if send_credentials {
+        match load_cookie_jar(&cookies, cookie_store.as_deref(), &origin_key) {
+            Ok(jar) => jar,
+            Err(message) => return fetch_failure(url.as_str(), method, message, "profile"),
+        }
+    } else {
+        CookieJar::default()
+    };
+    let cache_request = TextRequest {
+        url: url.clone(),
+        cross_site: cross_origin,
+        method,
+        redirect_mode,
+        headers: headers.clone(),
+        body: body.clone(),
+    };
+    let effective_headers =
+        match network.effective_request_headers(&mut request_cookies, &cache_request) {
+            Ok(headers) => headers,
+            Err(error) => return fetch_failure(url.as_str(), method, error.to_string(), "network"),
         };
-    if let Some(candidate) = &revalidation_candidate {
-        add_cache_revalidation_headers(&mut headers, candidate);
-    }
+    let cached = if !cache_disabled && method == Method::Get {
+        match fetch_cache_lookup(
+            cookie_store.as_deref(),
+            &url,
+            &effective_headers,
+            network.config().max_body_bytes,
+        ) {
+            Ok(candidate) => candidate,
+            Err(message) => return fetch_failure(url.as_str(), method, message, "cache"),
+        }
+    } else {
+        None
+    };
 
     if cache_disabled && method == Method::Get && cache_mode == FetchCacheMode::OnlyIfCached {
         return fetch_failure(url.as_str(), method, "fetch cache disabled", "cache");
@@ -705,8 +729,9 @@ fn op_vixen_fetch(
             FetchCacheMode::ForceCache | FetchCacheMode::OnlyIfCached
         )
     {
-        match fetch_cache_lookup(cookie_store.as_deref(), &url) {
-            Ok(Some(response)) => {
+        match cached.clone() {
+            Some((mut response, _)) => {
+                response.events = cached_response_events(&url, response.status);
                 let response = match apply_fetch_integrity(response, &integrity) {
                     Ok(response) => response,
                     Err(message) => {
@@ -724,12 +749,50 @@ fn op_vixen_fetch(
                     Err(message) => fetch_error(message),
                 };
             }
-            Ok(None) if cache_mode == FetchCacheMode::OnlyIfCached => {
+            None if cache_mode == FetchCacheMode::OnlyIfCached => {
                 return fetch_failure(url.as_str(), method, "fetch cache miss", "cache");
             }
-            Ok(None) => {}
-            Err(message) => return fetch_failure(url.as_str(), method, message, "cache"),
+            None => {}
         }
+    }
+
+    if cache_mode == FetchCacheMode::Default
+        && let Some((mut response, crate::http_cache::CacheUse::Fresh)) = cached.clone()
+    {
+        response.events = cached_response_events(&url, response.status);
+        let response = match apply_fetch_integrity(response, &integrity) {
+            Ok(response) => response,
+            Err(message) => return fetch_failure(url.as_str(), method, message, "integrity"),
+        };
+        return match apply_fetch_visibility(
+            response,
+            fetch_mode,
+            credentials_mode,
+            fetch_policy.as_ref(),
+            &url,
+        ) {
+            Ok((response, response_type)) => fetch_response(response, response_type),
+            Err(message) => {
+                let reason = fetch_blocked_reason(&message);
+                fetch_failure(url.as_str(), method, message, reason)
+            }
+        };
+    }
+
+    let revalidation_candidate = match cache_mode {
+        FetchCacheMode::NoCache => cached
+            .filter(|(response, _)| text_response_has_validator(response))
+            .map(|(response, _)| response),
+        FetchCacheMode::Default => cached
+            .filter(|(response, cache_use)| {
+                *cache_use == crate::http_cache::CacheUse::Stale
+                    && text_response_has_validator(response)
+            })
+            .map(|(response, _)| response),
+        _ => None,
+    };
+    if let Some(candidate) = &revalidation_candidate {
+        add_cache_revalidation_headers(&mut headers, candidate);
     }
 
     match fetch_http_text_blocking(
@@ -742,9 +805,15 @@ fn op_vixen_fetch(
             headers,
             body,
         },
-        send_credentials,
-        cookies,
-        cookie_store.clone(),
+        FetchWorkerProfile {
+            credentials: send_credentials.then_some(FetchRequestCredentials {
+                jar: request_cookies,
+                origin_key,
+                origin_host,
+            }),
+            cookies,
+            store: cookie_store.clone(),
+        },
         runtime_interrupt.clone(),
     ) {
         Ok(response) => {
@@ -1280,27 +1349,23 @@ fn preflight_headers_allowed(
 fn fetch_http_text_blocking(
     network: Network,
     request: TextRequest,
-    send_credentials: bool,
-    cookies: Arc<Mutex<CookieJar>>,
-    cookie_store: Option<Arc<Store>>,
+    profile: FetchWorkerProfile,
     runtime_interrupt: RuntimeInterruptHandle,
 ) -> Result<TextResponse, String> {
-    let worker_cookies = Arc::clone(&cookies);
-    let worker_store = cookie_store.clone();
+    let persistence_cookies = Arc::clone(&profile.cookies);
+    let persistence_store = profile.store.clone();
     let (result_tx, result_rx) = mpsc::sync_channel(1);
     let (cancel_tx, cancel_rx) = tokio::sync::oneshot::channel();
     let handle = std::thread::Builder::new()
         .name("vixen-fetch".to_owned())
         .spawn(move || {
             let result = (|| {
-                let url = request.url.clone();
-                let origin_key = cookie_origin_key(&url);
-                let origin_host = url.host_str().unwrap_or_default().to_ascii_lowercase();
-                let mut jar = if send_credentials {
-                    load_cookie_jar(&worker_cookies, worker_store.as_deref(), &origin_key)?
-                } else {
-                    CookieJar::default()
-                };
+                let mut credentials = profile.credentials;
+                let mut jar = credentials
+                    .as_mut()
+                    .map_or_else(CookieJar::default, |credentials| {
+                        std::mem::take(&mut credentials.jar)
+                    });
                 let rt = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()
@@ -1320,9 +1385,9 @@ fn fetch_http_text_blocking(
                 })?;
                 Ok(FetchWorkerResult {
                     response,
-                    credentials: send_credentials.then_some(FetchWorkerCredentials {
-                        origin_key,
-                        origin_host,
+                    credentials: credentials.map(|credentials| FetchWorkerCredentials {
+                        origin_key: credentials.origin_key,
+                        origin_host: credentials.origin_host,
                         jar,
                     }),
                 })
@@ -1334,8 +1399,8 @@ fn fetch_http_text_blocking(
     if let Some(credentials) = result.credentials {
         commit_host_effect(&runtime_interrupt, || {
             persist_cookie_jar(
-                &cookies,
-                cookie_store.as_deref(),
+                &persistence_cookies,
+                persistence_store.as_deref(),
                 &credentials.origin_key,
                 &credentials.origin_host,
                 credentials.jar,
@@ -1343,6 +1408,18 @@ fn fetch_http_text_blocking(
         })?;
     }
     Ok(result.response)
+}
+
+struct FetchWorkerProfile {
+    credentials: Option<FetchRequestCredentials>,
+    cookies: Arc<Mutex<CookieJar>>,
+    store: Option<Arc<Store>>,
+}
+
+struct FetchRequestCredentials {
+    jar: CookieJar,
+    origin_key: String,
+    origin_host: String,
 }
 
 struct FetchWorkerResult {
@@ -1563,22 +1640,26 @@ fn persist_fetch_cache(
     let Some(store) = store else {
         return Ok(());
     };
-    let entry = CacheEntry {
-        status: response.status,
-        headers: response
-            .headers
-            .iter()
-            .map(|(name, value)| (name.clone(), value.clone()))
-            .collect(),
-        body: response.body.as_bytes().to_vec(),
-        fetched_unix: current_unix_timestamp(),
+    let Some(entry) = crate::http_cache::cache_entry(
+        response.status,
+        &response.headers,
+        response.body.as_bytes().to_vec(),
+        &response.request_headers,
+        current_unix_timestamp(),
+    ) else {
+        return Ok(());
     };
     store
         .put_cache(origin_key, &response.final_url, &entry)
         .map_err(|err| err.to_string())
 }
 
-fn fetch_cache_lookup(store: Option<&Store>, url: &Url) -> Result<Option<TextResponse>, String> {
+fn fetch_cache_lookup(
+    store: Option<&Store>,
+    url: &Url,
+    request_headers: &std::collections::BTreeMap<String, String>,
+    max_body_bytes: u64,
+) -> Result<Option<(TextResponse, crate::http_cache::CacheUse)>, String> {
     let Some(store) = store else {
         return Ok(None);
     };
@@ -1589,15 +1670,45 @@ fn fetch_cache_lookup(store: Option<&Store>, url: &Url) -> Result<Option<TextRes
     else {
         return Ok(None);
     };
-    Ok(Some(TextResponse {
-        body: String::from_utf8_lossy(&entry.body).into_owned(),
-        headers: entry.headers.into_iter().collect(),
-        status: entry.status,
-        final_url: url.as_str().to_owned(),
-        set_cookie: Vec::new(),
-        redirects: 0,
-        events: Vec::new(),
-    }))
+    let cache_use = crate::http_cache::cache_use(
+        &entry,
+        request_headers,
+        current_unix_timestamp(),
+        max_body_bytes,
+    );
+    if cache_use == crate::http_cache::CacheUse::Unusable {
+        return Ok(None);
+    }
+    Ok(Some((
+        TextResponse {
+            body: String::from_utf8_lossy(&entry.body).into_owned(),
+            headers: entry.headers.into_iter().collect(),
+            status: entry.status,
+            final_url: url.as_str().to_owned(),
+            set_cookie: Vec::new(),
+            redirects: 0,
+            events: Vec::new(),
+            request_headers: request_headers.clone(),
+        },
+        cache_use,
+    )))
+}
+
+fn text_response_has_validator(response: &TextResponse) -> bool {
+    response.header("etag").is_some() || response.header("last-modified").is_some()
+}
+
+fn cached_response_events(url: &Url, status: u16) -> Vec<NetworkEvent> {
+    vec![
+        NetworkEvent::RequestStart {
+            url: url.to_string(),
+            method: Method::Get,
+        },
+        NetworkEvent::Response {
+            url: url.to_string(),
+            status,
+        },
+    ]
 }
 
 fn cookie_record_to_snapshot(record: CookieRecord) -> CookieSnapshot {
@@ -4361,6 +4472,7 @@ mod tests {
             set_cookie: Vec::new(),
             redirects: 0,
             events: Vec::new(),
+            request_headers: BTreeMap::new(),
         };
         let matching = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
 

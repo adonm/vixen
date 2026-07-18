@@ -21,6 +21,7 @@ pub mod headers;
 pub mod high_res_time;
 pub mod history;
 pub mod html_serialize;
+mod http_cache;
 pub mod length;
 pub mod media_query;
 pub mod message_port;

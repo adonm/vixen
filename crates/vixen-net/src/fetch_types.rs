@@ -95,6 +95,12 @@ pub struct ByteResponse {
     pub set_cookie: Vec<String>,
     pub redirects: u32,
     pub events: Vec<NetworkEvent>,
+    /// Effective headers on the final request, lower-cased and combined. This
+    /// is retained for exact private-cache `Vary` matching.
+    pub request_headers: BTreeMap<String, String>,
+    /// True only when the body came directly from the profile cache without a
+    /// validating transport response.
+    pub from_cache: bool,
 }
 
 impl ByteResponse {
@@ -131,6 +137,8 @@ pub struct TextResponse {
     pub redirects: u32,
     /// Stable network lifecycle events for automation/diagnostics.
     pub events: Vec<NetworkEvent>,
+    /// Effective headers on the final request, lower-cased and combined.
+    pub request_headers: BTreeMap<String, String>,
 }
 
 impl From<ByteResponse> for TextResponse {
@@ -143,6 +151,7 @@ impl From<ByteResponse> for TextResponse {
             set_cookie: response.set_cookie,
             redirects: response.redirects,
             events: response.events,
+            request_headers: response.request_headers,
         }
     }
 }

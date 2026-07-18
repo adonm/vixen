@@ -2608,6 +2608,63 @@ mod tests {
         )
     }
 
+    fn spawn_fresh_vary_server(
+        host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let requests = std::sync::Arc::new(AtomicUsize::new(0));
+        let server_requests = requests.clone();
+        let handle = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            while Instant::now() < deadline && server_requests.load(Ordering::SeqCst) < 2 {
+                let (mut stream, _) = match listener.accept() {
+                    Ok(value) => value,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                        continue;
+                    }
+                    Err(error) => panic!("fresh cache server accept failed: {error}"),
+                };
+                let index = server_requests.fetch_add(1, Ordering::SeqCst) + 1;
+                let mut request = [0_u8; 2048];
+                let read = stream.read(&mut request).unwrap_or_default();
+                let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+                let language = request
+                    .lines()
+                    .find_map(|line| line.strip_prefix("accept-language:"))
+                    .map(str::trim)
+                    .unwrap_or("missing");
+                let body = format!("response-{index}-{language}");
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nCache-Control: private, max-age=600\r\nVary: Accept-Language\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                stream.write_all(response.as_bytes()).unwrap();
+            }
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            requests,
+            handle,
+        )
+    }
+
     fn spawn_redirect_server(
         host: &str,
     ) -> (
@@ -6141,6 +6198,8 @@ mod tests {
             set_cookie: Vec::new(),
             redirects: 0,
             events: Vec::new(),
+            request_headers: std::collections::BTreeMap::new(),
+            from_cache: false,
         };
 
         assert!(!dependency.sends_credentials(dependency.url()));
@@ -6870,6 +6929,78 @@ mod tests {
 
         server.join().unwrap();
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn fetch_default_reuses_fresh_vary_match_without_network() {
+        use std::sync::atomic::Ordering;
+
+        let (url, network_config, requests, server) =
+            spawn_fresh_vary_server("vixen-fetch-fresh-vary.com");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-fetch-fresh-vary-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
+            .expect("engine init");
+        let expression = format!(
+            "fetch({url:?}, {{ headers: {{ 'Accept-Language': 'en' }} }}).then((response) => response.text())"
+        );
+
+        assert_eq!(
+            rt.evaluate(&expression).unwrap(),
+            JsValue::String("response-1-en".to_owned())
+        );
+        assert_eq!(
+            rt.evaluate(&expression).unwrap(),
+            JsValue::String("response-1-en".to_owned())
+        );
+        server.join().unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        drop(rt);
+
+        let parsed = url::Url::parse(&url).unwrap();
+        let origin_key = vixen_net::Origin::from_url(&parsed).partition_key();
+        let entry = vixen_store::Store::open(&path)
+            .unwrap()
+            .get_cache(&origin_key, &url)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            entry.vary_headers,
+            vec![("accept-language".to_owned(), Some("en".to_owned()))]
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn fetch_default_refetches_when_vary_value_changes() {
+        use std::sync::atomic::Ordering;
+
+        let (url, network_config, requests, server) =
+            spawn_fresh_vary_server("vixen-fetch-vary-change.com");
+        let path = std::env::temp_dir().join(format!(
+            "vixen-engine-fetch-vary-change-test-{}-{}.redb",
+            std::process::id(),
+            STORAGE_SESSION_COUNTER.fetch_add(1, Ordering::Relaxed)
+        ));
+        let _ = std::fs::remove_file(&path);
+        let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
+            .expect("engine init");
+        for (language, expected) in [("en", "response-1-en"), ("fr", "response-2-fr")] {
+            let expression = format!(
+                "fetch({url:?}, {{ headers: {{ 'Accept-Language': {language:?} }} }}).then((response) => response.text())"
+            );
+            assert_eq!(
+                rt.evaluate(&expression).unwrap(),
+                JsValue::String(expected.to_owned())
+            );
+        }
+        server.join().unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]

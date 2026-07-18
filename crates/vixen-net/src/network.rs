@@ -125,6 +125,25 @@ impl Network {
         &self.config
     }
 
+    /// Build the exact lower-cased request-header map used by the transport.
+    /// Cache callers use this before I/O so `Vary` matching and the eventual
+    /// request cannot disagree about automatic headers or cookies.
+    pub fn effective_request_headers(
+        &self,
+        jar: &mut CookieJar,
+        request: &TextRequest,
+    ) -> Result<std::collections::BTreeMap<String, String>, NetworkError> {
+        validate_http_url(&request.url)?;
+        self.effective_request_headers_for(
+            jar,
+            &request.url,
+            request.cross_site,
+            request.method,
+            &request.headers,
+            request.body.as_deref(),
+        )
+    }
+
     /// Fetch `url` as text, threading the cookie jar through every hop.
     ///
     /// `cross_site` and `method` gate `SameSite` cookie sending
@@ -316,21 +335,17 @@ impl Network {
                 &mut on_progress,
             );
 
-            let cookie_header = jar.cookies_for(&current, cross_site, method);
+            let request_headers = self.effective_request_headers_for(
+                jar,
+                &current,
+                cross_site,
+                method,
+                &headers,
+                body.as_deref(),
+            )?;
             let mut req = self.client.request(method.into(), current.clone());
-            for (name, value) in &headers {
-                let name = HeaderName::from_bytes(name.as_bytes()).map_err(|err| {
-                    NetworkError::Request {
-                        message: format!("invalid request header name {name}: {err}"),
-                    }
-                })?;
-                let value = HeaderValue::from_str(value).map_err(|err| NetworkError::Request {
-                    message: format!("invalid request header value for {name}: {err}"),
-                })?;
+            for (name, value) in &request_headers {
                 req = req.header(name, value);
-            }
-            if !cookie_header.is_empty() {
-                req = req.header(reqwest::header::COOKIE, cookie_header);
             }
             if let Some(body) = &body {
                 req = req.body(body.clone());
@@ -368,6 +383,8 @@ impl Network {
                     set_cookie,
                     redirects,
                     events,
+                    request_headers,
+                    from_cache: false,
                 });
             }
 
@@ -455,9 +472,67 @@ impl Network {
                 set_cookie,
                 redirects,
                 events,
+                request_headers,
+                from_cache: false,
             });
         }
     }
+
+    fn effective_request_headers_for(
+        &self,
+        jar: &mut CookieJar,
+        url: &Url,
+        cross_site: bool,
+        method: Method,
+        headers: &[(String, String)],
+        body: Option<&[u8]>,
+    ) -> Result<std::collections::BTreeMap<String, String>, NetworkError> {
+        let mut out = std::collections::BTreeMap::new();
+        for (name, value) in headers {
+            let name =
+                HeaderName::from_bytes(name.as_bytes()).map_err(|error| NetworkError::Request {
+                    message: format!("invalid request header name {name}: {error}"),
+                })?;
+            let value = HeaderValue::from_str(value).map_err(|error| NetworkError::Request {
+                message: format!("invalid request header value for {name}: {error}"),
+            })?;
+            let name = name.as_str().to_ascii_lowercase();
+            let value = value.to_str().unwrap_or_default();
+            out.entry(name)
+                .and_modify(|current: &mut String| {
+                    current.push_str(", ");
+                    current.push_str(value);
+                })
+                .or_insert_with(|| value.to_owned());
+        }
+        out.entry("user-agent".to_owned())
+            .or_insert_with(|| self.config.user_agent.clone());
+        out.entry("accept-encoding".to_owned())
+            .or_insert_with(|| "gzip, br".to_owned());
+        if let Some(host) = request_host(url) {
+            out.entry("host".to_owned()).or_insert(host);
+        }
+        let cookie = jar.cookies_for(url, cross_site, method);
+        if !cookie.is_empty() {
+            out.insert("cookie".to_owned(), cookie);
+        } else {
+            out.remove("cookie");
+        }
+        if let Some(body) = body {
+            out.insert("content-length".to_owned(), body.len().to_string());
+        } else {
+            out.remove("content-length");
+        }
+        Ok(out)
+    }
+}
+
+fn request_host(url: &Url) -> Option<String> {
+    let host = url.host_str()?;
+    Some(match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    })
 }
 
 fn record_progress<F>(events: &mut Vec<NetworkEvent>, event: NetworkEvent, on_progress: &mut F)

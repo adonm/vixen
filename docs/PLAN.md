@@ -68,10 +68,13 @@ controlled host proof rather than an IME or assistive-technology matrix.
    graph policy/import maps across later roots and tasks, share cumulative
    bounds, resolve children from accepted redirect URLs, and cancel without late
    profile or runtime effects. The release/AOT fixture now imports both a real
-   static and dynamic dependency without changing its scene. Continue A2 with
-   fetch/XHR streaming, abort/progress, cache freshness/`Vary`, and diagnostics;
-   direct classic/automation dynamic imports and import attributes stay
-   fail-closed pending exact source provenance.
+   static and dynamic dependency without changing its scene. Page fetch/XHR and
+   module resources now also share bounded `max-age`/`Age` freshness and exact
+   single-representation `Vary` matching. Continue A2 with transfer streaming,
+   signal-driven abort, progress, and diagnostics, then simultaneous variants,
+   `Expires`, request cache directives, and redirect aliases; direct classic/
+   automation dynamic imports and import attributes stay fail-closed pending
+   exact source provenance.
 
 ## Post-stabilization priorities
 
