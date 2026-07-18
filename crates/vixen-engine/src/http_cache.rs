@@ -9,6 +9,7 @@ use vixen_store::CacheEntry;
 
 const MAX_VARY_FIELDS: usize = 32;
 const MAX_VARY_NAME_BYTES: usize = 256;
+const MAX_VARY_VALUES_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CacheUse {
@@ -74,6 +75,27 @@ pub(crate) fn has_validator(entry: &CacheEntry) -> bool {
     header(&entry.headers, "etag").is_some() || header(&entry.headers, "last-modified").is_some()
 }
 
+pub(crate) fn select_variant(
+    entries: Vec<CacheEntry>,
+    request_headers: &BTreeMap<String, String>,
+    now_unix: i64,
+    max_body_bytes: u64,
+) -> Option<(CacheEntry, CacheUse)> {
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let cache_use = cache_use(&entry, request_headers, now_unix, max_body_bytes);
+            (cache_use != CacheUse::Unusable).then_some((entry, cache_use))
+        })
+        .max_by_key(|(entry, cache_use)| {
+            let usable_rank = match cache_use {
+                CacheUse::Fresh => 1,
+                CacheUse::Stale | CacheUse::Unusable => 0,
+            };
+            (entry.fetched_unix, usable_rank)
+        })
+}
+
 fn vary_matches(entry: &CacheEntry, request_headers: &BTreeMap<String, String>) -> bool {
     let Some(names) = vary_names(header(&entry.headers, "vary")) else {
         return false;
@@ -98,15 +120,17 @@ fn capture_vary(
     request_headers: &BTreeMap<String, String>,
 ) -> Option<Vec<(String, Option<String>)>> {
     let names = vary_names(value)?;
-    Some(
-        names
-            .into_iter()
-            .map(|name| {
-                let value = request_headers.get(&name).cloned();
-                (name, value)
-            })
-            .collect(),
-    )
+    let mut total_value_bytes = 0_usize;
+    let mut captured = Vec::with_capacity(names.len());
+    for name in names {
+        let value = request_headers.get(&name).cloned();
+        total_value_bytes = total_value_bytes.checked_add(value.as_ref().map_or(0, String::len))?;
+        if total_value_bytes > MAX_VARY_VALUES_BYTES {
+            return None;
+        }
+        captured.push((name, value));
+    }
+    Some(captured)
 }
 
 fn vary_names(value: Option<&str>) -> Option<Vec<String>> {
@@ -251,6 +275,37 @@ mod tests {
     }
 
     #[test]
+    fn variant_selection_returns_the_matching_representation() {
+        let english_headers = BTreeMap::from([("accept-language".to_owned(), "en".to_owned())]);
+        let french_headers = BTreeMap::from([("accept-language".to_owned(), "fr".to_owned())]);
+        let response_headers = BTreeMap::from([
+            ("cache-control".to_owned(), "max-age=60".to_owned()),
+            ("vary".to_owned(), "Accept-Language".to_owned()),
+        ]);
+        let english = cache_entry(
+            200,
+            &response_headers,
+            b"english".to_vec(),
+            &english_headers,
+            100,
+        )
+        .unwrap();
+        let french = cache_entry(
+            200,
+            &response_headers,
+            b"french".to_vec(),
+            &french_headers,
+            101,
+        )
+        .unwrap();
+
+        let (selected, cache_use) =
+            select_variant(vec![english, french], &english_headers, 102, 1024).unwrap();
+        assert_eq!(selected.body, b"english");
+        assert_eq!(cache_use, CacheUse::Fresh);
+    }
+
+    #[test]
     fn no_store_wildcard_and_oversized_vary_are_not_cached() {
         let request = BTreeMap::new();
         for vary in [
@@ -277,6 +332,16 @@ mod tests {
                 &BTreeMap::from([("cache-control".to_owned(), "no-store".to_owned())]),
                 Vec::new(),
                 &request,
+                0
+            )
+            .is_none()
+        );
+        assert!(
+            cache_entry(
+                200,
+                &BTreeMap::from([("vary".to_owned(), "X-Large".to_owned())]),
+                Vec::new(),
+                &BTreeMap::from([("x-large".to_owned(), "x".repeat(MAX_VARY_VALUES_BYTES + 1))]),
                 0
             )
             .is_none()

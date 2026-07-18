@@ -5954,26 +5954,23 @@ fn external_resource_cache_lookup(
     max_body_bytes: u64,
 ) -> Result<Option<(ByteResponse, crate::http_cache::CacheUse)>, BrowserError> {
     let origin_key = vixen_net::Origin::from_url(url).partition_key();
-    let entry = store
-        .get_cache(&origin_key, url.as_str())
+    let variants = store
+        .cache_variants(&origin_key, url.as_str())
         .map_err(|error| {
             BrowserError::new(
                 browser_error_codes::PROFILE,
                 format!("external resource cache read failed: {error}"),
             )
         })?;
-    let Some(entry) = entry else {
-        return Ok(None);
-    };
-    let cache_use = crate::http_cache::cache_use(
-        &entry,
+    let Some((entry, cache_use)) = crate::http_cache::select_variant(
+        variants,
         request_headers,
         current_unix_timestamp(),
         max_body_bytes,
-    );
-    if cache_use == crate::http_cache::CacheUse::Unusable
-        || cache_use == crate::http_cache::CacheUse::Stale
-            && !crate::http_cache::has_validator(&entry)
+    ) else {
+        return Ok(None);
+    };
+    if cache_use == crate::http_cache::CacheUse::Stale && !crate::http_cache::has_validator(&entry)
     {
         return Ok(None);
     }

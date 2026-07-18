@@ -1883,21 +1883,17 @@ fn fetch_cache_lookup(
         return Ok(None);
     };
     let origin_key = cookie_origin_key(url);
-    let Some(entry) = store
-        .get_cache(&origin_key, url.as_str())
-        .map_err(|err| err.to_string())?
-    else {
-        return Ok(None);
-    };
-    let cache_use = crate::http_cache::cache_use(
-        &entry,
+    let variants = store
+        .cache_variants(&origin_key, url.as_str())
+        .map_err(|err| err.to_string())?;
+    let Some((entry, cache_use)) = crate::http_cache::select_variant(
+        variants,
         request_headers,
         current_unix_timestamp(),
         max_body_bytes,
-    );
-    if cache_use == crate::http_cache::CacheUse::Unusable {
+    ) else {
         return Ok(None);
-    }
+    };
     Ok(Some((
         TextResponse {
             body: String::from_utf8_lossy(&entry.body).into_owned(),

@@ -815,8 +815,9 @@ bypass reads and writes. Cached responses still cross current CORS, integrity,
 status/MIME, graph provenance, and body-size policy before exposure. Focused
 runtime tests prove a fresh exact-language variant performs one transport
 request while a changed value refetches; a two-context module graph proves fresh
-root and dependency reuse through the same profile cache. The current URL-keyed
-store retains only the latest representation for a URL; simultaneous variants,
+root and dependency reuse through the same profile cache. At this checkpoint
+the URL-keyed store retained only the latest representation for a URL;
+simultaneous variants,
 `Expires`/heuristic freshness, request cache directives, and redirect aliases
 remain explicit breadth.
 
@@ -857,6 +858,20 @@ across evaluations rather than stranding op tasks on a per-evaluation runtime.
 Responses still resolve only after the bounded body, integrity, cache, and
 visibility decisions complete; policy-safe response-before-completion streaming
 is the next transfer boundary.
+
+**Ninth A2 checkpoint:** the profile cache now retains simultaneous response
+variants as independently bounded rows under a versioned URL-plus-selector key.
+Canonical sorted `Vary` selectors preserve absent versus empty values, cap total
+selected request-header data at 64 KiB, replace only the matching variant, and
+continue counting every representation toward the existing 512-record global
+eviction limit. Legacy URL-only rows remain readable and are transactionally
+replaced on the next write. Page fetch/XHR and BrowserCore module/resource loads
+select the newest matching usable variant through one shared decision before
+rerunning current policy. Store tests prove two variants survive, selector order
+does not create a duplicate, legacy migration works, and bounds count rows. The
+runtime `en` → `fr` → `en` proof performs exactly two transport requests and
+returns the first English representation on the third fetch. `Expires`/request
+directives and redirect aliases remain the next cache breadth.
 
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
@@ -1015,8 +1030,8 @@ Work top-to-bottom and finish/document/commit each slice:
    transfer into policy-safe head and bounded body ownership so `fetch()` may
    resolve before body completion while stream reads, cancellation, integrity,
    cache commit, and CDP progress retain one terminal lifecycle. Then extend the
-   cache checkpoint with simultaneous variants,
-   `Expires`/request-directive freshness, and redirect aliases. Keep direct
+   cache checkpoint with `Expires`/request-directive freshness and redirect
+   aliases. Keep direct
    classic/automation dynamic imports and module import attributes fail-closed
    until they can carry exact source URL, policy, and lifecycle provenance.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native

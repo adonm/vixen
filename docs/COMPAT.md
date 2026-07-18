@@ -257,15 +257,16 @@ remain fail-closed. Child frame globals and documents remain unavailable rather
 than fabricated until A3.
 
 Page `fetch()`/XHR and module resources now share bounded private-cache
-decisions. Exact effective final-hop request headers drive single-representation
-`Vary` matching; `max-age`/`Age` permit fresh default reuse, stale/no-cache
-entries require validators, and wildcard/malformed/oversized variants plus
-`no-store` responses are not reused. Focused runtime proof performs one network
-request for two same-language fetches and refetches a changed language; a fresh
-two-context module root/dependency graph also reuses the profile cache. Current
-CORS/integrity/status/MIME/body policy still runs before exposure. Simultaneous
-variants, `Expires`/heuristic freshness, request cache directives, and redirect
-aliases remain unsupported.
+decisions. Exact effective final-hop request headers select simultaneous
+independently bounded `Vary` representations; `max-age`/`Age` permit fresh
+default reuse, stale/no-cache entries require validators, and wildcard/malformed/
+oversized variants plus `no-store` responses are not reused. Focused runtime
+proof fetches `en` → `fr` → `en`, performs exactly two network requests, and
+reuses the first representation; a fresh two-context module root/dependency
+graph also reuses the profile cache. Current
+CORS/integrity/status/MIME/body policy still runs before exposure.
+`Expires`/heuristic freshness, request cache directives, and redirect aliases
+remain unsupported.
 
 HTTP bodies are now read incrementally with the configured cap checked before
 buffer growth. Ordered response/progress/completed diagnostics include exact

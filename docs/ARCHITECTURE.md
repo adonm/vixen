@@ -495,14 +495,16 @@ For every request:
 5. apply response CORS/CORP/COEP/nosniff/integrity/content policy;
 6. only then expose, execute, decode, persist, cache, or create a download.
 
-The current private-cache seam stores bounded bodies together with the effective
-final-hop request values named by `Vary`. One shared decision applies
+The current private-cache seam stores bounded bodies as independent variants
+together with the effective final-hop request values named by `Vary`. A
+versioned canonical selector preserves absent/empty values, caps selected header
+data at 64 KiB, keeps legacy URL-only rows readable, and counts every variant
+toward the 512-record table bound. One shared decision applies
 `no-store`/`no-cache`, `max-age` plus `Age`, exact present/absent variant matching,
 validator revalidation, body limits, and cache-disabled bypass for page
 fetch/XHR and module resources. Wildcard/malformed/oversized variants fail
-closed. The URL-keyed profile table currently keeps one representation per URL;
-simultaneous variants, `Expires`/heuristic freshness, request directives, and
-redirect aliases remain loader work rather than frontend-specific cache logic.
+closed. `Expires`/heuristic freshness, request directives, and redirect aliases
+remain loader work rather than frontend-specific cache logic.
 
 Transport body reads are incremental and enforce the destination cap before
 buffer growth. Ordered response, chunk progress, and completion records carry

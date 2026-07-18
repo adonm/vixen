@@ -278,11 +278,13 @@ impl Store {
     // --- Fetch cache --------------------------------------------------------
 
     pub fn put_cache(&self, origin_key: &str, url: &str, entry: &CacheEntry) -> Result<()> {
-        let key = namespaced_key(origin_key, url);
+        let key = fetch_cache_variant_key(origin_key, url, entry)?;
+        let legacy_key = namespaced_key(origin_key, url);
         let val = encode(entry)?;
         let w = self.db.begin_write()?;
         {
             let mut t = w.open_table(FETCH_CACHE)?;
+            t.remove(legacy_key.as_slice())?;
             t.insert(key.as_slice(), val.as_slice())?;
             let mut records = Vec::new();
             for item in t.iter()? {
@@ -305,15 +307,29 @@ impl Store {
     }
 
     pub fn get_cache(&self, origin_key: &str, url: &str) -> Result<Option<CacheEntry>> {
+        Ok(self
+            .cache_variants(origin_key, url)?
+            .into_iter()
+            .max_by_key(|entry| entry.fetched_unix))
+    }
+
+    pub fn cache_variants(&self, origin_key: &str, url: &str) -> Result<Vec<CacheEntry>> {
         let r = self.db.begin_read()?;
         let t = r
             .open_table(FETCH_CACHE)
             .map_err(|_| StoreError::MissingTable("fetch-cache"))?;
-        let key = namespaced_key(origin_key, url);
-        match t.get(key.as_slice())? {
-            Some(v) => Ok(Some(decode(v.value())?)),
-            None => Ok(None),
+        let legacy_key = namespaced_key(origin_key, url);
+        let variant_prefix = fetch_cache_variant_prefix(origin_key, url);
+        let mut entries = Vec::new();
+        for item in t.iter()? {
+            let (key, value) = item?;
+            if key.value() == legacy_key.as_slice()
+                || key.value().starts_with(variant_prefix.as_slice())
+            {
+                entries.push(decode(value.value())?);
+            }
         }
+        Ok(entries)
     }
 
     // --- History ------------------------------------------------------------
@@ -786,6 +802,23 @@ fn namespaced_prefix(origin_key: &str) -> Vec<u8> {
     k.extend_from_slice(origin_key.as_bytes());
     k.push(0);
     k
+}
+
+const FETCH_CACHE_VARIANT_MARKER: &[u8] = b"\0v1\0";
+
+fn fetch_cache_variant_prefix(origin_key: &str, url: &str) -> Vec<u8> {
+    let mut key = namespaced_key(origin_key, url);
+    key.extend_from_slice(FETCH_CACHE_VARIANT_MARKER);
+    key
+}
+
+fn fetch_cache_variant_key(origin_key: &str, url: &str, entry: &CacheEntry) -> Result<Vec<u8>> {
+    let mut selector = entry.vary_headers.clone();
+    selector.sort();
+    let selector = encode(&selector)?;
+    let mut key = fetch_cache_variant_prefix(origin_key, url);
+    key.extend_from_slice(&selector);
+    Ok(key)
 }
 
 fn validate_storage_input(field: &'static str, value: &str, allow_empty: bool) -> Result<()> {
@@ -1317,6 +1350,61 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn fetch_cache_retains_simultaneous_vary_variants() {
+        let (_f, store) = fresh_store();
+        let origin = "https://variants.test:443";
+        let url = "https://variants.test/data";
+        let mut english = cache_entry(100);
+        english
+            .headers
+            .push(("vary".to_owned(), "Accept-Language, X-Mode".to_owned()));
+        english.vary_headers = vec![
+            ("accept-language".to_owned(), Some("en".to_owned())),
+            ("x-mode".to_owned(), None),
+        ];
+        let mut french = english.clone();
+        french.fetched_unix = 101;
+        french.vary_headers[0].1 = Some("fr".to_owned());
+
+        store.put_cache(origin, url, &english).unwrap();
+        store.put_cache(origin, url, &french).unwrap();
+        let mut refreshed_english = english.clone();
+        refreshed_english.fetched_unix = 102;
+        refreshed_english.vary_headers.reverse();
+        store.put_cache(origin, url, &refreshed_english).unwrap();
+
+        let mut variants = store.cache_variants(origin, url).unwrap();
+        variants.sort_by_key(|entry| entry.fetched_unix);
+        assert_eq!(variants, vec![french, refreshed_english.clone()]);
+        assert_eq!(
+            store.get_cache(origin, url).unwrap(),
+            Some(refreshed_english)
+        );
+    }
+
+    #[test]
+    fn fetch_cache_reads_and_replaces_legacy_url_key() {
+        let (_f, store) = fresh_store();
+        let origin = "https://legacy-cache.test:443";
+        let url = "https://legacy-cache.test/data";
+        let legacy = cache_entry(100);
+        let key = namespaced_key(origin, url);
+        let value = encode(&legacy).unwrap();
+        let write = store.db.begin_write().unwrap();
+        {
+            let mut table = write.open_table(FETCH_CACHE).unwrap();
+            table.insert(key.as_slice(), value.as_slice()).unwrap();
+        }
+        write.commit().unwrap();
+
+        assert_eq!(store.cache_variants(origin, url).unwrap(), vec![legacy]);
+
+        let current = cache_entry(101);
+        store.put_cache(origin, url, &current).unwrap();
+        assert_eq!(store.cache_variants(origin, url).unwrap(), vec![current]);
     }
 
     #[test]

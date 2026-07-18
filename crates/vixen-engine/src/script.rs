@@ -7240,7 +7240,11 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let mut rt = JsRuntime::with_network_config_and_storage_path(network_config, &path)
             .expect("engine init");
-        for (language, expected) in [("en", "response-1-en"), ("fr", "response-2-fr")] {
+        for (language, expected) in [
+            ("en", "response-1-en"),
+            ("fr", "response-2-fr"),
+            ("en", "response-1-en"),
+        ] {
             let expression = format!(
                 "fetch({url:?}, {{ headers: {{ 'Accept-Language': {language:?} }} }}).then((response) => response.text())"
             );
