@@ -5,7 +5,7 @@
 use std::future::Future;
 use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::task::{Context, Poll, Waker};
 use std::thread::JoinHandle;
@@ -48,6 +48,7 @@ pub(super) struct DenoRuntimeConfig {
 pub(crate) struct RuntimeInterruptHandle {
     active: Arc<Mutex<Option<ActiveExecution>>>,
     layout_cancellation: RenderLayoutCancellation,
+    fetch_generation: Arc<AtomicU64>,
 }
 
 #[derive(Clone, Default)]
@@ -96,6 +97,7 @@ impl RuntimeInterruptHandle {
         if active.state.complete.load(Ordering::Acquire) {
             return false;
         }
+        self.interrupt_fetches();
         active.state.interrupted.store(true, Ordering::Release);
         let interrupted = active.isolate.terminate_execution();
         active.state.wake();
@@ -135,6 +137,18 @@ impl RuntimeInterruptHandle {
             return None;
         }
         Some(operation())
+    }
+
+    pub(crate) fn fetch_generation(&self) -> u64 {
+        self.fetch_generation.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn fetches_interrupted_since(&self, generation: u64) -> bool {
+        self.fetch_generation() != generation
+    }
+
+    fn interrupt_fetches(&self) {
+        self.fetch_generation.fetch_add(1, Ordering::AcqRel);
     }
 
     fn install(&self, state: Arc<DeadlineState>, isolate: v8::IsolateHandle) {
@@ -222,7 +236,9 @@ pub(super) fn execute_script(
     name: &'static str,
     source: String,
     interrupt: &RuntimeInterruptHandle,
+    executor: &tokio::runtime::Runtime,
 ) -> Result<v8::Global<v8::Value>, EngineError> {
+    let _executor_guard = executor.enter();
     let deadline = RuntimeDeadline::start(runtime, SCRIPT_EXECUTION_TIMEOUT, interrupt.clone());
     let global = match runtime.execute_script(name, source) {
         Ok(global) => global,
@@ -253,7 +269,7 @@ pub(super) fn execute_script(
         let timeout = Box::pin(DeadlineFuture {
             state: deadline.state.clone(),
         });
-        match deno_core::futures::executor::block_on(select(event_loop, timeout)) {
+        match executor.block_on(select(event_loop, timeout)) {
             Either::Left((result, timeout)) => {
                 drop(timeout);
                 Some(result)
@@ -298,6 +314,7 @@ pub(super) fn execute_module(
     specifier: deno_core::ModuleSpecifier,
     source: String,
     interrupt: &RuntimeInterruptHandle,
+    executor: &tokio::runtime::Runtime,
 ) -> Result<(), EngineError> {
     let deadline = RuntimeDeadline::start(runtime, SCRIPT_EXECUTION_TIMEOUT, interrupt.clone());
     let timeout = Box::pin(DeadlineFuture {
@@ -315,7 +332,8 @@ pub(super) fn execute_module(
             .map_err(|error| error.to_string())?;
         evaluation.await.map_err(|error| error.to_string())
     });
-    let outcome = match deno_core::futures::executor::block_on(select(operation, timeout)) {
+    let _executor_guard = executor.enter();
+    let outcome = match executor.block_on(select(operation, timeout)) {
         Either::Left((result, timeout)) => {
             drop(timeout);
             Some(result)
@@ -442,6 +460,7 @@ impl RuntimeDeadline {
         });
         let watchdog_state = state.clone();
         let watchdog_layout_cancellation = interrupt.layout_cancellation();
+        let watchdog_interrupt = interrupt.clone();
         let isolate = runtime.v8_isolate().thread_safe_handle();
         interrupt.install(state.clone(), isolate.clone());
         let watchdog = std::thread::spawn(move || {
@@ -458,6 +477,7 @@ impl RuntimeDeadline {
             if result.timed_out() && !watchdog_state.complete.load(Ordering::Acquire) {
                 watchdog_state.timed_out.store(true, Ordering::Release);
                 watchdog_layout_cancellation.cancel(RenderBrokerCancellation::Deadline);
+                watchdog_interrupt.interrupt_fetches();
                 let _ = isolate.terminate_execution();
                 watchdog_state.wake();
             }

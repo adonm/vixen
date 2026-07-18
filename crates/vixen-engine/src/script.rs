@@ -51,6 +51,7 @@ pub struct JsRuntime {
     runtime_network_state: webapi::RuntimeNetworkState,
     runtime_interrupt: RuntimeInterruptHandle,
     module_loader: module_loader::PageModuleLoader,
+    event_loop_executor: tokio::runtime::Runtime,
     runtime: Option<deno_core::JsRuntime>,
     dom_mutations: Option<dom::DomMutationSink>,
     synchronous_layout: Option<SynchronousLayoutConfig>,
@@ -580,25 +581,37 @@ impl JsRuntime {
             module_request_ids,
             module_executor,
         );
-        let init = runtime::new_deno_runtime(
-            initial_page,
-            runtime::DenoRuntimeConfig {
-                network: network_config.clone(),
-                storage: web_storage_host(
-                    initial_page,
-                    &storage_backend,
-                    &storage_session_id,
-                    storage_opaque_serial,
-                ),
-                network_state: runtime_network_state.clone(),
-                extra_http_headers: extra_http_headers.clone(),
-                cache_disabled: cache_disabled.clone(),
-                permission_overrides: permission_overrides.clone(),
-                interrupt: runtime_interrupt.clone(),
-                synchronous_layout: synchronous_layout.clone(),
-                module_loader: module_loader.clone(),
-            },
-        )?;
+        let event_loop_executor = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|error| {
+                EngineError::script(
+                    codes::SCRIPT_EVAL,
+                    format!("script event-loop executor unavailable: {error}"),
+                )
+            })?;
+        let init = {
+            let _executor_guard = event_loop_executor.enter();
+            runtime::new_deno_runtime(
+                initial_page,
+                runtime::DenoRuntimeConfig {
+                    network: network_config.clone(),
+                    storage: web_storage_host(
+                        initial_page,
+                        &storage_backend,
+                        &storage_session_id,
+                        storage_opaque_serial,
+                    ),
+                    network_state: runtime_network_state.clone(),
+                    extra_http_headers: extra_http_headers.clone(),
+                    cache_disabled: cache_disabled.clone(),
+                    permission_overrides: permission_overrides.clone(),
+                    interrupt: runtime_interrupt.clone(),
+                    synchronous_layout: synchronous_layout.clone(),
+                    module_loader: module_loader.clone(),
+                },
+            )?
+        };
         let realm_key = initial_page
             .map(page_realm_key)
             .map(RealmKey::Page)
@@ -616,6 +629,7 @@ impl JsRuntime {
             runtime_network_state,
             runtime_interrupt,
             module_loader,
+            event_loop_executor,
             runtime: Some(init.runtime),
             dom_mutations: init.dom_mutations,
             synchronous_layout,
@@ -1140,6 +1154,7 @@ impl JsRuntime {
                 "inline.js",
                 src.to_owned(),
                 &self.runtime_interrupt,
+                &self.event_loop_executor,
             )
             .and_then(|value| runtime::js_value_from_global(runtime, value))
         };
@@ -1170,6 +1185,7 @@ impl JsRuntime {
                 request.url().clone(),
                 source.to_owned(),
                 &self.runtime_interrupt,
+                &self.event_loop_executor,
             )
         };
         if result.as_ref().is_err_and(|error| {
@@ -1199,20 +1215,23 @@ impl JsRuntime {
                 &self.storage_session_id,
                 self.storage_opaque_serial,
             );
-            let init = runtime::new_deno_runtime(
-                page,
-                runtime::DenoRuntimeConfig {
-                    network: self.network_config.clone(),
-                    storage,
-                    network_state: self.runtime_network_state.clone(),
-                    extra_http_headers: self.extra_http_headers.clone(),
-                    cache_disabled: self.cache_disabled.clone(),
-                    permission_overrides: self.permission_overrides.clone(),
-                    interrupt: self.runtime_interrupt.clone(),
-                    synchronous_layout: self.synchronous_layout.clone(),
-                    module_loader: self.module_loader.clone(),
-                },
-            )?;
+            let init = {
+                let _executor_guard = self.event_loop_executor.enter();
+                runtime::new_deno_runtime(
+                    page,
+                    runtime::DenoRuntimeConfig {
+                        network: self.network_config.clone(),
+                        storage,
+                        network_state: self.runtime_network_state.clone(),
+                        extra_http_headers: self.extra_http_headers.clone(),
+                        cache_disabled: self.cache_disabled.clone(),
+                        permission_overrides: self.permission_overrides.clone(),
+                        interrupt: self.runtime_interrupt.clone(),
+                        synchronous_layout: self.synchronous_layout.clone(),
+                        module_loader: self.module_loader.clone(),
+                    },
+                )?
+            };
             self.runtime = Some(init.runtime);
             self.dom_mutations = init.dom_mutations;
             self.realm_key = target;
@@ -2255,6 +2274,50 @@ mod tests {
         (
             format!("http://{host}:{}/payload", addr.port()),
             config,
+            handle,
+        )
+    }
+
+    fn spawn_stalled_fetch_server(
+        host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::sync::Arc<std::sync::atomic::AtomicBool>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use std::time::Duration;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let disconnected = std::sync::Arc::new(AtomicBool::new(false));
+        let server_disconnected = disconnected.clone();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 1048576\r\nConnection: close\r\n\r\nx",
+                )
+                .unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut byte = [0_u8; 1];
+            if matches!(stream.read(&mut byte), Ok(0)) {
+                server_disconnected.store(true, Ordering::SeqCst);
+            }
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            disconnected,
             handle,
         )
     }
@@ -6483,6 +6546,66 @@ mod tests {
             JsValue::String("true:true:1".to_owned())
         );
         assert!(rt.drain_network_events().unwrap().is_empty());
+    }
+
+    #[test]
+    fn active_fetch_abort_disconnects_transport_and_keeps_signal_reason() {
+        use std::sync::atomic::Ordering;
+
+        let (url, network_config, disconnected, server) =
+            spawn_stalled_fetch_server("vixen-fetch-active-abort.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expression = format!(
+            r#"(() => {{
+              const controller = new AbortController();
+              const reason = new Error('active abort');
+              const pending = fetch({url:?}, {{ signal: controller.signal }});
+              const deadline = Date.now() + 75;
+              while (Date.now() < deadline) {{}}
+              controller.abort(reason);
+              return pending.then(() => false, (error) => error === reason);
+            }})()"#
+        );
+
+        assert_eq!(rt.evaluate(&expression).unwrap(), JsValue::Bool(true));
+        server.join().unwrap();
+        assert!(disconnected.load(Ordering::SeqCst));
+        let events = rt.drain_network_events().unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(matches!(events[0], JsNetworkEvent::Request { .. }));
+        assert!(matches!(events[1], JsNetworkEvent::Failure { .. }));
+    }
+
+    #[test]
+    fn xhr_abort_disconnects_transport_without_late_terminal_events() {
+        use std::sync::atomic::Ordering;
+
+        let (url, network_config, disconnected, server) =
+            spawn_stalled_fetch_server("vixen-xhr-active-abort.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expression = format!(
+            r#"(() => {{
+              const xhr = new XMLHttpRequest();
+              const events = [];
+              for (const type of ['readystatechange', 'loadstart', 'abort', 'loadend', 'load', 'error']) {{
+                xhr.addEventListener(type, () => events.push(type));
+              }}
+              xhr.open('GET', {url:?});
+              events.length = 0;
+              xhr.send();
+              const deadline = Date.now() + 75;
+              while (Date.now() < deadline) {{}}
+              xhr.abort();
+              return Promise.resolve().then(() => events.join(','));
+            }})()"#
+        );
+
+        assert_eq!(
+            rt.evaluate(&expression).unwrap(),
+            JsValue::String("loadstart,readystatechange,abort,loadend".to_owned())
+        );
+        server.join().unwrap();
+        assert!(disconnected.load(Ordering::SeqCst));
     }
 
     #[test]

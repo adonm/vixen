@@ -8,9 +8,10 @@
 
 use std::borrow::Cow;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant};
 
@@ -51,6 +52,7 @@ struct WebApiHost {
     preflight_cache: Arc<Mutex<PreflightCache>>,
     permission_overrides: PermissionOverrides,
     runtime_interrupt: RuntimeInterruptHandle,
+    active_fetches: ActiveFetches,
 }
 
 #[derive(Clone)]
@@ -114,8 +116,158 @@ impl WebApiHost {
             preflight_cache: config.network_state.preflight_cache,
             permission_overrides: config.permission_overrides,
             runtime_interrupt: config.interrupt,
+            active_fetches: ActiveFetches::default(),
         }
     }
+}
+
+impl Drop for WebApiHost {
+    fn drop(&mut self) {
+        self.active_fetches.cancel_all();
+    }
+}
+
+const MAX_ACTIVE_FETCHES: usize = 32;
+
+#[derive(Clone)]
+struct FetchCancellation {
+    cancelled: Arc<AtomicBool>,
+    runtime_interrupt: RuntimeInterruptHandle,
+    runtime_generation: u64,
+}
+
+impl FetchCancellation {
+    fn new(runtime_interrupt: RuntimeInterruptHandle) -> Self {
+        let runtime_generation = runtime_interrupt.fetch_generation();
+        Self {
+            cancelled: Arc::new(AtomicBool::new(false)),
+            runtime_interrupt,
+            runtime_generation,
+        }
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::Release);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::Acquire)
+            || self
+                .runtime_interrupt
+                .fetches_interrupted_since(self.runtime_generation)
+    }
+}
+
+#[derive(Default)]
+struct ActiveFetchState {
+    next_id: u32,
+    requests: BTreeMap<u32, ActiveFetch>,
+}
+
+struct ActiveFetch {
+    cancellation: FetchCancellation,
+    result: Option<tokio::sync::oneshot::Receiver<Value>>,
+}
+
+#[derive(Clone, Default)]
+struct ActiveFetches(Arc<Mutex<ActiveFetchState>>);
+
+impl ActiveFetches {
+    fn start(&self, context: FetchHostContext, request: Value) -> Result<u32, String> {
+        let cancellation = FetchCancellation::new(context.runtime_interrupt.clone());
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let id = {
+            let mut state = self
+                .0
+                .lock()
+                .map_err(|_| "active fetch state is poisoned".to_owned())?;
+            if state.requests.len() >= MAX_ACTIVE_FETCHES {
+                return Err(format!(
+                    "active fetch request limit exceeded ({MAX_ACTIVE_FETCHES})"
+                ));
+            }
+            let id = state.next_id;
+            state.next_id = state
+                .next_id
+                .checked_add(1)
+                .ok_or_else(|| "active fetch request id space is exhausted".to_owned())?;
+            state.requests.insert(
+                id,
+                ActiveFetch {
+                    cancellation: cancellation.clone(),
+                    result: Some(result_rx),
+                },
+            );
+            id
+        };
+        let worker_cancellation = cancellation.clone();
+        if let Err(error) = std::thread::Builder::new()
+            .name("vixen-page-fetch".to_owned())
+            .spawn(move || {
+                let result = perform_fetch(context, request, worker_cancellation);
+                let _ = result_tx.send(result);
+            })
+        {
+            if let Ok(mut state) = self.0.lock() {
+                state.requests.remove(&id);
+            }
+            return Err(format!("fetch worker spawn failed: {error}"));
+        }
+        Ok(id)
+    }
+
+    fn take_result(&self, id: u32) -> Result<tokio::sync::oneshot::Receiver<Value>, String> {
+        self.0
+            .lock()
+            .map_err(|_| "active fetch state is poisoned".to_owned())?
+            .requests
+            .get_mut(&id)
+            .ok_or_else(|| "unknown active fetch request".to_owned())?
+            .result
+            .take()
+            .ok_or_else(|| "active fetch result is already being awaited".to_owned())
+    }
+
+    fn finish(&self, id: u32) {
+        if let Ok(mut state) = self.0.lock() {
+            state.requests.remove(&id);
+        }
+    }
+
+    fn cancel(&self, id: u32) -> bool {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state.requests.get(&id).map(|request| {
+                    request.cancellation.cancel();
+                })
+            })
+            .is_some()
+    }
+
+    fn cancel_all(&self) {
+        let requests = self
+            .0
+            .lock()
+            .map(|mut state| std::mem::take(&mut state.requests))
+            .unwrap_or_default();
+        for request in requests.into_values() {
+            request.cancellation.cancel();
+        }
+    }
+}
+
+#[derive(Clone)]
+struct FetchHostContext {
+    network: Result<Network, String>,
+    cookies: Arc<Mutex<CookieJar>>,
+    cookie_store: Option<Arc<Store>>,
+    fetch_policy: Option<FetchPolicy>,
+    extra_http_headers: Vec<(String, String)>,
+    cache_disabled: bool,
+    preflight_cache: Arc<Mutex<PreflightCache>>,
+    runtime_interrupt: RuntimeInterruptHandle,
 }
 
 #[derive(Clone, Default)]
@@ -385,7 +537,9 @@ deno_core::extension!(
         op_vixen_document_cookie_set,
         op_vixen_permission_query,
         op_vixen_crypto_random_bytes,
-        op_vixen_fetch,
+        op_vixen_fetch_start,
+        op_vixen_fetch_finish,
+        op_vixen_fetch_cancel,
     ],
 );
 
@@ -493,9 +647,63 @@ fn op_vixen_storage_set(
 
 #[deno_core::op2]
 #[serde]
-fn op_vixen_fetch(
+fn op_vixen_fetch_start(
     state: Rc<RefCell<OpState>>,
     #[serde] request: deno_core::serde_json::Value,
+) -> deno_core::serde_json::Value {
+    let (active_fetches, context) = {
+        let state = state.borrow();
+        let host = state.borrow::<WebApiHost>();
+        (
+            host.active_fetches.clone(),
+            FetchHostContext {
+                network: host.network.clone(),
+                cookies: host.cookies.clone(),
+                cookie_store: web_storage_store(&host.storage),
+                fetch_policy: host.fetch_policy.clone(),
+                extra_http_headers: host.extra_http_headers.snapshot(),
+                cache_disabled: host.cache_disabled.snapshot(),
+                preflight_cache: host.preflight_cache.clone(),
+                runtime_interrupt: host.runtime_interrupt.clone(),
+            },
+        )
+    };
+    match active_fetches.start(context, request) {
+        Ok(id) => json!({ "ok": true, "id": id }),
+        Err(message) => fetch_error(message),
+    }
+}
+
+#[deno_core::op2]
+#[serde]
+async fn op_vixen_fetch_finish(
+    state: Rc<RefCell<OpState>>,
+    id: u32,
+) -> deno_core::serde_json::Value {
+    let active_fetches = {
+        let state = state.borrow();
+        state.borrow::<WebApiHost>().active_fetches.clone()
+    };
+    let result = match active_fetches.take_result(id) {
+        Ok(result) => result,
+        Err(message) => return fetch_error(message),
+    };
+    let result = result
+        .await
+        .unwrap_or_else(|_| fetch_error("fetch worker closed without a result"));
+    active_fetches.finish(id);
+    result
+}
+
+#[deno_core::op2(fast)]
+fn op_vixen_fetch_cancel(state: &mut OpState, id: u32) -> bool {
+    state.borrow::<WebApiHost>().active_fetches.cancel(id)
+}
+
+fn perform_fetch(
+    context: FetchHostContext,
+    request: deno_core::serde_json::Value,
+    cancellation: FetchCancellation,
 ) -> deno_core::serde_json::Value {
     let Some(url_text) = request.get("url").and_then(Value::as_str) else {
         return fetch_error("fetch request missing URL");
@@ -577,7 +785,7 @@ fn op_vixen_fetch(
         );
     }
 
-    let (
+    let FetchHostContext {
         network,
         cookies,
         cookie_store,
@@ -586,30 +794,17 @@ fn op_vixen_fetch(
         cache_disabled,
         preflight_cache,
         runtime_interrupt,
-    ) = {
-        let state = state.borrow();
-        let host = state.borrow::<WebApiHost>();
-        let network = match &host.network {
-            Ok(network) => network.clone(),
-            Err(message) => {
-                return fetch_failure(
-                    url.as_str(),
-                    method,
-                    format!("network unavailable: {message}"),
-                    "network",
-                );
-            }
-        };
-        (
-            network,
-            host.cookies.clone(),
-            web_storage_store(&host.storage),
-            host.fetch_policy.clone(),
-            host.extra_http_headers.snapshot(),
-            host.cache_disabled.snapshot(),
-            host.preflight_cache.clone(),
-            host.runtime_interrupt.clone(),
-        )
+    } = context;
+    let network = match network {
+        Ok(network) => network.clone(),
+        Err(message) => {
+            return fetch_failure(
+                url.as_str(),
+                method,
+                format!("network unavailable: {message}"),
+                "network",
+            );
+        }
     };
     headers.extend(extra_http_headers);
     let author_headers = headers.clone();
@@ -675,6 +870,7 @@ fn op_vixen_fetch(
                 },
                 preflight_cache,
                 runtime_interrupt.clone(),
+                cancellation.clone(),
             )
         {
             return fetch_failure(url.as_str(), method, message, "cors");
@@ -816,6 +1012,7 @@ fn op_vixen_fetch(
             store: cookie_store.clone(),
         },
         runtime_interrupt.clone(),
+        cancellation.clone(),
     ) {
         Ok(response) => {
             let response = revalidated_response(response, revalidation_candidate);
@@ -829,7 +1026,7 @@ fn op_vixen_fetch(
                 && method == Method::Get
                 && cache_mode != FetchCacheMode::NoStore
                 && response.status != 304
-                && let Err(message) = commit_host_effect(&runtime_interrupt, || {
+                && let Err(message) = commit_host_effect(&runtime_interrupt, &cancellation, || {
                     persist_fetch_cache(
                         cookie_store.as_deref(),
                         &cookie_origin_key(&url),
@@ -1171,6 +1368,7 @@ fn cors_preflight_blocking(
     request: CorsPreflightRequest,
     cache: Arc<Mutex<PreflightCache>>,
     runtime_interrupt: RuntimeInterruptHandle,
+    cancellation: FetchCancellation,
 ) -> Result<(), String> {
     let CorsPreflightRequest {
         url,
@@ -1254,6 +1452,7 @@ fn cors_preflight_blocking(
         handle,
         cancel_tx,
         &runtime_interrupt,
+        &cancellation,
         "fetch preflight",
     )?;
     let max_age = Duration::from_secs(
@@ -1263,7 +1462,7 @@ fn cors_preflight_blocking(
     )
     .min(MAX_PREFLIGHT_CACHE_AGE);
     if !max_age.is_zero() {
-        commit_host_effect(&runtime_interrupt, || {
+        commit_host_effect(&runtime_interrupt, &cancellation, || {
             cache
                 .lock()
                 .map_err(|_| "CORS preflight cache poisoned".to_owned())?
@@ -1352,6 +1551,7 @@ fn fetch_http_text_blocking(
     request: TextRequest,
     profile: FetchWorkerProfile,
     runtime_interrupt: RuntimeInterruptHandle,
+    cancellation: FetchCancellation,
 ) -> Result<TextResponse, String> {
     let persistence_cookies = Arc::clone(&profile.cookies);
     let persistence_store = profile.store.clone();
@@ -1396,9 +1596,16 @@ fn fetch_http_text_blocking(
             let _ = result_tx.send(result);
         })
         .map_err(|err| format!("fetch worker spawn failed: {err}"))?;
-    let result = wait_for_host_worker(result_rx, handle, cancel_tx, &runtime_interrupt, "fetch")?;
+    let result = wait_for_host_worker(
+        result_rx,
+        handle,
+        cancel_tx,
+        &runtime_interrupt,
+        &cancellation,
+        "fetch",
+    )?;
     if let Some(credentials) = result.credentials {
-        commit_host_effect(&runtime_interrupt, || {
+        commit_host_effect(&runtime_interrupt, &cancellation, || {
             persist_cookie_jar(
                 &persistence_cookies,
                 persistence_store.as_deref(),
@@ -1442,11 +1649,12 @@ fn wait_for_host_worker<T>(
     handle: std::thread::JoinHandle<()>,
     cancel: tokio::sync::oneshot::Sender<()>,
     runtime_interrupt: &RuntimeInterruptHandle,
+    cancellation: &FetchCancellation,
     name: &str,
 ) -> Result<T, String> {
     let mut cancel = Some(cancel);
     loop {
-        if runtime_interrupt.is_terminated() {
+        if runtime_interrupt.is_terminated() || cancellation.is_cancelled() {
             let _ = cancel
                 .take()
                 .expect("host worker cancellation is single-use")
@@ -1461,7 +1669,7 @@ fn wait_for_host_worker<T>(
                 handle
                     .join()
                     .map_err(|_| format!("{name} worker panicked"))?;
-                if runtime_interrupt.is_terminated() {
+                if runtime_interrupt.is_terminated() || cancellation.is_cancelled() {
                     return Err(HOST_CALL_INTERRUPTED.to_owned());
                 }
                 return result;
@@ -1479,10 +1687,20 @@ fn wait_for_host_worker<T>(
 
 fn commit_host_effect<T>(
     runtime_interrupt: &RuntimeInterruptHandle,
+    cancellation: &FetchCancellation,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
+    if cancellation.is_cancelled() {
+        return Err(HOST_CALL_INTERRUPTED.to_owned());
+    }
     runtime_interrupt
-        .with_active_execution(operation)
+        .with_active_execution(|| {
+            if cancellation.is_cancelled() {
+                Err(HOST_CALL_INTERRUPTED.to_owned())
+            } else {
+                operation()
+            }
+        })
         .ok_or_else(|| HOST_CALL_INTERRUPTED.to_owned())?
 }
 
@@ -2181,7 +2399,9 @@ const WEB_API_BOOTSTRAP: &str = r#"
     op_vixen_storage_persisted,
     op_vixen_permission_query,
     op_vixen_crypto_random_bytes,
-    op_vixen_fetch,
+    op_vixen_fetch_start,
+    op_vixen_fetch_finish,
+    op_vixen_fetch_cancel,
   } = Deno.core.ops;
   const webidl = globalThis.__vixenWebidl;
   const textEncoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
@@ -3589,19 +3809,38 @@ const WEB_API_BOOTSTRAP: &str = r#"
     if (request.signal && request.signal.aborted) {
       return Promise.reject(request.signal.reason === undefined ? new TypeError('fetch aborted') : request.signal.reason);
     }
-    const result = op_vixen_fetch({ url: request.url, method: request.method, mode: request.mode, cache: request.cache, credentials: request.credentials, redirect: request.redirect, referrerPolicy: request.referrerPolicy, integrity: request.integrity, headers: Array.from(request.headers.entries()), body: request.body === null ? null : request.__vixenBodyText });
-    recordNetworkEvents(result && result.events);
-    if (!result || !result.ok) {
-      return Promise.reject(new TypeError(result && result.message ? result.message : 'fetch failed'));
+    const started = op_vixen_fetch_start({ url: request.url, method: request.method, mode: request.mode, cache: request.cache, credentials: request.credentials, redirect: request.redirect, referrerPolicy: request.referrerPolicy, integrity: request.integrity, headers: Array.from(request.headers.entries()), body: request.body === null ? null : request.__vixenBodyText });
+    if (!started || !started.ok) {
+      return Promise.reject(new TypeError(started && started.message ? started.message : 'fetch failed to start'));
     }
-    return Promise.resolve(new VixenResponse(result.responseType === 'opaque' ? null : result.body, {
-      status: result.status,
-      type: result.responseType,
-      headers: result.headers,
-      url: result.finalUrl,
-      redirected: result.redirected,
-      bodyChunks: result.bodyChunks,
-    }));
+    const abort = () => { op_vixen_fetch_cancel(started.id); };
+    if (request.signal) request.signal.addEventListener('abort', abort, { once: true });
+    const pending = op_vixen_fetch_finish(started.id).then((result) => {
+      if (request.signal) request.signal.removeEventListener('abort', abort);
+      recordNetworkEvents(result && result.events);
+      if (request.signal && request.signal.aborted) {
+        throw request.signal.reason === undefined ? new TypeError('fetch aborted') : request.signal.reason;
+      }
+      if (!result || !result.ok) {
+        throw new TypeError(result && result.message ? result.message : 'fetch failed');
+      }
+      return new VixenResponse(result.responseType === 'opaque' ? null : result.body, {
+        status: result.status,
+        type: result.responseType,
+        headers: result.headers,
+        url: result.finalUrl,
+        redirected: result.redirected,
+        bodyChunks: result.bodyChunks,
+      });
+    }, (error) => {
+      if (request.signal) request.signal.removeEventListener('abort', abort);
+      if (request.signal && request.signal.aborted) {
+        throw request.signal.reason === undefined ? new TypeError('fetch aborted') : request.signal.reason;
+      }
+      throw error;
+    });
+    pending.catch(() => {});
+    return pending;
   }
 
   defineGlobal('fetch', fetch);
@@ -3646,8 +3885,13 @@ const WEB_API_BOOTSTRAP: &str = r#"
       defineData(this, '__vixenAsync', true, false);
       defineData(this, '__vixenResponseHeaders', new VixenHeaders(), false);
       defineData(this, '__vixenAborted', false, false);
+      defineData(this, '__vixenController', null, false);
+      defineData(this, '__vixenSendGeneration', 0, false);
     }
     open(method, url, async = true) {
+      if (this.__vixenController) this.__vixenController.abort();
+      this.__vixenController = null;
+      this.__vixenSendGeneration++;
       this.__vixenMethod = String(method || 'GET').toUpperCase();
       this.__vixenUrl = new VixenURL(String(url), typeof location !== 'undefined' ? location.href : undefined).href;
       this.__vixenAsync = async !== false;
@@ -3669,11 +3913,15 @@ const WEB_API_BOOTSTRAP: &str = r#"
       if (this.readyState !== 1) throw new Error('XMLHttpRequest is not open');
       if (!this.__vixenAsync) throw new Error('synchronous XMLHttpRequest is not supported');
       this.__vixenAborted = false;
+      const generation = ++this.__vixenSendGeneration;
+      const controller = new VixenAbortController();
+      this.__vixenController = controller;
       fireXhrProgress(this, 'loadstart', 0, 0);
       const init = {
         method: this.__vixenMethod,
         headers: this.__vixenHeaders,
         credentials: this.withCredentials ? 'include' : 'same-origin',
+        signal: controller.signal,
       };
       if (body !== null && body !== undefined) {
         init.body = body;
@@ -3684,7 +3932,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
         fireXhrProgress(this.upload, 'loadend', uploadBytes, uploadBytes);
       }
       fetch(this.__vixenUrl, init).then((res) => {
-        if (this.__vixenAborted) return;
+        if (this.__vixenAborted || generation !== this.__vixenSendGeneration) return;
         this.status = res.status;
         this.statusText = res.statusText || '';
         this.responseURL = res.url || '';
@@ -3698,16 +3946,17 @@ const WEB_API_BOOTSTRAP: &str = r#"
         }
         if (loaded < total) fireXhrProgress(this, 'progress', total, total);
         return res.text().then((text) => {
-          if (this.__vixenAborted) return;
+          if (this.__vixenAborted || generation !== this.__vixenSendGeneration) return;
           this.responseText = text;
           this.response = text;
           setXhrReadyState(this, 3);
           setXhrReadyState(this, 4);
           fireXhrProgress(this, 'load', total, total);
           fireXhrProgress(this, 'loadend', total, total);
+          if (generation === this.__vixenSendGeneration) this.__vixenController = null;
         });
       }).catch((err) => {
-        if (this.__vixenAborted) return;
+        if (this.__vixenAborted || generation !== this.__vixenSendGeneration) return;
         this.status = 0;
         this.statusText = '';
         this.responseText = '';
@@ -3715,10 +3964,14 @@ const WEB_API_BOOTSTRAP: &str = r#"
         setXhrReadyState(this, 4);
         fireXhrEvent(this, 'error');
         fireXhrEvent(this, 'loadend');
+        if (generation === this.__vixenSendGeneration) this.__vixenController = null;
       });
     }
     abort() {
       this.__vixenAborted = true;
+      this.__vixenSendGeneration++;
+      if (this.__vixenController) this.__vixenController.abort();
+      this.__vixenController = null;
       this.status = 0;
       this.statusText = '';
       setXhrReadyState(this, 0);

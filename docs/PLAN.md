@@ -70,12 +70,12 @@ controlled host proof rather than an IME or assistive-technology matrix.
    profile or runtime effects. The release/AOT fixture now imports both a real
    static and dynamic dependency without changing its scene. Page fetch/XHR and
    module resources now also share bounded `max-age`/`Age` freshness and exact
-   single-representation `Vary` matching. The next transfer checkpoint adds
-   bounded incremental body reads, exact progress/completion diagnostics through
-   BrowserCore/C ABI/CDP, retained `ReadableStream` chunks, XHR upload/download
-   progress, and pre-aborted fetch rejection. Continue by moving page fetch/XHR
-   to asynchronous loader ownership for active-signal transport cancellation and
-   policy-safe response-before-body completion; the current stream remains
+   single-representation `Vary` matching. Transport body reads, exact
+   progress/completion diagnostics through BrowserCore/C ABI/CDP, retained
+   `ReadableStream` chunks, XHR upload/download progress, and pre-aborted fetch
+   rejection are landed. Page fetch/XHR now have bounded asynchronous ownership
+   and active-signal transport cancellation. Continue with policy-safe
+   response-before-body completion; the current stream remains
    buffer-before-resolution. Then add simultaneous cache variants, `Expires`,
    request directives, and redirect aliases. Direct classic/automation dynamic
    imports and import attributes stay fail-closed pending exact source

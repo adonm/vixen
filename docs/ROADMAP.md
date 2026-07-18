@@ -840,6 +840,24 @@ cancellation and policy-safe response-before-completion streaming remain the nex
 loader boundary, while BrowserCore stop/navigation cancellation continues to
 drop the live reqwest future.
 
+**Eighth A2 checkpoint:** page `fetch()` now starts one host-owned asynchronous
+request instead of holding V8 inside a blocking op. Each realm admits at most 32
+active requests with opaque ids, one completion waiter, explicit cancellation,
+and teardown cancellation. An active `AbortSignal` drops the pending reqwest
+transport, rejects with the signal's exact first reason, and records a bounded
+request/failure diagnostic; XHR owns a controller and send generation so
+`abort()` drops the same transport and cannot publish late ready-state/load/error
+events into a reopened request. Runtime stop and deadlines use a persistent
+interrupt generation, so cancellation remains visible after V8 termination is
+cleared and no partial cookie, preflight-cache, or response-cache effect can
+commit. Focused stalled-peer tests prove fetch and XHR disconnect, exact reason,
+terminal event order, and the existing stop/preflight-stop recovery corridor.
+The Deno realm now retains one current-thread Tokio executor for async host ops
+across evaluations rather than stranding op tasks on a per-evaluation runtime.
+Responses still resolve only after the bounded body, integrity, cache, and
+visibility decisions complete; policy-safe response-before-completion streaming
+is the next transfer boundary.
+
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
 
@@ -993,11 +1011,11 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue A2 beyond the module vertical:** converge fetch/XHR transfer
-   ownership on the asynchronous shared loader so an active page `AbortSignal`
-   cancels transport and policy-safe responses can resolve before body
-   completion. Preserve the landed bounded chunk/progress/CDP diagnostics while
-   doing so. Then extend the cache checkpoint with simultaneous variants,
+1. **Continue A2 beyond active cancellation:** split the asynchronous page
+   transfer into policy-safe head and bounded body ownership so `fetch()` may
+   resolve before body completion while stream reads, cancellation, integrity,
+   cache commit, and CDP progress retain one terminal lifecycle. Then extend the
+   cache checkpoint with simultaneous variants,
    `Expires`/request-directive freshness, and redirect aliases. Keep direct
    classic/automation dynamic imports and module import attributes fail-closed
    until they can carry exact source URL, policy, and lifecycle provenance.

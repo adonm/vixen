@@ -54,11 +54,12 @@ roots/tasks. A shared bounded private-cache decision now gives page fetch/XHR an
 module loads `max-age`/`Age` freshness plus exact single-representation `Vary`
 matching. The transport now performs bounded incremental body reads and
 publishes progress/completion through ReadableStream, XHR, BrowserCore/C ABI, and
-CDP. Continue A2 by moving page fetch/XHR onto asynchronous loader ownership so
-active `AbortSignal` cancellation drops transport and policy-safe responses may
-resolve before completion; do not misreport the current buffer-before-resolution
-stream as online consumption. Then add simultaneous cache variants, `Expires`,
-request directives, and redirect aliases. Keep direct classic/automation dynamic
+CDP. Page fetch/XHR now use a bounded asynchronous realm owner; active
+`AbortSignal`, XHR abort, stop/deadline, and realm teardown drop transport without
+late profile effects. Continue A2 by separating policy-safe response heads from
+bounded online body consumption; do not misreport the current
+buffer-before-resolution stream as online consumption. Then add simultaneous
+cache variants, `Expires`, request directives, and redirect aliases. Keep direct classic/automation dynamic
 imports and import attributes fail-closed meanwhile.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk

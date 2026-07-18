@@ -509,10 +509,13 @@ buffer growth. Ordered response, chunk progress, and completion records carry
 exact byte counts through BrowserCore, C ABI diagnostics, and CDP. The current
 page text pipeline exposes retained chunks through `ReadableStream` and XHR
 progress only after the bounded response has completed so integrity/cache policy
-cannot be bypassed. BrowserCore lifecycle cancellation already drops the reqwest
-future; page `AbortSignal` cancellation and response-before-completion require
-moving fetch/XHR from its blocking host op to the asynchronous shared-loader
-owner.
+cannot be bypassed. Page fetch/XHR now use a per-realm host-owned asynchronous
+request table bounded to 32 entries. Explicit `AbortSignal`, XHR abort, realm
+teardown, BrowserCore stop, and runtime deadlines cancel the owned reqwest future;
+an interrupt generation prevents cleared V8 termination state from authorizing a
+late cookie/cache/preflight commit. The response remains buffer-before-resolution;
+splitting policy-safe response heads from bounded online body consumption is the
+next shared-loader boundary.
 
 Policy failure, transport/TLS failure, protocol failure, decode failure,
 unsupported behavior, and cancellation have distinct stable diagnostics. CDP
