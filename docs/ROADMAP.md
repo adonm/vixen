@@ -854,8 +854,8 @@ cleared and no partial cookie, preflight-cache, or response-cache effect can
 commit. Focused stalled-peer tests prove fetch and XHR disconnect, exact reason,
 terminal event order, and the existing stop/preflight-stop recovery corridor.
 The Deno realm now retains one current-thread Tokio executor for async host ops
-across evaluations rather than stranding op tasks on a per-evaluation runtime.
-Responses still resolve only after the bounded body, integrity, cache, and
+across evaluations rather than stranding op tasks on a per-evaluation runtime;
+non-blocking shutdown keeps async CDP owner teardown safe. Responses still resolve only after the bounded body, integrity, cache, and
 visibility decisions complete; policy-safe response-before-completion streaming
 is the next transfer boundary.
 

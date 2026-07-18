@@ -51,7 +51,7 @@ pub struct JsRuntime {
     runtime_network_state: webapi::RuntimeNetworkState,
     runtime_interrupt: RuntimeInterruptHandle,
     module_loader: module_loader::PageModuleLoader,
-    event_loop_executor: tokio::runtime::Runtime,
+    event_loop_executor: Option<tokio::runtime::Runtime>,
     runtime: Option<deno_core::JsRuntime>,
     dom_mutations: Option<dom::DomMutationSink>,
     synchronous_layout: Option<SynchronousLayoutConfig>,
@@ -629,7 +629,7 @@ impl JsRuntime {
             runtime_network_state,
             runtime_interrupt,
             module_loader,
-            event_loop_executor,
+            event_loop_executor: Some(event_loop_executor),
             runtime: Some(init.runtime),
             dom_mutations: init.dom_mutations,
             synchronous_layout,
@@ -1154,7 +1154,9 @@ impl JsRuntime {
                 "inline.js",
                 src.to_owned(),
                 &self.runtime_interrupt,
-                &self.event_loop_executor,
+                self.event_loop_executor
+                    .as_ref()
+                    .expect("event-loop executor is alive"),
             )
             .and_then(|value| runtime::js_value_from_global(runtime, value))
         };
@@ -1185,7 +1187,9 @@ impl JsRuntime {
                 request.url().clone(),
                 source.to_owned(),
                 &self.runtime_interrupt,
-                &self.event_loop_executor,
+                self.event_loop_executor
+                    .as_ref()
+                    .expect("event-loop executor is alive"),
             )
         };
         if result.as_ref().is_err_and(|error| {
@@ -1216,7 +1220,11 @@ impl JsRuntime {
                 self.storage_opaque_serial,
             );
             let init = {
-                let _executor_guard = self.event_loop_executor.enter();
+                let _executor_guard = self
+                    .event_loop_executor
+                    .as_ref()
+                    .expect("event-loop executor is alive")
+                    .enter();
                 runtime::new_deno_runtime(
                     page,
                     runtime::DenoRuntimeConfig {
@@ -2184,6 +2192,9 @@ impl Drop for JsRuntime {
         self.runtime = None;
         self.module_loader.shutdown();
         self.storage_backend = webapi::WebStorageBackend::memory();
+        if let Some(executor) = self.event_loop_executor.take() {
+            executor.shutdown_background();
+        }
         if let Some(path) = self.storage_temp_path.take() {
             let _ = std::fs::remove_file(path);
         }
