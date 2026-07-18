@@ -248,8 +248,32 @@ impl WptProfile {
     }
 }
 
+fn clear_git_repository_environment(command: &mut Command) {
+    for name in [
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_CONFIG",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_COUNT",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_GRAFT_FILE",
+        "GIT_INDEX_FILE",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_PREFIX",
+        "GIT_SHALLOW_FILE",
+        "GIT_COMMON_DIR",
+    ] {
+        command.env_remove(name);
+    }
+}
+
 fn git_output(root: &Path, operation: &'static str, args: &[&str]) -> Result<Output, ProfileError> {
-    let output = Command::new("git")
+    let mut command = Command::new("git");
+    clear_git_repository_environment(&mut command);
+    let output = command
         .arg("-C")
         .arg(root)
         .args(args)
