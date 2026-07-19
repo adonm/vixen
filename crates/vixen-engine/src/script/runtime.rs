@@ -218,9 +218,14 @@ pub(super) fn new_deno_runtime(
         dom_mutations = Some(mutations);
     }
 
+    let import_attribute_validator = config.module_loader.clone();
     let runtime = DenoJsRuntime::try_new(RuntimeOptions {
         extensions,
         module_loader: Some(Rc::new(config.module_loader)),
+        validate_import_attributes_cb: Some(Box::new(move |scope, attributes, context| {
+            import_attribute_validator
+                .validate_import_attributes_in_scope(scope, attributes, context);
+        })),
         ..Default::default()
     })
     .map_err(|err| EngineError::Other {

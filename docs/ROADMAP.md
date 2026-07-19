@@ -948,6 +948,22 @@ BrowserCore redirect test proves a classic dependency resolves from the final
 URL and settles navigation under one numeric module request id. Import
 attributes remain fail closed pending destination-specific response policy.
 
+**Fourteenth A2 checkpoint:** static and dynamic JSON modules now admit exactly
+`with { type: "json" }` through the existing graph loader. A V8 import-attribute
+validation callback sees the complete static/dynamic attribute map and records a
+bounded dynamic denial before resolution, so unknown keys and non-JSON types
+cannot trigger transport even when deno_core later reduces attributes to a
+requested module type. File loads require a `.json` URL; HTTP(S) loads require
+`application/json` or a `+json` subtype. Accepted source remains under the same
+URL/CSP/mixed-content/CORS, credentials, redirect, profile/cache, body, graph,
+request-id, diagnostics, and cancellation policy as JavaScript modules before
+V8 creates a JSON module namespace. Focused tests prove static and dynamic file
+imports, reject an extra dynamic key without a third request, preserve isolate
+reuse, and reject JavaScript MIME without a profile cache write. A BrowserCore
+HTTP proof persists an accepted JSON representation and exposes one numeric
+request id. Text/bytes/custom attributes and integrity metadata remain fail
+closed.
+
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
 
@@ -1101,11 +1117,10 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue A2 module provenance:** admit supported module import attributes
-   through the same source/policy/profile/cancellation boundary now used by
-   parser modules, classics, and automation. Keep unsupported attribute keys and
-   types fail closed, and preserve the existing request-id and terminal
-   lifecycle.
+1. **Continue A2 module metadata:** carry module integrity metadata through the
+   same source/policy/profile/cancellation boundary and verify it before V8 or
+   cache insertion. Keep text/bytes/custom attributes and unsupported integrity
+   forms fail closed; preserve the existing request-id and terminal lifecycle.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →
    newer-commit evidence green while widening shared-core behavior; do not

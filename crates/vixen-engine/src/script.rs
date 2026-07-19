@@ -6474,7 +6474,7 @@ mod tests {
              <script type='importmap'>{\"imports\":{\"lazy\":\"./lazy.js\"}}</script>\
              <script type='module'>\
                globalThis.__loadDynamic = () => import('lazy').then(module => module.value);\
-               globalThis.__loadAttributed = () => import('./child.js', { with: { type: 'json' } });\
+               globalThis.__loadAttributed = () => import('./child.js', { with: { type: 'css' } });\
              </script>\
              <script type='module'>globalThis.__laterRoot = true;</script>",
         )
@@ -6527,6 +6527,71 @@ mod tests {
                 .filter(|event| matches!(event, JsNetworkEvent::Request { .. }))
                 .count(),
             2
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn static_and_dynamic_json_modules_use_the_bounded_graph_loader() {
+        let directory = std::env::temp_dir().join(format!(
+            "vixen-json-module-{}-{}",
+            std::process::id(),
+            next_storage_session_id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("config.json"), r#"{"value":40}"#).unwrap();
+        std::fs::write(directory.join("later.json"), r#"{"value":2}"#).unwrap();
+        std::fs::write(directory.join("unknown.json"), r#"{"value":3}"#).unwrap();
+        let page_url = url::Url::from_file_path(directory.join("page.html"))
+            .unwrap()
+            .to_string();
+        let mut page = Page::from_html(
+            page_url,
+            "<script type='module'>\
+               import config from './config.json' with { type: 'json' };\
+               globalThis.__jsonStatic = config.value;\
+               globalThis.__loadJson = () => import('./later.json', { with: { type: 'json' } }).then(module => module.default.value);\
+               globalThis.__loadUnknownAttribute = () => import('./unknown.json', { with: { type: 'json', unsupported: 'yes' } });\
+             </script>",
+        )
+        .unwrap();
+        let mut runtime = JsRuntime::new().unwrap();
+
+        assert_eq!(runtime.execute_page_scripts(&mut page).unwrap(), 1);
+        assert_eq!(
+            runtime.evaluate_with_page("__jsonStatic", &page).unwrap(),
+            JsValue::Int32(40)
+        );
+        assert_eq!(
+            runtime
+                .evaluate_with_page_mut("__loadJson()", &mut page)
+                .unwrap(),
+            JsValue::Int32(2)
+        );
+        assert_eq!(
+            runtime
+                .evaluate_with_page_mut(
+                    "__loadUnknownAttribute().then(() => false, error => /only type=json/.test(error.message))",
+                    &mut page,
+                )
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert_eq!(
+            runtime
+                .drain_network_events()
+                .unwrap()
+                .iter()
+                .filter(|event| matches!(event, JsNetworkEvent::Request { .. }))
+                .count(),
+            2
+        );
+        assert_eq!(
+            runtime
+                .evaluate_with_page("__jsonStatic + 2", &page)
+                .unwrap(),
+            JsValue::Int32(42)
         );
 
         std::fs::remove_dir_all(directory).unwrap();

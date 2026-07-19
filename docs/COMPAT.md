@@ -256,8 +256,10 @@ cancellation. Parser classics and BrowserCore automation evaluations now use
 the same loader with exact source/document policy: mapped file imports execute,
 redirected classics resolve relative imports from the accepted final URL, and
 numeric request ids plus existing graph/cancellation bounds remain intact.
-Import attributes remain fail-closed. Child frame globals and documents remain unavailable rather
-than fabricated until A3.
+Exact static and dynamic `type=json` imports now use that loader with strict
+`.json` file or JSON HTTP MIME policy. Unknown keys and text/bytes/custom types
+fail before transport; a bad MIME creates no profile cache row. Child frame
+globals and documents remain unavailable rather than fabricated until A3.
 
 Page `fetch()`/XHR and module resources now share bounded private-cache
 decisions. Exact effective final-hop request headers select simultaneous

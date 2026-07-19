@@ -209,13 +209,14 @@ explicit until promoted by measured tests.
   writes.
 - One bounded inline import map registered before module discovery resolves
   exact/prefix/URL-like and scoped dependencies through that same policy-bound
-  loader; external/multiple/late/integrity maps and import attributes fail
-  closed without partial registration.
+  loader; external/multiple/late/integrity maps fail closed without partial
+  registration.
 - Dynamic imports originating in page modules, parser classics, and BrowserCore
   automation retain exact source/graph/import-map/credentials policy, share
   cumulative bounds, resolve redirected children from accepted final URLs, and
-  abort without late DOM/profile/lifecycle effects. Import attributes remain
-  unsupported until destination-specific response policy is proved.
+  abort without late DOM/profile/lifecycle effects. Exact static/dynamic JSON
+  import attributes require strict file/HTTP JSON typing; unknown keys and
+  text/bytes/custom types fail before transport.
 - Policy runs before resource bytes/handles cross to Flutter.
 - redb profile tables preserve partitioning, bounds, recovery, clear-data, and
   reopen behavior.

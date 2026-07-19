@@ -5,10 +5,11 @@
 //! checks, profile credentials/cache writes, and bounded network diagnostics to
 //! the same external-resource loader used by parser scripts, stylesheets, and
 //! images. Static and dynamic imports retain their originating graph policy;
-//! import attributes and graphs over explicit limits fail closed before module
-//! evaluation.
+//! exact JSON import attributes use destination-specific response policy, while
+//! unsupported attributes and graphs over explicit limits fail closed before
+//! module evaluation.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -40,6 +41,25 @@ const MAX_MODULE_PROVENANCE: usize = 1024;
 type PreparedModuleRequest = (String, ExternalPageScript, u64);
 type ModuleRequestError = (Option<String>, &'static str, String);
 
+fn validate_import_attributes(
+    import_attributes: &HashMap<String, String>,
+) -> Result<(), ModuleLoaderError> {
+    if import_attributes_supported(import_attributes) {
+        return Ok(());
+    }
+    Err(ModuleLoaderError::generic(
+        "unsupported module import attributes; only type=json is enabled",
+    ))
+}
+
+fn import_attributes_supported(import_attributes: &HashMap<String, String>) -> bool {
+    import_attributes.is_empty()
+        || import_attributes.len() == 1
+            && import_attributes
+                .get("type")
+                .is_some_and(|value| value == "json")
+}
+
 #[derive(Clone)]
 enum RequestIds {
     Browser(SharedRequestIdAllocator),
@@ -69,6 +89,8 @@ struct ModuleGraphContext {
 #[derive(Default)]
 struct LoaderState {
     modules: BTreeMap<String, Arc<Mutex<ModuleGraphContext>>>,
+    denied_attribute_imports: BTreeSet<(String, String)>,
+    attribute_denial_overflow: bool,
     events: VecDeque<JsNetworkEvent>,
     active_tasks: BTreeMap<u64, tokio::task::AbortHandle>,
     next_task_id: u64,
@@ -168,7 +190,55 @@ impl PageModuleLoader {
         self.cancel_pending_loads();
         if let Ok(mut state) = self.state.lock() {
             state.modules.clear();
+            state.denied_attribute_imports.clear();
+            state.attribute_denial_overflow = false;
         }
+    }
+
+    pub(super) fn validate_import_attributes_in_scope(
+        &self,
+        scope: &mut deno_core::v8::PinScope,
+        import_attributes: &HashMap<String, String>,
+        context: &deno_core::ImportAttributesContext,
+    ) {
+        if import_attributes_supported(import_attributes) {
+            return;
+        }
+        if context.line_number.is_none()
+            && let Ok(mut state) = self.state.lock()
+        {
+            if state.denied_attribute_imports.len() < MAX_MODULE_PROVENANCE {
+                state
+                    .denied_attribute_imports
+                    .insert((context.referrer.clone(), context.specifier.clone()));
+            } else {
+                state.attribute_denial_overflow = true;
+            }
+        }
+        let message = format!(
+            "unsupported module import attributes; only type=json is enabled{}",
+            context.format_location()
+        );
+        let Some(message) = deno_core::v8::String::new(scope, &message) else {
+            return;
+        };
+        let exception = deno_core::v8::Exception::type_error(scope, message);
+        scope.throw_exception(exception);
+    }
+
+    fn take_denied_attribute_import(
+        &self,
+        referrer: &str,
+        specifier: &str,
+    ) -> Result<bool, ModuleLoaderError> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| ModuleLoaderError::generic("module loader state is poisoned"))?;
+        Ok(state.attribute_denial_overflow
+            || state
+                .denied_attribute_imports
+                .remove(&(referrer.to_owned(), specifier.to_owned())))
     }
 
     pub(super) fn drain_events(&self) -> Result<Vec<JsNetworkEvent>, String> {
@@ -440,8 +510,15 @@ impl ModuleLoader for PageModuleLoader {
         &self,
         specifier: &str,
         referrer: &str,
-        _kind: ResolutionKind,
+        kind: ResolutionKind,
     ) -> ModuleResolveResponse {
+        if kind == ResolutionKind::DynamicImport
+            && self.take_denied_attribute_import(referrer, specifier)?
+        {
+            return Err(ModuleLoaderError::generic(
+                "unsupported module import attributes; only type=json is enabled",
+            ));
+        }
         self.resolve_module_specifier(specifier, referrer, true)
     }
 
@@ -453,11 +530,7 @@ impl ModuleLoader for PageModuleLoader {
         kind: ResolutionKind,
         import_attributes: &HashMap<String, String>,
     ) -> ModuleResolveResponse {
-        if !import_attributes.is_empty() {
-            return Err(ModuleLoaderError::generic(
-                "import attributes are not enabled for page module graphs",
-            ));
-        }
+        validate_import_attributes(import_attributes)?;
         self.resolve(specifier, referrer, kind)
     }
 
@@ -475,13 +548,17 @@ impl ModuleLoader for PageModuleLoader {
         _maybe_referrer: Option<&ModuleLoadReferrer>,
         options: ModuleLoadOptions,
     ) -> ModuleLoadResponse {
-        if options.requested_module_type != RequestedModuleType::None {
+        if !matches!(
+            options.requested_module_type,
+            RequestedModuleType::None | RequestedModuleType::Json
+        ) {
             return ModuleLoadResponse::Sync(Err(ModuleLoaderError::generic(
-                "import attributes are not enabled for page module graphs",
+                "unsupported module import attributes; only type=json is enabled",
             )));
         }
 
         let module_specifier = module_specifier.clone();
+        let requested_module_type = options.requested_module_type;
         let (request_id, request, generation) = match self.prepare_request(&module_specifier) {
             Ok(value) => value,
             Err((request_id, reason, message)) => {
@@ -511,7 +588,13 @@ impl ModuleLoader for PageModuleLoader {
         let loader = self.clone();
         let task = executor.spawn(async move {
             loader
-                .load_dependency(request_id, request, module_specifier, generation)
+                .load_dependency(
+                    request_id,
+                    request,
+                    module_specifier,
+                    requested_module_type,
+                    generation,
+                )
                 .await
         });
         let task_id = match self.register_task(task.abort_handle()) {
@@ -568,6 +651,7 @@ impl PageModuleLoader {
         request_id: String,
         request: ExternalPageScript,
         specified_url: Url,
+        requested_module_type: RequestedModuleType,
         generation: u64,
     ) -> Result<ModuleSource, String> {
         let store = match self
@@ -625,6 +709,29 @@ impl PageModuleLoader {
 
         let (found_url, body, requested_urls, cache_response) = match result {
             Ok(LoadedExternalResource::File { final_url, body }) => {
+                let is_json_file = final_url.path().to_ascii_lowercase().ends_with(".json");
+                if requested_module_type == RequestedModuleType::Json && !is_json_file {
+                    let message =
+                        format!("JSON module file does not have a .json URL: {final_url}");
+                    return self.record_load_failure(
+                        events,
+                        request_id,
+                        final_url.to_string(),
+                        "response-policy",
+                        message,
+                    );
+                }
+                if requested_module_type == RequestedModuleType::None && is_json_file {
+                    let message =
+                        format!("JSON module requires a type=json import attribute: {final_url}");
+                    return self.record_load_failure(
+                        events,
+                        request_id,
+                        final_url.to_string(),
+                        "response-policy",
+                        message,
+                    );
+                }
                 (final_url, body, Vec::new(), None)
             }
             Ok(LoadedExternalResource::Http {
@@ -644,10 +751,20 @@ impl PageModuleLoader {
                         );
                     }
                 };
-                if !module_script_response_allowed(&response) {
+                let response_allowed = match requested_module_type {
+                    RequestedModuleType::None => module_script_response_allowed(&response),
+                    RequestedModuleType::Json => json_module_response_allowed(&response),
+                    _ => false,
+                };
+                if !response_allowed {
                     let message = format!(
-                        "module dependency response policy rejected {}",
-                        response.final_url
+                        "{} module response policy rejected {}",
+                        if requested_module_type == RequestedModuleType::Json {
+                            "JSON"
+                        } else {
+                            "JavaScript"
+                        },
+                        response.final_url,
                     );
                     events.push(JsNetworkEvent::Failure {
                         request_id: request_id.clone(),
@@ -711,7 +828,11 @@ impl PageModuleLoader {
         self.record_events(events)?;
 
         Ok(ModuleSource::new_with_redirect(
-            ModuleType::JavaScript,
+            if requested_module_type == RequestedModuleType::Json {
+                ModuleType::Json
+            } else {
+                ModuleType::JavaScript
+            },
             ModuleSourceCode::Bytes(body.into_boxed_slice().into()),
             &specified_url,
             &found_url,
@@ -736,6 +857,20 @@ impl PageModuleLoader {
         self.record_events(events)?;
         Err(message)
     }
+}
+
+fn json_module_response_allowed(response: &vixen_net::ByteResponse) -> bool {
+    if !(200..300).contains(&response.status) {
+        return false;
+    }
+    response.content_type().is_some_and(is_json_module_mime)
+}
+
+fn is_json_module_mime(value: &str) -> bool {
+    crate::mime::MimeType::parse(value).is_some_and(|mime| {
+        mime.is_essence("application/json")
+            || mime.subtype.len() > "+json".len() && mime.subtype.ends_with("+json")
+    })
 }
 
 fn module_network_events(
@@ -820,5 +955,40 @@ fn network_event(request_id: &str, event: &NetworkEvent) -> JsNetworkEvent {
             url: url.clone(),
             body_bytes: *body_bytes,
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{is_json_module_mime, validate_import_attributes};
+    use std::collections::HashMap;
+
+    #[test]
+    fn only_exact_json_import_attributes_are_supported() {
+        assert!(validate_import_attributes(&HashMap::new()).is_ok());
+        assert!(
+            validate_import_attributes(&HashMap::from([("type".to_owned(), "json".to_owned())]))
+                .is_ok()
+        );
+        assert!(
+            validate_import_attributes(&HashMap::from([("type".to_owned(), "text".to_owned())]))
+                .is_err()
+        );
+        assert!(
+            validate_import_attributes(&HashMap::from([
+                ("type".to_owned(), "json".to_owned()),
+                ("unsupported".to_owned(), "yes".to_owned()),
+            ]))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn json_module_mime_is_strict() {
+        assert!(is_json_module_mime("application/json"));
+        assert!(is_json_module_mime("application/manifest+json"));
+        assert!(!is_json_module_mime("text/javascript"));
+        assert!(!is_json_module_mime("application/+json"));
+        assert!(!is_json_module_mime("application/json/evil+json"));
     }
 }

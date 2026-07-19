@@ -62,9 +62,11 @@ BrowserCore/C ABI, and CDP. Page fetch/XHR now use a bounded asynchronous realm 
 late profile effects. Ordinary policy-accepted response heads now resolve before
 body completion and feed an eight-message backpressured stream; abort after
 resolution rejects body reads with the same JS reason, while integrity, 304
-revalidation, and opaque responses remain buffered. Continue A2 by admitting
-supported import attributes through that exact source, policy, profile, limit,
-and cancellation provenance; keep unsupported keys and types fail-closed.
+revalidation, and opaque responses remain buffered. Exact static/dynamic JSON
+import attributes now use that source, policy, profile, limit, and cancellation
+provenance plus strict JSON response typing; unsupported keys and types are
+rejected before transport. Continue A2 with module integrity metadata through
+the same boundary, preserving fail-closed cache and V8 exposure.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

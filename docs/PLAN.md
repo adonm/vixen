@@ -82,8 +82,10 @@ controlled host proof rather than an IME or assistive-technology matrix.
    cancellation. Integrity, 304 revalidation, and opaque responses remain
    buffered. Direct classic and automation dynamic imports now carry exact
    source/document policy, retained import maps, profile state, graph limits,
-   and cancellation through the same loader. Continue with supported import
-   attributes; unsupported keys and types remain fail-closed.
+   and cancellation through the same loader. Exact static/dynamic JSON import
+   attributes now retain that boundary and strict file/HTTP response typing;
+   unsupported keys/types fail before transport. Continue with module integrity
+   metadata before cache insertion or V8 exposure.
 
 ## Post-stabilization priorities
 

@@ -344,6 +344,8 @@ JS uses `deno_core` directly:
   distinct document-base source identities, redirected classics use their
   accepted final URL, and automation registers the current document base,
   CSP/bypass decision, origin, and retained import map before dynamic import.
+  Exact JSON import attributes select strict file/HTTP JSON response policy;
+  unsupported attribute maps are bounded and rejected before transport.
 
 The obsolete `Page` string-expression and headless classifier shims are deleted;
 all evaluation adapters use `BrowserCore`/`JsRuntime`.

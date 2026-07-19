@@ -7074,6 +7074,13 @@ mod tests {
         )
     }
 
+    fn json_response(source: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{source}",
+            source.len()
+        )
+    }
+
     fn fresh_script_response(source: &str) -> String {
         format!(
             "HTTP/1.1 200 OK\r\nContent-Type: text/javascript\r\nCache-Control: max-age=600\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{source}",
@@ -9889,6 +9896,144 @@ mod tests {
 
         server.join();
         drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn json_module_uses_shared_request_policy_and_profile_cache() {
+        let server = GatedHttpServer::start(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/json-module-page");
+        let json_url = server.url("/config.json");
+        config.document_overrides.insert(
+            page_url.clone(),
+            "<!doctype html><title>initial</title>\
+             <script type='module'>\
+               import config from './config.json' with { type: 'json' };\
+               document.title = `json-${config.value}`;\
+             </script>"
+                .to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/config.json");
+        request
+            .respond
+            .send(json_response(r#"{"value":42}"#))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("JSON module response watchdog");
+
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("json-42")
+        );
+        let request_ids = events
+            .iter()
+            .filter_map(|event| match event {
+                BrowserEvent::RuntimeEffects { effects, .. } => Some(&effects.network),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|event| match event {
+                RuntimeNetworkEvent::Request {
+                    request_id, url, ..
+                } if url == &json_url => Some(request_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(request_ids.len(), 1);
+        assert!(request_ids[0].parse::<u64>().is_ok());
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        let parsed_json_url = url::Url::parse(&json_url).unwrap();
+        let origin_key = vixen_net::Origin::from_url(&parsed_json_url).partition_key();
+        assert!(
+            store
+                .get_cache(&origin_key, parsed_json_url.as_str())
+                .unwrap()
+                .is_some()
+        );
+        drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn json_module_rejects_non_json_mime_without_profile_effects() {
+        let server = GatedHttpServer::start(1);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/bad-json-module-page");
+        let json_url = server.url("/bad-config.json");
+        config.document_overrides.insert(
+            page_url.clone(),
+            "<!doctype html><title>unchanged</title>\
+             <script type='module'>\
+               import config from './bad-config.json' with { type: 'json' };\
+               document.title = String(config.value);\
+             </script>"
+                .to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &page_url);
+        let request = server.request();
+        assert_eq!(request.path, "/bad-config.json");
+        request
+            .respond
+            .send(script_response(r#"{"value":42}"#, None))
+            .unwrap();
+        request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("bad JSON module response watchdog");
+
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("unchanged")
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Failure {
+                        url,
+                        blocked_reason: Some(reason),
+                        ..
+                    } if url == &json_url && reason == "response-policy"
+                ))
+        )));
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        let parsed_json_url = url::Url::parse(&json_url).unwrap();
+        let origin_key = vixen_net::Origin::from_url(&parsed_json_url).partition_key();
+        assert!(
+            store
+                .get_cache(&origin_key, parsed_json_url.as_str())
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
         let _ = std::fs::remove_file(profile_path);
     }
 
