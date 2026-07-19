@@ -28,9 +28,7 @@ void main() {
               envelope.event.type == 'navigation_phase_changed' &&
               envelope.event.phase == 'settled',
         );
-        final fixture = File('../../crates/vixen-ffi/tests/fixtures/frame.html')
-            .absolute
-            .uri
+        final fixture = File('test/fixtures/native_bridge.html').absolute.uri
             .toString();
         await controller.navigate(contextId, fixture);
         await settled.timeout(const Duration(seconds: 30));
@@ -59,6 +57,12 @@ void main() {
               .map((node) => node.text)
               .join(' '),
           'Vixen draft Tail',
+        );
+        expect(
+          fullSnapshot.snapshot.nodes
+              .firstWhere((node) => node.semantic?.name == 'Vixen sample')
+              .styles['width'],
+          '32px',
         );
         final view = (await formatter.acceptFullSnapshot(
           fullSnapshot.snapshot,
@@ -159,23 +163,30 @@ void main() {
           pageZoom: zoomedState.pageZoom,
         );
         final zoomedUpdate =
-            controller.pollRenderer()! as NativeFullSnapshotUpdate;
-        expect(zoomedUpdate.snapshot.revision.viewportGeneration, 2);
-        expect(zoomedUpdate.snapshot.viewport.pageZoom, 1.25);
-        expect(zoomedUpdate.snapshot.scrollIntents.single.point.y, 75);
+            controller.pollRenderer()! as NativeMutationBatchUpdate;
+        expect(zoomedUpdate.batch.targetRevision.viewportGeneration, 2);
         expect(
-          zoomedUpdate.snapshot.nodes
-              .firstWhere((node) => node.semantic?.name == 'Vixen sample')
-              .styles['width'],
-          '32px',
+          zoomedUpdate.batch.mutations
+              .whereType<SetRenderViewport>()
+              .single
+              .viewport
+              .pageZoom,
+          1.25,
         );
-        final zoomedView = (await formatter.acceptFullSnapshot(
-          zoomedUpdate.snapshot,
-          beforePublish: (commit) {
-            controller.submitRenderer(rendererCommitSubmission(commit));
-          },
-        ) as RenderApplied).view;
-        await controller.flushRendererSubmissions();
+        expect(
+          zoomedUpdate.batch.mutations
+              .whereType<SetRenderScrollIntent>()
+              .single
+              .intent
+              .point
+              .y,
+          75,
+        );
+        final zoomedView = await _applyMutation(
+          controller,
+          formatter,
+          zoomedUpdate,
+        );
         final zoomedPresented = RenderPresented(
           contextId: contextId,
           documentId: state.documentId,
@@ -230,15 +241,21 @@ void main() {
           pageZoom: zoomedState.pageZoom,
         );
         final wheelUpdate =
-            controller.pollRenderer()! as NativeFullSnapshotUpdate;
-        expect(wheelUpdate.snapshot.scrollIntents.single.point.y, 115);
-        final wheelView = (await formatter.acceptFullSnapshot(
-          wheelUpdate.snapshot,
-          beforePublish: (commit) {
-            controller.submitRenderer(rendererCommitSubmission(commit));
-          },
-        ) as RenderApplied).view;
-        await controller.flushRendererSubmissions();
+            controller.pollRenderer()! as NativeMutationBatchUpdate;
+        expect(
+          wheelUpdate.batch.mutations
+              .whereType<SetRenderScrollIntent>()
+              .single
+              .intent
+              .point
+              .y,
+          115,
+        );
+        final wheelView = await _applyMutation(
+          controller,
+          formatter,
+          wheelUpdate,
+        );
         final wheelPresented = RenderPresented(
           contextId: contextId,
           documentId: state.documentId,
@@ -272,18 +289,16 @@ void main() {
           pageZoom: zoomedState.pageZoom,
         );
         final keyUpdate =
-            controller.pollRenderer()! as NativeFullSnapshotUpdate;
+            controller.pollRenderer()! as NativeMutationBatchUpdate;
+        final keyScroll = keyUpdate.batch.mutations
+            .whereType<SetRenderScrollIntent>()
+            .single
+            .intent;
         expect(
-          keyUpdate.snapshot.scrollIntents.single.point.y,
+          keyScroll.point.y,
           greaterThan(wheelView.commit.scroll.single.offsetY),
         );
-        final keyView = (await formatter.acceptFullSnapshot(
-          keyUpdate.snapshot,
-          beforePublish: (commit) {
-            controller.submitRenderer(rendererCommitSubmission(commit));
-          },
-        ) as RenderApplied).view;
-        await controller.flushRendererSubmissions();
+        final keyView = await _applyMutation(controller, formatter, keyUpdate);
         final keyPresented = RenderPresented(
           contextId: contextId,
           documentId: state.documentId,
@@ -296,10 +311,7 @@ void main() {
         final wheelRelease =
             controller.pollRenderer()! as NativeHandleReleaseUpdate;
         formatter.releaseHandles(wheelRelease.release);
-        expect(
-          keyView.commit.scroll.single.offsetY,
-          keyUpdate.snapshot.scrollIntents.single.point.y,
-        );
+        expect(keyView.commit.scroll.single.offsetY, keyScroll.point.y);
         expect(wheelView.isRetired, isTrue);
 
         await controller.publishRendererSnapshot(
@@ -311,17 +323,19 @@ void main() {
           pageZoom: zoomedState.pageZoom,
         );
         final resizedUpdate =
-            controller.pollRenderer()! as NativeFullSnapshotUpdate;
-        expect(resizedUpdate.snapshot.revision.viewportGeneration, 5);
-        expect(resizedUpdate.snapshot.viewport.width, 300);
-        expect(resizedUpdate.snapshot.viewport.height, 180);
-        final resizedView = (await formatter.acceptFullSnapshot(
-          resizedUpdate.snapshot,
-          beforePublish: (commit) {
-            controller.submitRenderer(rendererCommitSubmission(commit));
-          },
-        ) as RenderApplied).view;
-        await controller.flushRendererSubmissions();
+            controller.pollRenderer()! as NativeMutationBatchUpdate;
+        expect(resizedUpdate.batch.targetRevision.viewportGeneration, 5);
+        final resizedViewport = resizedUpdate.batch.mutations
+            .whereType<SetRenderViewport>()
+            .single
+            .viewport;
+        expect(resizedViewport.width, 300);
+        expect(resizedViewport.height, 180);
+        final resizedView = await _applyMutation(
+          controller,
+          formatter,
+          resizedUpdate,
+        );
         final resizedPresented = RenderPresented(
           contextId: contextId,
           documentId: state.documentId,
@@ -539,4 +553,20 @@ void main() {
         ? 'Set VIXEN_FFI_LIBRARY to run the native integration smoke test.'
         : false,
   );
+}
+
+Future<FormatterCommitView> _applyMutation(
+  NativeBrowserController controller,
+  VixenFormatter formatter,
+  NativeMutationBatchUpdate update,
+) async {
+  final result = await formatter.applyMutationBatch(
+    update.batch,
+    beforePublish: (commit) {
+      controller.submitRenderer(rendererCommitSubmission(commit));
+    },
+  );
+  expect(result, isA<RenderApplied>());
+  await controller.flushRendererSubmissions();
+  return (result as RenderApplied).view;
 }
