@@ -68,6 +68,9 @@ pub struct ExternalScript {
     /// Authored CORS settings attribute. Module graph loading interprets
     /// `use-credentials`; missing/anonymous values use same-origin credentials.
     pub cross_origin: Option<String>,
+    /// Authored Subresource Integrity metadata. The resource loader verifies
+    /// this against accepted raw response bytes before execution or caching.
+    pub integrity: Option<String>,
 }
 
 /// A parser-discovered inline import map. External maps are retained so the
@@ -416,18 +419,23 @@ impl Document {
                             .iter()
                             .find(|attr| attr.name.local.as_ref() == "crossorigin")
                             .map(|attr| attr.value.to_string());
-                        Some((kind, src, nonce, cross_origin))
+                        let integrity = attrs
+                            .iter()
+                            .find(|attr| attr.name.local.as_ref() == "integrity")
+                            .map(|attr| attr.value.to_string());
+                        Some((kind, src, nonce, cross_origin, integrity))
                     } else {
                         None
                     }
                 };
-                if let Some((kind, src, nonce, cross_origin)) = script_item {
+                if let Some((kind, src, nonce, cross_origin, integrity)) = script_item {
                     match (kind, src) {
                         (ScriptKind::Classic, Some(src)) => {
                             out.push(DocumentScriptItem::ExternalClassicScript(ExternalScript {
                                 src,
                                 nonce,
                                 cross_origin,
+                                integrity,
                             }))
                         }
                         (ScriptKind::Classic, None) => {
@@ -441,6 +449,7 @@ impl Document {
                                 src,
                                 nonce,
                                 cross_origin,
+                                integrity,
                             }))
                         }
                         (ScriptKind::Module, None) => {
@@ -1144,7 +1153,7 @@ mod tests {
     fn script_execution_items_include_inline_and_external_modules() {
         let doc = Document::parse(
             "<script type='module'>export const inline = true;</script>\
-             <script type='module' src='/module.js' nonce='module-nonce' crossorigin='use-credentials'></script>\
+             <script type='module' src='/module.js' nonce='module-nonce' crossorigin='use-credentials' integrity='sha256-test'></script>\
              <script type='importmap'>{}</script>",
         )
         .unwrap();
@@ -1162,6 +1171,7 @@ mod tests {
                 if script.src == "/module.js"
                     && script.nonce.as_deref() == Some("module-nonce")
                     && script.cross_origin.as_deref() == Some("use-credentials")
+                    && script.integrity.as_deref() == Some("sha256-test")
         ));
         assert!(matches!(
             &items[2],

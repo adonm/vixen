@@ -65,8 +65,9 @@ resolution rejects body reads with the same JS reason, while integrity, 304
 revalidation, and opaque responses remain buffered. Exact static/dynamic JSON
 import attributes now use that source, policy, profile, limit, and cancellation
 provenance plus strict JSON response typing; unsupported keys and types are
-rejected before transport. Continue A2 with module integrity metadata through
-the same boundary, preserving fail-closed cache and V8 exposure.
+rejected before transport. External classic/module root SRI now verifies raw
+bytes before V8, cookies, or cache insertion. Continue A2 with bounded import-map
+integrity metadata for graph dependencies through the same fail-closed boundary.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

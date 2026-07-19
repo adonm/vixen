@@ -346,6 +346,9 @@ JS uses `deno_core` directly:
   CSP/bypass decision, origin, and retained import map before dynamic import.
   Exact JSON import attributes select strict file/HTTP JSON response policy;
   unsupported attribute maps are bounded and rejected before transport.
+  Authored external classic/module root SRI is verified over accepted raw bytes
+  before source conversion, V8, response cookies, or cache insertion;
+  cross-origin classic SRI first requires an explicit CORS response.
 
 The obsolete `Page` string-expression and headless classifier shims are deleted;
 all evaluation adapters use `BrowserCore`/`JsRuntime`.

@@ -84,8 +84,9 @@ controlled host proof rather than an IME or assistive-technology matrix.
    source/document policy, retained import maps, profile state, graph limits,
    and cancellation through the same loader. Exact static/dynamic JSON import
    attributes now retain that boundary and strict file/HTTP response typing;
-   unsupported keys/types fail before transport. Continue with module integrity
-   metadata before cache insertion or V8 exposure.
+   unsupported keys/types fail before transport. External classic/module root
+   SRI now verifies raw bytes before cache/profile insertion or V8 exposure;
+   continue with bounded import-map integrity metadata for graph dependencies.
 
 ## Post-stabilization priorities
 

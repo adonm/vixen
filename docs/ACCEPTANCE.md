@@ -217,6 +217,10 @@ explicit until promoted by measured tests.
   abort without late DOM/profile/lifecycle effects. Exact static/dynamic JSON
   import attributes require strict file/HTTP JSON typing; unknown keys and
   text/bytes/custom types fail before transport.
+- External classic/module roots verify authored SHA-2 SRI over accepted raw bytes
+  before V8, response-cookie commit, or cache insertion; mismatch emits a stable
+  request-scoped `integrity` failure, and cross-origin classic SRI requires CORS.
+  Import-map integrity for dependencies remains fail closed.
 - Policy runs before resource bytes/handles cross to Flutter.
 - redb profile tables preserve partitioning, bounds, recovery, clear-data, and
   reopen behavior.

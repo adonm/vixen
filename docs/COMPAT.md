@@ -258,7 +258,11 @@ redirected classics resolve relative imports from the accepted final URL, and
 numeric request ids plus existing graph/cancellation bounds remain intact.
 Exact static and dynamic `type=json` imports now use that loader with strict
 `.json` file or JSON HTTP MIME policy. Unknown keys and text/bytes/custom types
-fail before transport; a bad MIME creates no profile cache row. Child frame
+fail before transport; a bad MIME creates no profile cache row. External
+classic/module roots also enforce authored SHA-2 SRI over raw response bytes;
+mismatch executes nothing and commits no response cookie/cache effect. Import-map
+integrity metadata for dependencies remains unsupported. Cross-origin classic
+SRI sends document origin and requires CORS before hash verification. Child frame
 globals and documents remain unavailable rather than fabricated until A3.
 
 Page `fetch()`/XHR and module resources now share bounded private-cache

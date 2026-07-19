@@ -145,6 +145,7 @@ pub(crate) struct ExternalPageScript {
     module: bool,
     module_credentials: ModuleCredentialsMode,
     import_map: Option<import_maps::PageImportMap>,
+    integrity: Option<String>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -187,7 +188,7 @@ impl ExternalPageScript {
     }
 
     pub(crate) fn request_headers(&self, url: &url::Url) -> Vec<(String, String)> {
-        if self.module && self.is_cross_origin(url) {
+        if self.uses_cors() && self.is_cross_origin(url) {
             vec![("origin".to_owned(), cors_origin_value(&self.origin))]
         } else {
             Vec::new()
@@ -195,7 +196,7 @@ impl ExternalPageScript {
     }
 
     pub(crate) fn sends_credentials(&self, url: &url::Url) -> bool {
-        !self.module
+        !self.uses_cors()
             || !self.is_cross_origin(url)
             || self.module_credentials == ModuleCredentialsMode::Include
     }
@@ -205,7 +206,7 @@ impl ExternalPageScript {
         url: &url::Url,
         response: &vixen_net::ByteResponse,
     ) -> Option<&'static str> {
-        if !self.module || !self.is_cross_origin(url) {
+        if !self.uses_cors() || !self.is_cross_origin(url) {
             return None;
         }
         let headers = vixen_net::CorsResponseHeaders::from_headers(response.headers.iter());
@@ -222,6 +223,27 @@ impl ExternalPageScript {
 
     pub(crate) fn is_module(&self) -> bool {
         self.module
+    }
+
+    pub(crate) fn integrity_failure(&self, body: &[u8]) -> Option<String> {
+        let metadata = self
+            .integrity
+            .as_deref()
+            .filter(|value| !value.is_empty())?;
+        let items = vixen_net::parse_integrity(metadata);
+        match vixen_net::verify_integrity(&items, body) {
+            vixen_net::IntegrityOutcome::Mismatch(algorithms) => Some(format!(
+                "external script blocked by integrity mismatch ({})",
+                algorithms
+                    .into_iter()
+                    .map(vixen_net::HashAlgorithm::token)
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )),
+            vixen_net::IntegrityOutcome::NoMetadata
+            | vixen_net::IntegrityOutcome::NoKnownAlgorithms
+            | vixen_net::IntegrityOutcome::Verified(_) => None,
+        }
     }
 
     pub(crate) fn with_url(&self, url: url::Url) -> Self {
@@ -267,6 +289,7 @@ impl ExternalPageScript {
             module: true,
             module_credentials: ModuleCredentialsMode::SameOrigin,
             import_map,
+            integrity: None,
         })
     }
 
@@ -288,6 +311,7 @@ impl ExternalPageScript {
             module: true,
             module_credentials: self.module_credentials,
             import_map: self.import_map.clone(),
+            integrity: None,
         };
         if let Some(reason) = request.blocked_reason(&request.url) {
             return Err(reason);
@@ -297,6 +321,14 @@ impl ExternalPageScript {
 
     fn is_cross_origin(&self, url: &url::Url) -> bool {
         vixen_net::Origin::from_url(url) != self.origin
+    }
+
+    fn uses_cors(&self) -> bool {
+        self.module
+            || self
+                .integrity
+                .as_deref()
+                .is_some_and(|value| !value.is_empty())
     }
 }
 
@@ -1538,6 +1570,7 @@ impl PageScriptRunner {
                                 module: false,
                                 module_credentials: ModuleCredentialsMode::SameOrigin,
                                 import_map: self.import_map.clone(),
+                                integrity: None,
                             }),
                         });
                     }
@@ -1576,6 +1609,7 @@ impl PageScriptRunner {
                             module: true,
                             module_credentials: ModuleCredentialsMode::SameOrigin,
                             import_map: self.import_map.clone(),
+                            integrity: None,
                         }),
                     }
                 }
@@ -1611,6 +1645,11 @@ impl PageScriptRunner {
         let Some(url) = resolve_external_script_url(page, &script.src) else {
             return PreparedPageScript::Skip;
         };
+        let uses_cors = module
+            || script
+                .integrity
+                .as_deref()
+                .is_some_and(|value| !value.is_empty());
         let request = ExternalPageScript {
             url,
             csp: (!self.bypass_csp).then(|| self.csp.clone()),
@@ -1621,7 +1660,7 @@ impl PageScriptRunner {
                 .as_ref()
                 .is_some_and(vixen_net::referrer_policy::is_potentially_trustworthy),
             module,
-            module_credentials: if module
+            module_credentials: if uses_cors
                 && script
                     .cross_origin
                     .as_deref()
@@ -1632,6 +1671,7 @@ impl PageScriptRunner {
                 ModuleCredentialsMode::SameOrigin
             },
             import_map: self.import_map.clone(),
+            integrity: script.integrity,
         };
         if request.allows_url(request.url()) {
             PreparedPageScript::External(Box::new(request))

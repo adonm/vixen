@@ -964,6 +964,22 @@ HTTP proof persists an accepted JSON representation and exposes one numeric
 request id. Text/bytes/custom attributes and integrity metadata remain fail
 closed.
 
+**Fifteenth A2 checkpoint:** parser-discovered external classic and module roots
+now retain their authored `integrity` metadata through the shared resource
+request. BrowserCore verifies the strongest recognized SHA-2 candidate against
+accepted raw response bytes after URL/CSP/CORS/status/MIME policy but before
+UTF-8 conversion, V8 execution, profile cookies, or cache insertion. Mismatch
+adds one stable `integrity` failure under the existing numeric request id,
+leaves the document runnable for later scripts/lifecycle, and commits no response
+profile effects. Unknown or malformed-only algorithms retain the existing SRI
+no-metadata behavior rather than inventing a failure. Focused parser and
+BrowserCore tests prove a SHA-384 module executes and caches, while a mismatched
+classic neither executes nor exposes its response cookie/cache row. Import-map
+integrity metadata for graph dependencies remains fail closed. Cross-origin
+classic SRI uses the module-style CORS boundary: requests carry document origin,
+anonymous mode omits cross-origin credentials, and source is rejected before SRI
+unless the response grants access.
+
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
 
@@ -1117,10 +1133,11 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue A2 module metadata:** carry module integrity metadata through the
-   same source/policy/profile/cancellation boundary and verify it before V8 or
-   cache insertion. Keep text/bytes/custom attributes and unsupported integrity
-   forms fail closed; preserve the existing request-id and terminal lifecycle.
+1. **Continue A2 module metadata:** extend the landed external-root SRI boundary
+   to bounded import-map integrity metadata for graph dependencies, verifying
+   accepted raw bytes before V8 or cache insertion. Keep text/bytes/custom
+   attributes and unsupported integrity forms fail closed; preserve the existing
+   request-id and terminal lifecycle.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →
    newer-commit evidence green while widening shared-core behavior; do not

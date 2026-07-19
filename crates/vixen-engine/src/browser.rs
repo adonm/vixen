@@ -3435,13 +3435,7 @@ impl BrowserCore {
         let (source, source_url, blocked, requested_urls, cache_response) = match result {
             Ok(LoadedExternalResource::File { final_url, body }) => {
                 if pending.request.allows_url(&final_url) {
-                    (
-                        Some(String::from_utf8_lossy(&body).into_owned()),
-                        Some(final_url),
-                        None,
-                        Vec::new(),
-                        None,
-                    )
+                    (Some(body), Some(final_url), None, Vec::new(), None)
                 } else {
                     (
                         None,
@@ -3482,7 +3476,7 @@ impl BrowserCore {
                     )
                 } else {
                     (
-                        Some(String::from_utf8_lossy(&response.body).into_owned()),
+                        Some(response.body.clone()),
                         final_url,
                         None,
                         requested_urls,
@@ -3522,6 +3516,29 @@ impl BrowserCore {
         if let Some(source_url) = source_url {
             pending.request = pending.request.with_url(source_url);
         }
+        if let Some(error_text) = pending.request.integrity_failure(&source) {
+            effects.network.push(RuntimeNetworkEvent::Failure {
+                request_id: key.request_id.to_string(),
+                url: pending.request.url().to_string(),
+                error_text,
+                blocked_reason: Some("integrity".to_owned()),
+            });
+            self.emit(BrowserEvent::RuntimeEffects {
+                context_id: key.context_id,
+                frame_id,
+                document_id: key.document_id,
+                runtime_context_id: key.runtime_context_id,
+                url: document_url.clone(),
+                effects,
+            });
+            self.restore_navigation_work(
+                key.context_id,
+                key.navigation_id,
+                NavigationWork::Scripts(pending.work),
+            );
+            return;
+        }
+        let source = String::from_utf8_lossy(&source).into_owned();
         if let Err(error) = persist_profile_cookies(&self.store, &requested_urls, &cookie_delta) {
             effects.exceptions.push(RuntimeExceptionEvent {
                 error: script_error(error),
@@ -10034,6 +10051,219 @@ mod tests {
                 .is_none()
         );
         drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn external_script_integrity_precedes_execution_and_profile_effects() {
+        const MODULE_SOURCE: &str = "document.title = 'integrity-module'; export const ok = true;";
+        const MODULE_INTEGRITY: &str =
+            "sha384-Da1OmXlFSBvhCLVsDknuYfW68eqW0CYsoSOQ+PHkZXyoA8H+LF5oFzM/BREhhIyL";
+
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let accepted_page_url = server.url("/accepted-integrity-page");
+        let accepted_script_url = server.url("/accepted-integrity.js");
+        let rejected_page_url = server.url("/rejected-integrity-page");
+        let rejected_script_url = server.url("/rejected-integrity.js");
+        config.document_overrides.insert(
+            accepted_page_url.clone(),
+            format!(
+                "<!doctype html><title>initial</title><script type='module' src='{accepted_script_url}' integrity='{MODULE_INTEGRITY}'></script>"
+            ),
+        );
+        config.document_overrides.insert(
+            rejected_page_url.clone(),
+            format!(
+                "<!doctype html><title>unchanged</title><script src='{rejected_script_url}' integrity='sha256-AAAA'></script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let accepted_context = create(&mut handle);
+        let rejected_context = create(&mut handle);
+        drain_events(&mut handle);
+
+        let accepted_navigation =
+            dispatch_navigation(&mut handle, accepted_context, &accepted_page_url);
+        let accepted_request = server.request();
+        assert_eq!(accepted_request.path, "/accepted-integrity.js");
+        accepted_request
+            .respond
+            .send(script_response(MODULE_SOURCE, None))
+            .unwrap();
+        accepted_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("accepted integrity response watchdog");
+        let accepted_events =
+            wait_for_navigation(&mut handle, accepted_context, accepted_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, accepted_context).title.as_deref(),
+            Some("integrity-module")
+        );
+        assert!(!accepted_events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Failure {
+                        blocked_reason: Some(reason),
+                        ..
+                    } if reason == "integrity"
+                ))
+        )));
+
+        let rejected_navigation =
+            dispatch_navigation(&mut handle, rejected_context, &rejected_page_url);
+        let rejected_request = server.request();
+        assert_eq!(rejected_request.path, "/rejected-integrity.js");
+        rejected_request
+            .respond
+            .send(script_response(
+                "document.title = 'must-not-run';",
+                Some("integrity_bad=1; Path=/"),
+            ))
+            .unwrap();
+        rejected_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("rejected integrity response watchdog");
+        let rejected_events =
+            wait_for_navigation(&mut handle, rejected_context, rejected_navigation).unwrap();
+        let rejected_state = state(&mut handle, rejected_context);
+        assert_eq!(rejected_state.title.as_deref(), Some("unchanged"));
+        assert_eq!(
+            eval(
+                &mut handle,
+                &rejected_state,
+                "document.cookie.includes('integrity_bad=1')"
+            ),
+            ScriptValue::Bool(false)
+        );
+        assert!(rejected_events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Failure {
+                        url,
+                        blocked_reason: Some(reason),
+                        ..
+                    } if url == &rejected_script_url && reason == "integrity"
+                ))
+        )));
+
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        let accepted_url = url::Url::parse(&accepted_script_url).unwrap();
+        let accepted_origin = vixen_net::Origin::from_url(&accepted_url).partition_key();
+        assert!(
+            store
+                .get_cache(&accepted_origin, accepted_url.as_str())
+                .unwrap()
+                .is_some()
+        );
+        let rejected_url = url::Url::parse(&rejected_script_url).unwrap();
+        let rejected_origin = vixen_net::Origin::from_url(&rejected_url).partition_key();
+        assert!(
+            store
+                .get_cache(&rejected_origin, rejected_url.as_str())
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn cross_origin_classic_integrity_requires_cors() {
+        const SOURCE: &str = "document.title = 'integrity-ok';";
+        const INTEGRITY: &str = "sha256-7X6w5KmSnHJuVn6Mbsw6DrD1tP38/qrV6KmTup3Pgq8=";
+
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let blocked_page = "http://source.test/integrity-cors-blocked";
+        let allowed_page = "http://source.test/integrity-cors-allowed";
+        let blocked_script = server.url("/integrity-cors-blocked.js");
+        let allowed_script = server.url("/integrity-cors-allowed.js");
+        config.document_overrides.insert(
+            blocked_page.to_owned(),
+            format!(
+                "<!doctype html><title>blocked</title><script src='{blocked_script}' integrity='{INTEGRITY}'></script>"
+            ),
+        );
+        config.document_overrides.insert(
+            allowed_page.to_owned(),
+            format!(
+                "<!doctype html><title>initial</title><script src='{allowed_script}' integrity='{INTEGRITY}' crossorigin='anonymous'></script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let blocked_context = create(&mut handle);
+        let allowed_context = create(&mut handle);
+        drain_events(&mut handle);
+
+        let blocked_navigation = dispatch_navigation(&mut handle, blocked_context, blocked_page);
+        let blocked_request = server.request();
+        assert_eq!(blocked_request.path, "/integrity-cors-blocked.js");
+        assert_eq!(
+            blocked_request.origin.as_deref(),
+            Some("http://source.test")
+        );
+        blocked_request
+            .respond
+            .send(script_response(SOURCE, None))
+            .unwrap();
+        blocked_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("blocked integrity CORS response watchdog");
+        let blocked_events =
+            wait_for_navigation(&mut handle, blocked_context, blocked_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, blocked_context).title.as_deref(),
+            Some("blocked")
+        );
+        assert!(blocked_events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Failure {
+                        blocked_reason: Some(reason),
+                        ..
+                    } if reason == "cors"
+                ))
+        )));
+
+        let allowed_navigation = dispatch_navigation(&mut handle, allowed_context, allowed_page);
+        let allowed_request = server.request();
+        assert_eq!(allowed_request.path, "/integrity-cors-allowed.js");
+        assert_eq!(
+            allowed_request.origin.as_deref(),
+            Some("http://source.test")
+        );
+        allowed_request
+            .respond
+            .send(cors_script_response(SOURCE, "*", false, None))
+            .unwrap();
+        allowed_request
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("allowed integrity CORS response watchdog");
+        wait_for_navigation(&mut handle, allowed_context, allowed_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, allowed_context).title.as_deref(),
+            Some("integrity-ok")
+        );
+
+        server.join();
+        drop(handle);
         let _ = std::fs::remove_file(profile_path);
     }
 

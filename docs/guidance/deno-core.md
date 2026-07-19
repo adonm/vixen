@@ -111,6 +111,8 @@ Current state:
   equivalent source/document policy provenance. Exact static/dynamic JSON import
   attributes select strict JSON response policy; a V8 validation callback
   rejects unsupported keys and types before module resolution or transport.
+  External classic/module root integrity is verified over raw accepted bytes
+  before source conversion, V8 evaluation, profile cookies, or cache insertion.
 
 Rules:
 
