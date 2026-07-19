@@ -297,6 +297,11 @@ impl ExternalPageScript {
         {
             return Err("module-policy");
         }
+        let integrity = self
+            .import_map
+            .as_ref()
+            .and_then(|import_map| import_map.integrity_for(&url))
+            .map(str::to_owned);
         let request = Self {
             url,
             csp: self.csp.clone(),
@@ -306,7 +311,7 @@ impl ExternalPageScript {
             module: true,
             module_credentials: self.module_credentials,
             import_map: self.import_map.clone(),
-            integrity: None,
+            integrity,
         };
         if let Some(reason) = request.blocked_reason(&request.url) {
             return Err(reason);
@@ -1634,11 +1639,17 @@ impl PageScriptRunner {
         let Some(url) = resolve_external_script_url(page, &script.src) else {
             return PreparedPageScript::Skip;
         };
-        let uses_cors = module
-            || script
-                .integrity
-                .as_deref()
-                .is_some_and(|value| !value.is_empty());
+        let integrity = script.integrity.or_else(|| {
+            module
+                .then(|| {
+                    self.import_map
+                        .as_ref()
+                        .and_then(|import_map| import_map.integrity_for(&url))
+                        .map(str::to_owned)
+                })
+                .flatten()
+        });
+        let uses_cors = module || integrity.as_deref().is_some_and(|value| !value.is_empty());
         let request = ExternalPageScript {
             url,
             csp: (!self.bypass_csp).then(|| self.csp.clone()),
@@ -1660,7 +1671,7 @@ impl PageScriptRunner {
                 ModuleCredentialsMode::SameOrigin
             },
             import_map: self.import_map.clone(),
-            integrity: script.integrity,
+            integrity,
         };
         if request.allows_url(request.url()) {
             PreparedPageScript::External(Box::new(request))
@@ -6445,18 +6456,15 @@ mod tests {
         let page_url = url::Url::from_file_path(directory.join("page.html"))
             .unwrap()
             .to_string();
-        let mut page = Page::from_html(
-            page_url,
-            "<title>initial</title><base href='./assets/'>\
-             <script type='importmap'>{\"imports\":{\"answer\":\"./answer.js\",\"pkg/\":\"./pkg/\"}}</script>\
+        let html = "<title>initial</title><base href='./assets/'>\
+             <script type='importmap'>{\"imports\":{\"answer\":\"./answer.js\",\"pkg/\":\"./pkg/\"},\"integrity\":{\"./answer.js\":\"sha384-9aB+L+8T3kpGS2KZ90OSY6a2B1SBcDnnZDLUSIz+7LzXNCOWbdRZ+695RofLRWu4\",\"./pkg/value.js\":\"sha384-Duj7AzvCtm2kermOm8v7UEsUDn+QxDxoQEmBw84jFACv0Ko+1KbbbQfMyO27bQsk\"}}</script>\
              <script type='module'>\
                import { answer } from 'answer';\
                import { value } from 'pkg/value.js';\
                globalThis.__mappedUrl = import.meta.resolve('answer');\
                document.title = `mapped-${answer + value}`;\
-             </script>",
-        )
-        .unwrap();
+             </script>";
+        let mut page = Page::from_html(page_url, html).unwrap();
         let mut runtime = JsRuntime::new().unwrap();
 
         assert_eq!(runtime.execute_page_scripts(&mut page).unwrap(), 1);
@@ -6476,6 +6484,60 @@ mod tests {
                 .count(),
             2
         );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn import_map_integrity_blocks_tampered_file_dependency() {
+        let directory = std::env::temp_dir().join(format!(
+            "vixen-import-map-integrity-{}-{}",
+            std::process::id(),
+            next_storage_session_id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("dependency.js"),
+            "globalThis.__tamperedDependencyRan = true; export const value = 42;",
+        )
+        .unwrap();
+        let page_url = url::Url::from_file_path(directory.join("page.html"))
+            .unwrap()
+            .to_string();
+        let mut page = Page::from_html(
+            page_url,
+            "<title>unchanged</title>\
+             <script type='importmap'>{\"integrity\":{\"./dependency.js\":\"sha384-AAAA\"}}</script>\
+             <script type='module'>import { value } from './dependency.js'; document.title = String(value);</script>",
+        )
+        .unwrap();
+        let mut runtime = JsRuntime::new().unwrap();
+
+        assert_eq!(
+            runtime.execute_page_scripts(&mut page).unwrap_err().code(),
+            codes::SCRIPT_EVAL
+        );
+        assert_eq!(page.document().title().as_deref(), Some("unchanged"));
+        assert_eq!(
+            runtime
+                .evaluate_with_page("globalThis.__tamperedDependencyRan === undefined", &page)
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        let events = runtime.drain_network_events().unwrap();
+        let request_id = events.iter().find_map(|event| match event {
+            JsNetworkEvent::Request { request_id, .. } => Some(request_id),
+            _ => None,
+        });
+        assert!(request_id.is_some());
+        assert!(events.iter().any(|event| matches!(
+            event,
+            JsNetworkEvent::Failure {
+                request_id: failed_request_id,
+                blocked_reason: Some(reason),
+                ..
+            } if Some(failed_request_id) == request_id && reason == "integrity"
+        )));
 
         std::fs::remove_dir_all(directory).unwrap();
     }

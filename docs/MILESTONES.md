@@ -29,7 +29,7 @@ gates are deleted.
 | `just gate-phase1` | network/store tests, audit, and security fuzz targets |
 | `just gate-phase2` | `deno_core` runtime and headless eval seam |
 | `just gate-phase3` | HTML/selector/cascade behavior and CSS fixture profile |
-| `just gate-phase6` | engine host-family tests, WebIDL, page/classic/automation module provenance, strict JSON import attributes, external script/module SRI, headless runtime, and CDP runtime integration |
+| `just gate-phase6` | engine host-family tests, WebIDL, page/classic/automation module provenance, strict JSON import attributes, external and import-map module SRI, headless runtime, and CDP runtime integration |
 | `npm test` | bounded-process, timeout, percentile, `/proc` parser, hash, and recursive-size unit tests used by the baseline tools |
 | `just wpt-profile <profile> <root>` | optional external profile execution after fail-closed validation of the canonical repository, full pinned commit, clean checkout root, and sparse-path coverage |
 | `just test-browser-core` | BrowserCore owner/thread/generation proof for contexts, navigation cancellation, DOM/V8, resources, profile state, accessibility meaning, and headless source/runtime adapter; no layout or paint evidence |

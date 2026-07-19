@@ -348,7 +348,11 @@ JS uses `deno_core` directly:
   unsupported attribute maps are bounded and rejected before transport.
   Authored external classic/module root SRI is verified over accepted raw bytes
   before source conversion, V8, response cookies, or cache insertion;
-  cross-origin classic SRI first requires an explicit CORS response.
+  cross-origin classic SRI first requires an explicit CORS response. The retained
+  import map also owns a bounded exact normalized-URL integrity table. Graph
+  roots use it only as fallback for an absent authored attribute; static/dynamic
+  dependencies verify accepted raw bytes before graph publication or profile
+  effects.
 
 The obsolete `Page` string-expression and headless classifier shims are deleted;
 all evaluation adapters use `BrowserCore`/`JsRuntime`.

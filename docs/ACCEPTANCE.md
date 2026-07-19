@@ -209,8 +209,10 @@ explicit until promoted by measured tests.
   writes.
 - One bounded inline import map registered before module discovery resolves
   exact/prefix/URL-like and scoped dependencies through that same policy-bound
-  loader; external/multiple/late/integrity maps fail closed without partial
-  registration.
+  loader. Its bounded exact-URL integrity table verifies top-level fallback and
+  static/dynamic dependency bytes before V8 or profile effects; malformed map
+  shapes and unsupported URL forms fail closed without partial registration.
+  External/multiple/late maps remain unsupported.
 - Dynamic imports originating in page modules, parser classics, and BrowserCore
   automation retain exact source/graph/import-map/credentials policy, share
   cumulative bounds, resolve redirected children from accepted final URLs, and
@@ -220,7 +222,7 @@ explicit until promoted by measured tests.
 - External classic/module roots verify authored SHA-2 SRI over accepted raw bytes
   before V8, response-cookie commit, or cache insertion; mismatch emits a stable
   request-scoped `integrity` failure, and cross-origin classic SRI requires CORS.
-  Import-map integrity for dependencies remains fail closed.
+  An authored root attribute takes precedence over import-map fallback metadata.
 - Policy runs before resource bytes/handles cross to Flutter.
 - redb profile tables preserve partitioning, bounds, recovery, clear-data, and
   reopen behavior.

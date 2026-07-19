@@ -66,8 +66,10 @@ revalidation, and opaque responses remain buffered. Exact static/dynamic JSON
 import attributes now use that source, policy, profile, limit, and cancellation
 provenance plus strict JSON response typing; unsupported keys and types are
 rejected before transport. External classic/module root SRI now verifies raw
-bytes before V8, cookies, or cache insertion. Continue A2 with bounded import-map
-integrity metadata for graph dependencies through the same fail-closed boundary.
+bytes before V8, cookies, or cache insertion. Bounded import-map integrity now
+applies exact normalized-URL metadata to root fallback and graph dependencies at
+the same boundary. Continue A2 with bounded modern multiple-map merging and
+resolved-module-set protection without mutating earlier graph provenance.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

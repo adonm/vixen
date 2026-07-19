@@ -85,8 +85,9 @@ controlled host proof rather than an IME or assistive-technology matrix.
    and cancellation through the same loader. Exact static/dynamic JSON import
    attributes now retain that boundary and strict file/HTTP response typing;
    unsupported keys/types fail before transport. External classic/module root
-   SRI now verifies raw bytes before cache/profile insertion or V8 exposure;
-   continue with bounded import-map integrity metadata for graph dependencies.
+   SRI and bounded import-map integrity metadata now verify root/dependency raw
+   bytes before cache/profile insertion or V8 exposure. Continue with bounded
+   modern multiple-map merging and resolved-module-set protection.
 
 ## Post-stabilization priorities
 

@@ -982,6 +982,23 @@ classic SRI uses the module-style CORS boundary: requests carry document origin,
 anonymous mode omits cross-origin credentials, and source is rejected before SRI
 unless the response grants access.
 
+**Sixteenth A2 checkpoint:** the retained inline import map now owns at most
+2,048 exact normalized-URL integrity entries beside the Deno-maintained resolver.
+Absolute and URL-like relative keys resolve against the map base; non-object,
+non-string, bare-relative, oversized, and normalized-duplicate forms reject the
+whole map without partial registration. Static and dynamic JavaScript/JSON
+dependencies select metadata only after import-map resolution, while an external
+module root uses it as fallback only when no authored `integrity` attribute is
+present. Accepted raw bytes pass URL/CSP/mixed-content/CORS/status/MIME policy,
+then strongest-recognized SHA-2 verification before redirect graph publication,
+V8, response-cookie commit, or cache insertion. Mismatch preserves the allocated
+numeric request id, adds one terminal `integrity` failure, and leaves no module or
+profile effect. Focused file proof accepts two mapped dependencies and rejects a
+tampered one without execution. BrowserCore HTTP proof accepts and caches a
+mapped root/dependency under separate numeric ids, while mismatch neither
+executes nor exposes its cookie/cache row. Multiple-map merging remains the next
+import-map breadth.
+
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
 
@@ -1135,11 +1152,10 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue A2 module metadata:** extend the landed external-root SRI boundary
-   to bounded import-map integrity metadata for graph dependencies, verifying
-   accepted raw bytes before V8 or cache insertion. Keep text/bytes/custom
-   attributes and unsupported integrity forms fail closed; preserve the existing
-   request-id and terminal lifecycle.
+1. **Continue A2 import maps:** implement bounded current-standard multiple-map
+   merging with a bounded resolved-module set. Preserve first-map rules and
+   integrity entries on conflict, prevent later maps from changing already
+   resolved `(referrer, specifier)` pairs, and retain exact graph provenance.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →
    newer-commit evidence green while widening shared-core behavior; do not

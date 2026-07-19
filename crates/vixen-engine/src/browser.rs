@@ -10268,6 +10268,186 @@ mod tests {
     }
 
     #[test]
+    fn import_map_integrity_precedes_module_graph_profile_effects() {
+        const ROOT_SOURCE: &str = "import { answer } from './accepted-dependency.js'; document.title = `integrity-map-${answer}`;";
+        const ROOT_INTEGRITY: &str =
+            "sha384-ZDYiLim2bsmzOHLGb9Yu/wdR7Fp1hYsJ09v+czd7reQC+3zQnnXRVZ+Dy3UGmaKn";
+        const DEPENDENCY_SOURCE: &str = "export const answer = 42;";
+        const DEPENDENCY_INTEGRITY: &str =
+            "sha384-2y8axPIfssX1jRIbGOpFCb+GsAUxJqGx9RzvHxDIm5SSP3vFBMOTOzqWxGpcVAyj";
+
+        let server = GatedHttpServer::start(3);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let accepted_page_url = server.url("/accepted-import-map-integrity-page");
+        let accepted_root_url = server.url("/accepted-root.js");
+        let accepted_dependency_url = server.url("/accepted-dependency.js");
+        let rejected_page_url = server.url("/rejected-import-map-integrity-page");
+        let rejected_dependency_url = server.url("/rejected-dependency.js");
+        config.document_overrides.insert(
+            accepted_page_url.clone(),
+            format!(
+                "<!doctype html><title>initial</title>\
+                 <script type='importmap'>{{\"integrity\":{{\"{accepted_root_url}\":\"{ROOT_INTEGRITY}\",\"{accepted_dependency_url}\":\"{DEPENDENCY_INTEGRITY}\"}}}}</script>\
+                 <script type='module' src='{accepted_root_url}'></script>"
+            ),
+        );
+        config.document_overrides.insert(
+            rejected_page_url.clone(),
+            "<!doctype html><title>unchanged</title>\
+             <script type='importmap'>{\"integrity\":{\"./rejected-dependency.js\":\"sha384-AAAA\"}}</script>\
+             <script type='module'>import './rejected-dependency.js'; document.title = 'must-not-run';</script>"
+                .to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let accepted_context = create(&mut handle);
+        let rejected_context = create(&mut handle);
+        drain_events(&mut handle);
+
+        let accepted_navigation =
+            dispatch_navigation(&mut handle, accepted_context, &accepted_page_url);
+        let accepted_root = server.request();
+        assert_eq!(accepted_root.path, "/accepted-root.js");
+        accepted_root
+            .respond
+            .send(script_response(ROOT_SOURCE, Some("root_ok=1; Path=/")))
+            .unwrap();
+        accepted_root
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("accepted integrity-map root response watchdog");
+
+        let accepted_dependency = server.request();
+        assert_eq!(accepted_dependency.path, "/accepted-dependency.js");
+        assert!(
+            accepted_dependency
+                .cookie
+                .as_deref()
+                .unwrap_or_default()
+                .contains("root_ok=1")
+        );
+        accepted_dependency
+            .respond
+            .send(script_response(
+                DEPENDENCY_SOURCE,
+                Some("dependency_ok=1; Path=/"),
+            ))
+            .unwrap();
+        accepted_dependency
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("accepted integrity-map dependency response watchdog");
+        let accepted_events =
+            wait_for_navigation(&mut handle, accepted_context, accepted_navigation).unwrap();
+        assert_eq!(
+            state(&mut handle, accepted_context).title.as_deref(),
+            Some("integrity-map-42")
+        );
+        let accepted_request_ids = accepted_events
+            .iter()
+            .filter_map(|event| match event {
+                BrowserEvent::RuntimeEffects { effects, .. } => Some(&effects.network),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|event| match event {
+                RuntimeNetworkEvent::Request { request_id, .. } => Some(request_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(accepted_request_ids.len(), 2);
+        assert!(
+            accepted_request_ids
+                .iter()
+                .all(|request_id| request_id.parse::<u64>().is_ok())
+        );
+        assert_ne!(accepted_request_ids[0], accepted_request_ids[1]);
+
+        let rejected_navigation =
+            dispatch_navigation(&mut handle, rejected_context, &rejected_page_url);
+        let rejected_dependency = server.request();
+        assert_eq!(rejected_dependency.path, "/rejected-dependency.js");
+        rejected_dependency
+            .respond
+            .send(script_response(
+                "document.title = 'tampered'; export const bad = true;",
+                Some("integrity_bad=1; Path=/"),
+            ))
+            .unwrap();
+        rejected_dependency
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("rejected integrity-map dependency response watchdog");
+        let rejected_events =
+            wait_for_navigation(&mut handle, rejected_context, rejected_navigation).unwrap();
+        let rejected_state = state(&mut handle, rejected_context);
+        assert_eq!(rejected_state.title.as_deref(), Some("unchanged"));
+        assert_eq!(
+            eval(
+                &mut handle,
+                &rejected_state,
+                "document.cookie.includes('integrity_bad=1')"
+            ),
+            ScriptValue::Bool(false)
+        );
+        let rejected_request_id = rejected_events
+            .iter()
+            .filter_map(|event| match event {
+                BrowserEvent::RuntimeEffects { effects, .. } => Some(&effects.network),
+                _ => None,
+            })
+            .flatten()
+            .find_map(|event| match event {
+                RuntimeNetworkEvent::Request {
+                    request_id, url, ..
+                } if url == &rejected_dependency_url => Some(request_id),
+                _ => None,
+            })
+            .expect("rejected integrity-map request id");
+        assert!(rejected_events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.network.iter().any(|event| matches!(
+                    event,
+                    RuntimeNetworkEvent::Failure {
+                        request_id,
+                        url,
+                        blocked_reason: Some(reason),
+                        ..
+                    } if request_id == rejected_request_id
+                        && url == &rejected_dependency_url
+                        && reason == "integrity"
+                ))
+        )));
+        assert_exactly_one_terminal_phase(&rejected_events, rejected_navigation);
+
+        server.join();
+        drop(handle);
+        let store = Store::open(&profile_path).unwrap();
+        for url in [&accepted_root_url, &accepted_dependency_url] {
+            let url = url::Url::parse(url).unwrap();
+            let origin_key = vixen_net::Origin::from_url(&url).partition_key();
+            assert!(
+                store
+                    .get_cache(&origin_key, url.as_str())
+                    .unwrap()
+                    .is_some()
+            );
+        }
+        let rejected_url = url::Url::parse(&rejected_dependency_url).unwrap();
+        let rejected_origin = vixen_net::Origin::from_url(&rejected_url).partition_key();
+        assert!(
+            store
+                .get_cache(&rejected_origin, rejected_url.as_str())
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
     fn fresh_permanent_redirected_module_graph_reuses_profile_alias() {
         let server = GatedHttpServer::start(3);
         let mut config = test_config();

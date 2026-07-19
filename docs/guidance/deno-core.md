@@ -115,6 +115,9 @@ Current state:
   rejects unsupported keys and types before module resolution or transport.
   External classic/module root integrity is verified over raw accepted bytes
   before source conversion, V8 evaluation, profile cookies, or cache insertion.
+  A bounded Vixen-owned exact-URL table adds import-map integrity for static and
+  dynamic dependencies plus top-level fallback through the same boundary; it is
+  deliberately separate because `import_map` 0.25.0 has no integrity model.
 
 Rules:
 

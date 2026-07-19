@@ -247,8 +247,14 @@ writes. Freshness reuse, redirect aliases, and full `Vary` still fail closed.
 One bounded inline import map before module discovery now supports exact, prefix,
 URL-like, null-blocking,
 and scoped mappings plus `import.meta.resolve()` through the same policy-bound
-loader. External, multiple, late, integrity-bearing, malformed, and oversized
-maps fail closed; current-standard multiple-map merging remains unsupported.
+loader. External, multiple, late, malformed, and oversized maps fail closed.
+One map may carry at most 2,048 exact normalized-URL integrity entries;
+URL-like relative keys resolve from its base.
+Static/dynamic graph dependencies and top-level modules without an authored
+`integrity` attribute verify mapped SHA-2 metadata over accepted raw bytes before
+V8, cookies, or cache insertion. Non-object/non-string/bare-URL forms and
+normalized duplicates reject the whole map. Multiple-map merging remains
+unsupported.
 Dynamic `import()` from parser-discovered page modules, including later retained
 module functions and document tasks, keeps the originating graph's import map,
 credentials/policy, cumulative limits, redirect base, cache/profile effects, and
@@ -262,10 +268,10 @@ Exact static and dynamic `type=json` imports now use that loader with strict
 `.json` file or JSON HTTP MIME policy. Unknown keys and text/bytes/custom types
 fail before transport; a bad MIME creates no profile cache row. External
 classic/module roots also enforce authored SHA-2 SRI over raw response bytes;
-mismatch executes nothing and commits no response cookie/cache effect. Import-map
-integrity metadata for dependencies remains unsupported. Cross-origin classic
-SRI sends document origin and requires CORS before hash verification. Child frame
-globals and documents remain unavailable rather than fabricated until A3.
+mismatch executes nothing and commits no response cookie/cache effect.
+Cross-origin classic SRI sends document origin and requires CORS before hash
+verification. Child frame globals and documents remain unavailable rather than
+fabricated until A3.
 
 Page `fetch()`/XHR and module resources now share bounded private-cache
 decisions. Exact effective final-hop request headers select simultaneous

@@ -694,7 +694,7 @@ impl PageModuleLoader {
             ExternalResourceLoadInput {
                 store: &store,
                 profile_baseline: &mut profile_baseline,
-                request,
+                request: request.clone(),
                 revalidate_profile_cache: profile_cache_enabled,
                 max_body_bytes: self.network_config.max_body_bytes,
                 max_redirects: self.network_config.max_redirects,
@@ -789,6 +789,15 @@ impl PageModuleLoader {
             }
         };
 
+        if let Some(message) = request.integrity_failure(&body) {
+            return self.record_load_failure(
+                events,
+                request_id,
+                found_url.to_string(),
+                "integrity",
+                message,
+            );
+        }
         if let Err(message) = self.register_redirect_url(&specified_url, &found_url) {
             return self.record_load_failure(
                 events,
