@@ -267,17 +267,12 @@ impl ExternalPageScript {
         page: &Page,
         bypass_csp: bool,
         import_map: Option<import_maps::PageImportMap>,
-    ) -> Result<Self, EngineError> {
+    ) -> Option<Self> {
         let mut url = url::Url::parse(&page.document_base_uri())
             .or_else(|_| url::Url::parse(page.url()))
-            .map_err(|error| {
-                EngineError::script(
-                    codes::SCRIPT_EVAL,
-                    format!("automation source URL is invalid: {error}"),
-                )
-            })?;
+            .ok()?;
         url.set_fragment(Some("vixen-automation"));
-        Ok(Self {
+        Some(Self {
             url,
             csp: (!bypass_csp).then(|| page.csp().clone()),
             origin: page_origin(page),
@@ -836,9 +831,9 @@ impl JsRuntime {
     ) -> Result<JsValue, EngineError> {
         let request = {
             let page = page.borrow();
-            ExternalPageScript::automation(&page, false, self.module_loader.document_import_map())?
+            ExternalPageScript::automation(&page, false, self.module_loader.document_import_map())
         };
-        self.evaluate_with_shared_page_mut_request(src, page, &request)
+        self.evaluate_with_shared_page_mut_request(src, page, request.as_ref())
     }
 
     pub(crate) fn evaluate_for_automation_with_shared_page_mut(
@@ -853,19 +848,19 @@ impl JsRuntime {
                 &page,
                 bypass_csp,
                 self.module_loader.document_import_map(),
-            )?
+            )
         };
-        self.evaluate_with_shared_page_mut_request(src, page, &request)
+        self.evaluate_with_shared_page_mut_request(src, page, request.as_ref())
     }
 
     fn evaluate_with_shared_page_mut_request(
         &mut self,
         src: &str,
         page: &Rc<RefCell<Page>>,
-        request: &ExternalPageScript,
+        request: Option<&ExternalPageScript>,
     ) -> Result<JsValue, EngineError> {
         self.ensure_realm(Some(&page.borrow()))?;
-        let value = match self.execute_in_current_realm(src, Some(request)) {
+        let value = match self.execute_in_current_realm(src, request) {
             Ok(value) => value,
             Err(error) => {
                 self.discard_dom_mutations();
@@ -881,7 +876,7 @@ impl JsRuntime {
         const MAX_SCROLL_SYNC_ROUNDS: usize = 8;
         for _ in 0..MAX_SCROLL_SYNC_ROUNDS {
             let source = dom::element_scroll_state_source(&page.borrow(), true);
-            let result = self.execute_in_current_realm(&source, Some(request));
+            let result = self.execute_in_current_realm(&source, request);
             if let Err(error) = result {
                 self.discard_dom_mutations();
                 return Err(error);
@@ -947,7 +942,7 @@ impl JsRuntime {
         request: &ExternalPageScript,
         page: &Rc<RefCell<Page>>,
     ) -> Result<JsValue, EngineError> {
-        self.evaluate_with_shared_page_mut_request(source, page, request)
+        self.evaluate_with_shared_page_mut_request(source, page, Some(request))
     }
 
     /// Set browser-controlled extra HTTP headers for subsequent runtime fetches.
@@ -1252,15 +1247,9 @@ impl JsRuntime {
         page: Option<&Page>,
     ) -> Result<JsValue, EngineError> {
         self.ensure_realm(page)?;
-        let request = page
-            .map(|page| {
-                ExternalPageScript::automation(
-                    page,
-                    false,
-                    self.module_loader.document_import_map(),
-                )
-            })
-            .transpose()?;
+        let request = page.and_then(|page| {
+            ExternalPageScript::automation(page, false, self.module_loader.document_import_map())
+        });
         self.execute_in_current_realm(src, request.as_ref())
     }
 
@@ -6698,6 +6687,31 @@ mod tests {
         }));
 
         std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn relative_fixture_realm_evaluates_but_keeps_dynamic_import_fail_closed() {
+        let page = Page::from_html(
+            "fixtures/dom/basic.html",
+            "<!doctype html><title>Relative fixture</title>",
+        )
+        .unwrap();
+        let mut runtime = JsRuntime::new().unwrap();
+
+        assert_eq!(
+            runtime.evaluate_with_page("20 + 22", &page).unwrap(),
+            JsValue::Int32(42)
+        );
+        assert_eq!(
+            runtime
+                .evaluate_with_page(
+                    "import('./unresolved.js').then(() => false, () => true)",
+                    &page,
+                )
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        assert!(runtime.drain_network_events().unwrap().is_empty());
     }
 
     #[test]

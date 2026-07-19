@@ -108,7 +108,9 @@ Current state:
   work to bounded event-loop quiescence; interruption aborts tracked transport,
   generation-rejects profile effects, and rebuilds the page realm after leaving
   the entered isolate. Direct classic/automation dynamic imports now register
-  equivalent source/document policy provenance. Exact static/dynamic JSON import
+  equivalent source/document policy provenance when the document has an exact
+  absolute base URL; source-only relative fixture realms retain ordinary eval but
+  no dynamic-import capability. Exact static/dynamic JSON import
   attributes select strict JSON response policy; a V8 validation callback
   rejects unsupported keys and types before module resolution or transport.
   External classic/module root integrity is verified over raw accepted bytes

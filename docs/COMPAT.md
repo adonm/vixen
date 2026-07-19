@@ -256,6 +256,8 @@ cancellation. Parser classics and BrowserCore automation evaluations now use
 the same loader with exact source/document policy: mapped file imports execute,
 redirected classics resolve relative imports from the accepted final URL, and
 numeric request ids plus existing graph/cancellation bounds remain intact.
+Committed source-only fixture identifiers remain usable for ordinary evaluation,
+but dynamic imports from a non-URL realm fail without transport.
 Exact static and dynamic `type=json` imports now use that loader with strict
 `.json` file or JSON HTTP MIME policy. Unknown keys and text/bytes/custom types
 fail before transport; a bad MIME creates no profile cache row. External

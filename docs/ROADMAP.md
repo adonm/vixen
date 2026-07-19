@@ -940,7 +940,9 @@ receive distinct document-base fragment identities and the import map available
 at their parser position; redirected external classics execute under the
 accepted final URL, so relative imports cannot fall back to the original
 request. Automation uses the current document base, CSP/bypass decision, origin,
-and retained import map. Every path receives same-origin module credentials,
+and retained import map. Source-only harness documents whose identifiers are not
+absolute URLs continue ordinary evaluation but cannot create module provenance;
+their dynamic imports fail before transport. Every admitted path receives same-origin module credentials,
 shared profile/cache state and numeric request ids, the existing 64-load graph
 cap, generation cancellation, response policy, and terminal diagnostics.
 Focused file tests prove mapped classic and automation imports, while a
