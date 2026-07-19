@@ -282,8 +282,16 @@ first signal reason without network I/O. Active page abort now cancels the owned
 transport and retains the exact first JS reason; XHR abort cancels the same
 request and suppresses stale send completions. Realm teardown, BrowserCore
 stop/navigation, and deadlines also cancel without partial profile effects.
-Fetch still resolves only after the bounded text body and policy/cache/integrity
-work complete, so the exposed stream is not yet online response consumption.
+For ordinary same-origin or CORS responses, `fetch()` now resolves after final
+redirect URL/CSP/mixed-content/CORS policy accepts the response head. Its body
+reader receives raw chunks before transport completion through an eight-message
+backpressured channel; XHR exposes headers at that boundary and enters loading as
+chunks arrive. Body completion waits for bounded cache/cookie commit, and an
+abort after resolution disconnects transport and rejects the body with the exact
+signal reason. Integrity-bearing fetches, conditional 304 revalidation, and
+opaque `no-cors` fetches remain intentionally buffered. Cloning or teeing an
+active network body is unsupported and throws rather than creating an unbounded
+or policy-detached consumer.
 
 CDP targets now map to independent BrowserCore contexts/runtimes and share only
 profile-scoped state. BrowserCore source navigation is asynchronous,

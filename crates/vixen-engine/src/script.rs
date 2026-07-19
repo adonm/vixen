@@ -2333,6 +2333,100 @@ mod tests {
         )
     }
 
+    type GatedFetchServer = (
+        String,
+        vixen_net::NetworkConfig,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+        std::thread::JoinHandle<()>,
+    );
+
+    fn spawn_gated_streaming_fetch_server(host: &str) -> GatedFetchServer {
+        use std::io::{Read, Write};
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (headers_tx, headers_rx) = mpsc::channel();
+        let (first_release_tx, first_release_rx) = mpsc::channel();
+        let (first_sent_tx, first_sent_rx) = mpsc::channel();
+        let (finish_release_tx, finish_release_rx) = mpsc::channel();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nX-Vixen-Stream: yes\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
+            stream.flush().unwrap();
+            headers_tx.send(()).unwrap();
+            first_release_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("response should resolve before the first body chunk");
+            stream.write_all(b"6\r\nfirst-\r\n").unwrap();
+            stream.flush().unwrap();
+            first_sent_tx.send(()).unwrap();
+            finish_release_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("first stream read should resolve before completion");
+            stream.write_all(b"6\r\nsecond\r\n0\r\n\r\n").unwrap();
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            headers_rx,
+            first_release_tx,
+            first_sent_rx,
+            finish_release_tx,
+            handle,
+        )
+    }
+
+    fn spawn_delayed_fetch_server(
+        host: &str,
+        body: &str,
+        delay: std::time::Duration,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let body = body.to_owned();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0_u8; 2048];
+            let _ = stream.read(&mut request);
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).unwrap();
+            stream.flush().unwrap();
+            std::thread::sleep(delay);
+            let _ = stream.write_all(body.as_bytes());
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config.dns_overrides.push((host.to_owned(), vec![addr]));
+        (
+            format!("http://{host}:{}/payload", addr.port()),
+            config,
+            handle,
+        )
+    }
+
     fn spawn_header_echo_server(
         host: &str,
     ) -> (
@@ -2862,6 +2956,74 @@ mod tests {
         (
             format!("http://{host}:{}/redirect", addr.port()),
             config,
+            handle,
+        )
+    }
+
+    fn spawn_cross_host_redirect_server(
+        initial_host: &str,
+        target_host: &str,
+    ) -> (
+        String,
+        vixen_net::NetworkConfig,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        std::thread::JoinHandle<()>,
+    ) {
+        use std::io::{Read, Write};
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::time::{Duration, Instant};
+
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let addr = listener.local_addr().unwrap();
+        let target_url = format!("http://{target_host}:{}/target", addr.port());
+        let requests = Arc::new(AtomicUsize::new(0));
+        let server_requests = Arc::clone(&requests);
+        let handle = std::thread::spawn(move || {
+            let (mut initial, _) = listener.accept().unwrap();
+            server_requests.fetch_add(1, Ordering::SeqCst);
+            let mut request = [0_u8; 2048];
+            let _ = initial.read(&mut request);
+            initial
+                .write_all(
+                    format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {target_url}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .unwrap();
+
+            listener.set_nonblocking(true).unwrap();
+            let deadline = Instant::now() + Duration::from_millis(300);
+            while Instant::now() < deadline {
+                match listener.accept() {
+                    Ok((mut target, _)) => {
+                        server_requests.fetch_add(1, Ordering::SeqCst);
+                        let _ = target.read(&mut request);
+                        let _ = target.write_all(
+                            b"HTTP/1.1 200 OK\r\nContent-Length: 6\r\nConnection: close\r\n\r\ntarget",
+                        );
+                        break;
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("redirect target accept failed: {error}"),
+                }
+            }
+        });
+
+        let mut config = vixen_net::NetworkConfig::default();
+        config
+            .dns_overrides
+            .push((initial_host.to_owned(), vec![addr]));
+        config
+            .dns_overrides
+            .push((target_host.to_owned(), vec![addr]));
+        (
+            format!("http://{initial_host}:{}/redirect", addr.port()),
+            config,
+            requests,
             handle,
         )
     }
@@ -6654,6 +6816,134 @@ mod tests {
     }
 
     #[test]
+    fn fetch_resolves_at_policy_accepted_head_and_streams_before_completion() {
+        use std::time::{Duration, Instant};
+
+        let (url, network_config, headers, release_first, first_sent, release_finish, server) =
+            spawn_gated_streaming_fetch_server("vixen-fetch-live-stream.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let started = Instant::now();
+        let expression = format!(
+            r#"fetch({url:?}).then((response) => {{
+              globalThis.__liveResponse = response;
+              return response.status + ':' + response.headers.get('x-vixen-stream') + ':' + response.bodyUsed;
+            }})"#
+        );
+
+        assert_eq!(
+            rt.evaluate(&expression).unwrap(),
+            JsValue::String("200:yes:false".to_owned())
+        );
+        assert!(started.elapsed() < Duration::from_secs(1));
+        headers
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server published response headers");
+        let head_events = rt.drain_network_events().unwrap();
+        assert!(matches!(
+            head_events.as_slice(),
+            [JsNetworkEvent::Request { request_id, .. }, JsNetworkEvent::Response { request_id: response_id, .. }]
+                if request_id == response_id
+        ));
+
+        release_first.send(()).unwrap();
+        first_sent
+            .recv_timeout(Duration::from_secs(1))
+            .expect("server published first body chunk");
+        assert_eq!(
+            rt.evaluate(
+                r#"globalThis.__liveReader = __liveResponse.body.getReader();
+                   __liveReader.read().then((item) => new TextDecoder().decode(item.value) + ':' + item.done)"#,
+            )
+            .unwrap(),
+            JsValue::String("first-:false".to_owned())
+        );
+
+        release_finish.send(()).unwrap();
+        server.join().unwrap();
+        assert_eq!(
+            rt.evaluate(
+                r#"__liveReader.read().then((item) => new TextDecoder().decode(item.value) + ':' + item.done)"#,
+            )
+            .unwrap(),
+            JsValue::String("second:false".to_owned())
+        );
+        std::thread::sleep(Duration::from_millis(25));
+        assert_eq!(
+            rt.evaluate("__liveReader.read().then((item) => item.done)")
+                .unwrap(),
+            JsValue::Bool(true)
+        );
+        let terminal_events = rt.drain_network_events().unwrap();
+        assert!(matches!(
+            terminal_events.as_slice(),
+            [JsNetworkEvent::Progress { request_id, .. }, JsNetworkEvent::Completed { request_id: completed_id, .. }]
+                if request_id == completed_id
+                    && head_events.iter().all(|event| match event {
+                        JsNetworkEvent::Request { request_id: head_id, .. }
+                        | JsNetworkEvent::Response { request_id: head_id, .. } => head_id == request_id,
+                        _ => false,
+                    })
+        ));
+    }
+
+    #[test]
+    fn abort_after_fetch_resolution_cancels_the_owned_body_stream() {
+        use std::sync::atomic::Ordering;
+
+        let (url, network_config, disconnected, server) =
+            spawn_stalled_fetch_server("vixen-fetch-body-abort.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expression = format!(
+            r#"globalThis.__bodyController = new AbortController();
+               fetch({url:?}, {{ signal: __bodyController.signal }}).then((response) => {{
+                 globalThis.__bodyResponse = response;
+                 return response.status;
+               }})"#
+        );
+        assert_eq!(rt.evaluate(&expression).unwrap(), JsValue::Int32(200));
+        assert_eq!(
+            rt.evaluate(
+                r#"globalThis.__bodyAbortReason = new Error('body abort');
+                   __bodyController.abort(__bodyAbortReason);
+                   __bodyResponse.text().then(() => false, (error) => error === __bodyAbortReason)"#,
+            )
+            .unwrap(),
+            JsValue::Bool(true)
+        );
+
+        server.join().unwrap();
+        assert!(disconnected.load(Ordering::SeqCst));
+        let events = rt.drain_network_events().unwrap();
+        assert!(matches!(
+            events.as_slice(),
+            [
+                JsNetworkEvent::Request { request_id, .. },
+                JsNetworkEvent::Response { request_id: response_id, .. },
+                JsNetworkEvent::Failure { request_id: failure_id, blocked_reason: Some(reason), .. },
+            ] if request_id == response_id && request_id == failure_id && reason == "aborted"
+        ));
+    }
+
+    #[test]
+    fn fetch_integrity_keeps_response_buffered_until_verification() {
+        use std::time::{Duration, Instant};
+
+        let delay = Duration::from_millis(100);
+        let digest = "sha256-ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=";
+        let (url, network_config, server) =
+            spawn_delayed_fetch_server("vixen-fetch-sri-buffered.com", "abc", delay);
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expression = format!(
+            "fetch({url:?}, {{ integrity: {digest:?} }}).then((response) => response.status)"
+        );
+        let started = Instant::now();
+
+        assert_eq!(rt.evaluate(&expression).unwrap(), JsValue::Int32(200));
+        assert!(started.elapsed() >= Duration::from_millis(75));
+        server.join().unwrap();
+    }
+
+    #[test]
     fn preaborted_fetch_rejects_without_transport_and_keeps_first_reason() {
         let mut rt = JsRuntime::new().expect("engine init");
 
@@ -6837,6 +7127,36 @@ mod tests {
             JsValue::Bool(true)
         );
         server.join().unwrap();
+    }
+
+    #[test]
+    fn fetch_rejects_disallowed_response_head_before_body_completion() {
+        use std::sync::atomic::Ordering;
+
+        let (url, network_config, disconnected, server) =
+            spawn_stalled_fetch_server("vixen-fetch-cors-head-block.com");
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let mut page = Page::from_html("http://source.test/page", "<main></main>").unwrap();
+        let expression = format!(
+            "fetch({url:?}).then(() => false, (error) => /blocked by CORS/.test(error.message))"
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(&expression, &mut page).unwrap(),
+            JsValue::Bool(true)
+        );
+        server.join().unwrap();
+        assert!(disconnected.load(Ordering::SeqCst));
+        assert!(matches!(
+            rt.drain_network_events().unwrap().as_slice(),
+            [
+                JsNetworkEvent::Request { .. },
+                JsNetworkEvent::Failure {
+                    blocked_reason: Some(reason),
+                    ..
+                }
+            ] if reason == "cors"
+        ));
     }
 
     #[test]
@@ -7612,6 +7932,32 @@ mod tests {
             .unwrap(),
             JsValue::Bool(true)
         );
+    }
+
+    #[test]
+    fn fetch_rechecks_redirect_target_policy_before_transport() {
+        use std::sync::atomic::Ordering;
+
+        let (url, network_config, requests, server) = spawn_cross_host_redirect_server(
+            "vixen-fetch-csp-redirect.com",
+            "vixen-fetch-csp-blocked.com",
+        );
+        let initial_origin = url.strip_suffix("/redirect").unwrap();
+        let html = format!(
+            "<meta http-equiv='Content-Security-Policy' content=\"connect-src {initial_origin}\"><main></main>"
+        );
+        let mut page = Page::from_html("http://source.test/page", &html).unwrap();
+        let mut rt = JsRuntime::with_network_config(network_config).expect("engine init");
+        let expression = format!(
+            "fetch({url:?}).then(() => false, (error) => /CSP connect-src/.test(error.message))"
+        );
+
+        assert_eq!(
+            rt.evaluate_with_page_mut(&expression, &mut page).unwrap(),
+            JsValue::Bool(true)
+        );
+        server.join().unwrap();
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
     }
 
     #[test]

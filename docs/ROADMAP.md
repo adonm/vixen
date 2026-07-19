@@ -855,9 +855,10 @@ commit. Focused stalled-peer tests prove fetch and XHR disconnect, exact reason,
 terminal event order, and the existing stop/preflight-stop recovery corridor.
 The Deno realm now retains one current-thread Tokio executor for async host ops
 across evaluations rather than stranding op tasks on a per-evaluation runtime;
-non-blocking shutdown keeps async CDP owner teardown safe. Responses still resolve only after the bounded body, integrity, cache, and
-visibility decisions complete; policy-safe response-before-completion streaming
-is the next transfer boundary.
+non-blocking shutdown keeps async CDP owner teardown safe. Responses still
+resolved only after the bounded body, integrity, cache, and visibility decisions
+completed; policy-safe response-before-completion streaming remained the next
+transfer boundary at that checkpoint.
 
 **Ninth A2 checkpoint:** the profile cache now retains simultaneous response
 variants as independently bounded rows under a versioned URL-plus-selector key.
@@ -911,6 +912,26 @@ redirect events. Store and decision tests pin eviction, validation, deletion,
 clear-data, legacy safety, and rejection of temporary/cross-origin aliases.
 General redirect-response caching still requires retained redirect response
 headers; this checkpoint deliberately does not treat 302/307 as permanent.
+
+**Twelfth A2 checkpoint:** ordinary page `fetch()` responses now resolve at a
+separate policy-accepted final-response head while one host worker retains the
+body and terminal profile effects. Every live redirect target reruns URL, CSP,
+and mixed-content policy; final same-origin/CORS visibility and filtered headers
+are fixed before status, URL, or headers reach V8. Accepted raw chunks cross an
+eight-message backpressured channel under the existing destination body cap and
+32-request realm cap. `ReadableStream` reads and XHR loading/progress therefore
+advance before transport completion, while terminal success waits for bounded
+cookie/cache commit and preserves one request id through response, progress, and
+completion. A serialized fetch-generation gate permits those commits while V8 is
+idle between reads but rejects them after abort, stop, or deadline invalidation.
+Abort after head exposure drops transport, removes ownership, emits one failure, and rejects pending or later body reads with the exact first JS
+reason. CORS failure at the head cancels without reading the stalled body.
+Integrity-bearing requests, conditional 304 revalidation, and opaque `no-cors`
+responses remain buffer-before-resolution; active network-body clone/tee also
+fails closed rather than creating an unbounded second consumer. Gated-peer tests
+prove response-before-first-chunk, first-read-before-completion, stable split
+diagnostics, post-response abort/disconnect, redirect-policy rejection before a
+second request, final-head rejection, and integrity buffering.
 
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
@@ -1065,12 +1086,11 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue A2 beyond active cancellation:** split the asynchronous page
-   transfer into policy-safe head and bounded body ownership so `fetch()` may
-   resolve before body completion while stream reads, cancellation, integrity,
-   cache commit, and CDP progress retain one terminal lifecycle. Keep direct
-   classic/automation dynamic imports and module import attributes fail-closed
-   until they can carry exact source URL, policy, and lifecycle provenance.
+1. **Continue A2 module provenance:** carry exact source URL, document policy,
+   credentials/profile state, graph limits, and cancellation into dynamic
+   imports authored by classic scripts or automation, then admit supported
+   module import attributes through the same loader. Keep each path fail-closed
+   until it can preserve the existing request-id and terminal lifecycle.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →
    newer-commit evidence green while widening shared-core behavior; do not

@@ -97,7 +97,7 @@ pub use cors::{
 };
 pub use csp::{ContentSecurityPolicy, CspPolicy, HashAlg, HostSource, Source};
 pub use fetch_types::{
-    ByteResponse, Method, NetworkEvent, RedirectMode, TextRequest, TextResponse,
+    ByteResponse, Method, NetworkEvent, RedirectMode, ResponseHead, TextRequest, TextResponse,
 };
 pub use integrity::{
     HashAlgorithm, IntegrityOutcome, IntensityItem, parse_integrity, verify as verify_integrity,

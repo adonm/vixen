@@ -17,7 +17,7 @@ use url::Url;
 
 use crate::cookie::CookieJar;
 use crate::fetch_types::{
-    ByteResponse, Method, NetworkEvent, RedirectMode, TextRequest, TextResponse,
+    ByteResponse, Method, NetworkEvent, RedirectMode, ResponseHead, TextRequest, TextResponse,
 };
 use crate::url_policy::{UrlPolicyError, validate_http_url};
 
@@ -99,6 +99,13 @@ impl Default for NetworkConfig {
 pub struct Network {
     client: reqwest::Client,
     config: NetworkConfig,
+}
+
+struct FetchObservers<F, R, H, B> {
+    progress: F,
+    redirect: R,
+    response: H,
+    body: B,
 }
 
 impl Network {
@@ -190,6 +197,9 @@ impl Network {
                 body: None,
             },
             |_| {},
+            |_| true,
+            |_| {},
+            |_| {},
         )
         .await
         .map(TextResponse::from)
@@ -219,6 +229,9 @@ impl Network {
                 body: None,
             },
             |_| {},
+            |_| true,
+            |_| {},
+            |_| {},
         )
         .await
         .map(TextResponse::from)
@@ -232,7 +245,7 @@ impl Network {
         request: TextRequest,
     ) -> Result<TextResponse, NetworkError> {
         validate_http_url(&request.url)?;
-        self.fetch_bytes(jar, request, |_| {})
+        self.fetch_bytes(jar, request, |_| {}, |_| true, |_| {}, |_| {})
             .await
             .map(TextResponse::from)
     }
@@ -251,7 +264,7 @@ impl Network {
         F: FnMut(&NetworkEvent),
     {
         validate_http_url(&request.url)?;
-        self.fetch_bytes(jar, request, on_progress)
+        self.fetch_bytes(jar, request, on_progress, |_| true, |_| {}, |_| {})
             .await
             .map(TextResponse::from)
     }
@@ -267,7 +280,31 @@ impl Network {
         F: FnMut(&NetworkEvent),
     {
         validate_http_url(&request.url)?;
-        self.fetch_bytes(jar, request, on_progress).await
+        self.fetch_bytes(jar, request, on_progress, |_| true, |_| {}, |_| {})
+            .await
+    }
+
+    /// Fetch raw bytes while exposing the accepted final response head and
+    /// each bounded transport chunk to the caller. The complete body and all
+    /// lifecycle events are still retained in the returned response.
+    pub async fn get_bytes_with_cookies_request_streaming<F, R, H, B>(
+        &mut self,
+        jar: &mut CookieJar,
+        request: TextRequest,
+        on_progress: F,
+        on_redirect: R,
+        on_response: H,
+        on_body: B,
+    ) -> Result<ByteResponse, NetworkError>
+    where
+        F: FnMut(&NetworkEvent),
+        R: FnMut(&Url) -> bool,
+        H: FnMut(&ResponseHead),
+        B: FnMut(&[u8]),
+    {
+        validate_http_url(&request.url)?;
+        self.fetch_bytes(jar, request, on_progress, on_redirect, on_response, on_body)
+            .await
     }
 
     /// Fetch raw bytes with a caller-specific body cap no wider than the
@@ -285,34 +322,69 @@ impl Network {
     {
         validate_http_url(&request.url)?;
         let limit = self.config.max_body_bytes.min(max_body_bytes);
-        self.fetch_bytes_with_limit(jar, request, limit, on_progress)
-            .await
+        self.fetch_bytes_with_limit(
+            jar,
+            request,
+            limit,
+            FetchObservers {
+                progress: on_progress,
+                redirect: allow_redirect,
+                response: ignore_response_head,
+                body: ignore_body_chunk,
+            },
+        )
+        .await
     }
 
-    async fn fetch_bytes<F>(
+    async fn fetch_bytes<F, R, H, B>(
         &mut self,
         jar: &mut CookieJar,
         request: TextRequest,
         on_progress: F,
+        on_redirect: R,
+        on_response: H,
+        on_body: B,
     ) -> Result<ByteResponse, NetworkError>
     where
         F: FnMut(&NetworkEvent),
+        R: FnMut(&Url) -> bool,
+        H: FnMut(&ResponseHead),
+        B: FnMut(&[u8]),
     {
         let limit = self.config.max_body_bytes;
-        self.fetch_bytes_with_limit(jar, request, limit, on_progress)
-            .await
+        self.fetch_bytes_with_limit(
+            jar,
+            request,
+            limit,
+            FetchObservers {
+                progress: on_progress,
+                redirect: on_redirect,
+                response: on_response,
+                body: on_body,
+            },
+        )
+        .await
     }
 
-    async fn fetch_bytes_with_limit<F>(
+    async fn fetch_bytes_with_limit<F, R, H, B>(
         &mut self,
         jar: &mut CookieJar,
         request: TextRequest,
         limit: u64,
-        mut on_progress: F,
+        observers: FetchObservers<F, R, H, B>,
     ) -> Result<ByteResponse, NetworkError>
     where
         F: FnMut(&NetworkEvent),
+        R: FnMut(&Url) -> bool,
+        H: FnMut(&ResponseHead),
+        B: FnMut(&[u8]),
     {
+        let FetchObservers {
+            mut progress,
+            mut redirect,
+            mut response,
+            body: mut on_body,
+        } = observers;
         let TextRequest {
             url: start,
             cross_site,
@@ -336,7 +408,7 @@ impl Network {
                     url: current.to_string(),
                     method,
                 },
-                &mut on_progress,
+                &mut progress,
             );
 
             let request_headers = self.effective_request_headers_for(
@@ -377,15 +449,26 @@ impl Network {
                         url: current.to_string(),
                         status,
                     },
-                    &mut on_progress,
+                    &mut progress,
                 );
+                response(&ResponseHead {
+                    headers: flatten_headers(resp.headers()),
+                    status,
+                    final_url: current.to_string(),
+                    set_cookie: set_cookie.clone(),
+                    redirects,
+                    events: events.clone(),
+                    request_headers: request_headers.clone(),
+                    redirect_aliasable: redirect_response_aliasable(status, resp.headers()),
+                    total_bytes: Some(0),
+                });
                 record_progress(
                     &mut events,
                     NetworkEvent::Completed {
                         url: current.to_string(),
                         body_bytes: 0,
                     },
-                    &mut on_progress,
+                    &mut progress,
                 );
                 return Ok(ByteResponse {
                     body: Vec::new(),
@@ -433,6 +516,11 @@ impl Network {
                 // URL policy re-applied at every fetch boundary (redirects
                 // included).
                 validate_http_url(&next)?;
+                if !redirect(&next) {
+                    return Err(NetworkError::Request {
+                        message: format!("redirect target rejected by caller policy: {next}"),
+                    });
+                }
                 redirect_aliasable &= redirect_response_aliasable(status, resp.headers());
                 record_progress(
                     &mut events,
@@ -441,7 +529,7 @@ impl Network {
                         to: next.to_string(),
                         status,
                     },
-                    &mut on_progress,
+                    &mut progress,
                 );
                 redirects += 1;
                 current = next;
@@ -454,7 +542,7 @@ impl Network {
                     url: current.to_string(),
                     status,
                 },
-                &mut on_progress,
+                &mut progress,
             );
 
             // Body-size guard: prefer Content-Length, then the actual bytes.
@@ -470,6 +558,17 @@ impl Network {
             }
             // Capture headers before incrementally consuming the response.
             let headers = flatten_headers(resp.headers());
+            response(&ResponseHead {
+                headers: headers.clone(),
+                status,
+                final_url: current.to_string(),
+                set_cookie: set_cookie.clone(),
+                redirects,
+                events: events.clone(),
+                request_headers: request_headers.clone(),
+                redirect_aliasable,
+                total_bytes,
+            });
             let capacity =
                 usize::try_from(total_bytes.unwrap_or_default().min(limit)).unwrap_or_default();
             let mut body = Vec::with_capacity(capacity);
@@ -486,6 +585,7 @@ impl Network {
                         url: current.to_string(),
                     });
                 }
+                on_body(&chunk);
                 body.extend_from_slice(&chunk);
                 loaded_bytes = actual;
                 pending_progress_bytes = pending_progress_bytes.saturating_add(chunk_bytes);
@@ -500,7 +600,7 @@ impl Network {
                             loaded_bytes,
                             total_bytes,
                         },
-                        &mut on_progress,
+                        &mut progress,
                     );
                     pending_progress_bytes = 0;
                 }
@@ -514,7 +614,7 @@ impl Network {
                         loaded_bytes,
                         total_bytes,
                     },
-                    &mut on_progress,
+                    &mut progress,
                 );
             }
             record_progress(
@@ -523,7 +623,7 @@ impl Network {
                     url: current.to_string(),
                     body_bytes: loaded_bytes,
                 },
-                &mut on_progress,
+                &mut progress,
             );
 
             return Ok(ByteResponse {
@@ -609,6 +709,14 @@ where
     on_progress(&event);
     events.push(event);
 }
+
+fn allow_redirect(_: &Url) -> bool {
+    true
+}
+
+fn ignore_response_head(_: &ResponseHead) {}
+
+fn ignore_body_chunk(_: &[u8]) {}
 
 /// Lower-case + join multi-valued headers into one `, `-separated entry.
 fn flatten_headers(headers: &HeaderMap) -> std::collections::BTreeMap<String, String> {

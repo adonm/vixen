@@ -519,16 +519,28 @@ replayed without weakening policy.
 
 Transport body reads are incremental and enforce the destination cap before
 buffer growth. Ordered response, chunk progress, and completion records carry
-exact byte counts through BrowserCore, C ABI diagnostics, and CDP. The current
-page text pipeline exposes retained chunks through `ReadableStream` and XHR
-progress only after the bounded response has completed so integrity/cache policy
-cannot be bypassed. Page fetch/XHR now use a per-realm host-owned asynchronous
-request table bounded to 32 entries. Explicit `AbortSignal`, XHR abort, realm
+exact byte counts through BrowserCore, C ABI diagnostics, and CDP. Ordinary page
+fetch/XHR responses now cross a distinct head boundary: every redirect target is
+rechecked against URL/CSP/mixed-content policy, and final CORS/header visibility
+is fixed before V8 receives status, URL, or headers. The transport then feeds raw
+body chunks through an eight-message backpressured channel while retaining the
+same destination-capped body for cookie/cache commit. Stream reads and XHR
+progress consume that channel; completion or failure carries the same request id
+and occurs only after profile effects settle. A serialized fetch-generation gate
+allows commit while V8 is idle between reads but rejects stale work after
+cancellation. Integrity-bearing requests,
+conditional 304 revalidation, and opaque `no-cors` responses remain
+buffer-before-resolution because their exposure decision requires the complete
+representation or deliberately exposes no body.
+
+Page fetch/XHR use a per-realm host-owned asynchronous request table bounded to
+32 entries. Explicit `AbortSignal`, body-stream cancellation, XHR abort, realm
 teardown, BrowserCore stop, and runtime deadlines cancel the owned reqwest future;
 an interrupt generation prevents cleared V8 termination state from authorizing a
-late cookie/cache/preflight commit. The response remains buffer-before-resolution;
-splitting policy-safe response heads from bounded online body consumption is the
-next shared-loader boundary.
+late cookie/cache/preflight commit. Aborting after head exposure rejects pending
+body reads with the exact JS reason and publishes one terminal failure. Active
+network-body cloning/teeing remains fail-closed until one transport can safely
+own multiple bounded consumers.
 
 Policy failure, transport/TLS failure, protocol failure, decode failure,
 unsupported behavior, and cancellation have distinct stable diagnostics. CDP

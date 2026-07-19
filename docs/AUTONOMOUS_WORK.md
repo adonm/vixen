@@ -54,13 +54,16 @@ roots/tasks. A shared bounded private-cache decision now gives page fetch/XHR an
 module loads `Date`/`Age` plus `max-age`/`Expires` freshness, effective request
 directives, simultaneous exact `Vary` variants, and bounded permanent
 same-origin redirect aliases. The transport now performs bounded incremental
-body reads and publishes progress/completion through ReadableStream, XHR, BrowserCore/C ABI, and
-CDP. Page fetch/XHR now use a bounded asynchronous realm owner; active
+body reads and publishes progress/completion through ReadableStream, XHR,
+BrowserCore/C ABI, and CDP. Page fetch/XHR now use a bounded asynchronous realm owner; active
 `AbortSignal`, XHR abort, stop/deadline, and realm teardown drop transport without
-late profile effects. Continue A2 by separating policy-safe response heads from
-bounded online body consumption; do not misreport the current
-buffer-before-resolution stream as online consumption. Keep direct classic/
-automation dynamic imports and import attributes fail-closed meanwhile.
+late profile effects. Ordinary policy-accepted response heads now resolve before
+body completion and feed an eight-message backpressured stream; abort after
+resolution rejects body reads with the same JS reason, while integrity, 304
+revalidation, and opaque responses remain buffered. Continue A2 by carrying
+exact source URL, policy, profile, and cancellation provenance into direct
+classic/automation dynamic imports and import attributes; keep them fail-closed
+until that provenance exists.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

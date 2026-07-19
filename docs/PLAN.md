@@ -76,11 +76,12 @@ controlled host proof rather than an IME or assistive-technology matrix.
    progress/completion diagnostics through BrowserCore/C ABI/CDP, retained
    `ReadableStream` chunks, XHR upload/download progress, and pre-aborted fetch
    rejection are landed. Page fetch/XHR now have bounded asynchronous ownership
-   and active-signal transport cancellation. Continue with policy-safe
-   response-before-body completion; the current stream remains
-   buffer-before-resolution. Direct classic/
-   automation dynamic imports and import attributes stay fail-closed pending
-   exact source provenance.
+   and active-signal transport cancellation. Ordinary policy-accepted response
+   heads now resolve before completion into an eight-message backpressured body
+   stream; body terminal state still owns cache/cookie commit and exact
+   cancellation. Integrity, 304 revalidation, and opaque responses remain
+   buffered. Continue with exact source/policy provenance for direct classic and
+   automation dynamic imports plus import attributes, which remain fail-closed.
 
 ## Post-stabilization priorities
 

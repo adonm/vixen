@@ -49,6 +49,7 @@ pub(crate) struct RuntimeInterruptHandle {
     active: Arc<Mutex<Option<ActiveExecution>>>,
     layout_cancellation: RenderLayoutCancellation,
     fetch_generation: Arc<AtomicU64>,
+    fetch_effect_gate: Arc<Mutex<()>>,
 }
 
 #[derive(Clone, Default)]
@@ -87,6 +88,7 @@ struct ActiveExecution {
 
 impl RuntimeInterruptHandle {
     pub(crate) fn interrupt(&self) -> bool {
+        self.interrupt_fetches();
         let active = self
             .active
             .lock()
@@ -97,7 +99,6 @@ impl RuntimeInterruptHandle {
         if active.state.complete.load(Ordering::Acquire) {
             return false;
         }
-        self.interrupt_fetches();
         active.state.interrupted.store(true, Ordering::Release);
         let interrupted = active.isolate.terminate_execution();
         active.state.wake();
@@ -124,19 +125,16 @@ impl RuntimeInterruptHandle {
             })
     }
 
-    pub(crate) fn with_active_execution<T>(&self, operation: impl FnOnce() -> T) -> Option<T> {
-        let active = self
-            .active
+    pub(crate) fn with_fetch_generation<T>(
+        &self,
+        generation: u64,
+        operation: impl FnOnce() -> T,
+    ) -> Option<T> {
+        let _gate = self
+            .fetch_effect_gate
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let active = active.as_ref()?;
-        if active.state.complete.load(Ordering::Acquire)
-            || active.state.interrupted.load(Ordering::Acquire)
-            || active.state.timed_out.load(Ordering::Acquire)
-        {
-            return None;
-        }
-        Some(operation())
+        (self.fetch_generation() == generation).then(operation)
     }
 
     pub(crate) fn fetch_generation(&self) -> u64 {
@@ -148,6 +146,10 @@ impl RuntimeInterruptHandle {
     }
 
     fn interrupt_fetches(&self) {
+        let _gate = self
+            .fetch_effect_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.fetch_generation.fetch_add(1, Ordering::AcqRel);
     }
 

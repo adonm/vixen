@@ -22,8 +22,8 @@ use url::Url;
 use vixen_net::{
     ContentSecurityPolicy, CookieJar, CookieSnapshot, CorsCheckOutcome, CorsCredentialsMode,
     CorsResponseHeaders, IntegrityOutcome, Method, MixedContentVerdict, Network, NetworkConfig,
-    NetworkEvent, Origin, RedirectMode, ResourceType, SameSite, TextRequest, TextResponse,
-    classify_mixed_content, cors_check, cors_filtered_headers, parse_integrity,
+    NetworkEvent, Origin, RedirectMode, ResourceType, ResponseHead, SameSite, TextRequest,
+    TextResponse, classify_mixed_content, cors_check, cors_filtered_headers, parse_integrity,
     referrer_policy::{
         ReferrerPolicy, ReferrerValue, is_potentially_trustworthy, parse_referrer_policy,
         resolve_referrer,
@@ -128,10 +128,12 @@ impl Drop for WebApiHost {
 }
 
 const MAX_ACTIVE_FETCHES: usize = 32;
+const FETCH_BODY_CHANNEL_CAPACITY: usize = 8;
 
 #[derive(Clone)]
 struct FetchCancellation {
     cancelled: Arc<AtomicBool>,
+    effect_gate: Arc<Mutex<()>>,
     runtime_interrupt: RuntimeInterruptHandle,
     runtime_generation: u64,
 }
@@ -141,12 +143,17 @@ impl FetchCancellation {
         let runtime_generation = runtime_interrupt.fetch_generation();
         Self {
             cancelled: Arc::new(AtomicBool::new(false)),
+            effect_gate: Arc::new(Mutex::new(())),
             runtime_interrupt,
             runtime_generation,
         }
     }
 
     fn cancel(&self) {
+        let _gate = self
+            .effect_gate
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         self.cancelled.store(true, Ordering::Release);
     }
 
@@ -166,7 +173,135 @@ struct ActiveFetchState {
 
 struct ActiveFetch {
     cancellation: FetchCancellation,
-    result: Option<tokio::sync::oneshot::Receiver<Value>>,
+    response: Option<tokio::sync::oneshot::Receiver<Value>>,
+    body: Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Value>>>,
+}
+
+#[derive(Clone)]
+struct FetchStreamOutput {
+    response: Arc<Mutex<Option<tokio::sync::oneshot::Sender<Value>>>>,
+    body: tokio::sync::mpsc::Sender<Value>,
+    response_sent: Arc<AtomicBool>,
+    expose_body: Arc<AtomicBool>,
+    events: Arc<Mutex<Vec<Value>>>,
+    cancellation: FetchCancellation,
+}
+
+impl FetchStreamOutput {
+    fn send_response(&self, response: Value) -> bool {
+        if self.response_sent.swap(true, Ordering::AcqRel) {
+            return false;
+        }
+        self.response
+            .lock()
+            .ok()
+            .and_then(|mut sender| sender.take())
+            .is_some_and(|sender| sender.send(response).is_ok())
+    }
+
+    fn response_sent(&self) -> bool {
+        self.response_sent.load(Ordering::Acquire)
+    }
+
+    fn set_expose_body(&self, expose: bool) {
+        self.expose_body.store(expose, Ordering::Release);
+    }
+
+    fn send_chunk(&self, bytes: &[u8]) {
+        if !self.expose_body.load(Ordering::Acquire) || self.cancellation.is_cancelled() {
+            return;
+        }
+        let mut message = json!({
+            "ok": true,
+            "done": false,
+            "value": bytes,
+            "events": [],
+        });
+        loop {
+            match self.body.try_send(message) {
+                Ok(()) => return,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(returned)) => {
+                    if self.cancellation.is_cancelled() {
+                        return;
+                    }
+                    message = returned;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    self.cancellation.cancel();
+                    return;
+                }
+            }
+        }
+    }
+
+    fn record_event(&self, event: &NetworkEvent) {
+        if !self.response_sent() {
+            return;
+        }
+        if matches!(
+            event,
+            NetworkEvent::BodyProgress { .. } | NetworkEvent::Completed { .. }
+        ) && let Ok(mut events) = self.events.lock()
+        {
+            events.push(network_event_value(event.clone()));
+        }
+    }
+
+    fn complete(&self, result: Value) {
+        if !self.response_sent() {
+            let _ = self.send_response(result);
+            return;
+        }
+        let mut events = self
+            .events
+            .lock()
+            .map(|mut events| std::mem::take(&mut *events))
+            .unwrap_or_default();
+        let ok = result.get("ok").and_then(Value::as_bool).unwrap_or(false);
+        if !ok && let Some(result_events) = result.get("events").and_then(Value::as_array) {
+            events.extend(
+                result_events
+                    .iter()
+                    .filter(|event| event.get("type").and_then(Value::as_str) == Some("failure"))
+                    .cloned(),
+            );
+        }
+        let message = if ok {
+            json!({
+                "ok": true,
+                "done": true,
+                "events": events,
+            })
+        } else {
+            json!({
+                "ok": false,
+                "done": true,
+                "message": result
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .unwrap_or("fetch body failed"),
+                "events": events,
+            })
+        };
+        self.send_terminal(message);
+    }
+
+    fn send_terminal(&self, mut message: Value) {
+        loop {
+            match self.body.try_send(message) {
+                Ok(()) => return,
+                Err(tokio::sync::mpsc::error::TrySendError::Full(returned)) => {
+                    if self.cancellation.is_cancelled() {
+                        return;
+                    }
+                    message = returned;
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => return,
+            }
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -175,7 +310,16 @@ struct ActiveFetches(Arc<Mutex<ActiveFetchState>>);
 impl ActiveFetches {
     fn start(&self, context: FetchHostContext, request: Value) -> Result<u32, String> {
         let cancellation = FetchCancellation::new(context.runtime_interrupt.clone());
-        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let (body_tx, body_rx) = tokio::sync::mpsc::channel(FETCH_BODY_CHANNEL_CAPACITY);
+        let output = FetchStreamOutput {
+            response: Arc::new(Mutex::new(Some(response_tx))),
+            body: body_tx,
+            response_sent: Arc::new(AtomicBool::new(false)),
+            expose_body: Arc::new(AtomicBool::new(false)),
+            events: Arc::new(Mutex::new(Vec::new())),
+            cancellation: cancellation.clone(),
+        };
         let id = {
             let mut state = self
                 .0
@@ -195,7 +339,8 @@ impl ActiveFetches {
                 id,
                 ActiveFetch {
                     cancellation: cancellation.clone(),
-                    result: Some(result_rx),
+                    response: Some(response_rx),
+                    body: Arc::new(tokio::sync::Mutex::new(body_rx)),
                 },
             );
             id
@@ -204,8 +349,8 @@ impl ActiveFetches {
         if let Err(error) = std::thread::Builder::new()
             .name("vixen-page-fetch".to_owned())
             .spawn(move || {
-                let result = perform_fetch(context, request, worker_cancellation);
-                let _ = result_tx.send(result);
+                let result = perform_fetch(context, request, worker_cancellation, output.clone());
+                output.complete(result);
             })
         {
             if let Ok(mut state) = self.0.lock() {
@@ -216,16 +361,29 @@ impl ActiveFetches {
         Ok(id)
     }
 
-    fn take_result(&self, id: u32) -> Result<tokio::sync::oneshot::Receiver<Value>, String> {
+    fn take_response(&self, id: u32) -> Result<tokio::sync::oneshot::Receiver<Value>, String> {
         self.0
             .lock()
             .map_err(|_| "active fetch state is poisoned".to_owned())?
             .requests
             .get_mut(&id)
             .ok_or_else(|| "unknown active fetch request".to_owned())?
-            .result
+            .response
             .take()
-            .ok_or_else(|| "active fetch result is already being awaited".to_owned())
+            .ok_or_else(|| "active fetch response is already being awaited".to_owned())
+    }
+
+    fn body(
+        &self,
+        id: u32,
+    ) -> Result<Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<Value>>>, String> {
+        self.0
+            .lock()
+            .map_err(|_| "active fetch state is poisoned".to_owned())?
+            .requests
+            .get(&id)
+            .map(|request| Arc::clone(&request.body))
+            .ok_or_else(|| "unknown active fetch request".to_owned())
     }
 
     fn finish(&self, id: u32) {
@@ -242,6 +400,17 @@ impl ActiveFetches {
                 state.requests.get(&id).map(|request| {
                     request.cancellation.cancel();
                 })
+            })
+            .is_some()
+    }
+
+    fn discard(&self, id: u32) -> bool {
+        self.0
+            .lock()
+            .ok()
+            .and_then(|mut state| state.requests.remove(&id))
+            .map(|request| {
+                request.cancellation.cancel();
             })
             .is_some()
     }
@@ -539,7 +708,9 @@ deno_core::extension!(
         op_vixen_crypto_random_bytes,
         op_vixen_fetch_start,
         op_vixen_fetch_finish,
+        op_vixen_fetch_read,
         op_vixen_fetch_cancel,
+        op_vixen_fetch_discard,
     ],
 );
 
@@ -684,14 +855,41 @@ async fn op_vixen_fetch_finish(
         let state = state.borrow();
         state.borrow::<WebApiHost>().active_fetches.clone()
     };
-    let result = match active_fetches.take_result(id) {
+    let result = match active_fetches.take_response(id) {
         Ok(result) => result,
         Err(message) => return fetch_error(message),
     };
     let result = result
         .await
         .unwrap_or_else(|_| fetch_error("fetch worker closed without a result"));
-    active_fetches.finish(id);
+    if result.get("streamed").and_then(Value::as_bool) != Some(true) {
+        active_fetches.finish(id);
+    }
+    result
+}
+
+#[deno_core::op2]
+#[serde]
+async fn op_vixen_fetch_read(state: Rc<RefCell<OpState>>, id: u32) -> deno_core::serde_json::Value {
+    let active_fetches = {
+        let state = state.borrow();
+        state.borrow::<WebApiHost>().active_fetches.clone()
+    };
+    let body = match active_fetches.body(id) {
+        Ok(body) => body,
+        Err(message) => return fetch_error(message),
+    };
+    let result = body
+        .lock()
+        .await
+        .recv()
+        .await
+        .unwrap_or_else(|| fetch_error("fetch body worker closed without a terminal result"));
+    if result.get("done").and_then(Value::as_bool) == Some(true)
+        || result.get("ok").and_then(Value::as_bool) == Some(false)
+    {
+        active_fetches.finish(id);
+    }
     result
 }
 
@@ -700,10 +898,16 @@ fn op_vixen_fetch_cancel(state: &mut OpState, id: u32) -> bool {
     state.borrow::<WebApiHost>().active_fetches.cancel(id)
 }
 
+#[deno_core::op2(fast)]
+fn op_vixen_fetch_discard(state: &mut OpState, id: u32) -> bool {
+    state.borrow::<WebApiHost>().active_fetches.discard(id)
+}
+
 fn perform_fetch(
     context: FetchHostContext,
     request: deno_core::serde_json::Value,
     cancellation: FetchCancellation,
+    stream_output: FetchStreamOutput,
 ) -> deno_core::serde_json::Value {
     let Some(url_text) = request.get("url").and_then(Value::as_str) else {
         return fetch_error("fetch request missing URL");
@@ -1031,6 +1235,18 @@ fn perform_fetch(
         add_cache_revalidation_headers(&mut headers, candidate);
     }
 
+    let live_stream =
+        integrity.is_empty() && revalidation_candidate.is_none() && fetch_mode != FetchMode::NoCors;
+    let stream = live_stream.then(|| LiveFetchBridge {
+        output: stream_output.clone(),
+        cancellation: cancellation.clone(),
+        original_url: url.clone(),
+        method,
+        fetch_mode,
+        credentials_mode,
+        fetch_policy: fetch_policy.clone(),
+    });
+
     match fetch_http_text_blocking(
         network,
         TextRequest {
@@ -1052,6 +1268,7 @@ fn perform_fetch(
         },
         runtime_interrupt.clone(),
         cancellation.clone(),
+        stream,
     ) {
         Ok(response) => {
             let response = revalidated_response(response, revalidation_candidate);
@@ -1078,7 +1295,13 @@ fn perform_fetch(
                 fetch_policy.as_ref(),
                 &url,
             ) {
-                Ok((response, response_type)) => fetch_response(response, response_type),
+                Ok((response, response_type)) => {
+                    if stream_output.response_sent() {
+                        json!({ "ok": true })
+                    } else {
+                        fetch_response(response, response_type)
+                    }
+                }
                 Err(message) => {
                     let reason = fetch_blocked_reason(&message);
                     fetch_failure(url.as_str(), method, message, reason)
@@ -1581,12 +1804,120 @@ fn preflight_headers_allowed(
     })
 }
 
+#[derive(Clone)]
+struct LiveFetchBridge {
+    output: FetchStreamOutput,
+    cancellation: FetchCancellation,
+    original_url: Url,
+    method: Method,
+    fetch_mode: FetchMode,
+    credentials_mode: FetchCredentialsMode,
+    fetch_policy: Option<FetchPolicy>,
+}
+
+impl LiveFetchBridge {
+    fn record_event(&self, event: &NetworkEvent) {
+        self.output.record_event(event);
+    }
+
+    fn receive_redirect(&self, target: &Url) -> bool {
+        let Some(policy) = &self.fetch_policy else {
+            return true;
+        };
+        let message = if !policy.allows_connect(target) {
+            Some("fetch redirect blocked by CSP connect-src")
+        } else if policy.mixed_content_verdict(target) == MixedContentVerdict::Block {
+            Some("fetch redirect blocked as active mixed content")
+        } else {
+            None
+        };
+        let Some(message) = message else {
+            return true;
+        };
+        let reason = fetch_blocked_reason(message);
+        let _ =
+            self.output
+                .send_response(fetch_failure(target.as_str(), self.method, message, reason));
+        self.cancellation.cancel();
+        false
+    }
+
+    fn receive_response(&self, head: &ResponseHead) {
+        if self.cancellation.is_cancelled() || self.output.response_sent() {
+            return;
+        }
+        let accepted = (|| {
+            if let Some(policy) = &self.fetch_policy {
+                for event in &head.events {
+                    let NetworkEvent::Redirect { to, .. } = event else {
+                        continue;
+                    };
+                    let target =
+                        Url::parse(to).map_err(|error| format!("invalid redirect URL: {error}"))?;
+                    if !policy.allows_connect(&target) {
+                        return Err("fetch redirect blocked by CSP connect-src".to_owned());
+                    }
+                    if policy.mixed_content_verdict(&target) == MixedContentVerdict::Block {
+                        return Err("fetch redirect blocked as active mixed content".to_owned());
+                    }
+                }
+            }
+            let response = TextResponse {
+                body: String::new(),
+                headers: head.headers.clone(),
+                status: head.status,
+                final_url: head.final_url.clone(),
+                set_cookie: head.set_cookie.clone(),
+                redirects: head.redirects,
+                events: head.events.clone(),
+                request_headers: head.request_headers.clone(),
+                redirect_aliasable: head.redirect_aliasable,
+            };
+            apply_fetch_visibility(
+                response,
+                self.fetch_mode,
+                self.credentials_mode,
+                self.fetch_policy.as_ref(),
+                &self.original_url,
+            )
+        })();
+
+        match accepted {
+            Ok((response, response_type)) => {
+                self.output.set_expose_body(response_type != "opaque");
+                if !self.output.send_response(fetch_response_head(
+                    response,
+                    response_type,
+                    head.total_bytes,
+                )) {
+                    self.cancellation.cancel();
+                }
+            }
+            Err(message) => {
+                let reason = fetch_blocked_reason(&message);
+                let _ = self.output.send_response(fetch_failure(
+                    self.original_url.as_str(),
+                    self.method,
+                    message,
+                    reason,
+                ));
+                self.cancellation.cancel();
+            }
+        }
+    }
+
+    fn receive_body(&self, bytes: &[u8]) {
+        self.output.send_chunk(bytes);
+    }
+}
+
 fn fetch_http_text_blocking(
     network: Network,
     request: TextRequest,
     profile: FetchWorkerProfile,
     runtime_interrupt: RuntimeInterruptHandle,
     cancellation: FetchCancellation,
+    stream: Option<LiveFetchBridge>,
 ) -> Result<TextResponse, String> {
     let persistence_cookies = Arc::clone(&profile.cookies);
     let persistence_store = profile.store.clone();
@@ -1608,8 +1939,29 @@ fn fetch_http_text_blocking(
                     .map_err(|err| format!("network runtime unavailable: {err}"))?;
                 let mut network = network;
                 let response = rt.block_on(async {
-                    let transport =
-                        Box::pin(network.get_text_with_cookies_request(&mut jar, request));
+                    let transport = Box::pin(async {
+                        if let Some(stream) = stream {
+                            let progress = stream.clone();
+                            let redirect = stream.clone();
+                            let response = stream.clone();
+                            let body = stream;
+                            network
+                                .get_bytes_with_cookies_request_streaming(
+                                    &mut jar,
+                                    request,
+                                    move |event| progress.record_event(event),
+                                    move |target| redirect.receive_redirect(target),
+                                    move |head| response.receive_response(head),
+                                    move |bytes| body.receive_body(bytes),
+                                )
+                                .await
+                                .map(TextResponse::from)
+                        } else {
+                            network
+                                .get_text_with_cookies_request(&mut jar, request)
+                                .await
+                        }
+                    });
                     let cancel = Box::pin(cancel_rx);
                     match select(transport, cancel).await {
                         Either::Left((result, _)) => result.map_err(|err| err.to_string()),
@@ -1725,17 +2077,15 @@ fn commit_host_effect<T>(
     cancellation: &FetchCancellation,
     operation: impl FnOnce() -> Result<T, String>,
 ) -> Result<T, String> {
-    if cancellation.is_cancelled() {
+    let _gate = cancellation
+        .effect_gate
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if cancellation.cancelled.load(Ordering::Acquire) {
         return Err(HOST_CALL_INTERRUPTED.to_owned());
     }
     runtime_interrupt
-        .with_active_execution(|| {
-            if cancellation.is_cancelled() {
-                Err(HOST_CALL_INTERRUPTED.to_owned())
-            } else {
-                operation()
-            }
-        })
+        .with_fetch_generation(cancellation.runtime_generation, operation)
         .ok_or_else(|| HOST_CALL_INTERRUPTED.to_owned())?
 }
 
@@ -2339,6 +2689,28 @@ fn fetch_response(response: TextResponse, response_type: &str) -> deno_core::ser
     })
 }
 
+fn fetch_response_head(
+    response: TextResponse,
+    response_type: &str,
+    total_bytes: Option<u64>,
+) -> deno_core::serde_json::Value {
+    json!({
+        "ok": true,
+        "streamed": true,
+        "headers": response.headers,
+        "status": response.status,
+        "finalUrl": response.final_url,
+        "redirected": response.redirects > 0,
+        "responseType": response_type,
+        "totalBytes": total_bytes,
+        "events": response
+            .events
+            .into_iter()
+            .map(network_event_value)
+            .collect::<Vec<_>>(),
+    })
+}
+
 fn network_event_value(event: NetworkEvent) -> deno_core::serde_json::Value {
     match event {
         NetworkEvent::RequestStart { url, method } => json!({
@@ -2456,7 +2828,9 @@ const WEB_API_BOOTSTRAP: &str = r#"
     op_vixen_crypto_random_bytes,
     op_vixen_fetch_start,
     op_vixen_fetch_finish,
+    op_vixen_fetch_read,
     op_vixen_fetch_cancel,
+    op_vixen_fetch_discard,
   } = Deno.core.ops;
   const webidl = globalThis.__vixenWebidl;
   const textEncoder = typeof TextEncoder === 'function' ? new TextEncoder() : null;
@@ -2558,13 +2932,14 @@ const WEB_API_BOOTSTRAP: &str = r#"
   const networkEvents = [];
   let networkRequestSequence = 0;
 
-  function recordNetworkEvents(events) {
-    if (!Array.isArray(events) || events.length === 0) return;
-    const requestId = 'fetch-' + (++networkRequestSequence);
+  function recordNetworkEvents(events, requestId = undefined) {
+    if (!Array.isArray(events) || events.length === 0) return requestId;
+    requestId = requestId || 'fetch-' + (++networkRequestSequence);
     for (const event of events) {
       if (!event || typeof event !== 'object') continue;
       networkEvents.push(Object.assign({ requestId }, event));
     }
+    return requestId;
   }
 
   defineGlobal('__vixenDrainNetworkEvents', function () {
@@ -3524,16 +3899,21 @@ const WEB_API_BOOTSTRAP: &str = r#"
   }
 
   class VixenReadableStream {
-    constructor(chunks = [], onLock = null) {
+    constructor(chunks = [], onLock = null, pull = null, onCancel = null) {
       defineReadonly(this, '__vixenChunks', Array.from(chunks, (chunk) => new Uint8Array(chunk).slice()), false);
       defineData(this, '__vixenIndex', 0, false);
       defineData(this, '__vixenLocked', false, false);
+      defineData(this, '__vixenDone', false, false);
       defineReadonly(this, '__vixenOnLock', typeof onLock === 'function' ? onLock : null, false);
+      defineReadonly(this, '__vixenPull', typeof pull === 'function' ? pull : null, false);
+      defineReadonly(this, '__vixenOnCancel', typeof onCancel === 'function' ? onCancel : null, false);
     }
     get locked() { return this.__vixenLocked; }
-    cancel() {
+    cancel(reason = undefined) {
+      if (this.__vixenDone) return Promise.resolve();
       this.__vixenIndex = this.__vixenChunks.length;
-      return Promise.resolve();
+      this.__vixenDone = true;
+      return Promise.resolve(this.__vixenOnCancel ? this.__vixenOnCancel(reason) : undefined);
     }
     getReader(options = undefined) {
       if (options && options.mode !== undefined) throw new TypeError('BYOB readers are not supported for this stream');
@@ -3558,6 +3938,7 @@ const WEB_API_BOOTSTRAP: &str = r#"
     }
     tee() {
       if (this.__vixenLocked) throw new TypeError('ReadableStream is locked');
+      if (this.__vixenPull) throw new TypeError('tee() is not supported for an active network body');
       const remaining = this.__vixenChunks.slice(this.__vixenIndex);
       this.__vixenLocked = true;
       if (this.__vixenOnLock) this.__vixenOnLock();
@@ -3573,11 +3954,20 @@ const WEB_API_BOOTSTRAP: &str = r#"
     read() {
       const stream = this.__vixenStream;
       if (!stream) return Promise.reject(new TypeError('ReadableStream reader is released'));
-      if (stream.__vixenIndex >= stream.__vixenChunks.length) {
+      if (stream.__vixenIndex < stream.__vixenChunks.length) {
+        const value = stream.__vixenChunks[stream.__vixenIndex++].slice();
+        return Promise.resolve({ value, done: false });
+      }
+      if (stream.__vixenDone || !stream.__vixenPull) {
         return Promise.resolve({ value: undefined, done: true });
       }
-      const value = stream.__vixenChunks[stream.__vixenIndex++].slice();
-      return Promise.resolve({ value, done: false });
+      return Promise.resolve(stream.__vixenPull()).then((item) => {
+        if (!item || item.done) {
+          stream.__vixenDone = true;
+          return { value: undefined, done: true };
+        }
+        return { value: new Uint8Array(item.value).slice(), done: false };
+      });
     }
     cancel(reason = undefined) {
       const stream = this.__vixenStream;
@@ -3597,6 +3987,44 @@ const WEB_API_BOOTSTRAP: &str = r#"
     defineReadonly(target, '__vixenChunkSizes', Object.freeze(Array.from(chunkSizes || [], (size) => Math.max(0, Math.trunc(finiteNumber(size, 0))))), false);
     defineData(target, 'bodyUsed', false, true);
     defineReadonly(target, 'body', info.isNull ? null : new VixenReadableStream(splitBodyChunks(bytes, chunkSizes), () => { target.bodyUsed = true; }), true);
+  }
+
+  function installStreamingBody(target, requestId, networkRequestId, signal, onDone) {
+    defineReadonly(target, '__vixenBodyText', '', false);
+    defineReadonly(target, '__vixenBodyBytes', new Uint8Array(0), false);
+    defineReadonly(target, '__vixenChunkSizes', Object.freeze([]), false);
+    defineReadonly(target, '__vixenStreaming', true, false);
+    defineData(target, 'bodyUsed', false, true);
+    const finish = () => { if (typeof onDone === 'function') onDone(); };
+    const pull = () => op_vixen_fetch_read(requestId).then((result) => {
+      recordNetworkEvents(result && result.events, networkRequestId);
+      if (signal && signal.aborted) {
+        finish();
+        throw signal.reason === undefined ? new TypeError('fetch aborted') : signal.reason;
+      }
+      if (!result || !result.ok) {
+        finish();
+        throw new TypeError(result && result.message ? result.message : 'fetch body failed');
+      }
+      if (result.done) finish();
+      return result.done
+        ? { value: undefined, done: true }
+        : { value: new Uint8Array(result.value || []), done: false };
+    });
+    const cancel = () => {
+      op_vixen_fetch_cancel(requestId);
+      op_vixen_fetch_discard(requestId);
+      if (!(signal && signal.aborted)) {
+        recordNetworkEvents([{
+          type: 'failure',
+          url: target.url || '',
+          errorText: 'fetch body cancelled',
+          blockedReason: 'aborted',
+        }], networkRequestId);
+      }
+      finish();
+    };
+    defineReadonly(target, 'body', new VixenReadableStream([], () => { target.bodyUsed = true; }, pull, cancel), true);
   }
 
   function consumeBody(target, convert) {
@@ -3813,10 +4241,15 @@ const WEB_API_BOOTSTRAP: &str = r#"
       defineReadonly(this, 'ok', status >= 200 && status <= 299, true);
       defineReadonly(this, 'statusText', (init && init.statusText) || '', true);
       defineReadonly(this, 'headers', headers, true);
-      installBody(this, info, init && init.bodyChunks);
+      if (init && init.bodyRequestId !== undefined) {
+        installStreamingBody(this, init.bodyRequestId, init.networkRequestId, init.signal, init.onBodyDone);
+      } else {
+        installBody(this, info, init && init.bodyChunks);
+      }
     }
     clone() {
       if (this.bodyUsed) throw new TypeError('Cannot clone a consumed Response body');
+      if (this.__vixenStreaming) throw new TypeError('Cannot clone an active network body');
       return new VixenResponse(this.__vixenBodyBytes, { status: this.status, statusText: this.statusText, type: this.type, headers: this.headers, url: this.url, redirected: this.redirected, bodyChunks: this.__vixenChunkSizes });
     }
     text() { return consumeBody(this, textFromBytes); }
@@ -3868,27 +4301,60 @@ const WEB_API_BOOTSTRAP: &str = r#"
     if (!started || !started.ok) {
       return Promise.reject(new TypeError(started && started.message ? started.message : 'fetch failed to start'));
     }
-    const abort = () => { op_vixen_fetch_cancel(started.id); };
+    let response = null;
+    let networkRequestId;
+    let bodyFinished = false;
+    const finishBody = () => {
+      if (bodyFinished) return;
+      bodyFinished = true;
+      if (request.signal) request.signal.removeEventListener('abort', abort);
+    };
+    const abort = () => {
+      op_vixen_fetch_cancel(started.id);
+      if (response) {
+        op_vixen_fetch_discard(started.id);
+        recordNetworkEvents([{
+          type: 'failure',
+          url: response.url || request.url,
+          errorText: 'fetch aborted',
+          blockedReason: 'aborted',
+        }], networkRequestId);
+        finishBody();
+      }
+    };
     if (request.signal) request.signal.addEventListener('abort', abort, { once: true });
     const pending = op_vixen_fetch_finish(started.id).then((result) => {
-      if (request.signal) request.signal.removeEventListener('abort', abort);
-      recordNetworkEvents(result && result.events);
       if (request.signal && request.signal.aborted) {
+        op_vixen_fetch_discard(started.id);
+        const events = Array.isArray(result && result.events)
+          ? result.events.filter((event) => event && event.type === 'request')
+          : [{ type: 'request', url: request.url, method: request.method }];
+        events.push({ type: 'failure', url: request.url, errorText: 'fetch aborted', blockedReason: 'aborted' });
+        recordNetworkEvents(events);
+        finishBody();
         throw request.signal.reason === undefined ? new TypeError('fetch aborted') : request.signal.reason;
       }
+      networkRequestId = recordNetworkEvents(result && result.events);
       if (!result || !result.ok) {
+        finishBody();
         throw new TypeError(result && result.message ? result.message : 'fetch failed');
       }
-      return new VixenResponse(result.responseType === 'opaque' ? null : result.body, {
+      response = new VixenResponse(result.responseType === 'opaque' ? null : result.body, {
         status: result.status,
         type: result.responseType,
         headers: result.headers,
         url: result.finalUrl,
         redirected: result.redirected,
         bodyChunks: result.bodyChunks,
+        bodyRequestId: result.streamed ? started.id : undefined,
+        networkRequestId,
+        signal: request.signal,
+        onBodyDone: finishBody,
       });
+      if (!result.streamed) finishBody();
+      return response;
     }, (error) => {
-      if (request.signal) request.signal.removeEventListener('abort', abort);
+      finishBody();
       if (request.signal && request.signal.aborted) {
         throw request.signal.reason === undefined ? new TypeError('fetch aborted') : request.signal.reason;
       }
@@ -3993,21 +4459,31 @@ const WEB_API_BOOTSTRAP: &str = r#"
         this.responseURL = res.url || '';
         this.__vixenResponseHeaders = new VixenHeaders(res.headers);
         setXhrReadyState(this, 2);
-        const total = res.__vixenBodyBytes.length;
+        const declaredTotal = Number(res.headers.get('content-length'));
+        const total = Number.isFinite(declaredTotal) && declaredTotal >= 0 ? declaredTotal : undefined;
         let loaded = 0;
-        for (const chunkSize of res.__vixenChunkSizes) {
-          loaded = Math.min(total, loaded + chunkSize);
+        let loading = false;
+        const chunks = [];
+        const reader = res.body && res.body.getReader();
+        const read = () => reader ? reader.read().then((item) => {
+          if (item.done) return;
+          if (!loading) {
+            loading = true;
+            setXhrReadyState(this, 3);
+          }
+          chunks.push(item.value);
+          loaded += item.value.length;
           fireXhrProgress(this, 'progress', loaded, total);
-        }
-        if (loaded < total) fireXhrProgress(this, 'progress', total, total);
-        return res.text().then((text) => {
+          return read();
+        }) : Promise.resolve();
+        return read().then(() => {
           if (this.__vixenAborted || generation !== this.__vixenSendGeneration) return;
+          const text = textFromBytes(concatBytes(chunks));
           this.responseText = text;
           this.response = text;
-          setXhrReadyState(this, 3);
           setXhrReadyState(this, 4);
-          fireXhrProgress(this, 'load', total, total);
-          fireXhrProgress(this, 'loadend', total, total);
+          fireXhrProgress(this, 'load', loaded, total);
+          fireXhrProgress(this, 'loadend', loaded, total);
           if (generation === this.__vixenSendGeneration) this.__vixenController = null;
         });
       }).catch((err) => {
@@ -5003,6 +5479,29 @@ mod tests {
         assert_eq!(
             apply_fetch_integrity(response, "sha256-AAAA").unwrap_err(),
             "fetch blocked by integrity mismatch (sha256)"
+        );
+    }
+
+    #[test]
+    fn fetch_effects_commit_while_idle_but_not_after_interrupt_or_cancel() {
+        let interrupt = RuntimeInterruptHandle::default();
+        let cancellation = FetchCancellation::new(interrupt.clone());
+
+        assert_eq!(
+            commit_host_effect(&interrupt, &cancellation, || Ok::<_, String>(42)).unwrap(),
+            42
+        );
+        assert!(!interrupt.interrupt());
+        assert_eq!(
+            commit_host_effect(&interrupt, &cancellation, || Ok::<_, String>(7)).unwrap_err(),
+            HOST_CALL_INTERRUPTED
+        );
+
+        let cancellation = FetchCancellation::new(interrupt.clone());
+        cancellation.cancel();
+        assert_eq!(
+            commit_host_effect(&interrupt, &cancellation, || Ok::<_, String>(7)).unwrap_err(),
+            HOST_CALL_INTERRUPTED
         );
     }
 }

@@ -115,6 +115,22 @@ pub struct ByteResponse {
     pub redirect_aliasable: bool,
 }
 
+/// Final response metadata available before the bounded body is consumed.
+/// Streaming callers use this as the response-policy trust boundary while the
+/// transport continues to own redirects, cookies, body limits, and completion.
+#[derive(Debug, Clone)]
+pub struct ResponseHead {
+    pub headers: BTreeMap<String, String>,
+    pub status: u16,
+    pub final_url: String,
+    pub set_cookie: Vec<String>,
+    pub redirects: u32,
+    pub events: Vec<NetworkEvent>,
+    pub request_headers: BTreeMap<String, String>,
+    pub redirect_aliasable: bool,
+    pub total_bytes: Option<u64>,
+}
+
 impl ByteResponse {
     /// Case-insensitive header lookup.
     pub fn header(&self, name: &str) -> Option<&str> {
