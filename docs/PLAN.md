@@ -80,8 +80,10 @@ controlled host proof rather than an IME or assistive-technology matrix.
    heads now resolve before completion into an eight-message backpressured body
    stream; body terminal state still owns cache/cookie commit and exact
    cancellation. Integrity, 304 revalidation, and opaque responses remain
-   buffered. Continue with exact source/policy provenance for direct classic and
-   automation dynamic imports plus import attributes, which remain fail-closed.
+   buffered. Direct classic and automation dynamic imports now carry exact
+   source/document policy, retained import maps, profile state, graph limits,
+   and cancellation through the same loader. Continue with supported import
+   attributes; unsupported keys and types remain fail-closed.
 
 ## Post-stabilization priorities
 

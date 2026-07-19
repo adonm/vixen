@@ -933,6 +933,21 @@ prove response-before-first-chunk, first-read-before-completion, stable split
 diagnostics, post-response abort/disconnect, redirect-policy rejection before a
 second request, final-head rejection, and integrity buffering.
 
+**Thirteenth A2 checkpoint:** dynamic `import()` authored by parser classic
+scripts and BrowserCore automation evaluations now enters the same retained
+module loader with an explicit source URL and document policy. Inline classics
+receive distinct document-base fragment identities and the import map available
+at their parser position; redirected external classics execute under the
+accepted final URL, so relative imports cannot fall back to the original
+request. Automation uses the current document base, CSP/bypass decision, origin,
+and retained import map. Every path receives same-origin module credentials,
+shared profile/cache state and numeric request ids, the existing 64-load graph
+cap, generation cancellation, response policy, and terminal diagnostics.
+Focused file tests prove mapped classic and automation imports, while a
+BrowserCore redirect test proves a classic dependency resolves from the final
+URL and settles navigation under one numeric module request id. Import
+attributes remain fail closed pending destination-specific response policy.
+
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
 
@@ -1086,11 +1101,11 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue A2 module provenance:** carry exact source URL, document policy,
-   credentials/profile state, graph limits, and cancellation into dynamic
-   imports authored by classic scripts or automation, then admit supported
-   module import attributes through the same loader. Keep each path fail-closed
-   until it can preserve the existing request-id and terminal lifecycle.
+1. **Continue A2 module provenance:** admit supported module import attributes
+   through the same source/policy/profile/cancellation boundary now used by
+   parser modules, classics, and automation. Keep unsupported attribute keys and
+   types fail closed, and preserve the existing request-id and terminal
+   lifecycle.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →
    newer-commit evidence green while widening shared-core behavior; do not

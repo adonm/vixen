@@ -50,7 +50,9 @@ CORS enforced before V8 exposure and eligible HTTP(S) cache entries
 conditionally revalidated under current policy. One bounded pre-module inline
 import map now resolves through the same policy-bound loader. Page-module
 dynamic imports retain bounded graph provenance and cancellation across later
-roots/tasks. A shared bounded private-cache decision now gives page fetch/XHR and
+roots/tasks. Parser classics and BrowserCore automation now also register exact
+source/document policy before dynamic import, including accepted redirect URLs
+and retained import maps. A shared bounded private-cache decision now gives page fetch/XHR and
 module loads `Date`/`Age` plus `max-age`/`Expires` freshness, effective request
 directives, simultaneous exact `Vary` variants, and bounded permanent
 same-origin redirect aliases. The transport now performs bounded incremental
@@ -60,10 +62,9 @@ BrowserCore/C ABI, and CDP. Page fetch/XHR now use a bounded asynchronous realm 
 late profile effects. Ordinary policy-accepted response heads now resolve before
 body completion and feed an eight-message backpressured stream; abort after
 resolution rejects body reads with the same JS reason, while integrity, 304
-revalidation, and opaque responses remain buffered. Continue A2 by carrying
-exact source URL, policy, profile, and cancellation provenance into direct
-classic/automation dynamic imports and import attributes; keep them fail-closed
-until that provenance exists.
+revalidation, and opaque responses remain buffered. Continue A2 by admitting
+supported import attributes through that exact source, policy, profile, limit,
+and cancellation provenance; keep unsupported keys and types fail-closed.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

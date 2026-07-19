@@ -197,7 +197,7 @@ explicit until promoted by measured tests.
 
 - `vixen-net` policy and transport tests are green, including URL/private-host,
   cookies, CSP, CORS, mixed content, referrer, integrity, nosniff, and cache rules.
-- Static ES-module dependencies use the shared external-resource boundary with
+- ES-module dependencies use the shared external-resource boundary with
   BrowserCore request ids, redirects/final URLs, policy, profile cookies/cache,
   bounded diagnostics, graph limits, and cancellation before V8 evaluation.
 - Cross-origin module roots, dependencies, and redirects pass CORS before V8
@@ -211,11 +211,11 @@ explicit until promoted by measured tests.
   exact/prefix/URL-like and scoped dependencies through that same policy-bound
   loader; external/multiple/late/integrity maps and import attributes fail
   closed without partial registration.
-- Dynamic imports originating in page modules retain exact graph/import-map/
-  credentials policy across later roots and tasks, share cumulative bounds,
-  resolve redirected children from accepted final URLs, and abort without late
-  DOM/profile/lifecycle effects. Direct classic/automation imports remain
-  unsupported until they carry exact source provenance.
+- Dynamic imports originating in page modules, parser classics, and BrowserCore
+  automation retain exact source/graph/import-map/credentials policy, share
+  cumulative bounds, resolve redirected children from accepted final URLs, and
+  abort without late DOM/profile/lifecycle effects. Import attributes remain
+  unsupported until destination-specific response policy is proved.
 - Policy runs before resource bytes/handles cross to Flutter.
 - redb profile tables preserve partitioning, bounds, recovery, clear-data, and
   reopen behavior.

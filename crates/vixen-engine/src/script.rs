@@ -111,6 +111,7 @@ pub(crate) struct PageScriptRunner {
     csp: vixen_net::csp::ContentSecurityPolicy,
     origin: vixen_net::Origin,
     bypass_csp: bool,
+    next_inline_classic: u64,
     next_inline_module: u64,
     import_map: Option<import_maps::PageImportMap>,
     import_map_seen: bool,
@@ -119,7 +120,10 @@ pub(crate) struct PageScriptRunner {
 
 pub(crate) enum PreparedPageScript {
     Skip,
-    Inline(String),
+    Inline {
+        source: String,
+        request: Box<ExternalPageScript>,
+    },
     InlineModule {
         source: String,
         request: Box<ExternalPageScript>,
@@ -228,6 +232,42 @@ impl ExternalPageScript {
 
     fn import_map(&self) -> Option<import_maps::PageImportMap> {
         self.import_map.clone()
+    }
+
+    fn dynamic_import_root(&self) -> Self {
+        let mut request = self.clone();
+        request.module = true;
+        request.module_credentials = ModuleCredentialsMode::SameOrigin;
+        request
+    }
+
+    fn automation(
+        page: &Page,
+        bypass_csp: bool,
+        import_map: Option<import_maps::PageImportMap>,
+    ) -> Result<Self, EngineError> {
+        let mut url = url::Url::parse(&page.document_base_uri())
+            .or_else(|_| url::Url::parse(page.url()))
+            .map_err(|error| {
+                EngineError::script(
+                    codes::SCRIPT_EVAL,
+                    format!("automation source URL is invalid: {error}"),
+                )
+            })?;
+        url.set_fragment(Some("vixen-automation"));
+        Ok(Self {
+            url,
+            csp: (!bypass_csp).then(|| page.csp().clone()),
+            origin: page_origin(page),
+            nonce: None,
+            context_trustworthy: url::Url::parse(page.url())
+                .ok()
+                .as_ref()
+                .is_some_and(vixen_net::referrer_policy::is_potentially_trustworthy),
+            module: true,
+            module_credentials: ModuleCredentialsMode::SameOrigin,
+            import_map,
+        })
     }
 
     fn module_dependency(&self, url: url::Url) -> Result<Self, &'static str> {
@@ -762,11 +802,38 @@ impl JsRuntime {
         src: &str,
         page: &Rc<RefCell<Page>>,
     ) -> Result<JsValue, EngineError> {
-        {
+        let request = {
             let page = page.borrow();
-            self.ensure_realm(Some(&page))?;
-        }
-        let value = match self.execute_in_current_realm(src) {
+            ExternalPageScript::automation(&page, false, self.module_loader.document_import_map())?
+        };
+        self.evaluate_with_shared_page_mut_request(src, page, &request)
+    }
+
+    pub(crate) fn evaluate_for_automation_with_shared_page_mut(
+        &mut self,
+        src: &str,
+        page: &Rc<RefCell<Page>>,
+        bypass_csp: bool,
+    ) -> Result<JsValue, EngineError> {
+        let request = {
+            let page = page.borrow();
+            ExternalPageScript::automation(
+                &page,
+                bypass_csp,
+                self.module_loader.document_import_map(),
+            )?
+        };
+        self.evaluate_with_shared_page_mut_request(src, page, &request)
+    }
+
+    fn evaluate_with_shared_page_mut_request(
+        &mut self,
+        src: &str,
+        page: &Rc<RefCell<Page>>,
+        request: &ExternalPageScript,
+    ) -> Result<JsValue, EngineError> {
+        self.ensure_realm(Some(&page.borrow()))?;
+        let value = match self.execute_in_current_realm(src, Some(request)) {
             Ok(value) => value,
             Err(error) => {
                 self.discard_dom_mutations();
@@ -782,7 +849,7 @@ impl JsRuntime {
         const MAX_SCROLL_SYNC_ROUNDS: usize = 8;
         for _ in 0..MAX_SCROLL_SYNC_ROUNDS {
             let source = dom::element_scroll_state_source(&page.borrow(), true);
-            let result = self.execute_in_current_realm(&source);
+            let result = self.execute_in_current_realm(&source, Some(request));
             if let Err(error) = result {
                 self.discard_dom_mutations();
                 return Err(error);
@@ -824,7 +891,7 @@ impl JsRuntime {
         const MAX_SCROLL_SYNC_ROUNDS: usize = 8;
         for _ in 0..MAX_SCROLL_SYNC_ROUNDS {
             let source = dom::element_scroll_state_source(&page.borrow(), true);
-            if let Err(error) = self.execute_in_current_realm(&source) {
+            if let Err(error) = self.execute_in_current_realm(&source, Some(request)) {
                 self.discard_dom_mutations();
                 return Err(error);
             }
@@ -840,6 +907,15 @@ impl JsRuntime {
             codes::SCRIPT_EVAL,
             "element scroll synchronization exceeded the mutation round limit",
         ))
+    }
+
+    pub(crate) fn evaluate_classic_with_shared_page_mut(
+        &mut self,
+        source: &str,
+        request: &ExternalPageScript,
+        page: &Rc<RefCell<Page>>,
+    ) -> Result<JsValue, EngineError> {
+        self.evaluate_with_shared_page_mut_request(source, page, request)
     }
 
     /// Set browser-controlled extra HTTP headers for subsequent runtime fetches.
@@ -922,8 +998,10 @@ impl JsRuntime {
         while let Some(item) = runner.prepare_next(page) {
             match item {
                 PreparedPageScript::Skip => {}
-                PreparedPageScript::Inline(source) => {
-                    self.evaluate_with_page_mut(&source, page)?;
+                PreparedPageScript::Inline { source, request } => {
+                    self.ensure_realm(Some(&*page))?;
+                    self.execute_in_current_realm(&source, Some(&request))?;
+                    self.apply_dom_mutations(page)?;
                     executed += 1;
                 }
                 PreparedPageScript::InlineModule { source, request } => {
@@ -1142,16 +1220,36 @@ impl JsRuntime {
         page: Option<&Page>,
     ) -> Result<JsValue, EngineError> {
         self.ensure_realm(page)?;
-
-        self.execute_in_current_realm(src)
+        let request = page
+            .map(|page| {
+                ExternalPageScript::automation(
+                    page,
+                    false,
+                    self.module_loader.document_import_map(),
+                )
+            })
+            .transpose()?;
+        self.execute_in_current_realm(src, request.as_ref())
     }
 
-    fn execute_in_current_realm(&mut self, src: &str) -> Result<JsValue, EngineError> {
+    fn execute_in_current_realm(
+        &mut self,
+        src: &str,
+        request: Option<&ExternalPageScript>,
+    ) -> Result<JsValue, EngineError> {
+        if let Some(request) = request {
+            self.module_loader
+                .begin_graph(request.dynamic_import_root())
+                .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))?;
+        }
+        let source_name = request
+            .map(|request| request.url().to_string())
+            .unwrap_or_else(|| "inline.js".to_owned());
         let result = {
             let runtime = self.runtime.as_mut().expect("realm initialised");
             runtime::execute_script(
                 runtime,
-                "inline.js",
+                source_name,
                 src.to_owned(),
                 &self.runtime_interrupt,
                 self.event_loop_executor
@@ -1389,6 +1487,7 @@ impl PageScriptRunner {
             csp: page.csp().clone(),
             origin: page_origin(page),
             bypass_csp,
+            next_inline_classic: 0,
             next_inline_module: 0,
             import_map: None,
             import_map_seen: false,
@@ -1412,7 +1511,35 @@ impl PageScriptRunner {
                 }
                 DocumentScriptItem::InlineClassicScript(script) => {
                     if self.inline_allowed(&script) {
-                        return Some(PreparedPageScript::Inline(script.source));
+                        self.next_inline_classic = self.next_inline_classic.saturating_add(1);
+                        let mut url = url::Url::parse(&page.document_base_uri())
+                            .or_else(|_| url::Url::parse(page.url()))
+                            .unwrap_or_else(|_| {
+                                url::Url::parse("about:blank")
+                                    .expect("static classic-script base URL")
+                            });
+                        url.set_fragment(Some(&format!(
+                            "vixen-inline-classic-{}",
+                            self.next_inline_classic
+                        )));
+                        return Some(PreparedPageScript::Inline {
+                            source: script.source,
+                            request: Box::new(ExternalPageScript {
+                                url,
+                                csp: (!self.bypass_csp).then(|| self.csp.clone()),
+                                origin: self.origin.clone(),
+                                nonce: script.nonce,
+                                context_trustworthy: url::Url::parse(page.url())
+                                    .ok()
+                                    .as_ref()
+                                    .is_some_and(
+                                        vixen_net::referrer_policy::is_potentially_trustworthy,
+                                    ),
+                                module: false,
+                                module_credentials: ModuleCredentialsMode::SameOrigin,
+                                import_map: self.import_map.clone(),
+                            }),
+                        });
                     }
                     return Some(PreparedPageScript::Skip);
                 }
@@ -1504,11 +1631,7 @@ impl PageScriptRunner {
             } else {
                 ModuleCredentialsMode::SameOrigin
             },
-            import_map: if module {
-                self.import_map.clone()
-            } else {
-                None
-            },
+            import_map: self.import_map.clone(),
         };
         if request.allows_url(request.url()) {
             PreparedPageScript::External(Box::new(request))
@@ -6390,11 +6513,11 @@ mod tests {
         assert_eq!(
             runtime
                 .evaluate_with_page_mut(
-                    "import('./child.js').then(() => false, () => true)",
+                    "import('./child.js').then(module => module.child)",
                     &mut page,
                 )
                 .unwrap(),
-            JsValue::Bool(true)
+            JsValue::Int32(41)
         );
         assert_eq!(
             runtime
@@ -6405,6 +6528,69 @@ mod tests {
                 .count(),
             2
         );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn classic_and_automation_dynamic_imports_use_document_provenance() {
+        let directory = std::env::temp_dir().join(format!(
+            "vixen-classic-dynamic-import-{}-{}",
+            std::process::id(),
+            next_storage_session_id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("classic-child.js"),
+            "export const value = 40;",
+        )
+        .unwrap();
+        std::fs::write(
+            directory.join("automation-child.js"),
+            "export const value = 2;",
+        )
+        .unwrap();
+        let page_url = url::Url::from_file_path(directory.join("page.html"))
+            .unwrap()
+            .to_string();
+        let mut page = Page::from_html(
+            page_url,
+            "<script type='importmap'>{\"imports\":{\"classic-child\":\"./classic-child.js\",\"automation-child\":\"./automation-child.js\"}}</script>\
+             <script>globalThis.__loadClassicChild = () => import('classic-child').then(module => module.value);</script>",
+        )
+        .unwrap();
+        let mut runtime = JsRuntime::new().unwrap();
+
+        assert_eq!(runtime.execute_page_scripts(&mut page).unwrap(), 1);
+        assert_eq!(
+            runtime
+                .evaluate_with_page_mut("__loadClassicChild()", &mut page)
+                .unwrap(),
+            JsValue::Int32(40)
+        );
+        assert_eq!(
+            runtime
+                .evaluate_with_page_mut(
+                    "import('automation-child').then(module => module.value)",
+                    &mut page,
+                )
+                .unwrap(),
+            JsValue::Int32(2)
+        );
+        let events = runtime.drain_network_events().unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, JsNetworkEvent::Request { .. }))
+                .count(),
+            2
+        );
+        assert!(events.iter().all(|event| match event {
+            JsNetworkEvent::Request { url, .. } | JsNetworkEvent::Response { url, .. } => {
+                url.starts_with("file:")
+            }
+            _ => true,
+        }));
 
         std::fs::remove_dir_all(directory).unwrap();
     }

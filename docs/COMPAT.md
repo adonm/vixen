@@ -252,8 +252,11 @@ maps fail closed; current-standard multiple-map merging remains unsupported.
 Dynamic `import()` from parser-discovered page modules, including later retained
 module functions and document tasks, keeps the originating graph's import map,
 credentials/policy, cumulative limits, redirect base, cache/profile effects, and
-cancellation. Direct classic/automation dynamic imports and import attributes
-remain fail-closed. Child frame globals and documents remain unavailable rather
+cancellation. Parser classics and BrowserCore automation evaluations now use
+the same loader with exact source/document policy: mapped file imports execute,
+redirected classics resolve relative imports from the accepted final URL, and
+numeric request ids plus existing graph/cancellation bounds remain intact.
+Import attributes remain fail-closed. Child frame globals and documents remain unavailable rather
 than fabricated until A3.
 
 Page `fetch()`/XHR and module resources now share bounded private-cache

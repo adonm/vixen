@@ -340,7 +340,10 @@ JS uses `deno_core` directly:
 - parser scripts, static/dynamic module graphs, tasks, and microtasks join the
   document lifecycle. Every module URL retains its originating bounded graph
   policy; dynamic descendants cannot inherit whichever root happened to run
-  last, and cancellation generation-checks profile effects.
+  last, and cancellation generation-checks profile effects. Parser classics use
+  distinct document-base source identities, redirected classics use their
+  accepted final URL, and automation registers the current document base,
+  CSP/bypass decision, origin, and retained import map before dynamic import.
 
 The obsolete `Page` string-expression and headless classifier shims are deleted;
 all evaluation adapters use `BrowserCore`/`JsRuntime`.

@@ -3193,10 +3193,21 @@ impl BrowserCore {
                 .runtime
                 .with_entered_isolate(|runtime| {
                     let item_result = match step {
-                        NavigationScriptStep::Host(source)
-                        | NavigationScriptStep::Author(PreparedPageScript::Inline(source)) => Some(
+                        NavigationScriptStep::Host(source) => Some(
                             runtime
                                 .evaluate_with_shared_page_mut(&source, &context.page)
+                                .map(|_| ()),
+                        ),
+                        NavigationScriptStep::Author(PreparedPageScript::Inline {
+                            source,
+                            request,
+                        }) => Some(
+                            runtime
+                                .evaluate_classic_with_shared_page_mut(
+                                    &source,
+                                    &request,
+                                    &context.page,
+                                )
                                 .map(|_| ()),
                         ),
                         NavigationScriptStep::Author(PreparedPageScript::InlineModule {
@@ -3508,9 +3519,7 @@ impl BrowserCore {
             );
             return;
         };
-        if pending.request.is_module()
-            && let Some(source_url) = source_url
-        {
+        if let Some(source_url) = source_url {
             pending.request = pending.request.with_url(source_url);
         }
         if let Err(error) = persist_profile_cookies(&self.store, &requested_urls, &cookie_delta) {
@@ -3592,7 +3601,11 @@ impl BrowserCore {
                         )
                     } else {
                         runtime
-                            .evaluate_with_shared_page_mut(&source, &context.page)
+                            .evaluate_classic_with_shared_page_mut(
+                                &source,
+                                &pending.request,
+                                &context.page,
+                            )
                             .map(|_| ())
                     };
                     let interrupted = item_result.as_ref().is_err_and(is_script_interrupted);
@@ -4096,12 +4109,17 @@ impl BrowserCore {
             ));
         }
         let runtime_slot = context.runtime_slot;
+        let bypass_csp = context.config.bypass_csp;
         let (contexts, runtime_slots) = (&mut self.contexts, &mut self.runtime_slots);
         let context = contexts.get_mut(&context_id).expect("context checked");
         let evaluation = runtime_slots[runtime_slot]
             .runtime
             .with_entered_isolate(|runtime| {
-                let value = match runtime.evaluate_with_shared_page_mut(&source, &context.page) {
+                let value = match runtime.evaluate_for_automation_with_shared_page_mut(
+                    &source,
+                    &context.page,
+                    bypass_csp,
+                ) {
                     Ok(value) => value,
                     Err(error) => {
                         discard_runtime_outputs(runtime);
@@ -9786,6 +9804,87 @@ mod tests {
             state(&mut handle, context_id).title.as_deref(),
             Some("redirect-42")
         );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn redirected_classic_dynamic_import_uses_accepted_final_url() {
+        let server = GatedHttpServer::start(3);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/redirected-classic-page");
+        config.document_overrides.insert(
+            page_url.clone(),
+            "<!doctype html><title>initial</title><script src='/classic-entry.js'></script>"
+                .to_owned(),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &page_url);
+        let initial = server.request();
+        assert_eq!(initial.path, "/classic-entry.js");
+        initial
+            .respond
+            .send(redirect_response("/classic/final.js"))
+            .unwrap();
+        initial
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("classic redirect response watchdog");
+
+        let final_script = server.request();
+        assert_eq!(final_script.path, "/classic/final.js");
+        final_script
+            .respond
+            .send(script_response(
+                "import('./dependency.js').then(module => { document.title = `classic-${module.value}`; });",
+                None,
+            ))
+            .unwrap();
+        final_script
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("final classic response watchdog");
+
+        let dependency = server.request();
+        assert_eq!(dependency.path, "/classic/dependency.js");
+        dependency
+            .respond
+            .send(script_response("export const value = 42;", None))
+            .unwrap();
+        dependency
+            .completed
+            .recv_timeout(Duration::from_secs(10))
+            .expect("classic dynamic dependency watchdog");
+
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("classic-42")
+        );
+        let module_request_ids = events
+            .iter()
+            .filter_map(|event| match event {
+                BrowserEvent::RuntimeEffects { effects, .. } => Some(&effects.network),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|event| match event {
+                RuntimeNetworkEvent::Request {
+                    request_id, url, ..
+                } if url.ends_with("/classic/dependency.js") => Some(request_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(module_request_ids.len(), 1);
+        assert!(module_request_ids[0].parse::<u64>().is_ok());
         assert_exactly_one_terminal_phase(&events, navigation_id);
 
         server.join();

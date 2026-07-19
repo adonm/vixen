@@ -134,6 +134,16 @@ impl PageModuleLoader {
         Ok(())
     }
 
+    pub(super) fn document_import_map(&self) -> Option<super::import_maps::PageImportMap> {
+        let state = self.state.lock().ok()?;
+        state.modules.values().find_map(|graph| {
+            graph
+                .lock()
+                .ok()
+                .and_then(|graph| graph.request.import_map())
+        })
+    }
+
     pub(super) fn has_pending_loads(&self) -> bool {
         self.state
             .lock()

@@ -235,7 +235,7 @@ pub(super) fn new_deno_runtime(
 
 pub(super) fn execute_script(
     runtime: &mut DenoJsRuntime,
-    name: &'static str,
+    name: String,
     source: String,
     interrupt: &RuntimeInterruptHandle,
     executor: &tokio::runtime::Runtime,

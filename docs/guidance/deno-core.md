@@ -107,8 +107,9 @@ Current state:
   different root executes. Module-owned delayed functions/tasks pump dynamic
   work to bounded event-loop quiescence; interruption aborts tracked transport,
   generation-rejects profile effects, and rebuilds the page realm after leaving
-  the entered isolate. Direct classic/automation dynamic imports and import
-  attributes remain fail closed because they lack this source provenance.
+  the entered isolate. Direct classic/automation dynamic imports now register
+  equivalent source/document policy provenance; import attributes remain fail
+  closed until their destination response policy is explicit.
 
 Rules:
 
