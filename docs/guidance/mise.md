@@ -13,6 +13,35 @@ The intended workflow is an activated shell where `cargo`, `rustfmt`, `clippy`,
 `rustup`, `cargo-binstall`, `hk`, and `just` come from the versions pinned in
 `.mise.toml`.
 
+## Linux environment
+
+Use an x86_64 Ubuntu 24.04 Distrobox as the primary Linux development
+environment:
+
+```sh
+distrobox create \
+  --name flutter-dev \
+  --image quay.io/toolbx/ubuntu-toolbox:24.04
+distrobox enter flutter-dev
+```
+
+The versioned image matches Vixen's explicit Ubuntu 24.04 host CI jobs. Do not
+replace it with `latest`; Ubuntu 26.04 and Fedora are additional compatibility
+checks rather than the development gate. Distrobox shares the host home by
+default, so an existing Mise installation and this checkout remain available.
+Do not add project activation blindly to the shared shell startup files.
+
+Install the native Linux build and host-smoke dependencies once inside the box:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y --no-install-recommends \
+  at-spi2-core binutils build-essential cage clang cmake curl dbus-daemon git \
+  gir1.2-atspi-2.0 ibus ibus-gtk4 ibus-mozc libegl-dev libgl-dev \
+  libgtk-4-dev libsecret-1-dev libwayland-dev mesa-vulkan-drivers ninja-build \
+  pkg-config python3 python3-gi ripgrep wayland-protocols wtype
+```
+
 ## First setup
 
 ```sh

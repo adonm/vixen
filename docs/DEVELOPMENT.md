@@ -84,6 +84,11 @@ calling that single recipe.
 
 ### GUI shell environment blockers
 
+Use the version-pinned Ubuntu 24.04 Distrobox described in
+[`guidance/mise.md`](guidance/mise.md) as the primary Linux development and
+host-smoke environment. Fedora and Ubuntu 26.04 runs are compatibility evidence
+only unless the Linux baseline and CI move in the same reviewed change.
+
 The Linux Flutter project and focused gate are checked in. Install the exact
 Flutter `3.47.0-1.0.pre-160` flutter-dev archive declared in `.mise.toml`, then
 run its gate. The pin supplies Dart 3.14, the GTK4 Linux embedder, and required
@@ -98,7 +103,9 @@ just gate-flutter-shell
 `just build-flutter-linux` and `just run-flutter` additionally need CMake, Ninja,
 pkg-config, and GTK4 development headers. Missing host packages are an
 environment limitation; they do not turn Rust or Dart-only checks into Linux
-bundle proof. The debug bundle has been reproduced in a Fedora 43 container.
+bundle proof. The direct build and run recipes use release mode because the
+immutable flutter-dev archive contains the reviewed GTK4 release engine; the
+pinned GNOME builder remains authoritative for distributable artifacts.
 The Linux runner requires native Wayland. `just run-flutter-cage` additionally
 uses Cage with wlroots' headless backend for isolated local Wayland testing;
 X11 and XWayland are intentionally unsupported.

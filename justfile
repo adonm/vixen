@@ -66,6 +66,10 @@ _flutter-sdk-present:
     command -v flutter >/dev/null || { printf '%s\n' "mise Flutter SDK missing from PATH; activate mise and run 'just setup-flutter'" >&2; exit 1; }
     test "$(flutter --version --machine | python3 -c 'import json, sys; value = json.load(sys.stdin); print(value["frameworkRevision"], value["engineRevision"], value["engineContentHash"])')" = "{{ FLUTTER_REVISION }} {{ FLUTTER_ENGINE }} {{ FLUTTER_ENGINE_CONTENT }}" || { printf '%s\n' "Flutter SDK revision mismatch; run 'mise install http:flutter'" >&2; exit 1; }
 
+_prepare-flutter-shell: _flutter-sdk-present
+    cd flutter/vixen_shell && flutter pub get --enforce-lockfile
+    python3 scripts/prepare-flutter-gtk4.py flutter/vixen_shell
+
 # --- Build / check -----------------------------------------------------------
 
 # Type-check every Rust workspace target and feature.
@@ -107,32 +111,33 @@ gate-native-abi:
 
 # Test-only R3 Canvas/Paragraph/PNG formatter and exact scene evidence with the
 # pinned engine asked to use Impeller. This does not change production frames.
-test-flutter-formatter-impeller: _flutter-sdk-present
-    cd flutter/vixen_shell && FLUTTER_TEST_IMPELLER=true flutter test --enable-impeller --dart-define=VIXEN_REQUIRE_IMPELLER=true test/formatter_test.dart test/renderer_broker_service_test.dart
+test-flutter-formatter-impeller: _prepare-flutter-shell
+    cd flutter/vixen_shell && FLUTTER_TEST_IMPELLER=true flutter test --no-pub --enable-impeller --dart-define=VIXEN_REQUIRE_IMPELLER=true test/formatter_test.dart test/renderer_broker_service_test.dart
 
 # Dart/widget/native bridge evidence for the checked-in Linux Flutter shell.
 # The native smoke test loads the exact cdylib built by gate-native-abi.
 gate-flutter-shell: _flutter-sdk-present gate-native-abi test-flutter-formatter-impeller
     cd flutter/vixen_shell && dart format --output=none --set-exit-if-changed lib test
-    cd flutter/vixen_shell && flutter analyze
-    cd flutter/vixen_shell && VIXEN_FFI_LIBRARY="{{ justfile_directory() }}/target/debug/libvixen_ffi.so" flutter test
+    cd flutter/vixen_shell && flutter analyze --no-pub
+    cd flutter/vixen_shell && VIXEN_FFI_LIBRARY="{{ justfile_directory() }}/target/debug/libvixen_ffi.so" flutter test --no-pub
 
 # Build the relocatable Linux bundle, including libvixen_ffi.so. Requires the
 # normal Flutter Linux prerequisites: CMake, Ninja, pkg-config, and GTK4 headers.
-build-flutter-linux: _flutter-sdk-present
-    cd flutter/vixen_shell && flutter build linux --debug
+build-flutter-linux: _prepare-flutter-shell
+    rm -rf flutter/vixen_shell/build/linux-gtk4
+    cd flutter/vixen_shell && flutter build linux --release --no-pub
 
-# Launch the Linux shell through Flutter's desktop runner.
-run-flutter: _flutter-sdk-present
-    cd flutter/vixen_shell && GDK_BACKEND=wayland flutter run -d linux
+# Launch the direct Ubuntu development bundle.
+run-flutter: build-flutter-linux
+    GDK_BACKEND=wayland {{ LINUX_RELEASE_BUNDLE }}/vixen_shell
 
 # Launch the Linux shell in a local headless Wayland compositor.
-run-flutter-cage: _flutter-sdk-present
+run-flutter-cage: build-flutter-linux
     command -v cage >/dev/null || { printf '%s\n' "cage is required for local headless Wayland testing" >&2; exit 1; }
     rm -rf .tmp/wayland-run && mkdir -m 700 -p .tmp/wayland-run
     XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/wayland-run" GDK_BACKEND=wayland \
         WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
-        LIBGL_ALWAYS_SOFTWARE=1 cage -- sh -c 'cd {{ justfile_directory() }}/flutter/vixen_shell && exec flutter run -d linux'
+        LIBGL_ALWAYS_SOFTWARE=1 cage -- {{ LINUX_RELEASE_BUNDLE }}/vixen_shell
 
 # Stage the exact SDK/toolchain and locked application/Cargo inputs in
 # workspace-local Docker caches. This is network-capable setup, not release evidence.
@@ -288,13 +293,13 @@ flutter-fixture-manifest: build-flutter-release-linux _node-deps
 gate-r5: linux-automation-smoke flutter-cdp-playwright-smoke flutter-fixture-manifest
 
 # Focused R6 mutation/EnsureLayout/text-query/cancellation/recovery evidence.
-test-r6: _flutter-sdk-present
+test-r6: _prepare-flutter-shell
     cargo test -p vixen-api snapshot_diff
     cargo test -p vixen-ffi sync_renderer::tests
     cargo test -p vixen-ffi renderer_broker::tests
     cd flutter/vixen_shell && dart format --output=none --set-exit-if-changed lib test
-    cd flutter/vixen_shell && flutter analyze
-    cd flutter/vixen_shell && flutter test --enable-impeller --dart-define=VIXEN_REQUIRE_IMPELLER=true test/renderer_broker_service_test.dart test/native_renderer_protocol_test.dart test/shell_coordinator_test.dart
+    cd flutter/vixen_shell && flutter analyze --no-pub
+    cd flutter/vixen_shell && flutter test --no-pub --enable-impeller --dart-define=VIXEN_REQUIRE_IMPELLER=true test/renderer_broker_service_test.dart test/native_renderer_protocol_test.dart test/shell_coordinator_test.dart
 
 # Full R6 preserves every R5 rendered product gate, then adds synchronous
 # mutation-to-geometry and recovery proof.
@@ -302,7 +307,8 @@ gate-r6: gate-r5 test-r6
 
 # R7 cutover/deletion proof: one Flutter renderer, no native paint/frame owner,
 # no raw coordinate-input ABI, and both native/Flutter test surfaces green.
-test-r7: _flutter-sdk-present
+test-r7: _prepare-flutter-shell
+    command -v rg >/dev/null || { printf '%s\n' "ripgrep is required for the R7 deletion scan" >&2; exit 1; }
     if rg -n 'webrender|gleam|khronos-egl|GlContext|PaintSnapshot|capture_paint_snapshot|RgbaFrame|BrowserFrame|VixenFrame|vixen_capture_frame|FlPixelBufferTexture|crate::display_list|pub mod display_list|crate::layout_tree|pub mod layout_tree|crate::line_layout|pub mod line_layout|"dispatch_mouse_event"' Cargo.toml Cargo.lock crates/vixen-api crates/vixen-engine crates/vixen-ffi crates/vixen-headless crates/vixen-wpt flutter/vixen_shell/lib flutter/vixen_shell/linux; then exit 1; fi
     cargo test -p vixen-api -p vixen-engine -p vixen-cdp -p vixen-ffi -p vixen-headless -p vixen-wpt
     cargo clippy --workspace --all-targets -- -D warnings
@@ -311,8 +317,8 @@ test-r7: _flutter-sdk-present
     node --check scripts/flutter-fixture-manifest.mjs
     python3 scripts/test_flutter_interaction_smoke.py
     cd flutter/vixen_shell && dart format --output=none --set-exit-if-changed lib test
-    cd flutter/vixen_shell && flutter analyze
-    cd flutter/vixen_shell && flutter test --enable-impeller --dart-define=VIXEN_REQUIRE_IMPELLER=true
+    cd flutter/vixen_shell && flutter analyze --no-pub
+    cd flutter/vixen_shell && flutter test --no-pub --enable-impeller --dart-define=VIXEN_REQUIRE_IMPELLER=true
 
 # Full R7 keeps every rendered R5/R6 product proof and adds deletion scans.
 gate-r7: gate-r6 test-r7

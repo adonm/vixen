@@ -29,6 +29,12 @@ For ordinary implementation details, choose the safest path aligned with
 
 ## Gate policy
 
+Linux agents and maintainers run from the version-pinned Ubuntu 24.04
+Distrobox documented in `docs/guidance/mise.md`. Before reporting a local Linux
+gate, record `PRETTY_NAME` from `/etc/os-release` and ensure Mise was activated
+inside that box. Fedora and Ubuntu 26.04 are optional compatibility runs;
+release-builder recipes retain their separately pinned environment.
+
 - **Inner loop:** focused `cargo check`/`cargo test`/`just gate-phaseN` as needed.
 - **Before commit:** hk pre-commit hook; it should stay quick and fix formatting.
 - **Before push:** hk pre-push hook; long gates run here because iteration speed

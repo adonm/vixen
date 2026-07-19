@@ -94,6 +94,13 @@ process hardening, packaging/update/distribution, and sustained release evidence
 
 ## Setup
 
+The primary Linux development environment is an x86_64 Ubuntu 24.04 Distrobox
+created from `quay.io/toolbx/ubuntu-toolbox:24.04`. Enter it before bootstrapping
+Mise so local checks match the repository's explicit Ubuntu 24.04 host jobs.
+Ubuntu 26.04 and Fedora remain useful additional compatibility checks, while
+the pinned GNOME builder remains authoritative for release recipes that invoke
+it. See [`docs/guidance/mise.md`](docs/guidance/mise.md).
+
 Workspace setup is split deliberately:
 
 - [mise](https://mise.jdx.dev) pins tool versions and exports the workspace

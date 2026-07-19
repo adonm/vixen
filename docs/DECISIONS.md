@@ -381,7 +381,7 @@ architecture migration.
 
 ---
 
-## ADR-019: Validate Flutter targets on the latest stable major OS
+## ADR-019: Validate Flutter targets on explicit supported OS baselines
 
 **Status:** accepted
 
@@ -390,14 +390,15 @@ release multiplies native runner, graphics, accessibility, signing, and CI work
 without compatibility evidence. Flutter's own support range is not evidence that
 BrowserCore, V8, Vixen's Flutter renderer, or packaging works throughout that range.
 
-**Decision.** At each release cutoff, Vixen validates one contemporary baseline:
-the latest generally available major release for each target OS. Linux uses the
-latest stable Fedora Workstation major as its native reference and the current
-pinned Flatpak/GNOME runtime for distribution; macOS uses the latest stable macOS
-major; Windows uses the latest stable client release and feature update; Android
-uses the latest stable major/API; and iOS Simulator uses the latest stable
-simulator major in the latest stable Xcode on current macOS. Release evidence
-pins exact versions and architectures. Preview releases do not satisfy gates.
+**Decision.** At each release cutoff, Vixen validates one explicit supported
+baseline for each target OS. Linux development and host-side CI use an x86_64
+Ubuntu 24.04 Distrobox/runner, while distribution uses the current pinned
+Flatpak/GNOME runtime. macOS uses the latest stable macOS major; Windows uses the
+latest stable client release and feature update; Android uses the latest stable
+major/API; and iOS Simulator uses the latest stable simulator major in the
+latest stable Xcode on current macOS. Release evidence pins exact versions and
+architectures. Fedora and newer Ubuntu releases are forward-compatibility
+checks; preview releases do not satisfy gates.
 
 Older releases are best-effort unless a release explicitly adds them as tested
 tiers. This policy may move forward at any release after native build, rendering,
@@ -416,10 +417,10 @@ own ongoing gate capacity.
 
 **Context.** Supporting both native Wayland and X11/XWayland duplicates native
 window, compositor, input/IME, accessibility, lifecycle, GPU, and release-smoke
-matrices while Linux browser usability is still converging. Fedora Workstation
-and the pinned GNOME distribution runtime already provide the contemporary
-Wayland target. ADR-022's Linux rendered automation also benefits from one
-controlled native Wayland environment under Cage.
+matrices while Linux browser usability is still converging. Ubuntu 24.04 and
+the pinned GNOME distribution runtime provide the controlled native Wayland
+targets. ADR-022's Linux rendered automation also benefits from one controlled
+native Wayland environment under Cage.
 
 **Decision.** The packaged Linux Flutter GUI requires GTK to select a native
 Wayland display. Startup on X11 or XWayland exits nonzero with an explicit

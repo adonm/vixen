@@ -64,9 +64,10 @@ version = "3.47.0-1.0.pre-160"
 linux-x64 = { url = "https://github.com/adonm/flutter-dev/releases/download/flutter-sdk-328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188/flutter-linux-x64-328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188.tar.xz", checksum = "sha256:b6e95c97348bebd1f129db1f1cbfb7a4a8f6481839ebe80d3eb746e102336bb9" }
 
 # --- Linux release builder --------------------------------------------------
-# The host does not need GTK4 development packages. Local and CI release builds
-# use the pinned Docker image (`just docker-builder-pull`), and
-# FlatPark repackages the resulting official GitHub Release archive.
+# Direct Ubuntu development uses the GTK4 packages documented in
+# `docs/guidance/mise.md`. Local and CI release builds use the pinned Docker
+# image (`just docker-builder-pull`), and FlatPark repackages the resulting
+# official GitHub Release archive.
 
 # --- Imperative project bootstrap -------------------------------------------
 # `mise bootstrap` runs this after [tools] are installed, with the project env
