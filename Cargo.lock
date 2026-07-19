@@ -3260,11 +3260,11 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vixen-api"
-version = "0.1.6"
+version = "0.1.7"
 
 [[package]]
 name = "vixen-cdp"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64",
  "futures-util",
@@ -3281,7 +3281,7 @@ dependencies = [
 
 [[package]]
 name = "vixen-engine"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64",
  "cssparser",
@@ -3308,7 +3308,7 @@ dependencies = [
 
 [[package]]
 name = "vixen-ffi"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "serde_json",
  "tokio",
@@ -3319,7 +3319,7 @@ dependencies = [
 
 [[package]]
 name = "vixen-headless"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64",
  "clap",
@@ -3339,7 +3339,7 @@ dependencies = [
 
 [[package]]
 name = "vixen-net"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "base64",
  "psl",
@@ -3354,7 +3354,7 @@ dependencies = [
 
 [[package]]
 name = "vixen-store"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "redb",
  "serde",
@@ -3365,7 +3365,7 @@ dependencies = [
 
 [[package]]
 name = "vixen-wpt"
-version = "0.1.6"
+version = "0.1.7"
 dependencies = [
  "serde",
  "serde_json",
