@@ -114,8 +114,7 @@ pub(crate) struct PageScriptRunner {
     next_inline_classic: u64,
     next_inline_module: u64,
     import_map: Option<import_maps::PageImportMap>,
-    import_map_seen: bool,
-    module_seen: bool,
+    import_map_count: usize,
 }
 
 pub(crate) enum PreparedPageScript {
@@ -131,6 +130,7 @@ pub(crate) enum PreparedPageScript {
     ImportMap {
         diagnostics: Vec<String>,
         error: Option<String>,
+        map: Option<import_maps::PageImportMap>,
     },
     External(Box<ExternalPageScript>),
 }
@@ -254,6 +254,10 @@ impl ExternalPageScript {
 
     fn import_map(&self) -> Option<import_maps::PageImportMap> {
         self.import_map.clone()
+    }
+
+    fn set_import_map(&mut self, import_map: import_maps::PageImportMap) {
+        self.import_map = Some(import_map);
     }
 
     fn dynamic_import_root(&self) -> Self {
@@ -999,6 +1003,10 @@ impl JsRuntime {
             .map_err(|message| EngineError::script(codes::SCRIPT_EVAL, message))
     }
 
+    pub(crate) fn set_document_import_map(&self, import_map: import_maps::PageImportMap) {
+        self.module_loader.set_document_import_map(import_map);
+    }
+
     /// Execute parser classics followed by deferred modules in the persistent
     /// page realm for `page`.
     ///
@@ -1040,7 +1048,12 @@ impl JsRuntime {
                     self.evaluate_module_with_page_mut(&source, &request, page)?;
                     executed += 1;
                 }
-                PreparedPageScript::ImportMap { .. } => {}
+                PreparedPageScript::ImportMap { map, .. } => {
+                    if let Some(map) = map {
+                        self.ensure_realm(Some(&*page))?;
+                        self.module_loader.set_document_import_map(map);
+                    }
+                }
                 PreparedPageScript::External(request) => {
                     let module = request.is_module();
                     if let Some(source) = load_external_page_script(&self.network_config, &request)?
@@ -1516,8 +1529,7 @@ impl PageScriptRunner {
             next_inline_classic: 0,
             next_inline_module: 0,
             import_map: None,
-            import_map_seen: false,
-            module_seen: false,
+            import_map_count: 0,
         }
     }
 
@@ -1574,7 +1586,6 @@ impl PageScriptRunner {
                     return Some(self.prepare_external(page, script, false));
                 }
                 DocumentScriptItem::InlineModuleScript(script) => {
-                    self.module_seen = true;
                     if !self.inline_allowed(&script) {
                         continue;
                     }
@@ -1608,7 +1619,6 @@ impl PageScriptRunner {
                     }
                 }
                 DocumentScriptItem::ExternalModuleScript(script) => {
-                    self.module_seen = true;
                     self.prepare_external(page, script, true)
                 }
                 DocumentScriptItem::ImportMap(import_map) => {
@@ -1685,23 +1695,22 @@ impl PageScriptRunner {
         page: &Page,
         import_map: crate::doc::InlineImportMap,
     ) -> PreparedPageScript {
-        if self.import_map_seen {
+        if self.import_map_count >= import_maps::MAX_DOCUMENT_IMPORT_MAPS {
             return PreparedPageScript::ImportMap {
                 diagnostics: Vec::new(),
-                error: Some("multiple import maps are not supported".to_owned()),
+                error: Some(format!(
+                    "document exceeds {} import maps",
+                    import_maps::MAX_DOCUMENT_IMPORT_MAPS
+                )),
+                map: None,
             };
         }
-        self.import_map_seen = true;
-        if self.module_seen {
-            return PreparedPageScript::ImportMap {
-                diagnostics: Vec::new(),
-                error: Some("import maps after module discovery are not supported".to_owned()),
-            };
-        }
+        self.import_map_count += 1;
         if import_map.src.is_some() {
             return PreparedPageScript::ImportMap {
                 diagnostics: Vec::new(),
                 error: Some("external import maps are not supported".to_owned()),
+                map: None,
             };
         }
         if !self.inline_source_allowed(&import_map.source, import_map.nonce.as_deref()) {
@@ -1713,20 +1722,28 @@ impl PageScriptRunner {
                 return PreparedPageScript::ImportMap {
                     diagnostics: Vec::new(),
                     error: Some(format!("import map base URL is invalid: {error}")),
+                    map: None,
                 };
             }
         };
-        match import_maps::parse_inline_import_map(&import_map.source, base_url) {
+        let parsed = if let Some(existing) = self.import_map.as_ref() {
+            import_maps::merge_inline_import_map(existing, &import_map.source, base_url)
+        } else {
+            import_maps::parse_inline_import_map(&import_map.source, base_url)
+        };
+        match parsed {
             Ok(parsed) => {
-                self.import_map = Some(parsed.map);
+                self.import_map = Some(parsed.map.clone());
                 PreparedPageScript::ImportMap {
                     diagnostics: parsed.diagnostics,
                     error: None,
+                    map: Some(parsed.map),
                 }
             }
             Err(error) => PreparedPageScript::ImportMap {
                 diagnostics: Vec::new(),
                 error: Some(error),
+                map: None,
             },
         }
     }
@@ -6624,6 +6641,37 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_import_uses_latest_map_without_rewriting_static_graph_snapshot() {
+        let directory = std::env::temp_dir().join(format!(
+            "vixen-late-dynamic-import-map-{}-{}",
+            std::process::id(),
+            next_storage_session_id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(directory.join("late.js"), "export const value = 42;").unwrap();
+        let page_url = url::Url::from_file_path(directory.join("page.html"))
+            .unwrap()
+            .to_string();
+        let mut page = Page::from_html(
+            page_url,
+            "<script type='module'>globalThis.__loadLateMapped = () => import('late').then(module => module.value);</script>\
+             <script type='importmap'>{\"imports\":{\"late\":\"./late.js\"}}</script>",
+        )
+        .unwrap();
+        let mut runtime = JsRuntime::new().unwrap();
+
+        assert_eq!(runtime.execute_page_scripts(&mut page).unwrap(), 1);
+        assert_eq!(
+            runtime
+                .evaluate_with_page_mut("__loadLateMapped()", &mut page)
+                .unwrap(),
+            JsValue::Int32(42)
+        );
+
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
     fn static_and_dynamic_json_modules_use_the_bounded_graph_loader() {
         let directory = std::env::temp_dir().join(format!(
             "vixen-json-module-{}-{}",
@@ -6828,7 +6876,7 @@ mod tests {
     }
 
     #[test]
-    fn external_multiple_and_late_import_maps_fail_closed() {
+    fn external_maps_fail_closed_while_multiple_and_late_maps_merge() {
         let external = Page::from_html(
             "https://example.test/external.html",
             "<script type='importmap' src='/map.json'></script>",
@@ -6854,8 +6902,11 @@ mod tests {
         ));
         assert!(matches!(
             scripts.prepare_next(&multiple),
-            Some(PreparedPageScript::ImportMap { error: Some(error), .. })
-                if error.contains("multiple")
+            Some(PreparedPageScript::ImportMap {
+                error: None,
+                map: Some(_),
+                ..
+            })
         ));
 
         let late = Page::from_html(
@@ -6867,13 +6918,17 @@ mod tests {
         let mut scripts = PageScriptRunner::new(&late, false);
         assert!(matches!(
             scripts.prepare_next(&late),
-            Some(PreparedPageScript::ImportMap { error: Some(error), .. })
-                if error.contains("after module")
+            Some(PreparedPageScript::ImportMap {
+                error: None,
+                map: Some(_),
+                ..
+            })
         ));
-        assert!(matches!(
-            scripts.prepare_next(&late),
-            Some(PreparedPageScript::InlineModule { .. })
-        ));
+        let Some(PreparedPageScript::InlineModule { request, .. }) = scripts.prepare_next(&late)
+        else {
+            panic!("expected the module discovered before the late map");
+        };
+        assert!(request.import_map().is_none());
 
         let root = Page::from_html(
             "https://example.test/root.html",
@@ -6919,6 +6974,25 @@ mod tests {
         assert!(matches!(
             scripts.prepare_next(&blocked),
             Some(PreparedPageScript::Skip)
+        ));
+
+        let many_maps = Page::from_html(
+            "https://example.test/many-maps.html",
+            &"<script type='importmap'>{}</script>"
+                .repeat(import_maps::MAX_DOCUMENT_IMPORT_MAPS + 1),
+        )
+        .unwrap();
+        let mut scripts = PageScriptRunner::new(&many_maps, false);
+        for _ in 0..import_maps::MAX_DOCUMENT_IMPORT_MAPS {
+            assert!(matches!(
+                scripts.prepare_next(&many_maps),
+                Some(PreparedPageScript::ImportMap { error: None, .. })
+            ));
+        }
+        assert!(matches!(
+            scripts.prepare_next(&many_maps),
+            Some(PreparedPageScript::ImportMap { error: Some(error), .. })
+                if error.contains("exceeds 64 import maps")
         ));
     }
 

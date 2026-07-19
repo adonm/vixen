@@ -113,9 +113,9 @@ Import-map matching uses Deno's
 [`import_map` 0.25.0](https://crates.io/crates/import_map/0.25.0) resolver with
 default logging disabled. Vixen owns parser ordering, bounds, diagnostics,
 scheme/policy checks, and a bounded exact-URL integrity table because the crate
-has no integrity model. Vixen still has a deliberately narrower
-one-map-before-modules product contract; the crate does not establish support
-for current-standard multiple-map merging.
+has no integrity model. Vixen also owns current-standard first-wins merging,
+parser-position snapshots, and the bounded successful-resolution set because the
+crate only parses and resolves individual maps.
 
 ```
 deno/core/                                         ← op/extension/runtime core patterns

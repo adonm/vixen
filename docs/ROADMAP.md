@@ -996,8 +996,29 @@ numeric request id, adds one terminal `integrity` failure, and leaves no module 
 profile effect. Focused file proof accepts two mapped dependencies and rejects a
 tampered one without execution. BrowserCore HTTP proof accepts and caches a
 mapped root/dependency under separate numeric ids, while mismatch neither
-executes nor exposes its cookie/cache row. Multiple-map merging remains the next
-import-map breadth.
+executes nor exposes its cookie/cache row. Multiple-map merging remained a
+separate follow-up trust boundary at this checkpoint.
+
+**Seventeenth A2 checkpoint:** a document may now register up to 64 bounded
+inline import maps before or after module discovery. Each source retains the
+256 KiB parse cap; the merged normalized resolver plus integrity state is capped
+at 512 KiB, 2,048 mappings, 128 scopes, and 2,048 integrity rows. Imports,
+scope rules, and integrity entries merge first-wins; conflicts produce at most
+32 bounded warnings plus one omission marker, and malformed or
+cumulative-overflow maps leave the prior state unchanged. One shared successful-resolution set retains at most 2,048
+`(referrer, normalized specifier)` records and 1 MiB of URL data. A repeated pair
+returns its first successful URL even across immutable map versions, while merge
+filtering prevents new global/scoped rules from affecting prior resolutions.
+Parser-discovered static roots keep their parser-position snapshot. Dynamic
+imports and `import.meta.resolve()` switch that graph to the latest document map
+without changing its CSP, credentials, profile, request-id, cancellation, or
+limit provenance; BrowserCore automation also receives the latest snapshot.
+Focused tests pin first-wins imports/scopes/integrity, late-map static isolation,
+late-map dynamic success, result stability, and every count/byte cap. A
+BrowserCore HTTP graph requests only the first map's conflicted module plus the
+second map's additive module, verifies both integrity entries, exposes numeric
+request ids and bounded conflict warnings, and settles once. External maps remain
+unsupported because HTML's import-map delivery format is inline.
 
 **Proof:** multi-context profile tests, waterfalls, CORS/CSP/SRI/mixed-content/
 cache profiles, cancellation races, safe download tests, and Linux host smokes.
@@ -1152,10 +1173,10 @@ After v1, prioritize by measured site/user impact:
 
 Work top-to-bottom and finish/document/commit each slice:
 
-1. **Continue A2 import maps:** implement bounded current-standard multiple-map
-   merging with a bounded resolved-module set. Preserve first-map rules and
-   integrity entries on conflict, prevent later maps from changing already
-   resolved `(referrer, specifier)` pairs, and retain exact graph provenance.
+1. **Continue A2 request metadata:** retain authored external-script/module
+   referrer policy and fetch priority through roots, accepted redirects, static
+   and dynamic descendants, cache requests, and bounded diagnostics. Apply the
+   policy at the shared loader rather than synthesizing headers in V8.
 2. **Preserve the R8/A1 corridors:** keep real Mozc preedit/commit, native
    AT-SPI role/state/positive-local-bounds plus native-pointer focus → DOM →
    newer-commit evidence green while widening shared-core behavior; do not

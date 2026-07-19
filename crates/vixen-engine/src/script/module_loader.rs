@@ -89,6 +89,7 @@ struct ModuleGraphContext {
 #[derive(Default)]
 struct LoaderState {
     modules: BTreeMap<String, Arc<Mutex<ModuleGraphContext>>>,
+    document_import_map: Option<super::import_maps::PageImportMap>,
     denied_attribute_imports: BTreeSet<(String, String)>,
     attribute_denial_overflow: bool,
     events: VecDeque<JsNetworkEvent>,
@@ -145,6 +146,9 @@ impl PageModuleLoader {
                 "module provenance exceeds {MAX_MODULE_PROVENANCE} URLs"
             ));
         }
+        if state.document_import_map.is_none() {
+            state.document_import_map = request.import_map();
+        }
         state.modules.insert(
             root_url,
             Arc::new(Mutex::new(ModuleGraphContext {
@@ -158,12 +162,20 @@ impl PageModuleLoader {
 
     pub(super) fn document_import_map(&self) -> Option<super::import_maps::PageImportMap> {
         let state = self.state.lock().ok()?;
-        state.modules.values().find_map(|graph| {
-            graph
-                .lock()
-                .ok()
-                .and_then(|graph| graph.request.import_map())
+        state.document_import_map.clone().or_else(|| {
+            state.modules.values().find_map(|graph| {
+                graph
+                    .lock()
+                    .ok()
+                    .and_then(|graph| graph.request.import_map())
+            })
         })
+    }
+
+    pub(super) fn set_document_import_map(&self, import_map: super::import_maps::PageImportMap) {
+        if let Ok(mut state) = self.state.lock() {
+            state.document_import_map = Some(import_map);
+        }
     }
 
     pub(super) fn has_pending_loads(&self) -> bool {
@@ -190,6 +202,7 @@ impl PageModuleLoader {
         self.cancel_pending_loads();
         if let Ok(mut state) = self.state.lock() {
             state.modules.clear();
+            state.document_import_map = None;
             state.denied_attribute_imports.clear();
             state.attribute_denial_overflow = false;
         }
@@ -455,6 +468,7 @@ impl PageModuleLoader {
         specifier: &str,
         referrer: &str,
         register: bool,
+        use_latest_map: bool,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
         if specifier.len() > MAX_MODULE_SPECIFIER_BYTES
             || referrer.len() > MAX_MODULE_SPECIFIER_BYTES
@@ -473,19 +487,29 @@ impl PageModuleLoader {
             return Ok(root);
         }
         let referrer_url = Url::parse(referrer).map_err(ModuleLoaderError::from_err)?;
-        let graph = self
-            .state
-            .lock()
-            .map_err(|_| ModuleLoaderError::generic("module loader state is poisoned"))?
-            .modules
-            .get(referrer_url.as_str())
-            .cloned()
-            .ok_or_else(|| ModuleLoaderError::generic("module referrer has no graph provenance"))?;
-        let import_map = graph
-            .lock()
-            .map_err(|_| ModuleLoaderError::generic("module graph provenance is poisoned"))?
-            .request
-            .import_map();
+        let (graph, latest_import_map) = {
+            let state = self
+                .state
+                .lock()
+                .map_err(|_| ModuleLoaderError::generic("module loader state is poisoned"))?;
+            let graph = state
+                .modules
+                .get(referrer_url.as_str())
+                .cloned()
+                .ok_or_else(|| {
+                    ModuleLoaderError::generic("module referrer has no graph provenance")
+                })?;
+            (graph, state.document_import_map.clone())
+        };
+        let import_map = {
+            let mut context = graph
+                .lock()
+                .map_err(|_| ModuleLoaderError::generic("module graph provenance is poisoned"))?;
+            if use_latest_map && let Some(import_map) = latest_import_map {
+                context.request.set_import_map(import_map);
+            }
+            context.request.import_map()
+        };
         let resolved = if let Some(import_map) = import_map {
             import_map
                 .resolve(specifier, &referrer_url)
@@ -519,7 +543,12 @@ impl ModuleLoader for PageModuleLoader {
                 "unsupported module import attributes; only type=json is enabled",
             ));
         }
-        self.resolve_module_specifier(specifier, referrer, true)
+        self.resolve_module_specifier(
+            specifier,
+            referrer,
+            true,
+            kind == ResolutionKind::DynamicImport,
+        )
     }
 
     fn resolve_with_scope(
@@ -539,7 +568,7 @@ impl ModuleLoader for PageModuleLoader {
         specifier: &str,
         referrer: &str,
     ) -> Result<ModuleSpecifier, ModuleLoaderError> {
-        self.resolve_module_specifier(specifier, referrer, false)
+        self.resolve_module_specifier(specifier, referrer, false, true)
     }
 
     fn load(

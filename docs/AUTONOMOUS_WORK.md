@@ -68,8 +68,11 @@ provenance plus strict JSON response typing; unsupported keys and types are
 rejected before transport. External classic/module root SRI now verifies raw
 bytes before V8, cookies, or cache insertion. Bounded import-map integrity now
 applies exact normalized-URL metadata to root fallback and graph dependencies at
-the same boundary. Continue A2 with bounded modern multiple-map merging and
-resolved-module-set protection without mutating earlier graph provenance.
+the same boundary. Up to 64 inline maps now merge first-wins under a 512 KiB
+normalized-state cap and a 2,048-entry/1 MiB successful-resolution set; static
+parser-position snapshots remain stable while later dynamic imports see the
+latest map. Continue A2 by carrying authored script/module referrer policy and
+fetch priority through roots, redirects, dependencies, and diagnostics.
 
 The project owns hook definitions in `hk.pkl`. `just` owns command recipes; hk
 owns when those recipes run in the git lifecycle.

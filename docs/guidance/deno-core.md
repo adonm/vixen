@@ -118,6 +118,10 @@ Current state:
   A bounded Vixen-owned exact-URL table adds import-map integrity for static and
   dynamic dependencies plus top-level fallback through the same boundary; it is
   deliberately separate because `import_map` 0.25.0 has no integrity model.
+  Vixen also merges up to 64 maps first-wins under cumulative normalized-state
+  and successful-resolution bounds. Static roots retain their parser-position
+  snapshot; dynamic imports and automation use the latest merged map without
+  replacing the graph's source/security/profile provenance.
 
 Rules:
 

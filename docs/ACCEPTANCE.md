@@ -207,12 +207,13 @@ explicit until promoted by measured tests.
   revalidate profile entries; a 304 restores bounded source only before current
   CORS/status/strict-MIME policy, and cache-disabled contexts bypass reads and
   writes.
-- One bounded inline import map registered before module discovery resolves
-  exact/prefix/URL-like and scoped dependencies through that same policy-bound
-  loader. Its bounded exact-URL integrity table verifies top-level fallback and
-  static/dynamic dependency bytes before V8 or profile effects; malformed map
-  shapes and unsupported URL forms fail closed without partial registration.
-  External/multiple/late maps remain unsupported.
+- Up to 64 bounded inline import maps merge into one 512 KiB normalized state.
+  Earlier imports/scopes/integrity rules win conflicts, a bounded successful
+  `(referrer, specifier)` set prevents later maps from changing prior results,
+  and exact/prefix/URL-like/scoped dependencies use the same policy-bound loader.
+  Exact-URL integrity verifies top-level fallback and static/dynamic dependency
+  bytes before V8 or profile effects. Malformed maps, cumulative overflow, and
+  external maps fail closed without partial registration.
 - Dynamic imports originating in page modules, parser classics, and BrowserCore
   automation retain exact source/graph/import-map/credentials policy, share
   cumulative bounds, resolve redirected children from accepted final URLs, and

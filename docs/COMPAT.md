@@ -247,14 +247,18 @@ writes. Freshness reuse, redirect aliases, and full `Vary` still fail closed.
 One bounded inline import map before module discovery now supports exact, prefix,
 URL-like, null-blocking,
 and scoped mappings plus `import.meta.resolve()` through the same policy-bound
-loader. External, multiple, late, malformed, and oversized maps fail closed.
-One map may carry at most 2,048 exact normalized-URL integrity entries;
-URL-like relative keys resolve from its base.
+loader. Up to 64 inline maps may appear before or after module discovery and
+merge into one normalized state capped at 512 KiB, 2,048 mappings, 128 scopes,
+and 2,048 integrity entries. Earlier conflicting imports/scopes/integrity entries
+win with bounded warnings. A shared 2,048-entry/1 MiB successful-resolution set
+keeps each `(referrer, specifier)` result stable; parser-position static graph
+snapshots cannot be rewritten, while later dynamic imports and automation use
+the latest map. External, malformed, cumulative-overflow, and oversized maps
+fail closed. URL-like relative integrity keys resolve from each map's base.
 Static/dynamic graph dependencies and top-level modules without an authored
 `integrity` attribute verify mapped SHA-2 metadata over accepted raw bytes before
 V8, cookies, or cache insertion. Non-object/non-string/bare-URL forms and
-normalized duplicates reject the whole map. Multiple-map merging remains
-unsupported.
+normalized duplicates reject the whole map.
 Dynamic `import()` from parser-discovered page modules, including later retained
 module functions and document tasks, keeps the originating graph's import map,
 credentials/policy, cumulative limits, redirect base, cache/profile effects, and

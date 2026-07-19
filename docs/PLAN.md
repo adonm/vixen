@@ -86,8 +86,9 @@ controlled host proof rather than an IME or assistive-technology matrix.
    attributes now retain that boundary and strict file/HTTP response typing;
    unsupported keys/types fail before transport. External classic/module root
    SRI and bounded import-map integrity metadata now verify root/dependency raw
-   bytes before cache/profile insertion or V8 exposure. Continue with bounded
-   modern multiple-map merging and resolved-module-set protection.
+   bytes before cache/profile insertion or V8 exposure. Up to 64 inline maps now
+   merge first-wins under cumulative state and successful-resolution bounds;
+   continue with module referrer-policy and fetch-priority provenance.
 
 ## Post-stabilization priorities
 

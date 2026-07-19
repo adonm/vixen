@@ -3144,7 +3144,16 @@ impl BrowserCore {
                 );
                 return;
             }
-            NavigationScriptStep::Author(PreparedPageScript::ImportMap { diagnostics, error }) => {
+            NavigationScriptStep::Author(PreparedPageScript::ImportMap {
+                diagnostics,
+                error,
+                map,
+            }) => {
+                if let Some(map) = map {
+                    self.runtime_slots[runtime_slot]
+                        .runtime
+                        .set_document_import_map(map);
+                }
                 let mut effects = RuntimeEffects::default();
                 effects
                     .console
@@ -10756,7 +10765,100 @@ mod tests {
     }
 
     #[test]
-    fn late_import_map_reports_stable_error_and_does_not_remap_prior_module() {
+    fn multiple_import_maps_merge_first_wins_through_browser_loader() {
+        const ANSWER_SOURCE: &str = "export const answer = 40;";
+        const ANSWER_INTEGRITY: &str =
+            "sha384-9aB+L+8T3kpGS2KZ90OSY6a2B1SBcDnnZDLUSIz+7LzXNCOWbdRZ+695RofLRWu4";
+        const EXTRA_SOURCE: &str = "export const value = 2;";
+        const EXTRA_INTEGRITY: &str =
+            "sha384-Duj7AzvCtm2kermOm8v7UEsUDn+QxDxoQEmBw84jFACv0Ko+1KbbbQfMyO27bQsk";
+
+        let server = GatedHttpServer::start(2);
+        let mut config = test_config();
+        server.configure(&mut config);
+        let page_url = server.url("/multiple-import-map-page");
+        let answer_url = server.url("/maps/answer.js");
+        let ignored_url = server.url("/maps/must-not-load.js");
+        let extra_url = server.url("/maps/extra.js");
+        config.document_overrides.insert(
+            page_url.clone(),
+            format!(
+                "<!doctype html><title>initial</title>\
+                 <script type='importmap'>{{\"imports\":{{\"answer\":\"{answer_url}\"}},\"integrity\":{{\"{answer_url}\":\"{ANSWER_INTEGRITY}\"}}}}</script>\
+                 <script type='importmap'>{{\"imports\":{{\"answer\":\"{ignored_url}\",\"extra\":\"{extra_url}\"}},\"integrity\":{{\"{answer_url}\":\"sha384-AAAA\",\"{extra_url}\":\"{EXTRA_INTEGRITY}\"}}}}</script>\
+                 <script type='module'>import {{ answer }} from 'answer'; import {{ value }} from 'extra'; document.title = `merged-${{answer + value}}`;</script>"
+            ),
+        );
+        let profile_path = config.profile_path.clone();
+        let mut handle = spawn_browser(config).unwrap();
+        let context_id = create(&mut handle);
+        drain_events(&mut handle);
+
+        let navigation_id = dispatch_navigation(&mut handle, context_id, &page_url);
+        let mut requested_paths = std::collections::BTreeSet::new();
+        for _ in 0..2 {
+            let request = server.request();
+            let source = match request.path.as_str() {
+                "/maps/answer.js" => ANSWER_SOURCE,
+                "/maps/extra.js" => EXTRA_SOURCE,
+                path => panic!("unexpected merged import-map request: {path}"),
+            };
+            requested_paths.insert(request.path.clone());
+            request.respond.send(script_response(source, None)).unwrap();
+            request
+                .completed
+                .recv_timeout(Duration::from_secs(10))
+                .expect("merged import-map module response watchdog");
+        }
+        assert_eq!(
+            requested_paths,
+            ["/maps/answer.js".to_owned(), "/maps/extra.js".to_owned()]
+                .into_iter()
+                .collect()
+        );
+
+        let events = wait_for_navigation(&mut handle, context_id, navigation_id).unwrap();
+        assert_eq!(
+            state(&mut handle, context_id).title.as_deref(),
+            Some("merged-42")
+        );
+        assert!(events.iter().any(|event| matches!(
+            event,
+            BrowserEvent::RuntimeEffects { effects, .. }
+                if effects.console.iter().any(|event|
+                    event.kind == "warning"
+                        && event.args.iter().any(|arg|
+                            arg.description.contains("was ignored")
+                        )
+                )
+        )));
+        let request_ids = events
+            .iter()
+            .filter_map(|event| match event {
+                BrowserEvent::RuntimeEffects { effects, .. } => Some(&effects.network),
+                _ => None,
+            })
+            .flatten()
+            .filter_map(|event| match event {
+                RuntimeNetworkEvent::Request { request_id, .. } => Some(request_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(request_ids.len(), 2);
+        assert!(
+            request_ids
+                .iter()
+                .all(|request_id| request_id.parse::<u64>().is_ok())
+        );
+        assert_exactly_one_terminal_phase(&events, navigation_id);
+
+        server.join();
+        drop(handle);
+        let _ = std::fs::remove_file(profile_path);
+    }
+
+    #[test]
+    fn late_import_map_does_not_remap_prior_module() {
         let mut config = test_config();
         let page_url = "https://same.test/late-import-map";
         config.document_overrides.insert(
@@ -10777,7 +10879,7 @@ mod tests {
             state(&mut handle, context_id).title.as_deref(),
             Some("initial")
         );
-        assert!(events.iter().any(|event| matches!(
+        assert!(!events.iter().any(|event| matches!(
             event,
             BrowserEvent::RuntimeEffects { effects, .. }
                 if effects.exceptions.iter().any(|exception|

@@ -352,7 +352,10 @@ JS uses `deno_core` directly:
   import map also owns a bounded exact normalized-URL integrity table. Graph
   roots use it only as fallback for an absent authored attribute; static/dynamic
   dependencies verify accepted raw bytes before graph publication or profile
-  effects.
+  effects. Multiple inline maps merge first-wins into immutable parser-position
+  snapshots over one bounded successful-resolution set. Earlier static graphs
+  cannot be rewritten; unresolved dynamic imports and automation consult the
+  latest merged snapshot without replacing the graph's other policy provenance.
 
 The obsolete `Page` string-expression and headless classifier shims are deleted;
 all evaluation adapters use `BrowserCore`/`JsRuntime`.
