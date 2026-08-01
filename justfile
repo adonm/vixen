@@ -17,17 +17,17 @@ alias webidl := gate-webidl
 alias hooks := hooks-install
 alias docs := book-build
 
-# Docker + immutable GNOME SDK image and flutter-dev GTK4 SDK used for builds.
+# Docker + immutable GNOME SDK image and official Flutter beta used for builds.
 DOCKER := env_var_or_default("DOCKER", "docker")
 FLUTTER_BUILDER_IMAGE := "ghcr.io/flathub-infra/flatpak-github-actions@sha256:a2b78890f165cd5b5c6a8629c5f6cb293e64d1bf523ca6662fac8ca8e247f8b0"
-FLUTTER_VERSION := "3.47.0-1.0.pre-160"
-FLUTTER_REVISION := "328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188"
-FLUTTER_ENGINE := "fc1ad955f16467c959e3cd8079b760d5af0984aa"
-FLUTTER_ENGINE_CONTENT := "469f2b34de41cab5f677ba84d6e9099c0e682d1e"
+FLUTTER_VERSION := "3.47.0-0.3.pre"
+FLUTTER_REVISION := "7c7929adb0767c020659a422ae86df9ec0d5f82a"
+FLUTTER_ENGINE := "effb186f3172afa211230de73d83af2788e44324"
+FLUTTER_ENGINE_CONTENT := "af26a0f38651b914f497fee0b7470975b83d8159"
 FLUTTER_HELLO := "fixtures/artifact-size/flutter_hello"
 RUSTY_V8_ARCHIVE := ".tmp/linux-release/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
 RUSTY_V8_SHA256 := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"
-LINUX_RELEASE_BUNDLE := "flutter/vixen_shell/build/linux-gtk4/x64/release/bundle"
+LINUX_RELEASE_BUNDLE := "flutter/vixen_shell/build/linux/x64/release/bundle"
 LINUX_RELEASE_ARCHIVE := ".tmp/release/vixen-linux-x86_64.tar.gz"
 WTYPE := env_var_or_default("WTYPE", "wtype")
 
@@ -68,7 +68,6 @@ _flutter-sdk-present:
 
 _prepare-flutter-shell: _flutter-sdk-present
     cd flutter/vixen_shell && flutter pub get --enforce-lockfile
-    python3 scripts/prepare-flutter-gtk4.py flutter/vixen_shell
 
 # --- Build / check -----------------------------------------------------------
 
@@ -122,9 +121,9 @@ gate-flutter-shell: _flutter-sdk-present gate-native-abi test-flutter-formatter-
     cd flutter/vixen_shell && VIXEN_FFI_LIBRARY="{{ justfile_directory() }}/target/debug/libvixen_ffi.so" flutter test --no-pub
 
 # Build the relocatable Linux bundle, including libvixen_ffi.so. Requires the
-# normal Flutter Linux prerequisites: CMake, Ninja, pkg-config, and GTK4 headers.
+# normal Flutter Linux prerequisites: CMake, Ninja, pkg-config, and GTK3 headers.
 build-flutter-linux: _prepare-flutter-shell
-    rm -rf flutter/vixen_shell/build/linux-gtk4
+    rm -rf flutter/vixen_shell/build/linux
     cd flutter/vixen_shell && flutter build linux --release --no-pub
 
 # Launch the direct Ubuntu development bundle.
@@ -234,13 +233,13 @@ build-flutter-size-linux: build-flutter-release-linux
     DOCKER={{ DOCKER }} bash scripts/docker-flutter.sh hello
 
 size-flutter-linux: build-flutter-size-linux
-    node scripts/flutter-artifact-size.mjs --hello-bundle {{ FLUTTER_HELLO }}/build/linux-gtk4/x64/release/bundle --vixen-bundle {{ LINUX_RELEASE_BUNDLE }}
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{ FLUTTER_HELLO }}/build/linux/x64/release/bundle --vixen-bundle {{ LINUX_RELEASE_BUNDLE }}
 
 size-flutter-linux-json: build-flutter-size-linux
-    node scripts/flutter-artifact-size.mjs --hello-bundle {{ FLUTTER_HELLO }}/build/linux-gtk4/x64/release/bundle --vixen-bundle {{ LINUX_RELEASE_BUNDLE }} --json
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{ FLUTTER_HELLO }}/build/linux/x64/release/bundle --vixen-bundle {{ LINUX_RELEASE_BUNDLE }} --json
 
 size-flutter-linux-existing:
-    node scripts/flutter-artifact-size.mjs --hello-bundle {{ FLUTTER_HELLO }}/build/linux-gtk4/x64/release/bundle --vixen-bundle {{ LINUX_RELEASE_BUNDLE }}
+    node scripts/flutter-artifact-size.mjs --hello-bundle {{ FLUTTER_HELLO }}/build/linux/x64/release/bundle --vixen-bundle {{ LINUX_RELEASE_BUNDLE }}
 
 # ADR-017 ownership vertical: production BrowserCore transport, context/runtime
 # generations, bounded events, profile/session partitioning, and headless adapter.

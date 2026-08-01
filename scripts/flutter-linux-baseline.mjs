@@ -15,8 +15,8 @@ import {
   workspaceRoot,
 } from './baseline-common.mjs';
 
-const DEFAULT_APP = 'flutter/vixen_shell/build/linux-gtk4/x64/release/bundle/vixen_shell';
-const DEFAULT_LIBRARY = 'flutter/vixen_shell/build/linux-gtk4/x64/release/bundle/lib/libvixen_ffi.so';
+const DEFAULT_APP = 'flutter/vixen_shell/build/linux/x64/release/bundle/vixen_shell';
+const DEFAULT_LIBRARY = 'flutter/vixen_shell/build/linux/x64/release/bundle/lib/libvixen_ffi.so';
 const FIXTURE = 'fixtures/dom/basic.html';
 const INTERACTION_FIXTURE = 'fixtures/cdp/playwright-smoke.html';
 const VIEWPORT = { width: 320, height: 240 };

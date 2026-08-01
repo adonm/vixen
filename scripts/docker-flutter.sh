@@ -2,8 +2,8 @@
 set -euo pipefail
 
 readonly IMAGE=ghcr.io/flathub-infra/flatpak-github-actions@sha256:a2b78890f165cd5b5c6a8629c5f6cb293e64d1bf523ca6662fac8ca8e247f8b0
-readonly FLUTTER_URL=https://github.com/adonm/flutter-dev/releases/download/flutter-sdk-328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188/flutter-linux-x64-328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188.tar.xz
-readonly FLUTTER_SHA256=b6e95c97348bebd1f129db1f1cbfb7a4a8f6481839ebe80d3eb746e102336bb9
+readonly FLUTTER_URL=https://storage.googleapis.com/flutter_infra_release/releases/beta/linux/flutter_linux_3.47.0-0.3.pre-beta.tar.xz
+readonly FLUTTER_SHA256=43d4be54346fe24a81ae292f1a6779afd9099c65be64e73825ae5bc9d5659621
 readonly RUSTUP_URL=https://static.rust-lang.org/rustup/archive/1.29.0/x86_64-unknown-linux-gnu/rustup-init
 readonly RUSTUP_SHA256=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
 readonly RUSTY_V8_URL=https://github.com/denoland/rusty_v8/releases/download/v149.4.0/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz
@@ -99,7 +99,6 @@ run_args=(
   --env PUB_CACHE=/cache/pub
   --env CI=true
   --env FLUTTER_ALREADY_LOCKED=true
-  --env FLUTTER_PREBUILT_ENGINE_VERSION=469f2b34de41cab5f677ba84d6e9099c0e682d1e
   --env FLUTTER_SUPPRESS_ANALYTICS=true
   --env GIT_OPTIONAL_LOCKS=0
   --env SOURCE_DATE_EPOCH="$(git -C "$root" show -s --format=%ct HEAD)"
@@ -138,7 +137,7 @@ export CXXFLAGS="--sysroot=$sysroot"
 export LDFLAGS="--sysroot=$sysroot -Wl,-rpath-link,$sysroot/usr/lib/x86_64-linux-gnu"
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER="$sdk_root/bin/gcc"
 export RUSTFLAGS="-C link-arg=--sysroot=$sysroot -C link-arg=-Wl,-rpath-link,$sysroot/usr/lib/x86_64-linux-gnu"
-test "$(pkg-config --modversion gtk4)" = "4.22.4"
+pkg-config --exists gtk+-3.0
 EOF
 
 read -r -d '' copy_source <<'EOF' || true
@@ -162,8 +161,9 @@ EOF
 case "$mode" in
   prefetch)
     read -r -d '' command <<EOF || true
-flutter_archive=/cache/downloads/flutter-linux-x64.tar.xz
-if ! test -x /cache/flutter/bin/flutter; then
+flutter_archive=/cache/downloads/flutter-linux-x64-3.47.0-0.3.pre.tar.xz
+if ! test -x /cache/flutter/bin/flutter || \
+    ! /cache/flutter/bin/flutter --version --machine | grep -q '"frameworkRevision": "7c7929adb0767c020659a422ae86df9ec0d5f82a"'; then
   curl --fail --location --retry 3 '$FLUTTER_URL' --output "\$flutter_archive.part"
   mv "\$flutter_archive.part" "\$flutter_archive"
   rm -rf /cache/flutter
@@ -184,11 +184,11 @@ test "\$(rustc --version)" = 'rustc 1.96.1 (31fca3adb 2026-06-26)'
 flutter --version --machine | python3 -c '
 import json, sys
 value = json.load(sys.stdin)
-assert value["frameworkVersion"] == "3.47.0-1.0.pre-160"
-assert value["frameworkRevision"] == "328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188"
-assert value["engineRevision"] == "fc1ad955f16467c959e3cd8079b760d5af0984aa"
-assert value["engineContentHash"] == "469f2b34de41cab5f677ba84d6e9099c0e682d1e"
-assert value["dartSdkVersion"] == "3.14.0 (build 3.14.0-28.0.dev)"
+assert value["frameworkVersion"] == "3.47.0-0.3.pre"
+assert value["frameworkRevision"] == "7c7929adb0767c020659a422ae86df9ec0d5f82a"
+assert value["engineRevision"] == "effb186f3172afa211230de73d83af2788e44324"
+assert value["engineContentHash"] == "af26a0f38651b914f497fee0b7470975b83d8159"
+assert value["dartSdkVersion"] == "3.13.0 (build 3.13.0-282.3.beta)"
 '
 
 mkdir -p "\$(dirname '$RUSTY_V8_ARCHIVE')"
@@ -198,7 +198,6 @@ printf '%s  %s\n' '$RUSTY_V8_SHA256' '$RUSTY_V8_ARCHIVE' | sha256sum --check
 cargo fetch --locked
 cd flutter/vixen_shell
 flutter pub get --enforce-lockfile
-python3 ../../scripts/prepare-flutter-gtk4.py .
 cd ../../fixtures/artifact-size/flutter_hello
 flutter pub get --enforce-lockfile
 EOF
@@ -210,10 +209,9 @@ test "\$(rustc --version)" = 'rustc 1.96.1 (31fca3adb 2026-06-26)'
 cd flutter/vixen_shell
 find build -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 flutter pub get --offline --enforce-lockfile
-python3 ../../scripts/prepare-flutter-gtk4.py .
 flutter build linux --release --no-pub
-strip --strip-unneeded build/linux-gtk4/x64/release/bundle/vixen_shell
-find build/linux-gtk4/x64/release/bundle/lib -maxdepth 1 -type f \
+strip --strip-unneeded build/linux/x64/release/bundle/vixen_shell
+find build/linux/x64/release/bundle/lib -maxdepth 1 -type f \
   -name '*_plugin.so' -exec strip --strip-unneeded {} +
 EOF
     ;;
@@ -223,8 +221,8 @@ cd fixtures/artifact-size/flutter_hello
 find build -mindepth 1 -maxdepth 1 -exec rm -rf {} +
 flutter pub get --offline --enforce-lockfile
 flutter build linux --release --no-pub
-strip --strip-unneeded build/linux-gtk4/x64/release/bundle/vixen_hello
-find build/linux-gtk4/x64/release/bundle/lib -maxdepth 1 -type f \
+strip --strip-unneeded build/linux/x64/release/bundle/vixen_hello
+find build/linux/x64/release/bundle/lib -maxdepth 1 -type f \
   -name '*_plugin.so' -exec strip --strip-unneeded {} +
 EOF
     ;;

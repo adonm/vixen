@@ -5,7 +5,7 @@
 #include <cstdio>
 
 #ifdef GDK_WINDOWING_WAYLAND
-#include <gdk/wayland/gdkwayland.h>
+#include <gdk/gdkwayland.h>
 #endif
 
 #include "flutter/generated_plugin_registrant.h"
@@ -68,9 +68,9 @@ G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
-  GtkRoot* root = gtk_widget_get_root(GTK_WIDGET(view));
-  if (root != nullptr) {
-    gtk_window_present(GTK_WINDOW(root));
+  GtkWidget* window = gtk_widget_get_toplevel(GTK_WIDGET(view));
+  if (gtk_widget_is_toplevel(window)) {
+    gtk_window_present(GTK_WINDOW(window));
   }
 }
 
@@ -97,8 +97,9 @@ static void my_application_activate(GApplication* application) {
     }
   } else {
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
-    gtk_header_bar_set_show_title_buttons(header_bar, TRUE);
-    gtk_header_bar_set_title_widget(header_bar, gtk_label_new("Vixen"));
+    gtk_header_bar_set_show_close_button(header_bar, TRUE);
+    gtk_header_bar_set_title(header_bar, "Vixen");
+    gtk_widget_show(GTK_WIDGET(header_bar));
     gtk_window_set_titlebar(window, GTK_WIDGET(header_bar));
     gtk_window_set_title(window, "Vixen");
     gtk_window_set_default_size(window, 1100, 820);
@@ -116,9 +117,9 @@ static void my_application_activate(GApplication* application) {
   // for transparent.
   gdk_rgba_parse(&background_color, "#000000");
   fl_view_set_background_color(self->view, &background_color);
-  gtk_widget_set_focusable(GTK_WIDGET(self->view), TRUE);
-  gtk_widget_set_visible(GTK_WIDGET(self->view), TRUE);
-  gtk_window_set_child(window, GTK_WIDGET(self->view));
+  gtk_widget_set_can_focus(GTK_WIDGET(self->view), TRUE);
+  gtk_widget_show(GTK_WIDGET(self->view));
+  gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(self->view));
 
   // Show the window when Flutter renders.
   // Requires the view to be realized so we can start rendering.

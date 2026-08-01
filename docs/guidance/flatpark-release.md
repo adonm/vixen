@@ -24,13 +24,13 @@ dependencies are supplied through Flathub.
 
 The release archive uses:
 
-- Flutter `3.47.0-1.0.pre-160` from the checksum-pinned flutter-dev Linux x64
+- official Flutter beta `3.47.0-0.3.pre` from the checksum-pinned Linux x64
   archive declared in `.mise.toml`;
-- Flutter revision `328b829d35a3a5d7a00e0c2f0e97eb8cc0d97188`;
-- engine revision `fc1ad955f16467c959e3cd8079b760d5af0984aa` and immutable
-  engine content hash `469f2b34de41cab5f677ba84d6e9099c0e682d1e`;
+- Flutter revision `7c7929adb0767c020659a422ae86df9ec0d5f82a`;
+- engine revision `effb186f3172afa211230de73d83af2788e44324` and
+  engine content hash `af26a0f38651b914f497fee0b7470975b83d8159`;
 - SDK archive SHA-256
-  `b6e95c97348bebd1f129db1f1cbfb7a4a8f6481839ebe80d3eb746e102336bb9`;
+  `43d4be54346fe24a81ae292f1a6779afd9099c65be64e73825ae5bc9d5659621`;
 - GNOME 50 Linux builder image digest
   `sha256:a2b78890f165cd5b5c6a8629c5f6cb293e64d1bf523ca6662fac8ca8e247f8b0`;
 - Rust `1.96.1`;
@@ -39,8 +39,8 @@ The release archive uses:
   `aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53`.
 
 The Linux runner explicitly enables Impeller and links
-`libflutter_linux_gtk4.so`; archive validation rejects GTK3 and checks the exact
-engine library hash. A version string alone is not runtime evidence.
+`libflutter_linux_gtk.so`; archive validation requires GTK3 linkage and rejects
+debug/JIT artifacts. A version string alone is not runtime evidence.
 
 ## Local build and smoke
 
@@ -65,8 +65,7 @@ the release build runs with `--network=none` from workspace-local caches.
 
 - builds Flutter in release/AOT mode;
 - builds the BrowserCore-backed `libvixen_ffi.so` through the Flutter runner;
-- verifies GTK4 linkage, absence of GTK3 linkage, and the immutable GTK4 engine
-  hash;
+- verifies GTK3 linkage and the expected release bundle structure;
 - creates a deterministic archive with normalized ownership and timestamps;
 - extracts that exact archive into a clean directory;
 - launches it under Cage's headless Wayland backend on the Linux host;

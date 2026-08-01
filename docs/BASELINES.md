@@ -77,14 +77,14 @@ just size-flutter-linux-json     # controlled build and JSON report
 just size-flutter-linux-existing # analyze existing release bundles only
 ```
 
-The accepted report below is historical GTK3 evidence from the exact pinned
-Flutter 3.47.0-0.1.pre beta. The current release path uses the immutable
-flutter-dev `3.47.0-1.0.pre-160` GTK4 SDK, Dart 3.14, and a digest-pinned GNOME
-50 builder. A 2026-07-18 migration check measured 21,384,740 logical bytes for
+The accepted report below is historical GTK3 evidence from Flutter
+3.47.0-0.1.pre. The current release path uses the checksum-pinned official
+`3.47.0-0.3.pre` beta, Dart 3.13, and a digest-pinned GNOME 50 builder. A
+2026-07-18 migration check measured 21,384,740 logical bytes for
 the hello bundle and 85,283,280 for Vixen, a 63,898,540-byte delta with no
 native plugin ELFs; it remains an unaccepted dirty-worktree candidate until a
 clean revision report is checked in. `fixtures/artifact-size/flutter_hello`
-uses Material plus the standard GTK4 Linux runner without Vixen code. Both
+uses Material plus the standard GTK3 Linux runner without Vixen code. Both
 controlled runners are stripped with the same policy.
 
 The analyzer requires release bundle structure (`libapp.so`, Flutter engine,

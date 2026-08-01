@@ -50,12 +50,10 @@ def accessible_names(process_id: int) -> set[str]:
     return names
 
 
-def require_gtk4_only(process_id: int) -> None:
+def require_gtk3(process_id: int) -> None:
     mappings = Path(f"/proc/{process_id}/maps").read_text()
-    if "libgtk-3.so" in mappings:
-        raise SystemExit("Flutter shell loaded GTK3 in the GTK4 release corridor")
-    if "libgtk-4.so" not in mappings:
-        raise SystemExit("Flutter shell did not load GTK4")
+    if "libgtk-3.so" not in mappings:
+        raise SystemExit("Flutter shell did not load GTK3")
 
 
 def main() -> int:
@@ -101,9 +99,9 @@ def main() -> int:
                 )
             seen.update(accessible_names(process.pid))
             if all(expected in seen for expected in args.expect):
-                require_gtk4_only(process.pid)
+                require_gtk3(process.pid)
                 print("AT-SPI names:", ", ".join(sorted(args.expect)))
-                print("GTK runtime: GTK4 only")
+                print("GTK runtime: GTK3")
                 return 0
             time.sleep(0.2)
         missing = sorted(set(args.expect) - seen)

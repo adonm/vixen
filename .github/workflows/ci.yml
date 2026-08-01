@@ -141,7 +141,7 @@ jobs:
             cage \
             gir1.2-atspi-2.0 \
             ibus \
-            ibus-gtk4 \
+            ibus-gtk3 \
             ibus-mozc \
             libgtk-4-1 \
             mesa-vulkan-drivers \
@@ -192,8 +192,8 @@ jobs:
             WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=pixman \
             LIBGL_ALWAYS_SOFTWARE=1 timeout 120s cage -- \
               python3 scripts/flutter-interaction-smoke.py \
-              --app flutter/vixen_shell/build/linux-gtk4/x64/release/bundle/vixen_shell \
-              --library flutter/vixen_shell/build/linux-gtk4/x64/release/bundle/lib/libvixen_ffi.so \
+              --app flutter/vixen_shell/build/linux/x64/release/bundle/vixen_shell \
+              --library flutter/vixen_shell/build/linux/x64/release/bundle/lib/libvixen_ffi.so \
               --url "file://$GITHUB_WORKSPACE/fixtures/events/linux-interaction-qa.html" \
               --app-headless-window \
               --app-viewport 1280x720 \
@@ -203,7 +203,7 @@ jobs:
       - name: Create deterministic release archive
         run: |
           set -eu
-          bundle=flutter/vixen_shell/build/linux-gtk4/x64/release/bundle
+          bundle=flutter/vixen_shell/build/linux/x64/release/bundle
           output="$GITHUB_WORKSPACE/vixen-linux-x86_64.tar.gz"
           python3 scripts/package-linux-release.py "$bundle" "$output"
           cp "$output" "$output.first"
@@ -212,7 +212,7 @@ jobs:
           rm "$output.first"
           sha256sum "$(basename "$output")" > "$(basename "$output").sha256"
           tar -tzf "$output" | grep -q '^vixen/lib/libvixen_ffi.so$'
-          tar -tzf "$output" | grep -q '^vixen/lib/libflutter_linux_gtk4.so$'
+          tar -tzf "$output" | grep -q '^vixen/lib/libflutter_linux_gtk.so$'
           tar -tzf "$output" | grep -q '^vixen/lib/libapp.so$'
 
       - name: Smoke exact release archive with Impeller

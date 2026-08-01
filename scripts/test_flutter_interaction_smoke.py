@@ -233,7 +233,7 @@ class LinuxCiContractTests(unittest.TestCase):
         workflow = (ROOT / ".github" / "workflows" / "ci.yml").read_text()
         self.assertIn("runs-on: ubuntu-24.04", workflow)
         self.assertIn("at-spi2-core \\", workflow)
-        self.assertIn("ibus-gtk4 \\", workflow)
+        self.assertIn("ibus-gtk3 \\", workflow)
         self.assertIn("ibus-mozc \\", workflow)
         self.assertNotIn("ibus-anthy", workflow)
 

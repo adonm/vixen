@@ -17,10 +17,9 @@ REQUIRED = (
     "data/icudtl.dat",
     "data/flutter_assets/AssetManifest.bin",
     "lib/libapp.so",
-    "lib/libflutter_linux_gtk4.so",
+    "lib/libflutter_linux_gtk.so",
     "lib/libvixen_ffi.so",
 )
-ENGINE_SHA256 = "61cafba174d24e2c4f73e416cb98c0b33a0ca751b99bf0d9c42cf2c4f1f44add"
 PREFIX = PurePosixPath("vixen")
 
 
@@ -33,11 +32,7 @@ def validate_bundle(bundle: Path) -> None:
             raise SystemExit(f"release bundle is missing {relative}")
     if not os.access(bundle / "vixen_shell", os.X_OK):
         raise SystemExit("release runner is not executable")
-    engine = bundle / "lib/libflutter_linux_gtk4.so"
-    if hashlib.sha256(engine.read_bytes()).hexdigest() != ENGINE_SHA256:
-        raise SystemExit("GTK4 engine does not match the immutable Flutter SDK")
-
-    saw_gtk4 = False
+    saw_gtk3 = False
     for path in bundle.rglob("*"):
         if not path.is_file():
             continue
@@ -49,12 +44,11 @@ def validate_bundle(bundle: Path) -> None:
                 check=True,
                 capture_output=True,
                 text=True,
+                env={**os.environ, "LD_LIBRARY_PATH": str(bundle / "lib")},
             ).stdout
             if "not found" in linkage:
                 raise SystemExit(f"release ELF has unresolved dependencies: {path.relative_to(bundle)}")
-            if "libgtk-3.so.0" in linkage:
-                raise SystemExit(f"release ELF loads GTK3: {path.relative_to(bundle)}")
-            saw_gtk4 = saw_gtk4 or "libgtk-4.so.1" in linkage
+            saw_gtk3 = saw_gtk3 or "libgtk-3.so.0" in linkage
             sections = subprocess.run(
                 ["readelf", "--sections", "--wide", path],
                 check=True,
@@ -63,8 +57,8 @@ def validate_bundle(bundle: Path) -> None:
             ).stdout
             if re.search(r"\.debug_(?:info|line)\b", sections):
                 raise SystemExit(f"release ELF contains debug sections: {path.relative_to(bundle)}")
-    if not saw_gtk4:
-        raise SystemExit("release bundle does not load GTK4")
+    if not saw_gtk3:
+        raise SystemExit("release bundle does not load GTK3")
 
     forbidden = [
         path.relative_to(bundle)

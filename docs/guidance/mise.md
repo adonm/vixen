@@ -37,8 +37,8 @@ Install the native Linux build and host-smoke dependencies once inside the box:
 sudo apt-get update
 sudo apt-get install -y --no-install-recommends \
   at-spi2-core binutils build-essential cage clang cmake curl dbus-daemon git \
-  gir1.2-atspi-2.0 ibus ibus-gtk4 ibus-mozc libegl-dev libgl-dev \
-  libgtk-4-dev libsecret-1-dev libwayland-dev mesa-vulkan-drivers ninja-build \
+  gir1.2-atspi-2.0 ibus ibus-gtk3 ibus-mozc libegl-dev libgl-dev \
+  libgtk-3-dev libsecret-1-dev libwayland-dev mesa-vulkan-drivers ninja-build \
   pkg-config python3 python3-gi ripgrep wayland-protocols wtype
 ```
 

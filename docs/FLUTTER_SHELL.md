@@ -17,11 +17,10 @@ pixels or create a texture fallback.
 The Linux runner:
 
 - requires native Wayland and rejects X11/XWayland;
-- uses Flutter's GTK4 embedder but owns no second Rust/GTK browser widget tree;
-- owns the native GTK4 header bar/window controls while Flutter owns the tab
+- uses Flutter's standard GTK3 embedder but owns no second Rust/GTK browser widget tree;
+- owns the native GTK3 header bar/window controls while Flutter owns the tab
   strip and all browser chrome below it;
-- does not register the GTK3-only `gtk`, `screen_retriever_linux`,
-  `window_manager`, or `yaru_window_linux` plugins;
+- uses Flutter's generated plugin registration without a downstream engine;
 - has no pixel-buffer texture channel, native frame pool, EGL surface, or
   compositor-specific web-content path.
 
@@ -82,15 +81,11 @@ semantic bounds. Stale action generations and stale commits fail closed.
 Accessibility metadata refresh is independent of scene capture. There is no
 frame/Semantics pairing or BrowserCore layout bbox fallback.
 
-The GTK3 `FlViewAccessible` recursion guard is deleted. The pinned GTK4 engine
-publishes a native tree that the release harness observes by process id and
-checks for role, editable/visible/showing state, names, and finite positive
-local bounds; `/proc/<pid>/maps` must contain GTK4 and no GTK3. This engine
-revision does not expose semantic nodes through AT-SPI Action and reports local
-rather than transformed screen-coordinate origins, so the controlled
-interaction corridor uses those nodes as semantic/bounds evidence and drives
-focus through a native Wayland pointer. Do not restore the GTK3 ATK hook or
-claim an AT-SPI action until a newer immutable engine proves it.
+The release harness observes the native accessibility tree by process id and
+checks BrowserCore-derived names while `/proc/<pid>/maps` confirms the expected
+GTK3 runtime. Native Wayland input remains the interaction path; broader AT-SPI
+role, action, and transformed-bound claims require fresh evidence on the
+official beta engine.
 
 ## Lifecycle and recovery
 

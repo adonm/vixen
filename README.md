@@ -79,14 +79,10 @@ Pre-v1.0. The current integrated vertical includes:
   `just gate-r7` composes all prior rendered product evidence, while the R8
   checkpoints add compatibility/release/frame/GPU rebaselines and a passing
   real Mozc plus native AT-SPI interaction corridor.
-- The x86_64 Linux release now uses the checksum-pinned flutter-dev GTK4 SDK,
-  Dart 3.14, and `libflutter_linux_gtk4.so`. GTK3-only Yaru window plugins are
-  excluded while pure-Dart Yaru styling remains. The GTK4 AT-SPI corridor
-  observes BrowserCore names, roles, states, and positive local bounds and
-  verifies from `/proc` that the process loads GTK4 but not GTK3. The current
-  custom engine does not yet expose its semantic nodes through AT-SPI Action or
-  transformed screen-coordinate bounds; native Wayland input remains the
-  interaction path until that upstream surface advances.
+- The x86_64 Linux release uses the checksum-pinned official Flutter
+  `3.47.0-0.3.pre` beta, Dart 3.13, the standard GTK3 embedder, and explicitly
+  enabled Impeller. The native release corridor verifies GTK3 linkage and
+  requires Flutter to report an Impeller backend under Cage.
 
 The project is not yet a daily-driver browser. Remaining work is product breadth:
 standards compatibility, accessibility/IME/device matrices, performance and size,
@@ -251,8 +247,8 @@ Update both when resolving.
 ## Working assumptions
 
 - Primary GUI targets: **Linux, macOS, Windows, Android, and Apple Silicon iOS
-  Simulator** through the pinned Flutter `3.47.0-1.0.pre-160` flutter-dev SDK
-  (framework `328b829d35`, Dart `3.14.0-28.0.dev`). Each remains
+  Simulator** through the pinned Flutter `3.47.0-0.3.pre` beta
+  (framework `7c7929adb0`, Dart `3.13.0-282.3.beta`). Each remains
   evidence-gated; the Linux Flutter renderer/shell and deterministic release
   path are implemented, while non-Linux runners remain open. Validation tracks
   each target's latest stable major OS release at
