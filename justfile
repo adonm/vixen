@@ -20,10 +20,10 @@ alias docs := book-build
 # Docker + immutable GNOME SDK image and official Flutter beta used for builds.
 DOCKER := env_var_or_default("DOCKER", "docker")
 FLUTTER_BUILDER_IMAGE := "ghcr.io/flathub-infra/flatpak-github-actions@sha256:a2b78890f165cd5b5c6a8629c5f6cb293e64d1bf523ca6662fac8ca8e247f8b0"
-FLUTTER_VERSION := "3.47.0-0.3.pre"
-FLUTTER_REVISION := "7c7929adb0767c020659a422ae86df9ec0d5f82a"
-FLUTTER_ENGINE := "effb186f3172afa211230de73d83af2788e44324"
-FLUTTER_ENGINE_CONTENT := "af26a0f38651b914f497fee0b7470975b83d8159"
+FLUTTER_VERSION := "3.48.0-0.1.pre"
+FLUTTER_REVISION := "ceb9a865625239789d86b31be0a8d04e4c5a5084"
+FLUTTER_ENGINE := "fc1ad955f16467c959e3cd8079b760d5af0984aa"
+FLUTTER_ENGINE_CONTENT := "469f2b34de41cab5f677ba84d6e9099c0e682d1e"
 FLUTTER_HELLO := "fixtures/artifact-size/flutter_hello"
 RUSTY_V8_ARCHIVE := ".tmp/linux-release/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
 RUSTY_V8_SHA256 := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"
