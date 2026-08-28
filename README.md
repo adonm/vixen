@@ -5,7 +5,7 @@
 [![Docs](https://img.shields.io/badge/docs-vixen.adonm.dev-blue)](https://vixen.adonm.dev/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](Cargo.toml)
-[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.47%20beta-02569B.svg)](docs/FLUTTER_SHELL.md)
+[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.47%20stable-02569B.svg)](docs/FLUTTER_SHELL.md)
 
 A focused cross-platform Firefox replacement: one Flutter web renderer and GUI
 targeting Linux, macOS, Windows, Android, and the Apple Silicon iOS Simulator,
@@ -80,7 +80,7 @@ Pre-v1.0. The current integrated vertical includes:
   checkpoints add compatibility/release/frame/GPU rebaselines and a passing
   real Mozc plus native AT-SPI interaction corridor.
 - The x86_64 Linux release uses the checksum-pinned official Flutter
-  `3.47.0-0.3.pre` beta, Dart 3.13, the standard GTK3 embedder, and explicitly
+  `3.47.1` stable, Dart 3.13, the standard GTK3 embedder, and explicitly
   enabled Impeller. The native release corridor verifies GTK3 linkage and
   requires Flutter to report an Impeller backend under Cage.
 
@@ -247,8 +247,8 @@ Update both when resolving.
 ## Working assumptions
 
 - Primary GUI targets: **Linux, macOS, Windows, Android, and Apple Silicon iOS
-  Simulator** through the pinned Flutter `3.47.0-0.3.pre` beta
-  (framework `7c7929adb0`, Dart `3.13.0-282.3.beta`). Each remains
+  Simulator** through the pinned Flutter `3.47.1` stable
+  (framework `6655482ec0`, Dart `3.13.1`). Each remains
   evidence-gated; the Linux Flutter renderer/shell and deterministic release
   path are implemented, while non-Linux runners remain open. Validation tracks
   each target's latest stable major OS release at

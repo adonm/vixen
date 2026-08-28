@@ -17,13 +17,13 @@ alias webidl := gate-webidl
 alias hooks := hooks-install
 alias docs := book-build
 
-# Docker + immutable GNOME SDK image and official Flutter beta used for builds.
+# Docker + immutable GNOME SDK image and official Flutter stable used for builds.
 DOCKER := env_var_or_default("DOCKER", "docker")
 FLUTTER_BUILDER_IMAGE := "ghcr.io/flathub-infra/flatpak-github-actions@sha256:a2b78890f165cd5b5c6a8629c5f6cb293e64d1bf523ca6662fac8ca8e247f8b0"
-FLUTTER_VERSION := "3.48.0-0.1.pre"
-FLUTTER_REVISION := "ceb9a865625239789d86b31be0a8d04e4c5a5084"
-FLUTTER_ENGINE := "fc1ad955f16467c959e3cd8079b760d5af0984aa"
-FLUTTER_ENGINE_CONTENT := "469f2b34de41cab5f677ba84d6e9099c0e682d1e"
+FLUTTER_VERSION := "3.47.1"
+FLUTTER_REVISION := "6655482ec06e547f90abf8ae7590466f4415978d"
+FLUTTER_ENGINE := "5d531788691ec3404cac0cee66ead4007b177363"
+FLUTTER_ENGINE_CONTENT := "11d79658c444477b06513d32b52c8c4ccb7276b0"
 FLUTTER_HELLO := "fixtures/artifact-size/flutter_hello"
 RUSTY_V8_ARCHIVE := ".tmp/linux-release/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz"
 RUSTY_V8_SHA256 := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca84b53"
@@ -57,7 +57,7 @@ setup-dev-tools:
     cargo binstall --no-confirm cargo-deny || cargo install cargo-deny || true
     cargo binstall --no-confirm cargo-fuzz || cargo install cargo-fuzz || true
 
-# Install the exact flutter-dev SDK archive declared as a mise tool.
+# Install the exact Flutter SDK archive declared as a mise tool.
 setup-flutter:
     mise install http:flutter
     mise x -- flutter --version

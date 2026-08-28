@@ -46,7 +46,7 @@ The checked-in Linux Flutter slice uses an exact ignored SDK checkout and
 Rust/GTK checks as Flutter proof, or Dart/widget checks as Linux package proof.
 Platform work follows `ROADMAP.md` and `FLUTTER_SHELL.md`: ADR-022 R1–R8 are
 complete. Post-R7 compatibility/release/frame/GPU checkpoints and the real Linux
-Mozc corridor are recorded. The official beta migration preserves the
+Mozc corridor are recorded. The official stable SDK migration preserves the
 process-filtered AT-SPI name gate and native-pointer focus on GTK3; broader
 role/state/bounds/action claims require fresh migrated evidence. Keep the
 executable gates intact while shared-core reductions proceed one proven host

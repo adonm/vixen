@@ -90,9 +90,10 @@ host-smoke environment. Fedora and Ubuntu 26.04 runs are compatibility evidence
 only unless the Linux baseline and CI move in the same reviewed change.
 
 The Linux Flutter project and focused gate are checked in. Install the exact
-official Flutter `3.47.0-0.3.pre` beta archive declared in `.mise.toml`, then
+official Flutter `3.47.1` stable archive declared in `.mise.toml`, then
 run its gate. The pin supplies Dart 3.13, the standard GTK3 Linux embedder, and
-required Linux Impeller support; do not replace it with another SDK or accept a
+required Linux Impeller support (Impeller is the default desktop renderer since
+stable 3.47); do not replace it with another SDK or accept a
 Skia-backed smoke without updating the renderer decision and evidence:
 
 ```sh
@@ -104,7 +105,7 @@ just gate-flutter-shell
 pkg-config, and GTK3 development headers. Missing host packages are an
 environment limitation; they do not turn Rust or Dart-only checks into Linux
 bundle proof. The direct build and run recipes use release mode because the
-official beta archive contains the reviewed Linux engine; the pinned GNOME
+official stable archive contains the reviewed Linux engine; the pinned GNOME
 builder remains authoritative for distributable artifacts.
 The Linux runner requires native Wayland. `just run-flutter-cage` additionally
 uses Cage with wlroots' headless backend for isolated local Wayland testing;
@@ -134,7 +135,7 @@ builds; the pinned release container supplies them for official archive work.
 toolchain is mounted.
 
 GitHub Releases publish the deterministic x86_64 archive built with the
-SHA-256-pinned official Flutter beta SDK, locked application/Cargo dependencies,
+SHA-256-pinned official Flutter stable SDK, locked application/Cargo dependencies,
 and pinned rusty_v8 input. FlatPark repackages those bytes as a signed
 convenience Flatpak. The release validator requires GTK3 linkage and rejects
 debug/JIT artifacts; direct GTK code remains limited to Flutter's native runner

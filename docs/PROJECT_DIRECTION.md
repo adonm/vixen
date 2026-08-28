@@ -75,8 +75,8 @@ The user-facing rank is:
    rendered integration and release target. Dart owns ephemeral formatting,
    Paragraph/Canvas scenes, geometry commits, chrome, and host-service
    presentation without acquiring browser state. Impeller is the required
-   Flutter engine backend; the latest beta pin is deliberate for Linux Impeller
-   until the needed support reaches the selected stable SDK. The
+   Flutter engine backend; the pinned Flutter stable SDK supplies Linux
+   Impeller (the default desktop renderer since stable 3.47). The
    same proven contract then expands to the other four native targets.
 6. **Flutter-hosted headless + CDP/Playwright-compatible seams** — rendered
    automation and text reports are product features, not test-only scaffolding.

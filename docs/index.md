@@ -5,7 +5,7 @@
 [![Docs](https://img.shields.io/badge/docs-vixen.adonm.dev-blue)](https://vixen.adonm.dev/)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](https://github.com/adonm/vixen/blob/main/LICENSE)
 [![Rust](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://github.com/adonm/vixen/blob/main/Cargo.toml)
-[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.47%20beta-02569B.svg)](FLUTTER_SHELL.md)
+[![GUI target](https://img.shields.io/badge/GUI-Flutter%203.47%20stable-02569B.svg)](FLUTTER_SHELL.md)
 
 Vixen is a focused cross-platform Firefox replacement: one Flutter web renderer
 and GUI targeting Linux, macOS, Windows, Android, and the Apple Silicon iOS

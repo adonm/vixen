@@ -83,7 +83,7 @@ scene suppression through widget/core/ABI tests plus Cage smoke.
 Implemented: `just gate-flutter-shell` covers the formatter/coordinator/native
 ABI identities and `just linux-interaction-smoke` correlates accepted and canceled
 DOM scroll effects with exact presented Flutter commit ids in the release process.
-The official beta engine exposes process-filtered names through GTK3. The
+The official stable engine exposes process-filtered names through GTK3. The
 native Semantics action and transformed-screen-origin clauses remain open until
 the migrated release corridor records fresh evidence; current interaction proof
 uses native Wayland input and does not weaken that release criterion.

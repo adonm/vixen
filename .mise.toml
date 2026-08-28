@@ -56,12 +56,12 @@ cargo-binstall = "1.20.1"
 # browser binaries are downloaded; the script connects to Vixen's CDP endpoint.
 node = "24.18.0"
 
-# Official Flutter beta with Linux Impeller and Dart 3.14.
+# Official Flutter stable with Linux Impeller and Dart 3.13.
 [tools."http:flutter"]
-version = "3.48.0-0.1.pre"
+version = "3.47.1"
 
 [tools."http:flutter".platforms]
-linux-x64 = { url = "https://storage.googleapis.com/flutter_infra_release/releases/beta/linux/flutter_linux_3.48.0-0.1.pre-beta.tar.xz", checksum = "sha256:9a21104985070dbddf09112b82d2e54991b28020fea91dd255ef14e8c717082e" }
+linux-x64 = { url = "https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.1-stable.tar.xz", checksum = "sha256:a1d8166c0309267cb7dc99f1424eecf08b86946ad3b50723c6f59945964aea45" }
 
 # --- Linux release builder --------------------------------------------------
 # Direct Ubuntu development uses the GTK3 packages documented in

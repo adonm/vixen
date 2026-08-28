@@ -18,7 +18,7 @@ architecture change so citations continue to name an exact tree state.
 | **Firefox**    | `https://github.com/mozilla-firefox/firefox.git`                  | `46e9f12a8f9b`     | `main` | CSS formatting/property semantics, DOM API behavior, JS/realm discipline, accessibility behavior, and WPT selection. Also hosts the `servo/` Stylo subtree. |
 | **Servo Stylo** (under Firefox tree) | vendored at `firefox/servo/` @ `46e9f12a8f9b` | (same as Firefox) | —      | **Primary CSS reference.** Stylo (`components/style/`), selectors (`components/selectors/`), and supporting Servo crates. Current Firefox HEAD does **not** carry the old Servo script/layout crates. |
 | **Ladybird**   | `https://github.com/LadybirdBrowser/ladybird.git`                 | `0de15a5dd2a9`     | `master` | CSS box-tree/formatting/fragmentation architecture reference; Vixen reimplements required semantics in Dart. |
-| **Flutter**    | `https://github.com/flutter/flutter.git`                          | `bd1e75d91860`     | `beta` | **Primary renderer and GUI reference.** `dart:ui` Paragraph/Canvas/scene, Impeller, Semantics, platform channels, runners, capture, lifecycle, and tests. |
+| **Flutter**    | `https://github.com/flutter/flutter.git`                          | `6655482ec06e`     | `stable` | **Primary renderer and GUI reference.** `dart:ui` Paragraph/Canvas/scene, Impeller, Semantics, platform channels, runners, capture, lifecycle, and tests. |
 | **GNOME Web (Epiphany)** | `https://gitlab.gnome.org/GNOME/epiphany.git`            | `21e02b9a272d`     | `main` | Linux browser AppStream/desktop metadata, portal behavior, and Flatpak manifest conventions. |
 | **Obscura**    | `https://github.com/h4ckf0r0day/obscura.git`                      | `ca71ce3c2da9`     | `main` | Headless CLI design, CDP server patterns, single-binary distribution. |
 | **Deno / deno_core** | `https://github.com/denoland/deno.git`                     | `83c50b1da61e`     | `main` | **Primary JS runtime packaging reference.** `deno_core` embedding, extension/op boundaries, bootstrap JS packaging, resource tables, permissions, and test layout. |
@@ -141,9 +141,9 @@ git clone --depth 1 --filter=blob:none --sparse --branch master https://github.c
 git -C ladybird sparse-checkout set Libraries/LibWeb Libraries/LibGfx
 git -C ladybird checkout 0de15a5dd2a9
 
-git clone --depth 1 --filter=blob:none --sparse --branch beta https://github.com/flutter/flutter.git
+git clone --depth 1 --filter=blob:none --sparse --branch stable https://github.com/flutter/flutter.git
 git -C flutter sparse-checkout set packages/flutter packages/flutter_test packages/flutter_tools/templates/app/linux.tmpl engine/src/flutter/lib/ui engine/src/flutter/flow engine/src/flutter/impeller examples
-git -C flutter checkout 7c7929adb0767c020659a422ae86df9ec0d5f82a
+git -C flutter checkout 6655482ec06e547f90abf8ae7590466f4415978d
 
 git clone --depth 1 --filter=blob:none --sparse --branch main https://gitlab.gnome.org/GNOME/epiphany.git gnome-web
 git -C gnome-web sparse-checkout set data flatpak

@@ -79,7 +79,7 @@ just size-flutter-linux-existing # analyze existing release bundles only
 
 The accepted report below is historical GTK3 evidence from Flutter
 3.47.0-0.1.pre. The current release path uses the checksum-pinned official
-`3.47.0-0.3.pre` beta, Dart 3.13, and a digest-pinned GNOME 50 builder. A
+`3.47.1` stable, Dart 3.13, and a digest-pinned GNOME 50 builder. A
 2026-07-18 migration check measured 21,384,740 logical bytes for
 the hello bundle and 85,283,280 for Vixen, a 63,898,540-byte delta with no
 native plugin ELFs; it remains an unaccepted dirty-worktree candidate until a

@@ -24,13 +24,13 @@ dependencies are supplied through Flathub.
 
 The release archive uses:
 
-- official Flutter beta `3.47.0-0.3.pre` from the checksum-pinned Linux x64
+- official Flutter stable `3.47.1` from the checksum-pinned Linux x64
   archive declared in `.mise.toml`;
-- Flutter revision `7c7929adb0767c020659a422ae86df9ec0d5f82a`;
-- engine revision `effb186f3172afa211230de73d83af2788e44324` and
-  engine content hash `af26a0f38651b914f497fee0b7470975b83d8159`;
+- Flutter revision `6655482ec06e547f90abf8ae7590466f4415978d`;
+- engine revision `5d531788691ec3404cac0cee66ead4007b177363` and
+  engine content hash `11d79658c444477b06513d32b52c8c4ccb7276b0`;
 - SDK archive SHA-256
-  `43d4be54346fe24a81ae292f1a6779afd9099c65be64e73825ae5bc9d5659621`;
+  `a1d8166c0309267cb7dc99f1424eecf08b86946ad3b50723c6f59945964aea45`;
 - GNOME 50 Linux builder image digest
   `sha256:a2b78890f165cd5b5c6a8629c5f6cb293e64d1bf523ca6662fac8ca8e247f8b0`;
 - Rust `1.96.1`;

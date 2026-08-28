@@ -85,7 +85,7 @@ The release harness observes the native accessibility tree by process id and
 checks BrowserCore-derived names while `/proc/<pid>/maps` confirms the expected
 GTK3 runtime. Native Wayland input remains the interaction path; broader AT-SPI
 role, action, and transformed-bound claims require fresh evidence on the
-official beta engine.
+official stable engine.
 
 ## Lifecycle and recovery
 

@@ -2,8 +2,8 @@
 set -euo pipefail
 
 readonly IMAGE=ghcr.io/flathub-infra/flatpak-github-actions@sha256:a2b78890f165cd5b5c6a8629c5f6cb293e64d1bf523ca6662fac8ca8e247f8b0
-readonly FLUTTER_URL=https://storage.googleapis.com/flutter_infra_release/releases/beta/linux/flutter_linux_3.47.0-0.3.pre-beta.tar.xz
-readonly FLUTTER_SHA256=43d4be54346fe24a81ae292f1a6779afd9099c65be64e73825ae5bc9d5659621
+readonly FLUTTER_URL=https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.47.1-stable.tar.xz
+readonly FLUTTER_SHA256=a1d8166c0309267cb7dc99f1424eecf08b86946ad3b50723c6f59945964aea45
 readonly RUSTUP_URL=https://static.rust-lang.org/rustup/archive/1.29.0/x86_64-unknown-linux-gnu/rustup-init
 readonly RUSTUP_SHA256=4acc9acc76d5079515b46346a485974457b5a79893cfb01112423c89aeb5aa10
 readonly RUSTY_V8_URL=https://github.com/denoland/rusty_v8/releases/download/v149.4.0/librusty_v8_simdutf_release_x86_64-unknown-linux-gnu.a.gz
@@ -161,9 +161,9 @@ EOF
 case "$mode" in
   prefetch)
     read -r -d '' command <<EOF || true
-flutter_archive=/cache/downloads/flutter-linux-x64-3.47.0-0.3.pre.tar.xz
+flutter_archive=/cache/downloads/flutter-linux-x64-3.47.1.tar.xz
 if ! test -x /cache/flutter/bin/flutter || \
-    ! /cache/flutter/bin/flutter --version --machine | grep -q '"frameworkRevision": "7c7929adb0767c020659a422ae86df9ec0d5f82a"'; then
+    ! /cache/flutter/bin/flutter --version --machine | grep -q '"frameworkRevision": "6655482ec06e547f90abf8ae7590466f4415978d"'; then
   curl --fail --location --retry 3 '$FLUTTER_URL' --output "\$flutter_archive.part"
   mv "\$flutter_archive.part" "\$flutter_archive"
   rm -rf /cache/flutter
@@ -184,11 +184,11 @@ test "\$(rustc --version)" = 'rustc 1.96.1 (31fca3adb 2026-06-26)'
 flutter --version --machine | python3 -c '
 import json, sys
 value = json.load(sys.stdin)
-assert value["frameworkVersion"] == "3.47.0-0.3.pre"
-assert value["frameworkRevision"] == "7c7929adb0767c020659a422ae86df9ec0d5f82a"
-assert value["engineRevision"] == "effb186f3172afa211230de73d83af2788e44324"
-assert value["engineContentHash"] == "af26a0f38651b914f497fee0b7470975b83d8159"
-assert value["dartSdkVersion"] == "3.13.0 (build 3.13.0-282.3.beta)"
+assert value["frameworkVersion"] == "3.47.1"
+assert value["frameworkRevision"] == "6655482ec06e547f90abf8ae7590466f4415978d"
+assert value["engineRevision"] == "5d531788691ec3404cac0cee66ead4007b177363"
+assert value["engineContentHash"] == "11d79658c444477b06513d32b52c8c4ccb7276b0"
+assert value["dartSdkVersion"].startswith("3.13.1")
 '
 
 mkdir -p "\$(dirname '$RUSTY_V8_ARCHIVE')"

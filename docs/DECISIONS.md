@@ -465,8 +465,9 @@ semantics, and durable accessibility meaning.
 Vixen targets Flutter's public Canvas/Paragraph/scene APIs with **Impeller** as
 the required engine rendering backend. The runner enables Impeller explicitly;
 a Skia-backed launch does not satisfy renderer, release, or platform evidence.
-The latest pinned Flutter beta is deliberate while required Linux Impeller
-support has not reached the selected stable SDK. Vixen does not call private
+The pinned Flutter stable SDK is deliberate: Linux Impeller reached stable 3.47
+(Impeller is the default desktop renderer), so the pin supplies the required
+Linux Impeller support without a beta channel. Vixen does not call private
 Impeller APIs or add a backend-specific paint path; Flutter remains the boundary.
 
 The product targets are Linux, macOS, Windows, Android, and the Apple Silicon iOS
