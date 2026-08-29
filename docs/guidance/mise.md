@@ -43,6 +43,13 @@ shares the host home by default, so an existing Mise installation and this
 checkout remain available. Do not add project activation blindly to the shared
 shell startup files.
 
+GPU-less hosts (no `/dev/dri`) run the headless Wayland smokes with the
+wlroots software compositor instead of the default GLES2 renderer:
+
+```sh
+WLR_RENDERER=pixman just linux-release-smoke
+```
+
 ## First setup
 
 ```sh

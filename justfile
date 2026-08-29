@@ -30,6 +30,10 @@ RUSTY_V8_SHA256 := "aa30f198b6e7be2188df6498f95053c4c052f212037a01f2c31414d7aca8
 LINUX_RELEASE_BUNDLE := "flutter/vixen_shell/build/linux/x64/release/bundle"
 LINUX_RELEASE_ARCHIVE := ".tmp/release/vixen-linux-x86_64.tar.gz"
 WTYPE := env_var_or_default("WTYPE", "wtype")
+# wlroots renderer for the headless Wayland smokes. CI and GPU hosts use gles2;
+# GPU-less hosts (no /dev/dri) use pixman, e.g.:
+#   WLR_RENDERER=pixman just linux-release-smoke
+WLR_RENDERER := env_var_or_default("WLR_RENDERER", "gles2")
 
 # Default recipe: explain yourself.
 default:
@@ -135,7 +139,7 @@ run-flutter-cage: build-flutter-linux
     command -v cage >/dev/null || { printf '%s\n' "cage is required for local headless Wayland testing" >&2; exit 1; }
     rm -rf .tmp/wayland-run && mkdir -m 700 -p .tmp/wayland-run
     XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/wayland-run" GDK_BACKEND=wayland \
-        WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
+        WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER={{ WLR_RENDERER }} \
         LIBGL_ALWAYS_SOFTWARE=1 cage -- {{ LINUX_RELEASE_BUNDLE }}/vixen_shell
 
 # Stage the exact SDK/toolchain and locked application/Cargo inputs in
@@ -171,7 +175,7 @@ linux-release-smoke: linux-release-archive
     tar -xzf {{ LINUX_RELEASE_ARCHIVE }} -C .tmp/linux-release/smoke
     command -v cage >/dev/null || { printf '%s\n' "cage is required for the Wayland release smoke" >&2; exit 1; }
     rm -rf .tmp/linux-release/wayland && mkdir -m 700 -p .tmp/linux-release/wayland
-    sh -c 'set +e; XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/linux-release/wayland" GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 timeout 15s cage -- .tmp/linux-release/smoke/vixen/vixen_shell > .tmp/linux-release-smoke.log 2>&1; status=$?; set -e; cat .tmp/linux-release-smoke.log; test "$status" -eq 124; grep -Eq "Using the Impeller rendering backend \\((Vulkan|OpenGLES|VulkanSDF|OpenGLESSDF)\\)\\." .tmp/linux-release-smoke.log'
+    sh -c 'set +e; XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/linux-release/wayland" GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER={{ WLR_RENDERER }} LIBGL_ALWAYS_SOFTWARE=1 timeout 15s cage -- .tmp/linux-release/smoke/vixen/vixen_shell > .tmp/linux-release-smoke.log 2>&1; status=$?; set -e; cat .tmp/linux-release-smoke.log; test "$status" -eq 124; grep -Eq "Using the Impeller rendering backend \\((Vulkan|OpenGLES|VulkanSDF|OpenGLESSDF)\\)\\." .tmp/linux-release-smoke.log'
 
 # Launch the real release bundle on an isolated Wayland compositor and require
 # BrowserCore-projected fixture semantics to appear through native AT-SPI.
@@ -181,7 +185,7 @@ linux-at-spi-smoke: build-flutter-release-linux
     python3 -c 'import gi; gi.require_version("Atspi", "2.0"); from gi.repository import Atspi'
     rm -rf .tmp/linux-at-spi-wayland && mkdir -m 700 -p .tmp/linux-at-spi-wayland
     XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/linux-at-spi-wayland" GDK_BACKEND=wayland \
-        WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER=gles2 \
+        WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_RENDERER={{ WLR_RENDERER }} \
         LIBGL_ALWAYS_SOFTWARE=1 cage -- python3 scripts/flutter-at-spi-smoke.py \
         --app {{ LINUX_RELEASE_BUNDLE }}/vixen_shell \
         --library {{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so \
@@ -202,7 +206,7 @@ linux-interaction-smoke: build-flutter-release-linux _build-wayland-virtual-poin
     rm -rf .tmp/linux-interaction-wayland .tmp/interaction-profile && mkdir -m 700 -p .tmp/linux-interaction-wayland
     IBUS_ADDRESS="$(ibus address)" XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/linux-interaction-wayland" \
         GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
-        WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 timeout 120s cage -- \
+        WLR_RENDERER={{ WLR_RENDERER }} LIBGL_ALWAYS_SOFTWARE=1 timeout 120s cage -- \
         python3 scripts/flutter-interaction-smoke.py \
         --app {{ LINUX_RELEASE_BUNDLE }}/vixen_shell \
         --library {{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so \
@@ -219,7 +223,7 @@ linux-automation-smoke: build-flutter-release-linux
     rm -rf .tmp/linux-automation-wayland .tmp/linux-automation && mkdir -m 700 -p .tmp/linux-automation-wayland && mkdir -p .tmp/linux-automation
     XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/linux-automation-wayland" \
         GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
-        WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 timeout 210s cage -- \
+        WLR_RENDERER={{ WLR_RENDERER }} LIBGL_ALWAYS_SOFTWARE=1 timeout 210s cage -- \
         python3 scripts/flutter-automation-smoke.py \
         --app {{ LINUX_RELEASE_BUNDLE }}/vixen_shell \
         --library {{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so \
@@ -269,7 +273,7 @@ flutter-cdp-playwright-smoke: build-flutter-release-linux _node-deps
     rm -rf .tmp/flutter-cdp-wayland .tmp/flutter-cdp-profile && mkdir -m 700 -p .tmp/flutter-cdp-wayland .tmp/flutter-cdp-profile
     XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/flutter-cdp-wayland" \
         GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
-        WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 \
+        WLR_RENDERER={{ WLR_RENDERER }} LIBGL_ALWAYS_SOFTWARE=1 \
         VIXEN_CDP_APP="{{ justfile_directory() }}/{{ LINUX_RELEASE_BUNDLE }}/vixen_shell" \
         VIXEN_FFI_LIBRARY="{{ justfile_directory() }}/{{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so" \
         VIXEN_PROFILE_PATH="{{ justfile_directory() }}/.tmp/flutter-cdp-profile/profile.redb" \
@@ -283,7 +287,7 @@ flutter-fixture-manifest: build-flutter-release-linux _node-deps
     rm -rf .tmp/flutter-manifest-wayland .tmp/flutter-manifest-profile && mkdir -m 700 -p .tmp/flutter-manifest-wayland .tmp/flutter-manifest-profile
     XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/flutter-manifest-wayland" \
         GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
-        WLR_RENDERER=gles2 LIBGL_ALWAYS_SOFTWARE=1 \
+        WLR_RENDERER={{ WLR_RENDERER }} LIBGL_ALWAYS_SOFTWARE=1 \
         VIXEN_CDP_APP="{{ justfile_directory() }}/{{ LINUX_RELEASE_BUNDLE }}/vixen_shell" \
         VIXEN_FFI_LIBRARY="{{ justfile_directory() }}/{{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so" \
         VIXEN_PROFILE_PATH="{{ justfile_directory() }}/.tmp/flutter-manifest-profile/profile.redb" \
@@ -462,7 +466,7 @@ _baseline-flutter-linux runs warmups json renderer: build-flutter-release-linux 
         if [ "{{ renderer }}" = software ]; then export LIBGL_ALWAYS_SOFTWARE=1; else unset LIBGL_ALWAYS_SOFTWARE; fi; \
         XDG_RUNTIME_DIR="{{ justfile_directory() }}/.tmp/flutter-baseline-wayland" \
         GDK_BACKEND=wayland WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 \
-        WLR_RENDERER=gles2 cage -- mise x node@24 -- \
+        WLR_RENDERER={{ WLR_RENDERER }} cage -- mise x node@24 -- \
         node scripts/flutter-linux-baseline.mjs \
         --app {{ LINUX_RELEASE_BUNDLE }}/vixen_shell \
         --library {{ LINUX_RELEASE_BUNDLE }}/lib/libvixen_ffi.so \
