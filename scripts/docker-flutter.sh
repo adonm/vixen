@@ -207,7 +207,7 @@ EOF
 printf '%s  %s\n' '$RUSTY_V8_SHA256' '$RUSTY_V8_ARCHIVE' | sha256sum --check
 test "\$(rustc --version)" = 'rustc 1.96.1 (31fca3adb 2026-06-26)'
 cd flutter/vixen_shell
-find build -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+rm -rf build/linux
 flutter pub get --offline --enforce-lockfile
 flutter build linux --release --no-pub
 strip --strip-unneeded build/linux/x64/release/bundle/vixen_shell
@@ -218,7 +218,7 @@ EOF
   hello)
     read -r -d '' command <<'EOF' || true
 cd fixtures/artifact-size/flutter_hello
-find build -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+rm -rf build/linux
 flutter pub get --offline --enforce-lockfile
 flutter build linux --release --no-pub
 strip --strip-unneeded build/linux/x64/release/bundle/vixen_hello
