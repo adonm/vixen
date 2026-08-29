@@ -84,10 +84,11 @@ calling that single recipe.
 
 ### GUI shell environment blockers
 
-Use the version-pinned Ubuntu 24.04 Distrobox described in
-[`guidance/mise.md`](guidance/mise.md) as the primary Linux development and
-host-smoke environment. Fedora and Ubuntu 26.04 runs are compatibility evidence
-only unless the Linux baseline and CI move in the same reviewed change.
+Ubuntu 24.04 is the CI and release baseline; a Distrobox is not required. On a
+host with the native Linux packages listed in
+[`guidance/mise.md`](guidance/mise.md), run the shell recipes directly. Debian,
+Fedora, and Ubuntu 26.04 runs are compatibility evidence only unless the Linux
+baseline and CI move in the same reviewed change.
 
 The Linux Flutter project and focused gate are checked in. Install the exact
 official Flutter `3.47.1` stable archive declared in `.mise.toml`, then

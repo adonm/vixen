@@ -44,10 +44,10 @@ debug/JIT artifacts. A version string alone is not runtime evidence.
 
 ## Local build and smoke
 
-Enter the version-pinned Ubuntu 24.04 Distrobox from
-[`mise.md`](mise.md), install the Mise tools, ensure Docker is reachable, pull
-the GNOME builder image, stage locked inputs, then build the exact release
-archive:
+On a host with the native packages from [`mise.md`](mise.md) (or inside the
+optional Ubuntu 24.04 Distrobox), install the Mise tools, ensure Docker is
+reachable, pull the GNOME builder image, stage locked inputs, then build the
+exact release archive:
 
 ```sh
 mise install

@@ -391,8 +391,9 @@ without compatibility evidence. Flutter's own support range is not evidence that
 BrowserCore, V8, Vixen's Flutter renderer, or packaging works throughout that range.
 
 **Decision.** At each release cutoff, Vixen validates one explicit supported
-baseline for each target OS. Linux development and host-side CI use an x86_64
-Ubuntu 24.04 Distrobox/runner, while distribution uses the current pinned
+baseline for each target OS. Linux development and host-side CI use x86_64
+Ubuntu 24.04 (host-side CI on GitHub runners; a matching Distrobox is optional
+for local development), while distribution uses the current pinned
 Flatpak/GNOME runtime. macOS uses the latest stable macOS major; Windows uses the
 latest stable client release and feature update; Android uses the latest stable
 major/API; and iOS Simulator uses the latest stable simulator major in the

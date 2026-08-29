@@ -15,23 +15,8 @@ The intended workflow is an activated shell where `cargo`, `rustfmt`, `clippy`,
 
 ## Linux environment
 
-Use an x86_64 Ubuntu 24.04 Distrobox as the primary Linux development
-environment:
-
-```sh
-distrobox create \
-  --name flutter-dev \
-  --image quay.io/toolbx/ubuntu-toolbox:24.04
-distrobox enter flutter-dev
-```
-
-The versioned image matches Vixen's explicit Ubuntu 24.04 host CI jobs. Do not
-replace it with `latest`; Ubuntu 26.04 and Fedora are additional compatibility
-checks rather than the development gate. Distrobox shares the host home by
-default, so an existing Mise installation and this checkout remain available.
-Do not add project activation blindly to the shared shell startup files.
-
-Install the native Linux build and host-smoke dependencies once inside the box:
+Ubuntu 24.04 is the CI and release baseline; a Distrobox is not required.
+Install the native Linux build and host-smoke dependencies once on the host:
 
 ```sh
 sudo apt-get update
@@ -41,6 +26,22 @@ sudo apt-get install -y --no-install-recommends \
   libgtk-3-dev libsecret-1-dev libwayland-dev mesa-vulkan-drivers ninja-build \
   pkg-config python3 python3-gi ripgrep wayland-protocols wtype
 ```
+
+An x86_64 Ubuntu 24.04 Distrobox that replicates CI exactly remains an optional
+convenience:
+
+```sh
+distrobox create \
+  --name flutter-dev \
+  --image quay.io/toolbx/ubuntu-toolbox:24.04
+distrobox enter flutter-dev
+```
+
+Do not replace the versioned image with `latest`; Debian, Ubuntu 26.04, and
+Fedora runs are compatibility checks rather than the CI baseline. Distrobox
+shares the host home by default, so an existing Mise installation and this
+checkout remain available. Do not add project activation blindly to the shared
+shell startup files.
 
 ## First setup
 
