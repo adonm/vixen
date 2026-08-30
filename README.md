@@ -143,7 +143,7 @@ Common recipes:
 | `just size-headless` | Report structured headless artifact size |
 | `just flutter-size-prefetch` | Network-capable staging for pinned Linux Flutter size inputs; not evidence |
 | `just size-flutter-linux` / `just size-flutter-linux-json` | Release/AOT hello-Flutter versus Flutter+Vixen raw-bundle comparison |
-| `just baseline-beta` | Run the local headless, profile-growth, and headless-size measurement batch |
+| `just baseline-measure` | Run the local headless, profile-growth, and headless-size measurement batch |
 | `just docker-builder-pull` | Pull the digest-pinned GNOME 50 release-builder image |
 | `just linux-release-prefetch` | Stage locked release inputs and the pinned rusty_v8 archive |
 | `just linux-release-smoke` | Build, archive, extract, and Impeller-smoke the official Linux release |

@@ -439,11 +439,14 @@ baseline-profile-growth runs="5": build-release
 size-headless: build-release
     node scripts/artifact-size.mjs --headless target/release/vixen-headless
 
-# Hermetic beta measurement foundation; intentionally not part of gate-push.
-baseline-beta runs="5" warmups="1": build-release
+# Hermetic measurement foundation; intentionally not part of gate-push.
+baseline-measure runs="5" warmups="1": build-release
     node scripts/headless-baseline.mjs --binary target/release/vixen-headless --suite fixtures/performance/headless-local.json --runs {{ runs }} --warmups {{ warmups }}
     node scripts/profile-growth-baseline.mjs --binary target/release/vixen-headless --runs {{ runs }}
     node scripts/artifact-size.mjs --headless target/release/vixen-headless
+
+# Backward-compatible name retained for older notes/scripts.
+baseline-beta: baseline-measure
 
 # Release/AOT Flutter-only renderer measurement under headless Wayland. This
 # records exact-commit startup, capture, and app-process memory without budgets.

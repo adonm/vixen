@@ -53,7 +53,7 @@ gates are deleted.
 | `just baseline-flutter-linux` / `just baseline-flutter-linux-json` | release/AOT Flutter exact-commit startup/capture/memory plus serialized mutation/input-to-commit frame timing under Cage; measurement-only, software rendered, and outside `gate-push` |
 | `just baseline-flutter-linux-hardware` / `just baseline-flutter-linux-hardware-json` | same bounded workload without the software override; fails unless the same Wayland display reports a non-software EGL renderer and records its GPU/driver fingerprint; one-host evidence, not a matrix or budget |
 | `just baseline-profile-growth` | opaque temporary profile growth at init/repeated/unique/storage checkpoints with localStorage reopen proof |
-| `just baseline-beta` | hermetic local headless scenarios, profile growth, and headless artifact size; measurement-only and outside `gate-push` |
+| `just baseline-measure` | hermetic local headless scenarios, profile growth, and headless artifact size; measurement-only and outside `gate-push` |
 
 ## Evidence rules
 

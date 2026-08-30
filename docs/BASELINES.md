@@ -189,7 +189,7 @@ policy in `ACCEPTANCE.md`. There is no accepted numeric Flutter budget today.
 Run the complete hermetic local batch with:
 
 ```sh
-just baseline-beta
+just baseline-measure
 ```
 
 This runs the headless scenarios, profile growth, and headless artifact size. It
