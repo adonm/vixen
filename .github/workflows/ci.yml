@@ -9,25 +9,14 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            build-essential cmake curl python3 pkg-config unzip \
-            libcurl4-openssl-dev libpsl-dev libx11-dev libxext-dev \
-            libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
-            libxss-dev libxkbcommon-dev libwayland-dev libegl-dev \
-            libasound2-dev \
-            fonts-noto-core fonts-lohit-deva fonts-thai-tlwg \
-            fonts-wqy-microhei fonts-sil-ezra fonts-dejavu-core
       - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
         with:
           cache: true
           install: true
       - name: Trust repo config
         run: mise trust
-      - name: Setup pinned natives
-        run: mise exec -- just setup
+      - name: Bootstrap machine
+        run: mise bootstrap --yes
       - name: Build
         run: mise exec -- just build
       - name: Gates

@@ -1,6 +1,39 @@
 # Vixen tool versions. `mise trust && mise install` (Odin SDK + just).
-# Native C libraries and fonts are provisioned by `just setup`.
+# Full machine setup (system packages included): `mise bootstrap`.
 
 [tools]
 odin = "dev-2026-03"
 just = "1.58.0"
+
+# System packages (Debian/Ubuntu via apt). Converged by `mise bootstrap`
+# before tools install; re-running is safe.
+[bootstrap.packages]
+"apt:build-essential" = "latest"
+"apt:cmake" = "latest"
+"apt:curl" = "latest"
+"apt:python3" = "latest"
+"apt:pkg-config" = "latest"
+"apt:unzip" = "latest"
+"apt:libcurl4-openssl-dev" = "latest"
+"apt:libpsl-dev" = "latest"
+"apt:libx11-dev" = "latest"
+"apt:libxext-dev" = "latest"
+"apt:libxrandr-dev" = "latest"
+"apt:libxcursor-dev" = "latest"
+"apt:libxfixes-dev" = "latest"
+"apt:libxi-dev" = "latest"
+"apt:libxss-dev" = "latest"
+"apt:libxkbcommon-dev" = "latest"
+"apt:libwayland-dev" = "latest"
+"apt:libegl-dev" = "latest"
+"apt:libasound2-dev" = "latest"
+"apt:fonts-noto-core" = "latest"
+"apt:fonts-lohit-deva" = "latest"
+"apt:fonts-thai-tlwg" = "latest"
+"apt:fonts-wqy-microhei" = "latest"
+"apt:fonts-sil-ezra" = "latest"
+"apt:fonts-dejavu-core" = "latest"
+
+[tasks.bootstrap]
+description = "One-shot machine setup: system packages, tools, natives, fonts."
+run = "just setup"

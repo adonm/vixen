@@ -12,27 +12,19 @@ claim ships with a gate.
 
 ## Setup
 
-System packages (Debian/Ubuntu):
+One command (Debian/Ubuntu, sudo available):
 
 ```sh
-sudo apt-get install -y --no-install-recommends \
-  build-essential cmake curl python3 pkg-config unzip \
-  libcurl4-openssl-dev libpsl-dev libx11-dev libxext-dev \
-  libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
-  libxkbcommon-dev libwayland-dev libegl-dev libasound2-dev \
-  fonts-noto-core fonts-lohit-deva fonts-thai-tlwg fonts-wqy-microhei \
-  fonts-sil-ezra fonts-dejavu-core
+mise trust && mise bootstrap --yes && just build
 ```
 
-SDL3 is built pinned from source by `just setup` (Ubuntu 24.04 has no
-SDL3 package); no sudo is needed for that step.
-
-Then fetch the pinned toolchains and build the native libraries
-(Odin SDK, QuickJS, lexbor, SQLite, WAMR, stb objects, corpus fonts):
-
-```sh
-mise trust && mise install && just setup
-```
+That converges the system packages declared in `.mise.toml`, installs the
+pinned Odin SDK + just, provisions the native libraries (QuickJS, lexbor,
+SQLite, WAMR, stb, kb, SDL3-from-source) and corpus fonts, then builds.
+SDL3 is built pinned from source because Ubuntu 24.04 has no SDL3 package;
+no sudo is needed for that step. Everything is idempotent — re-running is
+safe. See `.mise.toml` (`[bootstrap.packages]`, `[tools]`) and the
+`setup-*` recipes for the exact pins.
 
 `just setup` is idempotent and recreates the exact `thirdparty/` layout the
 build expects. Nothing under `thirdparty/`, `fonts/`, or `*.o`/`*.a` is
