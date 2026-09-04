@@ -89,7 +89,10 @@ tui_draw_hints :: proc(t: ^Tui, sw, sh: int) {
 		if by < 0 {
 			by = 0
 		}
-		label := fmt.tprintf("%d", hi + 1)
+		// Stack buffer: no allocation, nothing to free (tprintf results
+		// are temp-allocator backed and must never be delete()d).
+		lbuf: [8]byte
+		label := fmt.bprintf(lbuf[:], "%d", hi + 1)
 		bw := len(label) * 9 + 6
 		bh := 17
 		for yy in by ..< min(by + bh, sh) {
@@ -184,13 +187,14 @@ tui_status_line :: proc(t: ^Tui) {
 		pct = 100 * t.scroll_y / max(sess.page.height, 1)
 	}
 	msg := t.status
-	if len(t.hint) > 0 {
-		msg = fmt.tprintf("link: %s", string(t.hint[:]))
-		defer delete(msg)
-	}
 	fmt.printf("\x1b[7m %-60.60s %3d%% links=%d \x1b[0m",
 		sess.page.url, pct, len(sess.page.links))
-	if len(msg) > 0 {
+	// NOTE: hint digits print inline (no tprintf): tprintf is
+	// temp-allocator backed and must NEVER be delete()d — freeing temp
+	// memory corrupts the heap (this segfaulted the TUI).
+	if len(t.hint) > 0 {
+		fmt.printf(" link: %s", string(t.hint[:]))
+	} else if len(msg) > 0 {
 		fmt.printf(" %s", msg)
 	}
 	if t.url_active {
@@ -223,8 +227,9 @@ tui_draw_text :: proc(t: ^Tui) {
 
 tui_url_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 	// Returns true when the bar closes (commit or cancel).
-	edit.begin(&t.url_state, 1, &t.url_build)
-	defer edit.end(&t.url_state)
+	// NOTE: no edit.begin/end here — begin resets the selection to
+	// {len, 0} (select-all), which would wipe the bar on every keystroke.
+	// The bar is initialized once via setup_once when opened.
 	switch v in k {
 	case rune:
 		if v >= 32 && v != 127 {
@@ -313,8 +318,8 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 			browse_reload(t.sess)
 		case 'u':
 			t.url_active = true
-			edit.begin(&t.url_state, 1, &t.url_build)
-			edit.end(&t.url_state)
+			strings.builder_reset(&t.url_build)
+			edit.setup_once(&t.url_state, &t.url_build)
 		case 'g':
 			t.scroll_y, t.scroll_ln = 0, 0
 		case 'G':

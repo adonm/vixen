@@ -71,7 +71,10 @@ assumes games — week-one sugar against a week-three ceiling.
 - kb context allocator must outlive the context: heap-hold it in `Render_Ctx`.
 - Never `delete` slices aliasing static tables (`FONT_PATHS[i].path`).
 - Never `delete` strings borrowed from lexbor tables (`tag_name_of` clones).
-- `fmt.tprintf` is temp-allocator backed: stored strings need `aprintf`.
+- `fmt.tprintf` is temp-allocator backed: stored strings need `aprintf` —
+  and must NEVER be `delete()`d. Freeing temp memory corrupts the heap
+  (segfaulted the TUI via the link-hint status line). Prefer stack buffers
+  (`fmt.bprintf`) or direct `fmt.printf` for transient formatting.
 - Odin map headers don't propagate mutations via old copies: re-store after
   mutating nested maps; `delete_key` doesn't free key strings.
 - `delete()` on dynamic arrays frees backing but leaves headers: nil anything

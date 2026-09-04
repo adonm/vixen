@@ -67,8 +67,36 @@ tuitest_main :: proc() -> bool {
 	if fails > 0 {
 		return false
 	}
+	if !tuitest_status_hints() {
+		return false
+	}
 	// Server-backed browse section: navigate, back, forward, dump content.
 	return tuitest_browse()
+}
+
+// Status-line smoke with link hints set. Regression: the hint display once
+// delete()d a tprintf (temp-allocator) string, corrupting the heap and
+// segfaulting the TUI on link-hint input. This path must stay
+// allocation-free; the heap traffic between frames makes any recurrence
+// crash fast and loud instead of corrupting silently.
+tuitest_status_hints :: proc() -> bool {
+	sess: Browse_Session
+	sess.page.url = "http://example.com/article"
+	sess.page.height = 1000
+	t: Tui
+	t.sess = &sess
+	t.rows = 24
+	t.cols = 80
+	append(&t.hint, '1', '2')
+	for _ in 0 ..< 20 {
+		tui_status_line(&t)
+		probe := strings.clone("probe")
+		delete(probe)
+	}
+	fmt.println()
+	delete(t.hint)
+	fmt.println("PASS status-hints          20 hint frames, no crash")
+	return true
 }
 
 // Browse subset against the deterministic test server (shares nettest's).
