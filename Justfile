@@ -73,7 +73,9 @@ setup-stb:
     gcc -O2 -c spike/shim.c -o spike/shim.o -I. -I"$STB"
     gcc -O2 -c "$STB/stb_truetype.c" -o spike/stb_truetype.o -I"$STB"
     gcc -O2 -c "$STB/stb_image_write.c" -o spike/stb_image_write.o -I"$STB"
-    ar rcs spike/stb_native.a spike/stb_truetype.o spike/stb_image_write.o
+    gcc -O2 -c "$STB/stb_image.c" -o spike/stb_image.o -I"$STB"
+    gcc -O2 -c "$STB/stb_image_resize.c" -o spike/stb_image_resize.o -I"$STB"
+    ar rcs spike/stb_native.a spike/stb_truetype.o spike/stb_image_write.o spike/stb_image.o spike/stb_image_resize.o
 
 setup-kb:
     #!/usr/bin/env bash

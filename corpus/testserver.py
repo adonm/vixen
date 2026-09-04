@@ -106,6 +106,38 @@ class H(BaseHTTPRequestHandler):
             with open("corpus/article.html", "rb") as f:
                 html = f.read()
             self._send(200, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "max-age=60")], html)
+        elif p == "/imgpage":
+            self._send(200, [("Content-Type", "text/html; charset=utf-8")],
+                          "<html><head><title>Pics</title></head><body>"
+                          "<h1>Gallery</h1>"
+                          '<img src="/img.png" alt="tiny" width="8" height="6">'
+                          '<img src="/missing.png" alt="gone">'
+                          '<img src="/img.png" alt="dup">'
+                          '<img src="/img.png" width="4" height="3">'
+                          "</body></html>")
+        elif p == "/search":
+            self._send(200, [("Content-Type", "text/html; charset=utf-8")],
+                          f"<html><head><title>Results</title></head><body><p>results for [{u.query}]</p></body></html>")
+        elif p == "/form":
+            with open("corpus/form.html", "rb") as f:
+                html = f.read()
+            self._send(200, [("Content-Type", "text/html; charset=utf-8")], html)
+        elif p == "/postform":
+            ln = int(self.headers.get("Content-Length", "0") or 0)
+            data = self.rfile.read(ln) if ln else b""
+            self._send(200, [("Content-Type", "text/html; charset=utf-8")],
+                          f"<html><head><title>Posted</title></head><body><p>got [{data.decode()}]</p></body></html>")
+        elif p == "/img.png":
+            import struct, zlib
+            w, h = 8, 6
+            raw = b"".join(b"\x00" + bytes([c for x in range(w) for c in (x * 32 % 256, y * 43 % 256, 128, 255)]) for y in range(h))
+            ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+            def chunk(t, d):
+                c = t + d
+                return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c))
+            png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) +
+                   chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+            self._send(200, [("Content-Type", "image/png"), ("Cache-Control", "max-age=60")], png)
         else:
             self._send(404, [("Content-Type", "text/plain")], b"nope")
 

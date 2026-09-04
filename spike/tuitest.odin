@@ -7,6 +7,8 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 
+import edit "core:text/edit"
+
 tuitest_main :: proc() -> bool {
 	fails := 0
 	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
@@ -70,8 +72,371 @@ tuitest_main :: proc() -> bool {
 	if !tuitest_status_hints() {
 		return false
 	}
+	if !tuitest_forms() {
+		return false
+	}
+	if !tuitest_submit() {
+		return false
+	}
+	if !tuitest_images() {
+		return false
+	}
 	// Server-backed browse section: navigate, back, forward, dump content.
 	return tuitest_browse()
+}
+
+// Image pipeline against the test server: fetch, decode, resize, place.
+// /img.png is a hand-rolled 8x6 RGBA PNG; /missing.png 404s.
+tuitest_images :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	port, srv, ok := server_start()
+	if !ok {
+		check(&fails, "images/server", false)
+		return false
+	}
+	defer {
+		_ = os.process_kill(srv)
+		_, _ = os.process_wait(srv)
+	}
+	defer delete(port)
+	base := fmt.aprintf("http://127.0.0.1:%s", port)
+	defer delete(base)
+	prof := "/tmp/opencode/tuitest-images-profile"
+	os.remove_all(prof)
+	sess, sok := browse_open(prof, 900)
+	if !sok {
+		check(&fails, "images/open", false)
+		return false
+	}
+	defer browse_close(&sess)
+	page_url := fmt.aprintf("%s/imgpage", base)
+	defer delete(page_url)
+	if !browse_navigate(&sess, page_url, true) {
+		check(&fails, "images/navigate", false)
+		return false
+	}
+	// Three size variants decode (dup shares the unadorned one);
+	// the 404 falls back to a text placeholder.
+	check(&fails, "images/count", len(sess.page.images) == 3, fmt.tprintf("%d", len(sess.page.images)))
+	check(&fails, "images/placements", len(sess.page.placements) == 3, fmt.tprintf("%d", len(sess.page.placements)))
+	if len(sess.page.images) == 1 {
+		im := &sess.page.images[0]
+		check(&fails, "images/dims", im.w == 8 && im.h == 6, fmt.tprintf("%dx%d", im.w, im.h))
+		check(&fails, "images/pixels", len(im.px) == 8 * 6 * 4, "")
+		// First pixel is deterministic: (0,0,128,255) per the generator.
+		check(&fails, "images/content", im.px[0] == 0 && im.px[1] == 0 && im.px[2] == 128 && im.px[3] == 255, "")
+	}
+	if len(sess.page.placements) == 3 {
+		// Third img carries width/height attrs: 4x3 display block.
+		pl := &sess.page.placements[2]
+		check(&fails, "images/attr-size", pl.w == 4 && pl.h == 3, fmt.tprintf("%dx%d", pl.w, pl.h))
+	}
+	found_dims, found_missing := false, false
+	for t in sess.page.text {
+		if strings.contains(t, "8x6") {
+			found_dims = true
+		}
+		if strings.contains(t, "gone") && !strings.contains(t, "x") {
+			found_missing = true
+		}
+	}
+	check(&fails, "images/text-dims", found_dims, "")
+	check(&fails, "images/text-missing", found_missing, "")
+	// End-to-end raster: slice the viewport and require non-background
+	// pixels inside the first image placement.
+	bank, bok := font_bank_load(20)
+	if !bok {
+		check(&fails, "images/fontbank", false, "")
+	} else {
+		defer font_bank_free(&bank)
+		fr := raster_slice(&bank, sess.page.lines, sess.page.placements[:], sess.page.images[:], sess.page.width, 0, 400)
+		defer delete(fr.px)
+		pl := &sess.page.placements[0]
+		ink := 0
+		for yy in pl.y ..< min(pl.y + pl.h, fr.h) {
+			for xx in pl.x ..< min(pl.x + pl.w, fr.w) {
+				o := (yy * fr.w + xx) * 4
+				if fr.px[o] != 16 || fr.px[o+1] != 16 || fr.px[o+2] != 22 {
+					ink += 1
+				}
+			}
+		}
+		check(&fails, "images/raster", ink > 0, fmt.tprintf("%d px", ink))
+	}
+	fmt.printfln("tuitest-images: %d failures", fails)
+	return fails == 0
+}
+
+// Live form submission against the test server: fill, submit, assert URLs.
+tuitest_submit :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	port, srv, ok := server_start()
+	if !ok {
+		check(&fails, "submit/server", false)
+		return false
+	}
+	defer {
+		_ = os.process_kill(srv)
+		_, _ = os.process_wait(srv)
+	}
+	defer delete(port)
+	base := fmt.aprintf("http://127.0.0.1:%s", port)
+	defer delete(base)
+	prof := "/tmp/opencode/tuitest-submit-profile"
+	os.remove_all(prof)
+	sess, sok := browse_open(prof, 900)
+	if !sok {
+		check(&fails, "submit/open", false)
+		return false
+	}
+	defer browse_close(&sess)
+	form_url := fmt.aprintf("%s/form", base)
+	defer delete(form_url)
+	if !browse_navigate(&sess, form_url, true) {
+		check(&fails, "submit/navigate", false)
+		return false
+	}
+	find_idx := proc(sess: ^Browse_Session, name: string) -> int {
+		for &f, i in sess.page.fields {
+			if f.name == name {
+				return i
+			}
+		}
+		return -1
+	}
+	qi := find_idx(&sess, "q")
+	check(&fails, "submit/has-q", qi >= 0, "")
+	// Orphan submit has no form owner: must fail without navigating.
+	oi := find_idx(&sess, "orphan")
+	if oi >= 0 {
+		before := strings.clone(sess.page.url)
+		defer delete(before)
+		check(&fails, "submit/orphan", !browse_submit(&sess, oi) && sess.page.url == before, "")
+	} else {
+		check(&fails, "submit/has-orphan", false, "")
+	}
+	// Interactive path: Tab focuses, typing edits, Enter submits.
+	// (Drives tui_handle_key directly — no terminal needed.)
+	if qi >= 0 {
+		t: Tui
+		t.sess = &sess
+		t.rows = 24
+		t.cols = 80
+		t.focus = -1
+		t.status = strings.clone("")
+		defer delete(t.status)
+		defer {
+			for &fe in t.field_edits {
+				edit.destroy(&fe.state)
+				strings.builder_destroy(&fe.build)
+			}
+			delete(t.field_edits)
+		}
+		tui_sync_fields(&t)
+		tui_handle_key(&t, Key_Special.Tab)
+		check(&fails, "keys/focus", t.focus == 0, "")
+		tui_handle_key(&t, Term_Key('h'))
+		tui_handle_key(&t, Term_Key('i'))
+		qv := strings.clone(sess.page.fields[qi].value)
+		defer delete(qv)
+		check(&fails, "keys/type", qv == "hi", qv)
+		tui_handle_key(&t, Key_Special.Enter)
+		check(&fails, "keys/submit", strings.contains(sess.page.url, "q=hi"), sess.page.url)
+	}
+	// The Enter above navigated away; go back for the direct-API flow.
+	if !browse_back(&sess) {
+		check(&fails, "submit/back-to-form", false)
+	}
+	if qi >= 0 {
+		f := &sess.page.fields[qi]
+		delete(f.value)
+		f.value = strings.clone("rust lang")
+		if !browse_submit(&sess, qi) {
+			check(&fails, "submit/get", false, "")
+		} else {
+			want_q := strings.contains(sess.page.url, "q=rust+lang")
+			want_src := strings.contains(sess.page.url, "src=web")
+			check(&fails, "submit/get-url", want_q && want_src, sess.page.url)
+			check(&fails, "submit/get-title", sess.page.title == "Results", sess.page.title)
+		}
+	}
+	// Back to the form, then POST through the textarea form.
+	if !browse_back(&sess) {
+		check(&fails, "submit/back", false)
+	} else {
+		bi := find_idx(&sess, "body")
+		if bi < 0 {
+			check(&fails, "submit/has-body", false)
+		} else {
+			// Find the Send button (submit in the POST form).
+			send := -1
+			for &f, i in sess.page.fields {
+				if f.kind == .submit && f.method == "POST" {
+					send = i
+				}
+			}
+			check(&fails, "submit/has-send", send >= 0, "")
+			if send >= 0 {
+				if !browse_submit(&sess, send) {
+					check(&fails, "submit/post", false, "")
+				} else {
+					check(&fails, "submit/post-title", sess.page.title == "Posted", sess.page.title)
+					found := false
+					for t in sess.page.text {
+						if strings.contains(t, "body=hello") {
+							found = true
+						}
+					}
+					check(&fails, "submit/post-echo", found, "")
+				}
+			}
+		}
+	}
+	fmt.printfln("tuitest-submit: %d failures", fails)
+	return fails == 0
+}
+
+// Form logic + layout. Live submit flow lives in tuitest_submit().
+tuitest_forms :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	mkfield := proc(kind: Field_Kind, name, value, action, method: string, form := 0) -> Field {
+		return Field{kind, strings.clone(name), strings.clone(value), strings.clone(""), strings.clone(action), strings.clone(method), form, -1, 0, 0}
+	}
+	// Percent-encoding.
+	e := form_url_encode("a b+c&d=e/f~ok-._")
+	check(&fails, "form/encode", e == "a+b%2Bc%26d%3De%2Ff~ok-._", e)
+	delete(e)
+	e = form_url_encode("caf\u00e9")
+	check(&fails, "form/encode-utf8", e == "caf%C3%A9", e)
+	delete(e)
+	// Dataset: unnamed skipped, button only when clicked.
+	fields: [dynamic]Field
+	append(&fields, mkfield(.text, "q", "x", "", "GET"))
+	append(&fields, mkfield(.hidden, "src", "web", "", "GET"))
+	append(&fields, mkfield(.text, "", "y", "", "GET"))
+	append(&fields, mkfield(.submit, "go", "Go!", "", "GET"))
+	append(&fields, mkfield(.text, "other", "z", "", "GET", 1))
+	defer {
+		for &f in fields {
+			delete_field(&f)
+		}
+		delete(fields)
+	}
+	d := form_dataset(fields[:], 0, -1)
+	check(&fails, "form/dataset", d == "q=x&src=web", d)
+	delete(d)
+	d = form_dataset(fields[:], 0, 3)
+	check(&fails, "form/dataset-btn", d == "q=x&src=web&go=Go%21", d)
+	delete(d)
+	d = form_dataset(fields[:], 1, -1)
+	check(&fails, "form/dataset-scope", d == "other=z", d)
+	delete(d)
+	// GET submission replaces any existing query, drops the fragment.
+	for &f in fields {
+		delete(f.action)
+		f.action = strings.clone("http://h/search?old=1#frag")
+	}
+	req, ok := form_submit("http://h/search?old=1#frag", "get", fields[:], 0, -1)
+	check(&fails, "form/submit-get", ok && req.method == "GET" && req.url == "http://h/search?q=x&src=web" && req.body == "", req.url)
+	delete_form_request(&req)
+	// Empty action falls back to the document URL minus fragment.
+	req, ok = form_submit("", "GET", fields[:], 0, -1)
+	check(&fails, "form/submit-noaction", !ok, "")
+	delete_form_request(&req)
+	// POST keeps the action URL, dataset goes in the body.
+	for &f in fields {
+		delete(f.action)
+		f.action = strings.clone("http://h/postform?a=1")
+	}
+	req, ok = form_submit("http://h/postform?a=1", "POST", fields[:], 0, 3)
+	check(&fails, "form/submit-post", ok && req.method == "POST" && req.url == "http://h/postform?a=1" && req.body == "q=x&src=web&go=Go%21", req.body)
+	delete_form_request(&req)
+	_, ok = form_submit("::::", "GET", fields[:], 0, -1)
+	check(&fails, "form/submit-badurl", !ok, "")
+	// Layout over the fixture.
+	data, err := os.read_entire_file_from_path("corpus/form.html", context.allocator)
+	if err != nil {
+		check(&fails, "form/fixture", false, "")
+		return false
+	}
+	defer delete(data)
+	bank, bok := font_bank_load(20)
+	if !bok {
+		check(&fails, "form/fontbank", false, "")
+		return false
+	}
+	defer font_bank_free(&bank)
+	rc, rok := layout_bytes(data, 900, &bank, "http://127.0.0.1:9/form")
+	if !rok {
+		check(&fails, "form/layout", false, "")
+		return false
+	}
+	defer render_ctx_free(&rc)
+	check(&fails, "form/count", len(rc.fields) == 8, fmt.tprintf("%d", len(rc.fields)))
+	find := proc(rc: ^Render_Ctx, name: string) -> (Field, bool) {
+		for &f in rc.fields {
+			if f.name == name {
+				return f, true
+			}
+		}
+		return {}, false
+	}
+	if q, found := find(&rc, "q"); found {
+		check(&fails, "form/q", q.kind == .text && q.value == "" && q.action == "http://127.0.0.1:9/search" && q.method == "GET" && q.line >= 0, q.action)
+	} else {
+		check(&fails, "form/q", false, "missing")
+	}
+	if s, found := find(&rc, "src"); found {
+		check(&fails, "form/hidden", s.kind == .hidden && s.value == "web" && s.line < 0, "")
+	} else {
+		check(&fails, "form/hidden", false, "missing")
+	}
+	if b, found := find(&rc, "body"); found {
+		check(&fails, "form/textarea", b.kind == .text && b.value == "hello" && b.method == "POST", b.value)
+	} else {
+		check(&fails, "form/textarea", false, "missing")
+	}
+	if o, found := find(&rc, "orphan"); found {
+		check(&fails, "form/orphan", o.action == "" && o.line >= 0, o.action)
+	} else {
+		check(&fails, "form/orphan", false, "missing")
+	}
+	if na, found := find(&rc, "noact"); found {
+		check(&fails, "form/noaction", na.action == "http://127.0.0.1:9/form", na.action)
+	} else {
+		check(&fails, "form/noaction", false, "missing")
+	}
+	_, has_c := find(&rc, "c")
+	_, has_t2 := find(&rc, "t2")
+	check(&fails, "form/skipped", !has_c && !has_t2, "")
+	// Submit buttons: Go (value), Send (inner text), Nowhere (orphan form).
+	named := 0
+	for &f in rc.fields {
+		if f.kind == .submit {
+			named += 1
+		}
+	}
+	check(&fails, "form/buttons", named == 3, "")
+	fmt.printfln("tuitest-forms: %d failures", fails)
+	return fails == 0
 }
 
 // Status-line smoke with link hints set. Regression: the hint display once

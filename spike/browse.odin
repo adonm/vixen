@@ -12,6 +12,9 @@ Page :: struct {
 	title: string, // owned
 	lines: [dynamic]Line, // owned laid-out lines (glyphs + text)
 	links: [dynamic]Link, // owned urls
+	fields: [dynamic]Field, // form controls in tree order (owned)
+	images: [dynamic]Image, // decoded page images (owned pixels)
+	placements: [dynamic]Image_Placement, // image blocks (plain structs)
 	text:  [dynamic]string, // owned laid-out line texts (text driver, tests)
 	width: int,   // layout width, px
 	height: int,  // total content height, px
@@ -109,6 +112,18 @@ browse_drop_page :: proc(sess: ^Browse_Session) {
 	}
 	delete(sess.page.links)
 	sess.page.links = nil
+	for &f in sess.page.fields {
+		delete_field(&f)
+	}
+	delete(sess.page.fields)
+	sess.page.fields = nil
+	for &im in sess.page.images {
+		delete_image(&im)
+	}
+	delete(sess.page.images)
+	sess.page.images = nil
+	delete(sess.page.placements)
+	sess.page.placements = nil
 	for t in sess.page.text {
 		delete(t)
 	}
@@ -119,9 +134,19 @@ browse_drop_page :: proc(sess: ^Browse_Session) {
 
 // Fetch + render a URL into the live page. push_hist records back-stack.
 browse_navigate :: proc(sess: ^Browse_Session, url: string, push_hist: bool) -> bool {
+	return browse_navigate_request(sess, "GET", url, nil, push_hist)
+}
+
+// General navigation with method + body (form POST). GET callers use
+// browse_navigate; POST responses are never cached (no cache key).
+browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body: []u8, push_hist: bool) -> bool {
 	pc := phase_start(url)
 	now := tnow()
-	r, info, ok := cached_fetch(&sess.cache, &sess.fc, &sess.jar, "GET", url, nil, nil, now)
+	extra: []string
+	if method == "POST" {
+		extra = []string{"Content-Type: application/x-www-form-urlencoded"}
+	}
+	r, info, ok := cached_fetch(&sess.cache, &sess.fc, &sess.jar, method, url, extra, body, now)
 	if !ok {
 		return browse_error_page(sess, url, "fetch failed")
 	}
@@ -135,9 +160,27 @@ browse_navigate :: proc(sess: ^Browse_Session, url: string, push_hist: bool) -> 
 		return browse_error_page(sess, url, msg)
 	}
 	_ = info
-	rc, rok := layout_bytes(r.body, sess.width, &sess.bank, url)
-	if !rok {
+	doc, dok := parse_document(r.body)
+	if !dok {
 		return browse_error_page(sess, url, "parse failed")
+	}
+	defer lxb_html_document_destroy(doc)
+	// Image pre-pass between parse and layout: bounded fetch+decode so
+	// layout reserves true display sizes. Failures shrink the set.
+	refs := collect_image_urls(doc, url, MAX_PAGE_IMAGES)
+	imgs := page_load_images(sess, refs[:])
+	delete_image_refs(refs)
+	rc := render_ctx_new(&sess.bank, 20, f32(sess.width), url)
+	// Move decoded pixels into the layout context BEFORE layout runs.
+	for &im in imgs {
+		append(&rc.images, im)
+	}
+	delete(imgs)
+	layout_html(&rc, doc)
+	finalize_links(&rc)
+	rok := true
+	if !rok {
+		return browse_error_page(sess, url, "layout failed")
 	}
 	defer render_ctx_free(&rc)
 	phase_end(&pc, "parse+layout")
@@ -167,11 +210,29 @@ browse_navigate :: proc(sess: ^Browse_Session, url: string, push_hist: bool) -> 
 	for &l in rc.links {
 		append(&sess.page.links, Link{strings.clone(l.url), l.x0, l.y0, l.x1, l.y1})
 	}
+	for &f in rc.fields {
+		append(&sess.page.fields, Field{
+			f.kind,
+			strings.clone(f.name),
+			strings.clone(f.value),
+			strings.clone(f.label),
+			strings.clone(f.action),
+			strings.clone(f.method),
+			f.form,
+			f.line, f.x0, f.px,
+		})
+	}
 	for &ln in rc.lines {
 		append(&sess.page.text, strings.clone(ln.text))
 	}
+	// Move decoded pixels + placements into the page (single owner each).
+	for &im in rc.images {
+		append(&sess.page.images, im)
+	}
+	clear(&rc.images)
+	append(&sess.page.placements, ..rc.placements[:])
 	sess.has = true
-	fmt.eprintfln("browse %-40s %dx%d lines=%d links=%d title=%q", url, sess.width, sess.page.height, len(rc.lines), len(sess.page.links), sess.page.title)
+	fmt.eprintfln("browse %-40s %dx%d lines=%d links=%d fields=%d images=%d title=%q", url, sess.width, sess.page.height, len(rc.lines), len(sess.page.links), len(rc.fields), len(sess.page.images), sess.page.title)
 	return true
 }
 
@@ -222,4 +283,28 @@ browse_reload :: proc(sess: ^Browse_Session) -> bool {
 	defer delete(u)
 	// Plain re-navigate: fresh entries serve from cache, stale revalidate.
 	return browse_navigate(sess, u, false)
+}
+
+// Submit the form owning field submitter (a submit button, or a text field
+// whose Enter submits its own form with no button). Reads current field
+// values; the TUI mirrors edits into them per keystroke. Returns false
+// when there is nothing to submit (no form owner, bad action URL).
+browse_submit :: proc(sess: ^Browse_Session, submitter: int) -> bool {
+	if !sess.has || submitter < 0 || submitter >= len(sess.page.fields) {
+		return false
+	}
+	f := &sess.page.fields[submitter]
+	if len(f.action) == 0 {
+		return false
+	}
+	btn := submitter if f.kind == .submit else -1
+	req, ok := form_submit(f.action, f.method, sess.page.fields[:], f.form, btn)
+	if !ok {
+		return false
+	}
+	defer delete_form_request(&req)
+	if req.method == "POST" {
+		return browse_navigate_request(sess, "POST", req.url, transmute([]u8)req.body, true)
+	}
+	return browse_navigate(sess, req.url, true)
 }

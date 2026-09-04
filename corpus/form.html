@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html>
+<head><title>Form Test</title></head>
+<body>
+<h1>Search the archive</h1>
+<form action="/search" method="get">
+<input type="text" name="q" value="">
+<input type="hidden" name="src" value="web">
+<input type="submit" value="Go">
+</form>
+<form action="/postform" method="POST">
+<textarea name="body">hello</textarea>
+<button type="submit">Send</button>
+</form>
+<form>
+<input name="noact" value="n">
+</form>
+<input name="orphan" value="x">
+<input type="submit" value="Nowhere">
+<p>After <input type="checkbox" name="c"> and <input type="text" name="t2" value="v" disabled> tail.</p>
+</body>
+</html>

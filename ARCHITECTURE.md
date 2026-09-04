@@ -24,8 +24,8 @@ construction. Diagnostics go to stderr; stdout stays clean for Kitty bytes.
 | Shape    | `vendor:kb_text_shape` | Segmentation + OpenType shaping + BiDi, in-tree |
 | Raster   | `vendor:stb/truetype` sources compiled in | Per-glyph-ID bitmaps (shaped IDs, not codepoints) |
 | PNG      | `stb_image_write` compiled in | One call, no new dep |
-| Fonts | fontconfig discovery (dlopen, zero link deps) | no vendored files; coverage-checked by setup |
-| Window | pinned static SDL3 (`-Bstatic` fence) | shared system SDL would win the link without fencing |
+| Fonts    | fontconfig discovery (dlopen, zero link deps) | no vendored files; coverage-checked by setup |
+| Window   | pinned static SDL3 (`-Bstatic` fence) | shared system SDL would win the link without fencing |
 | Fetch    | curl CLI (corpus pre-fetched) | In-spike fetch is future work; `vendor:curl` exists |
 | Net fetch | system libcurl via own `mincurl` binding | `vendor:curl` links a nonexistent `mbedtls` lib; 15-proc surface owned instead |
 | Cookies/jar | own RFC 6265 + libpsl | curl engine OFF; supercookie defense via builtin PSL |
@@ -37,7 +37,8 @@ construction. Diagnostics go to stderr; stdout stays clean for Kitty bytes.
 | Browse session | heap-held store, retained lines, viewport slicing | fullscreen raster removed: 146 MB -> ~2 MB viewport |
 | TUI loop | raw termios, CSI metrics, shared input buffer | typeahead survives queries; ASCII fast path |
 | TUI drivers | Kitty PNG slices + text fallback | GUI (`show`) manual-only until GUI suites exist |
-| Fonts    | Pinned TTFs in `fonts/` | Self-contained corpus; no fontconfig yet |
+| Forms | own fields/dataset/submit + Tab focus + cursor | per-form scoping; GET+POST; select/checkbox out of scope |
+| Images | stb_image decode + stb_image_resize to display size | eager bounded pre-pass; SVG/WebP/data-URLs fall back |
 
 SDL3 over raylib: a browser needs a platform layer (window/events/IME/GPU)
 it fully owns. raylib's text story ends at unshaped TTF and its loop model
@@ -54,6 +55,8 @@ assumes games — week-one sugar against a week-three ceiling.
 | Shaping suite | 8/8 (lam-alef, conjunct, BiDi, CJK uniformity) | n/a |
 | Net suite (`nettest`) | 58/58 (URL, cookies, cache, Vary, redirects, storage) | n/a |
 | DOM suite (`domtest`) | 20/20 (query, attrs, tree edit, events) | n/a |
+| Form suite (`tuitest`) | encode/dataset/submit/layout/live GET+POST | n/a |
+| Image suite (`tuitest`) | fetch/decode/resize/place/raster pixels | n/a |
 | WASM round trip | add(40,2)=42, import callback=210 | n/a |
 
 ## Gotchas found (for the record)
@@ -96,9 +99,14 @@ assumes games — week-one sugar against a week-three ceiling.
 - No mid-word break: words wider than the measure overflow the line.
 - Mixed-direction lines assume kb returns runs in visual order.
 - No glyph atlas: direct framebuffer blits (fine at corpus scale).
-- `head`/`script`/`style` subtrees skipped; forms/media/inputs absent.
+- `head`/`script`/`style` subtrees skipped; media/inputs absent.
 - No JS DOM bindings; WASM has no JS bridge yet (native round trip only).
 - No sandbox/fuel metering on wasm execution yet.
+- Forms: text/hidden/submit/button/textarea only; select, checkbox/radio,
+  file, image-button, and `type=button` skipped. Controls render even
+  inside skipped landmarks (a header search box is UI, not noise).
+- Images: PNG/JPEG/GIF-first-frame/BMP via stb; SVG/WebP, data: URLs,
+  and srcset out of scope. 12 images / 8 MB each / 24 MB per page max.
 - woff2/variable fonts untested (shipped TTFs are static instances).
 - Kitty detection is environmental (`TERM`/`KITTY_WINDOW_ID`, `--kitty=`).
 - Profile: `$SPIKE_PROFILE` or `~/.config/spikebrowser`; cache caps

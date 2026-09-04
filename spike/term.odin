@@ -140,6 +140,7 @@ Term_Key :: union {
 Key_Special :: enum {
 	Up, Down, Left, Right,
 	Enter, Backspace, Tab, Esc,
+	ShiftTab,
 	CtrlC, CtrlD,
 	Unknown,
 }
@@ -184,6 +185,8 @@ term_read_key :: proc() -> Term_Key {
 			return Key_Special.Right
 		case 'D':
 			return Key_Special.Left
+		case 'Z':
+			return Key_Special.ShiftTab
 		}
 	}
 	return Key_Special.Unknown

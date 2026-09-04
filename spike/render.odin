@@ -85,6 +85,13 @@ Render_Ctx :: struct {
 	anchors:   [dynamic]Anchor_Open,
 	spans:     [dynamic]Link_Span,
 	links:     [dynamic]Link, // finalized bboxes
+	fields:    [dynamic]Field, // form controls in tree order (owned)
+	forms:     [dynamic]Form_Ctx, // open form elements (owned)
+	next_form: int, // form identity counter (dataset scoping)
+	pending:   [dynamic]int, // button/textarea fields awaiting exit finalization (-1 = skipped)
+	label_depth: int, // >0 while inside button/textarea (suppress prose layout)
+	images:    [dynamic]Image, // decoded page images (owned pixels)
+	placements: [dynamic]Image_Placement, // image blocks in paint order
 }
 
 delete_render_ctx :: proc(rc: ^Render_Ctx) {
@@ -256,6 +263,20 @@ render_ctx_free :: proc(rc: ^Render_Ctx) {
 		delete(l.url)
 	}
 	delete(rc.links)
+	for &im in rc.images {
+		delete_image(&im)
+	}
+	delete(rc.images)
+	delete(rc.placements)
+	for &f in rc.fields {
+		delete_field(&f)
+	}
+	delete(rc.fields)
+	for &f in rc.forms {
+		delete_form_ctx(&f)
+	}
+	delete(rc.forms)
+	delete(rc.pending)
 }
 
 font_index_of :: proc(bank: ^Font_Bank, kh: ^kbts.font) -> int {
@@ -451,17 +472,265 @@ anchor_exit :: proc(rc: ^Render_Ctx) {
 	}
 }
 
-// Media placeholder as its own line.
-img_placeholder :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, node: ^Dom_Node) {
+// Collect concatenated descendant text (button labels, textarea values).
+// Owns the returned string.
+collect_text :: proc(node: ^Dom_Node) -> string {
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	stack: [dynamic]^Dom_Node
+	defer delete(stack)
+	kids: [dynamic]^Dom_Node
+	defer delete(kids)
+	if c := node_field(node, NODE_OFF_FIRST_CHILD); c != nil {
+		append(&stack, c)
+	}
+	for len(stack) > 0 {
+		n := pop(&stack)
+		if node_u32(n, NODE_OFF_TYPE) == NODE_TYPE_TEXT {
+			tlen: uint
+			if ptr := lxb_dom_node_text_content(n, &tlen); ptr != nil && tlen > 0 {
+				strings.write_string(&b, strings.string_from_ptr(ptr, int(tlen)))
+			}
+		}
+		clear(&kids)
+		for c := node_field(n, NODE_OFF_FIRST_CHILD); c != nil; c = node_field(c, NODE_OFF_NEXT) {
+			append(&kids, c)
+		}
+		for i := len(kids) - 1; i >= 0; i -= 1 {
+			append(&stack, kids[i])
+		}
+	}
+	return strings.clone(strings.to_string(b))
+}
+
+// Collapse whitespace runs to single spaces and trim (button labels).
+collapse_space :: proc(s: string) -> string {
+	b: strings.Builder
+	strings.builder_init(&b, context.temp_allocator)
+	defer delete(b.buf)
+	first := true
+	for seg in strings.split_multi(s, []string{" ", "\t", "\n", "\r", "\f", "\v"}, context.temp_allocator) {
+		w := strings.trim_space(seg)
+		if len(w) == 0 {
+			continue
+		}
+		if !first {
+			strings.write_byte(&b, ' ')
+		}
+		first = false
+		strings.write_string(&b, w)
+	}
+	return strings.clone(strings.to_string(b))
+}
+
+// Form element: push resolved action/method. Always tracked, even inside
+// skipped landmarks — a search box in <header> is UI, not prose noise.
+form_enter :: proc(rc: ^Render_Ctx, node: ^Dom_Node) {
+	aval, _ := dom_attr_val(node, "action")
+	defer delete(aval)
+	mval, _ := dom_attr_val(node, "method")
+	defer delete(mval)
+	action, _ := resolve_action(aval, rc.page_url)
+	append(&rc.forms, Form_Ctx{rc.next_form, action, normalize_method(mval)})
+	rc.next_form += 1
+}
+
+form_exit :: proc(rc: ^Render_Ctx) {
+	if len(rc.forms) == 0 {
+		return
+	}
+	f := pop(&rc.forms)
+	delete_form_ctx(&f)
+}
+
+// Lay out one field box on its own line: `[value]` or `[label]`.
+// Records the field with its line index and box x-origin for the TUI.
+layout_field_box :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, text: string) -> (lineno: int, x0: f32) {
 	flush_line(rc, line, size_px, y, false)
-	alt, ok := dom_attr_val(node, "alt")
+	lineno = len(rc.lines)
+	layout_place_word(rc, line, y, size_px, "[")
+	for seg in strings.split_multi(text, []string{" ", "\t", "\n", "\r", "\f", "\v"}, context.temp_allocator) {
+		word := strings.trim_space(seg)
+		if len(word) == 0 {
+			continue
+		}
+		layout_place_word(rc, line, y, size_px, word)
+	}
+	layout_place_word(rc, line, y, size_px, "]")
+	if len(line.glyphs) > 0 {
+		x0 = line.glyphs[0].x
+	}
+	return lineno, x0
+}
+
+// <input>: void element, handled fully at enter.
+input_enter :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, node: ^Dom_Node) {
+	if dom_attr_has(node, "disabled") {
+		return
+	}
+	typ, _ := dom_attr_val(node, "type")
+	defer delete(typ)
+	kind, supported := classify_input(typ)
+	if !supported {
+		return
+	}
+	name, _ := dom_attr_val(node, "name")
+	value, _ := dom_attr_val(node, "value")
+	action := strings.clone("")
+	method := strings.clone("GET")
+	form_id := -1
+	if len(rc.forms) > 0 {
+		f := &rc.forms[len(rc.forms) - 1]
+		delete(action)
+		action = strings.clone(f.action)
+		delete(method)
+		method = strings.clone(f.method)
+		form_id = f.id
+	}
+	if kind == .hidden {
+		append(&rc.fields, Field{kind, name, value, strings.clone(""), action, method, form_id, -1, 0, 0})
+		return
+	}
+	label := strings.clone("")
+	box := value
+	if kind == .submit {
+		delete(label)
+		if len(strings.trim_space(value)) > 0 {
+			label = strings.clone(strings.trim_space(value))
+		} else {
+			label = strings.clone("Submit")
+		}
+		delete(value)
+		value = strings.clone("")
+		box = label
+	}
+	lineno, x0 := layout_field_box(rc, line, y, size_px, box)
+	append(&rc.fields, Field{kind, name, value, label, action, method, form_id, lineno, x0, size_px})
+}
+
+// <button>/<textarea>: label/value finalized at exit (children not yet seen).
+// Pushes the field index (or -1 sentinel for skipped controls) so exit
+// stays balanced even for type=button/disabled.
+button_enter :: proc(rc: ^Render_Ctx, node: ^Dom_Node, textarea: bool) {
+	if dom_attr_has(node, "disabled") {
+		append(&rc.pending, -1)
+		return
+	}
+	// type=button never submits; skip it (no dead controls).
+	if !textarea {
+		if tval, tok := dom_attr_val(node, "type"); tok {
+			defer delete(tval)
+			lower := strings.to_lower(tval, context.temp_allocator)
+			if lower == "button" || (lower != "" && lower != "submit") {
+				append(&rc.pending, -1)
+				return
+			}
+		}
+	}
+	name, _ := dom_attr_val(node, "name")
+	action := strings.clone("")
+	method := strings.clone("GET")
+	form_id := -1
+	if len(rc.forms) > 0 {
+		f := &rc.forms[len(rc.forms) - 1]
+		delete(action)
+		action = strings.clone(f.action)
+		delete(method)
+		method = strings.clone(f.method)
+		form_id = f.id
+	}
+	kind := Field_Kind.text if textarea else Field_Kind.submit
+	append(&rc.fields, Field{kind, name, strings.clone(""), strings.clone(""), action, method, form_id, -1, 0, 0})
+	append(&rc.pending, len(rc.fields) - 1)
+	rc.label_depth += 1
+}
+
+button_exit :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, node: ^Dom_Node, textarea: bool) {
+	if len(rc.pending) == 0 {
+		return
+	}
+	idx := pop(&rc.pending)
+	if idx < 0 {
+		return // skipped control; nothing to finalize
+	}
+	if rc.label_depth > 0 {
+		rc.label_depth -= 1
+	}
+	if idx >= len(rc.fields) {
+		return
+	}
+	raw := collect_text(node)
+	defer delete(raw)
+	f := &rc.fields[idx]
+	if textarea {
+		delete(f.value)
+		f.value = strings.clone(strings.trim(raw, "\n"))
+		f.px = size_px
+		lineno, x0 := layout_field_box(rc, line, y, size_px, f.value)
+		f.line = lineno
+		f.x0 = x0
+		return
+	}
+	text := collapse_space(raw)
+	defer delete(text)
+	label := "Submit"
+	if v, vok := dom_attr_val(node, "value"); vok {
+		defer delete(v)
+		if len(strings.trim_space(v)) > 0 {
+			label = strings.trim_space(v)
+		} else if len(text) > 0 {
+			label = text
+		}
+	} else if len(text) > 0 {
+		label = text
+	}
+	// label aliases text/value or a literal; clone before the defers free them.
+	delete(f.label)
+	f.label = strings.clone(label)
+	f.px = size_px
+	lineno, x0 := layout_field_box(rc, line, y, size_px, f.label)
+	f.line = lineno
+	f.x0 = x0
+}
+
+// <img>: decoded image block when loaded, text placeholder otherwise.
+// The text line always exists (text driver + fallback); a loaded image
+// additionally reserves its full display height for graphical drivers.
+img_block :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, node: ^Dom_Node) {
+	alt, aok := dom_attr_val(node, "alt")
+	defer if aok { delete(alt) }
+	idx := -1
+	dw, dh := -1, -1
+	if len(rc.page_url) > 0 {
+		if src, ok := dom_attr_val(node, "src"); ok {
+			defer delete(src)
+			if abs, rok := url_resolve(rc.page_url, src); rok {
+				defer delete(abs)
+				aw, ah := img_attr_size(node)
+				if ii, found := image_lookup(rc, abs, aw, ah); found {
+					idx = ii
+					dw, dh = rc.images[ii].w, rc.images[ii].h
+				}
+			}
+		}
+	}
 	mark := "[image]"
-	if ok && len(strings.trim_space(alt)) > 0 {
-		mark = strings.concatenate([]string{"[image: ", strings.trim_space(alt), "]"}, context.temp_allocator)
+	atext := ""
+	if aok {
+		atext = strings.trim_space(alt)
 	}
-	if ok {
-		delete(alt)
+	if dw > 0 {
+		dims := fmt.tprintf("%dx%d", dw, dh)
+		if len(atext) > 0 {
+			mark = fmt.tprintf("[image: %s %s]", atext, dims)
+		} else {
+			mark = fmt.tprintf("[image %s]", dims)
+		}
+	} else if len(atext) > 0 {
+		mark = strings.concatenate([]string{"[image: ", atext, "]"}, context.temp_allocator)
 	}
+	flush_line(rc, line, size_px, y, false)
+	y0 := y^
 	for seg in strings.split(mark, " ", context.temp_allocator) {
 		if len(seg) == 0 {
 			continue
@@ -469,6 +738,15 @@ img_placeholder :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32,
 		layout_place_word(rc, line, y, size_px, seg)
 	}
 	flush_line(rc, line, size_px, y, true)
+	// NOTE: mark aliases temp/literal memory; never deleted.
+	if idx >= 0 {
+		lh := size_px * 1.35
+		extra := f32(dh) + 6 - lh
+		if extra > 0 {
+			y^ += extra
+		}
+		append(&rc.placements, Image_Placement{idx, int(rc.indent), int(y0), dw, dh})
+	}
 }
 
 // Resolve link spans to rendered bboxes after layout.
@@ -544,6 +822,17 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 				if tag == "a" && skip_depth == 0 {
 					anchor_enter(rc, node)
 				}
+				// Form controls are processed even inside skipped landmarks:
+				// a search box in <header> is UI, not prose noise.
+				if tag == "form" {
+					form_enter(rc, node)
+				} else if tag == "input" {
+					input_enter(rc, &line, &y, size_px, node)
+				} else if tag == "button" {
+					button_enter(rc, node, false)
+				} else if tag == "textarea" {
+					button_enter(rc, node, true)
+				}
 				if is_skip_tag(tag) {
 					skip_depth += 1
 				} else if skip_depth == 0 {
@@ -553,7 +842,7 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 							y += 6
 						}
 					} else if tag == "img" {
-						img_placeholder(rc, &line, &y, size_px, node)
+						img_block(rc, &line, &y, size_px, node)
 					} else if tag == "table" {
 						flush_line(rc, &line, size_px, &y, false)
 						y += 4
@@ -578,7 +867,10 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 				ptr := lxb_dom_node_text_content(node, &tlen)
 				if ptr != nil && tlen > 0 {
 					text := strings.string_from_ptr(ptr, int(tlen))
-					if rc.in_title {
+					if rc.label_depth > 0 {
+						// Button/textarea children: collected at exit,
+						// never laid out as prose (no double render).
+					} else if rc.in_title {
 						old := rc.title
 						rc.title = strings.concatenate([]string{old, text})
 						delete(old)
@@ -611,6 +903,13 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 				}
 				if tag == "a" {
 					anchor_exit(rc)
+				}
+				if tag == "form" {
+					form_exit(rc)
+				} else if tag == "button" {
+					button_exit(rc, &line, &y, size_px, xnode, false)
+				} else if tag == "textarea" {
+					button_exit(rc, &line, &y, size_px, xnode, true)
 				}
 				if is_skip_tag(tag) {
 					skip_depth -= 1
@@ -680,9 +979,38 @@ blit_glyph_px :: proc(buf: []u8, bw, bh: int, f: ^Loaded_Font, gid: u16, pen_x, 
 	stbtt_FreeBitmap(bmp, nil)
 }
 
+// RGBA blit with per-pixel alpha and clipping. Framebuffer alpha untouched.
+blit_image_px :: proc(buf: []u8, bw, bh: int, px: []u8, pw, ph, dx, dy: int) {
+	for row in 0 ..< ph {
+		yy := dy + row
+		if yy < 0 || yy >= bh {
+			continue
+		}
+		for col in 0 ..< pw {
+			xx := dx + col
+			if xx < 0 || xx >= bw {
+				continue
+			}
+			si := (row * pw + col) * 4
+			a := f32(px[si+3]) / 255
+			if a <= 0 {
+				continue
+			}
+			o := (yy * bw + xx) * 4
+			if a >= 1 {
+				buf[o+0], buf[o+1], buf[o+2] = px[si+0], px[si+1], px[si+2]
+			} else {
+				buf[o+0] = u8(f32(px[si+0]) * a + f32(buf[o+0]) * (1 - a) + 0.5)
+				buf[o+1] = u8(f32(px[si+1]) * a + f32(buf[o+1]) * (1 - a) + 0.5)
+				buf[o+2] = u8(f32(px[si+2]) * a + f32(buf[o+2]) * (1 - a) + 0.5)
+			}
+		}
+	}
+}
+
 // Rasterize the lines intersecting [y0, y1) into a fresh viewport frame.
 // The TUI scrolls by re-slicing; whole pages are never rasterized.
-raster_slice :: proc(bank: ^Font_Bank, lines: [dynamic]Line, width, y0, h: int) -> Frame {
+raster_slice :: proc(bank: ^Font_Bank, lines: [dynamic]Line, plc: []Image_Placement, img: []Image, width, y0, h: int) -> Frame {
 	fr := frame_new(width, h, [4]u8{16, 16, 22, 255})
 	fg := [4]u8{232, 232, 238, 255}
 	for &ln in lines {
@@ -701,6 +1029,16 @@ raster_slice :: proc(bank: ^Font_Bank, lines: [dynamic]Line, width, y0, h: int) 
 			blit_glyph_px(fr.px, fr.w, fr.h, f, p.gid, p.x + p.off_x, ln.baseline + dy + p.off_y, fg)
 		}
 	}
+	for pl in plc {
+		if pl.img < 0 || pl.img >= len(img) {
+			continue
+		}
+		if pl.y + pl.h < y0 || pl.y >= y0 + h {
+			continue
+		}
+		im := &img[pl.img]
+		blit_image_px(fr.px, fr.w, fr.h, im.px, im.w, im.h, pl.x, pl.y - y0)
+	}
 	return fr
 }
 
@@ -716,6 +1054,13 @@ raster_lines :: proc(rc: ^Render_Ctx, fr: ^Frame, fg: [4]u8) {
 			}
 			blit_glyph_px(fr.px, fr.w, fr.h, f, p.gid, p.x + p.off_x, ln.baseline + p.off_y, fg)
 		}
+	}
+	for pl in rc.placements {
+		if pl.img < 0 || pl.img >= len(rc.images) {
+			continue
+		}
+		im := &rc.images[pl.img]
+		blit_image_px(fr.px, fr.w, fr.h, im.px, im.w, im.h, pl.x, pl.y)
 	}
 }
 
@@ -757,18 +1102,45 @@ phase_end :: proc(pc: ^Phase_Clock, what: string) {
 // Full page: parse + layout over bytes. Caller owns the ctx.
 layout_bytes :: proc(data: []u8, max_width: int, bank: ^Font_Bank, page_url := "") -> (Render_Ctx, bool) {
 	empty: Render_Ctx
-	doc := lxb_html_document_create()
-	if doc == nil {
+	doc, ok := parse_document(data)
+	if !ok {
 		return empty, false
 	}
 	defer lxb_html_document_destroy(doc)
-	if lxb_html_document_parse(doc, raw_data(data), uint(len(data))) != LXB_STATUS_OK {
-		return empty, false
+	return layout_document(doc, max_width, bank, page_url)
+}
+
+// Parse only; caller destroys the document. Split out so image loading
+// (which needs img URLs) can run between parse and layout.
+parse_document :: proc(data: []u8) -> (^Html_Document, bool) {
+	doc := lxb_html_document_create()
+	if doc == nil {
+		return nil, false
 	}
+	if lxb_html_document_parse(doc, raw_data(data), uint(len(data))) != LXB_STATUS_OK {
+		lxb_html_document_destroy(doc)
+		return nil, false
+	}
+	return doc, true
+}
+
+// Layout a parsed document. Caller owns the ctx (render_ctx_free).
+layout_document :: proc(doc: ^Html_Document, max_width: int, bank: ^Font_Bank, page_url := "") -> (Render_Ctx, bool) {
 	rc := render_ctx_new(bank, 20, f32(max_width), page_url)
 	layout_html(&rc, doc)
 	finalize_links(&rc)
 	return rc, true
+}
+
+// Find a decoded image by absolute URL + requested attr size
+// (linear scan; page cap is small). Same URL at two sizes decodes twice.
+image_lookup :: proc(rc: ^Render_Ctx, url: string, aw, ah: int) -> (int, bool) {
+	for &im, i in rc.images {
+		if im.url == url && im.aw == aw && im.ah == ah {
+			return i, true
+		}
+	}
+	return -1, false
 }
 
 // Full page: parse + layout. Caller owns the ctx (render_ctx_free).

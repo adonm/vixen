@@ -30,9 +30,19 @@ Tui :: struct {
 	show_list:  bool, // text-mode link list overlay
 	url_state:  edit.State,
 	url_build:  strings.Builder,
+	focus:      int, // focused field edit index (-1 = none)
+	field_edits: [dynamic]Field_Edit,
 	status:     string, // owned transient message
 	// Visible links this frame (indices into sess.page.links).
 	vis:        [dynamic]int,
+}
+
+// Per-field edit state, rebuilt on every navigation (values mirror into
+// sess.page.fields per keystroke so submit reads current text).
+Field_Edit :: struct {
+	field: int, // index into sess.page.fields
+	state: edit.State,
+	build: strings.Builder,
 }
 
 tui_status :: proc(t: ^Tui, msg: string) {
@@ -119,6 +129,38 @@ tui_draw_hints :: proc(t: ^Tui, sw, sh: int) {
 	}
 }
 
+// Caret bar for the focused text field, drawn into the viewport slice.
+// Prefix is re-shaped, so the caret can sit slightly off inside ligatures.
+tui_draw_cursor :: proc(t: ^Tui, sw, sh: int) {
+	if t.focus < 0 || t.focus >= len(t.field_edits) {
+		return
+	}
+	fe := &t.field_edits[t.focus]
+	f := &t.sess.page.fields[fe.field]
+	if f.kind != .text || f.line < 0 || f.line >= len(t.sess.page.lines) {
+		return
+	}
+	ln := &t.sess.page.lines[f.line]
+	caret := clamp(fe.state.selection[0], 0, len(f.value))
+	rc := Render_Ctx{bank = &t.sess.bank}
+	probe: Cur_Line
+	w := shape_word(&rc, f.value[:caret], f.px, &probe)
+	for wd in probe.words {
+		delete(wd)
+	}
+	delete(probe.glyphs)
+	delete(probe.words)
+	cx := int(f.x0 + w + 0.5)
+	top := int(ln.baseline - f.px + 0.5) - t.scroll_y
+	bot := int(ln.baseline + 2 + 0.5) - t.scroll_y
+	for yy in max(top, 0) ..< min(bot, sh) {
+		for xx in max(cx, 0) ..< min(cx + 2, sw) {
+			o := (yy * sw + xx) * 4
+			t.slice[o + 0], t.slice[o + 1], t.slice[o + 2] = 255, 255, 255
+		}
+	}
+}
+
 // Number entry shared by both drivers: digits accumulate, Enter follows.
 tui_follow_hint :: proc(t: ^Tui) {
 	if len(t.hint) == 0 {
@@ -138,7 +180,9 @@ tui_follow_hint :: proc(t: ^Tui) {
 	t.scroll_ln = 0
 	if !browse_navigate(t.sess, url, true) {
 		tui_status(t, "navigation failed")
+		return
 	}
+	tui_sync_fields(t)
 }
 
 tui_draw_graphical :: proc(t: ^Tui) {
@@ -154,7 +198,7 @@ tui_draw_graphical :: proc(t: ^Tui) {
 		return
 	}
 	// Rasterize only the viewport slice from retained lines.
-	vfr := raster_slice(&sess.bank, sess.page.lines, sess.page.width, t.scroll_y, sh)
+	vfr := raster_slice(&sess.bank, sess.page.lines, sess.page.placements[:], sess.page.images[:], sess.page.width, t.scroll_y, sh)
 	defer delete(vfr.px)
 	if len(t.slice) != sw*sh*4 || t.slice_w != sw || t.slice_h != sh {
 		delete(t.slice)
@@ -166,6 +210,7 @@ tui_draw_graphical :: proc(t: ^Tui) {
 	}
 	tui_visible_links(t)
 	tui_draw_hints(t, sw, sh)
+	tui_draw_cursor(t, sw, sh)
 	png, ok := frame_encode_slice(t.slice, sw, sh)
 	if !ok {
 		return
@@ -200,19 +245,25 @@ tui_status_line :: proc(t: ^Tui) {
 	if t.url_active {
 		fmt.printf("\nURL: %s\x1b[K", strings.to_string(t.url_build))
 	} else {
-		fmt.printf("\n[q]uit [u]rl [b]ack [f]wd [r]eload [l]inks\x1b[K")
+		fmt.printf("\n[q]uit [u]rl [b]ack [f]wd [r]eload [l]inks [tab]field\x1b[K")
 	}
 }
 
 tui_draw_text :: proc(t: ^Tui) {
 	sess := t.sess
 	tui_clamp_scroll(t)
+	fline, fcaret, has_focus := tui_focused_line(t)
 	n := len(sess.page.text)
 	rows := t.rows - 2
 	for i in 0 ..< rows {
 		li := t.scroll_ln + i
 		if li < n {
 			line := sess.page.text[li]
+			if has_focus && fline == li {
+				// Caret overlay on a temp copy; never mutates page text.
+				c := clamp(fcaret, 0, len(line))
+				line = strings.concatenate([]string{line[:c], "|", line[c:]}, context.temp_allocator)
+			}
 			if len(line) > t.cols {
 				line = line[:t.cols]
 			}
@@ -254,7 +305,7 @@ tui_url_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 			edit.move_to(&t.url_state, .Left)
 		case .Right:
 			edit.move_to(&t.url_state, .Right)
-		case .Up, .Down, .Tab, .CtrlC, .CtrlD, .Unknown:
+		case .Up, .Down, .Tab, .ShiftTab, .CtrlC, .CtrlD, .Unknown:
 		}
 	}
 	return false
@@ -270,7 +321,141 @@ tui_navigate_bar :: proc(t: ^Tui, text: string) {
 	clear(&t.hint)
 	if !browse_navigate(t.sess, url, true) {
 		tui_status(t, "navigation failed")
+		return
 	}
+	tui_sync_fields(t)
+}
+
+// Rebuild per-field edit states after navigation; drops focus. Call after
+// every successful browse_* that replaces the page.
+tui_sync_fields :: proc(t: ^Tui) {
+	for &fe in t.field_edits {
+		edit.destroy(&fe.state)
+		strings.builder_destroy(&fe.build)
+	}
+	clear(&t.field_edits)
+	t.focus = -1
+	for &f, i in t.sess.page.fields {
+		if f.kind == .hidden {
+			continue
+		}
+		fe: Field_Edit
+		fe.field = i
+		edit.init(&fe.state, context.allocator, context.allocator)
+		strings.builder_init(&fe.build)
+		strings.write_string(&fe.build, f.value)
+		edit.setup_once(&fe.state, &fe.build)
+		// Collapse: setup_once selects all ({len,0}); caret goes to end.
+		n := len(fe.build.buf)
+		fe.state.selection = {n, n}
+		append(&t.field_edits, fe)
+	}
+	// Rebind: setup_once pointed each state at the loop-local Builder;
+	// append copies the struct, and growth may move elements. Every
+	// state must point at its own array element's builder.
+	for &e in t.field_edits {
+		e.state.builder = &e.build
+	}
+}
+
+// Mirror the focused field's builder back into the page field value.
+tui_field_sync :: proc(t: ^Tui) {
+	fe := &t.field_edits[t.focus]
+	f := &t.sess.page.fields[fe.field]
+	delete(f.value)
+	f.value = strings.clone(strings.to_string(fe.build))
+}
+
+tui_focus_move :: proc(t: ^Tui, dir: int) {
+	n := len(t.field_edits)
+	if n == 0 {
+		tui_status(t, "no fields")
+		return
+	}
+	if t.focus < 0 {
+		t.focus = 0 if dir > 0 else n - 1
+	} else {
+		t.focus = (t.focus + dir + n) % n
+	}
+	f := &t.sess.page.fields[t.field_edits[t.focus].field]
+	if len(f.name) > 0 {
+		tui_status(t, fmt.tprintf("field %s", f.name))
+	} else {
+		tui_status(t, fmt.tprintf("%s field", "text" if f.kind == .text else "button"))
+	}
+}
+
+// Focused field's line + caret byte offset for cursor display.
+tui_focused_line :: proc(t: ^Tui) -> (line, caret: int, ok: bool) {
+	if t.focus < 0 || t.focus >= len(t.field_edits) {
+		return 0, 0, false
+	}
+	fe := &t.field_edits[t.focus]
+	f := &t.sess.page.fields[fe.field]
+	if f.line < 0 {
+		return 0, 0, false
+	}
+	caret = clamp(fe.state.selection[0], 0, len(f.value))
+	return f.line, caret, true
+}
+
+// Keys while a field is focused. Returns false to quit.
+tui_field_key :: proc(t: ^Tui, k: Term_Key) -> bool {
+	fe := &t.field_edits[t.focus]
+	f := &t.sess.page.fields[fe.field]
+	_ = f
+	switch v in k {
+	case rune:
+		if v >= 32 && v != 127 {
+			if t.sess.page.fields[fe.field].kind == .text {
+				edit.input_rune(&fe.state, v)
+				tui_field_sync(t)
+			}
+		}
+	case Key_Special:
+		switch v {
+		case .Enter:
+			idx := fe.field
+			t.focus = -1
+			if !browse_submit(t.sess, idx) {
+				if len(t.sess.page.fields[idx].action) == 0 {
+					tui_status(t, "not in a form")
+				} else {
+					tui_status(t, "submission failed")
+				}
+			} else {
+				t.scroll_y, t.scroll_ln = 0, 0
+				tui_sync_fields(t)
+			}
+		case .Esc:
+			t.focus = -1
+		case .Backspace:
+			if t.sess.page.fields[fe.field].kind == .text {
+				edit.delete_to(&fe.state, .Left)
+				tui_field_sync(t)
+			}
+		case .Left:
+			edit.move_to(&fe.state, .Left)
+		case .Right:
+			edit.move_to(&fe.state, .Right)
+		case .Tab:
+			tui_focus_move(t, 1)
+		case .ShiftTab:
+			tui_focus_move(t, -1)
+		case .Up, .Down:
+			t.focus = -1
+			if t.kitty {
+				t.scroll_y += -40 if v == .Up else 40
+			} else {
+				t.scroll_ln += -1 if v == .Up else 1
+			}
+			tui_clamp_scroll(t)
+		case .CtrlC, .CtrlD:
+			return false
+		case .Unknown:
+		}
+	}
+	return true
 }
 
 tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
@@ -278,6 +463,9 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 	if t.url_active {
 		tui_url_key(t, k)
 		return true
+	}
+	if t.focus >= 0 {
+		return tui_field_key(t, k)
 	}
 	switch v in k {
 	case rune:
@@ -307,15 +495,18 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 				tui_status(t, "no back history")
 			} else {
 				t.scroll_y, t.scroll_ln = 0, 0
+				tui_sync_fields(t)
 			}
 		case 'f':
 			if !browse_forward(t.sess) {
 				tui_status(t, "no forward history")
 			} else {
 				t.scroll_y, t.scroll_ln = 0, 0
+				tui_sync_fields(t)
 			}
 		case 'r':
 			browse_reload(t.sess)
+			tui_sync_fields(t)
 		case 'u':
 			t.url_active = true
 			strings.builder_reset(&t.url_build)
@@ -350,6 +541,10 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 			tui_follow_hint(t)
 		case .Esc:
 			clear(&t.hint)
+		case .Tab:
+			tui_focus_move(t, 1)
+		case .ShiftTab:
+			tui_focus_move(t, -1)
 		case .CtrlC, .CtrlD:
 			return false
 		case .Backspace:
@@ -357,8 +552,9 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 				tui_status(t, "no back history")
 			} else {
 				t.scroll_y, t.scroll_ln = 0, 0
+				tui_sync_fields(t)
 			}
-		case .Left, .Right, .Tab, .Unknown:
+		case .Left, .Right, .Unknown:
 			clear(&t.hint)
 		}
 	}
@@ -561,6 +757,14 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) {
 	defer delete(t.slice)
 	defer delete(t.hint)
 	defer delete(t.vis)
+	t.focus = -1 // zero value 0 is a valid field index
+	defer {
+		for &fe in t.field_edits {
+			edit.destroy(&fe.state)
+			strings.builder_destroy(&fe.build)
+		}
+		delete(t.field_edits)
+	}
 	edit.init(&t.url_state, context.allocator, context.allocator)
 	defer edit.destroy(&t.url_state)
 	strings.builder_init(&t.url_build)
@@ -568,6 +772,7 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) {
 	if !browse_navigate(sess, start_url, true) {
 		tui_status(&t, "initial navigation failed")
 	}
+	tui_sync_fields(&t)
 	for {
 		tui_frame_geom(&t)
 		if t.show_list && !t.kitty {

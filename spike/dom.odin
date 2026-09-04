@@ -30,6 +30,7 @@ foreign domlx {
 	lxb_selectors_find             :: proc(s: ^Dom_Selectors, root: ^Dom_Node, list: ^Dom_SelectorList, cb: rawptr, ctx: rawptr) -> i32 ---
 	lxb_html_serialize_tree_cb       :: proc(node: ^Dom_Node, cb: rawptr, ctx: rawptr) -> i32 ---
 	lxb_dom_element_get_attribute  :: proc(el: ^Dom_Node, name: [^]u8, nlen: uint, vlen: ^uint) -> [^]u8 ---
+	lxb_dom_element_has_attribute  :: proc(el: ^Dom_Node, name: [^]u8, nlen: uint) -> bool ---
 	lxb_dom_element_set_attribute  :: proc(el: ^Dom_Node, name: [^]u8, nlen: uint, val: [^]u8, vlen: uint) -> rawptr ---
 	lxb_dom_element_remove_attribute :: proc(el: ^Dom_Node, name: [^]u8, nlen: uint) -> i32 ---
 	lxb_html_document_create_element_noi :: proc(doc: ^Html_Document, name: [^]u8, nlen: uint, reserved: rawptr) -> ^Dom_Node ---
@@ -611,6 +612,12 @@ dom_attr_val :: proc(node: ^Dom_Node, name: string) -> (string, bool) {
 		return "", false
 	}
 	return strings.clone(string(cstring(ptr))[:vlen]), true
+}
+
+// Presence check (boolean attributes like `disabled` have no value and
+// read back NULL from get_attribute).
+dom_attr_has :: proc(node: ^Dom_Node, name: string) -> bool {
+	return lxb_dom_element_has_attribute(node, raw_data(name), uint(len(name)))
 }
 
 dom_id_get :: proc "c" (ctx: ^JS_Context, this: JS_Value) -> JS_Value {
