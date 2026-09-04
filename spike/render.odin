@@ -123,24 +123,30 @@ font_upm_at :: proc(data: []u8, base: int) -> int {
 	return 0
 }
 
-FONT_PATHS := [?]struct {
-	path:  string,
-	index: int,
-	px:    f32,
+FONT_SPECS := [?]struct {
+	families: [2]string, // primary, fallback ("" = none)
+	index:    int, // collection member (ttc)
+	px:       f32,
 } {
 	// NOTE: kb resolves fallback last-pushed-first, so the widest-coverage
 	// fallback (wqy) goes first and the preferred Latin font goes last.
-	{"fonts/wqy-microhei.ttc", 0, 20},
-	{"fonts/Waree.ttf", 0, 20},
-	{"fonts/NotoSansDevanagari-Regular.ttf", 0, 20},
-	{"fonts/NotoSansHebrew-Regular.ttf", 0, 20},
-	{"fonts/NotoSansArabic-Regular.ttf", 0, 20},
-	{"fonts/DejaVuSans.ttf", 0, 20},
+	{{"WenQuanYi Micro Hei", ""}, 0, 20},
+	{{"Noto Serif Thai", "Waree"}, 0, 20},
+	{{"Noto Sans Devanagari", "Lohit Devanagari"}, 0, 20},
+	{{"Noto Sans Hebrew", "Ezra SIL"}, 0, 20},
+	{{"Noto Sans Arabic", ""}, 0, 20},
+	{{"DejaVu Sans", ""}, 0, 20},
 }
 
 font_bank_load :: proc(body_px: f32) -> (Font_Bank, bool) {
 	t0 := time.now()
 	bank: Font_Bank
+	fc, fok := fontfind_open()
+	if !fok {
+		fmt.eprintln("render: fontconfig unavailable")
+		return bank, false
+	}
+	defer fontfind_close(&fc)
 	alloc := new(runtime.Allocator)
 	alloc^ = context.allocator
 	alloc_fn, alloc_data := kbts.AllocatorFromOdinAllocator(alloc)
@@ -150,41 +156,56 @@ font_bank_load :: proc(body_px: f32) -> (Font_Bank, bool) {
 		return bank, false
 	}
 	bank.kb_alloc = alloc
-	for fp in FONT_PATHS {
-		data, err := os.read_entire_file_from_path(fp.path, context.allocator)
+	for spec in FONT_SPECS {
+		path := ""
+		for fam in spec.families {
+			if len(fam) == 0 {
+				continue
+			}
+			if p, ok := fontfind_file(&fc, fam); ok {
+				path = p
+				break
+			}
+		}
+		if len(path) == 0 {
+			fmt.eprintfln("render: no font for %q, skipping (tofu will show)", spec.families[0])
+			continue
+		}
+		// Ownership of path transfers into Loaded_Font below; do not free here.
+		data, err := os.read_entire_file_from_path(path, context.allocator)
 		if err != nil {
-			fmt.eprintfln("render: cannot read font %s", fp.path)
+			fmt.eprintfln("render: cannot read font %s", path)
 			return bank, false
 		}
-		off := stbtt_GetFontOffsetForIndex(raw_data(data), i32(fp.index))
+		off := stbtt_GetFontOffsetForIndex(raw_data(data), i32(spec.index))
 		if off < 0 {
-			fmt.eprintfln("render: bad font offset %s", fp.path)
+			fmt.eprintfln("render: bad font offset %s", path)
 			delete(data)
 			return bank, false
 		}
 		stb := spike_stbtt_alloc()
 		if stbtt_InitFont(stb, raw_data(data), off) == 0 {
-			fmt.eprintfln("render: stbtt init failed %s", fp.path)
+			fmt.eprintfln("render: stbtt init failed %s", path)
 			delete(data)
 			return bank, false
 		}
 		upm := font_upm_at(data, int(off))
 		if upm == 0 {
-			fmt.eprintfln("render: no head table %s", fp.path)
+			fmt.eprintfln("render: no head table %s", path)
 			delete(data)
 			return bank, false
 		}
-		px := body_px if fp.px == 20 else fp.px
+		px := body_px if spec.px == 20 else spec.px
 		scale := px / f32(upm)
 		a, d, g: i32
 		stbtt_GetFontVMetrics(stb, &a, &d, &g)
-		kh := kbts.ShapePushFontFromMemory(bank.kb_ctx, data, c.int(fp.index))
+		kh := kbts.ShapePushFontFromMemory(bank.kb_ctx, data, c.int(spec.index))
 		if kh == nil {
-			fmt.eprintfln("render: kb push failed %s", fp.path)
+			fmt.eprintfln("render: kb push failed %s", path)
 			delete(data)
 			return bank, false
 		}
-		append(&bank.fonts, Loaded_Font{fp.path, data, stb, kh, upm, px, scale, f32(a) * scale, f32(d) * scale, f32(g) * scale})
+		append(&bank.fonts, Loaded_Font{path, data, stb, kh, upm, px, scale, f32(a) * scale, f32(d) * scale, f32(g) * scale})
 	}
 	fmt.eprintfln("t+%-28s %8.1f ms", "font-bank-load", time.duration_milliseconds(time.since(t0)))
 	return bank, true
@@ -197,7 +218,7 @@ font_bank_free :: proc(bank: ^Font_Bank) {
 	for &f in bank.fonts {
 		spike_stbtt_free(f.stb)
 		delete(f.data)
-		// NOTE: f.path aliases the static FONT_PATHS table; must not free.
+		delete(f.path) // owned (fontconfig discovery result)
 	}
 	delete(bank.fonts)
 	free(bank.kb_alloc)

@@ -3,10 +3,11 @@ package spike
 // Shaping conformance suite: popular scripts through kb_text_shape.
 // Each case asserts structural shaping facts (ligatures, run direction,
 // conjuncts, advance uniformity) that are font-independent in spirit but
-// pinned to the corpus fonts in fonts/.
+// resolved through system fontconfig (see fontfind.odin).
 //
 //   spike shapetest   # exit 0 iff every case passes
 
+import "base:runtime"
 import "core:c"
 import "core:fmt"
 import "core:os"
@@ -47,6 +48,29 @@ shape_collect :: proc(ctx: ^kbts.shape_context, text: string) -> (Shape_Result, 
 	return r, true
 }
 
+shape_disc: Font_Discovery
+shape_disc_ok := false
+
+with_family :: proc(family: string, font_index: int, fn: proc(ctx: ^kbts.shape_context) -> bool) -> bool {
+	// One discovery per process: repeated dlopen/dlclose cycles are unsafe.
+	if !shape_disc_ok {
+		d, dok := fontfind_open()
+		if !dok {
+			fmt.printfln("FAIL shape setup: fontconfig unavailable")
+			return false
+		}
+		shape_disc = d
+		shape_disc_ok = true
+	}
+	path, pok := fontfind_file(&shape_disc, family)
+	if !pok {
+		fmt.printfln("FAIL shape setup: no font for %q", family)
+		return false
+	}
+	defer delete(path)
+	return with_font(path, font_index, fn)
+}
+
 with_font :: proc(font_path: string, font_index: int, fn: proc(ctx: ^kbts.shape_context) -> bool) -> bool {
 	data, err := os.read_entire_file_from_path(font_path, context.allocator)
 	if err != nil {
@@ -54,19 +78,25 @@ with_font :: proc(font_path: string, font_index: int, fn: proc(ctx: ^kbts.shape_
 		return false
 	}
 	defer delete(data)
-	alloc := context.allocator
-	alloc_fn, alloc_data := kbts.AllocatorFromOdinAllocator(&alloc)
+	// Heap-held: the kb context calls back into it past this scope.
+	ap := new(runtime.Allocator)
+	ap^ = context.allocator
+	alloc_fn, alloc_data := kbts.AllocatorFromOdinAllocator(ap)
 	ctx := kbts.CreateShapeContext(alloc_fn, alloc_data)
 	if ctx == nil {
-		fmt.println("FAIL context create")
+		free(ap)
 		return false
 	}
-	defer kbts.DestroyShapeContext(ctx)
+	// NOTE: allocator must outlive the context: free it only after destroy.
+	ok := false
 	if kbts.ShapePushFontFromMemory(ctx, data, c.int(font_index)) == nil {
 		fmt.printfln("FAIL font push %s", font_path)
-		return false
+	} else {
+		ok = fn(ctx)
 	}
-	return fn(ctx)
+	kbts.DestroyShapeContext(ctx)
+	free(ap)
+	return ok
 }
 
 check :: proc(name: string, cond: bool, detail: string) -> bool {
@@ -78,7 +108,7 @@ run_shapetests :: proc() -> bool {
 	all_ok := true
 
 	// 1. Latin baseline.
-	all_ok = all_ok && with_font("fonts/DejaVuSans.ttf", 0, proc(ctx: ^kbts.shape_context) -> bool {
+	all_ok = all_ok && with_family("DejaVu Sans", 0, proc(ctx: ^kbts.shape_context) -> bool {
 		r, ok := shape_collect(ctx, "Hello, world!")
 		defer delete_shape_result(&r)
 		if !ok {
@@ -93,7 +123,7 @@ run_shapetests :: proc() -> bool {
 	})
 
 	// 2. Arabic lam-alef ligature: 6 chars -> 5 glyphs.
-	all_ok = all_ok && with_font("fonts/NotoSansArabic-Regular.ttf", 0, proc(ctx: ^kbts.shape_context) -> bool {
+	all_ok = all_ok && with_family("Noto Sans Arabic", 0, proc(ctx: ^kbts.shape_context) -> bool {
 		r, ok := shape_collect(ctx, "السلام")
 		defer delete_shape_result(&r)
 		if !ok {
@@ -104,7 +134,7 @@ run_shapetests :: proc() -> bool {
 	})
 
 	// 3. Arabic plain word: 5 chars -> 5 glyphs, RTL.
-	all_ok = all_ok && with_font("fonts/NotoSansArabic-Regular.ttf", 0, proc(ctx: ^kbts.shape_context) -> bool {
+	all_ok = all_ok && with_family("Noto Sans Arabic", 0, proc(ctx: ^kbts.shape_context) -> bool {
 		r, ok := shape_collect(ctx, "مرحبا")
 		defer delete_shape_result(&r)
 		if !ok {
@@ -115,7 +145,7 @@ run_shapetests :: proc() -> bool {
 	})
 
 	// 4. Hebrew: 4 chars -> 4 glyphs, RTL.
-	all_ok = all_ok && with_font("fonts/NotoSansHebrew-Regular.ttf", 0, proc(ctx: ^kbts.shape_context) -> bool {
+	all_ok = all_ok && with_family("Noto Sans Hebrew", 0, proc(ctx: ^kbts.shape_context) -> bool {
 		r, ok := shape_collect(ctx, "שלום")
 		defer delete_shape_result(&r)
 		if !ok {
@@ -126,7 +156,7 @@ run_shapetests :: proc() -> bool {
 	})
 
 	// 5. Devanagari conjunct k+halant+ssa -> fewer glyphs than chars.
-	all_ok = all_ok && with_font("fonts/NotoSansDevanagari-Regular.ttf", 0, proc(ctx: ^kbts.shape_context) -> bool {
+	all_ok = all_ok && with_family("Noto Sans Devanagari", 0, proc(ctx: ^kbts.shape_context) -> bool {
 		r, ok := shape_collect(ctx, "क्ष")
 		defer delete_shape_result(&r)
 		if !ok {
@@ -137,7 +167,7 @@ run_shapetests :: proc() -> bool {
 	})
 
 	// 6. Thai with above/below marks: shapes cleanly, sane advances.
-	all_ok = all_ok && with_font("fonts/Waree.ttf", 0, proc(ctx: ^kbts.shape_context) -> bool {
+	all_ok = all_ok && with_family("Waree", 0, proc(ctx: ^kbts.shape_context) -> bool {
 		r, ok := shape_collect(ctx, "สวัสดี")
 		defer delete_shape_result(&r)
 		if !ok {
@@ -152,7 +182,7 @@ run_shapetests :: proc() -> bool {
 	})
 
 	// 7. CJK fullwidth: uniform advances.
-	all_ok = all_ok && with_font("fonts/wqy-microhei.ttc", 0, proc(ctx: ^kbts.shape_context) -> bool {
+	all_ok = all_ok && with_family("WenQuanYi Micro Hei", 0, proc(ctx: ^kbts.shape_context) -> bool {
 		r, ok := shape_collect(ctx, "日本語")
 		defer delete_shape_result(&r)
 		if !ok {
@@ -166,7 +196,7 @@ run_shapetests :: proc() -> bool {
 	})
 
 	// 8. Mixed bidi splits runs by direction (coverage-independent).
-	all_ok = all_ok && with_font("fonts/NotoSansHebrew-Regular.ttf", 0, proc(ctx: ^kbts.shape_context) -> bool {
+	all_ok = all_ok && with_family("Noto Sans Hebrew", 0, proc(ctx: ^kbts.shape_context) -> bool {
 		r, ok := shape_collect(ctx, "abc שלום")
 		defer delete_shape_result(&r)
 		if !ok {

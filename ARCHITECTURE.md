@@ -24,7 +24,8 @@ construction. Diagnostics go to stderr; stdout stays clean for Kitty bytes.
 | Shape    | `vendor:kb_text_shape` | Segmentation + OpenType shaping + BiDi, in-tree |
 | Raster   | `vendor:stb/truetype` sources compiled in | Per-glyph-ID bitmaps (shaped IDs, not codepoints) |
 | PNG      | `stb_image_write` compiled in | One call, no new dep |
-| Window   | `vendor:sdl3` renderer API + pinned source build (`thirdparty/sdl3`) | Ubuntu 24.04 has no SDL3 package; Justfile links `-L/-rpath`, no sudo |
+| Fonts | fontconfig discovery (dlopen, zero link deps) | no vendored files; coverage-checked by setup |
+| Window | pinned static SDL3 (`-Bstatic` fence) | shared system SDL would win the link without fencing |
 | Fetch    | curl CLI (corpus pre-fetched) | In-spike fetch is future work; `vendor:curl` exists |
 | Net fetch | system libcurl via own `mincurl` binding | `vendor:curl` links a nonexistent `mbedtls` lib; 15-proc surface owned instead |
 | Cookies/jar | own RFC 6265 + libpsl | curl engine OFF; supercookie defense via builtin PSL |
@@ -46,7 +47,7 @@ assumes games — week-one sugar against a week-three ceiling.
 
 | Metric | spike | vixen (control) |
 |--------|-------|-----------------|
-| Binary | 8.3 MB (net+storage+wasm included) | 58.7 MB release |
+| Binary | 12.4 MB, no sidecars (static SDL3; dynamic tail is libc + curl stack only) | 58.7 MB release |
 | Cold-start RSS | 2.1 MB | 6.8 MB |
 | app-shell page | 0.2 ms / 2.4 MB | 160 ms / 54 MB |
 | JS bench, same file+answer | ~320 ms / 7 MB heap | ~230 ms / 71 MB RSS |

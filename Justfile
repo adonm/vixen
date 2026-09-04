@@ -89,36 +89,41 @@ setup-kb:
 setup-sdl:
     #!/usr/bin/env bash
     set -euo pipefail
-    test -f "{{ SDL_LIB }}/libSDL3.so" && exit 0
+    # Static-only SDL (sidecar-free binary). Rebuilds when the recorded
+    # prefix no longer matches this checkout.
+    FRESH=0
+    test -f "{{ SDL_LIB }}/libSDL3.a" || FRESH=1
+    grep -q "prefix={{ TP }}/sdl3" "{{ SDL_LIB }}/pkgconfig/sdl3.pc" 2>/dev/null || FRESH=1
+    test "$FRESH" = 0 && exit 0
     curl -fsSL -o "{{ TP }}/SDL.tar.gz" "https://github.com/libsdl-org/SDL/releases/download/release-{{ SDL_VERSION }}/SDL3-{{ SDL_VERSION }}.tar.gz"
     rm -rf "{{ TP }}/SDL3-{{ SDL_VERSION }}"
     tar -xzf "{{ TP }}/SDL.tar.gz" -C "{{ TP }}"
-    (cd "{{ TP }}/SDL3-{{ SDL_VERSION }}" && cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="{{ TP }}/sdl3" > /dev/null && cmake --build build -j"$(nproc)" > /dev/null && cmake --install build > /dev/null)
+    (cd "{{ TP }}/SDL3-{{ SDL_VERSION }}" && cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="{{ TP }}/sdl3" -DSDL_SHARED=OFF -DSDL_STATIC=ON > /dev/null && cmake --build build -j"$(nproc)" > /dev/null && cmake --install build > /dev/null)
+    rm -f "{{ TP }}/sdl3/lib/libSDL3.so"* "{{ TP }}/sdl3/lib/libSDL3_test"* 2>/dev/null || true
     rm -rf "{{ TP }}/SDL3-{{ SDL_VERSION }}" "{{ TP }}/SDL.tar.gz"
 
 setup-fonts:
     #!/usr/bin/env bash
+    # Fonts resolve at runtime through fontconfig (see fontfind.odin);
+    # nothing is vendored. Verify the coverage the gates need.
     set -euo pipefail
-    missing=0
-    for fam in "DejaVu Sans" "Noto Sans Arabic" "Noto Sans Hebrew" "Noto Sans Devanagari" "WenQuanYi Micro Hei"; do
-      fc-match "$fam" file > /dev/null 2>&1 || { echo "missing font family: $fam (see README apt list)"; missing=1; }
+    fail=0
+    for fam in "DejaVu Sans" "Noto Sans Arabic" "Noto Sans Hebrew" "Noto Sans Devanagari" "Noto Serif Thai" "WenQuanYi Micro Hei"; do
+      if fc-match "$fam" file > /dev/null 2>&1; then
+        echo "font ok: $fam -> $(fc-match "$fam" file | cut -d: -f1)"
+      else
+        echo "font MISSING: $fam"
+        fail=1
+      fi
     done
-    if [ ! -f "fonts/NotoNaskhArabic[wght].ttf" ]; then
-      curl -fsSL -o "fonts/NotoNaskhArabic[wght].ttf" "https://raw.githubusercontent.com/google/fonts/main/ofl/notonaskharabic/NotoNaskhArabic%5Bwght%5D.ttf"
-    fi
-    copy_font() { src=$(fc-match -f "%{file}\n" "$1" 2>/dev/null) && cp "$src" "fonts/$2"; }
-    copy_font "DejaVu Sans" DejaVuSans.ttf
-    copy_font "Noto Sans Arabic" NotoSansArabic-Regular.ttf
-    copy_font "Noto Sans Hebrew" NotoSansHebrew-Regular.ttf
-    copy_font "Noto Sans Devanagari" NotoSansDevanagari-Regular.ttf
-    copy_font "Noto Serif Thai:style=Regular" NotoSerifThai-Regular.ttf || cp /usr/share/fonts/truetype/tlwg/Waree.ttf fonts/Waree.ttf
-    copy_font "WenQuanYi Micro Hei" wqy-microhei.ttc
-    test "$missing" = 0 || { echo "install the README apt list and rerun" >&2; exit 1; }
+    # Thai accepts Waree as fallback (see FONT_SPECS).
+    fc-match "Waree" file > /dev/null 2>&1 || echo "note: Waree (Thai fallback) not installed"
+    test "$fail" = 0 || { echo "install the README font list and rerun" >&2; exit 1; }
 
 build:
     command -v odin > /dev/null || { echo "activate mise (eval \"$(mise activate bash)\") or run: mise exec -- just build" >&2; exit 1; }
-    test -f {{ SDL_LIB }}/libSDL3.so || { echo "run 'just setup' first" >&2; exit 1; }
-    odin build spike -out:{{ BIN }} -o:speed -extra-linker-flags:"-L{{ SDL_LIB }} -Wl,-rpath,\\\$ORIGIN/thirdparty/sdl3/lib"
+    test -f {{ SDL_LIB }}/libSDL3.a || { echo "run 'just setup' first" >&2; exit 1; }
+    odin build spike -out:{{ BIN }} -o:speed -extra-linker-flags:"`./scripts/sdl-flags.sh`"
 
 test: build
     mkdir -p .tmp
