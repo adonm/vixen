@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Vixen app shell control</title>
+  <style>
+    body { margin: 0; color: #e8eef6; background: #101722; font-family: sans-serif; }
+    header { padding: 16px 24px; border-bottom: 1px solid #33455c; }
+    main { display: flex; min-height: 420px; }
+    nav { width: 180px; padding: 20px; background: #172233; }
+    nav ul { margin: 0; padding: 0; }
+    nav li { margin: 0 0 12px; }
+    section { flex: 1; padding: 24px; }
+    .cards { display: flex; gap: 16px; }
+    .card { width: 180px; padding: 16px; border: 1px solid #47617e; background: #1b293b; }
+  </style>
+</head>
+<body>
+  <header><strong>Control Console</strong></header>
+  <main>
+    <nav aria-label="Primary">
+      <ul><li>Overview</li><li>Activity</li><li>Settings</li></ul>
+    </nav>
+    <section>
+      <h1>Overview</h1>
+      <p>A deterministic app-like shell for local runtime and layout measurement.</p>
+      <div class="cards">
+        <div class="card"><strong>12</strong><p>queued controls</p></div>
+        <div class="card"><strong>4</strong><p>completed controls</p></div>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

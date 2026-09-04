@@ -1,41 +1,22 @@
-# Rust / Cargo
-/target
-**/*.rs.bk
-Cargo.lock.bak
+# Provisioned, never committed.
+thirdparty/
+fonts/
+lexbor-2.5.0/
+quickjs-2024-01-13/
 
-# mdBook output
-/book
+# Build outputs.
+/vixen
+spike/*.o
+spike/*.a
+spike/*_asan
+spike/show.png
+spike/out.png
+.tmp/
+*.tmp.png
 
-# Workspace-local CARGO_HOME (docs/guidance/cargo-home.md). We pin
-# `.cargo/config.toml` (project config); the cache subdirs are build state.
-/.cargo/*
-!/.cargo/config.toml
+# Local test state.
+.tmp/
 
-# cargo-fuzz build outputs. The harness source lives in fuzz/fuzz_targets/;
-# corpora/artifacts are regenerated per run and are too large to ship.
-/fuzz/target
-/fuzz/corpus
-/fuzz/artifacts
-/fuzz/coverage
-
-# Reference browser checkouts (docs/REFERENCES.md) — never shipped
-/reference-browsers
-
-# Local profile data created while dogfooding
-/profile/
-
-# Editor / OS noise
-.idea/
-.vscode/
-*.swp
+# Editors and OS.
+*~
 .DS_Store
-
-# Reftest diff output (docs/PLAN.md "Snapshot tests against Firefox reference")
-/target-reftest-diff/
-
-# Node tooling cache/install outputs. `package-lock.json` is tracked; modules are
-# reproduced through mise-managed npm.
-/node_modules/
-
-# Workspace-local external checkouts and other reproducible scratch data
-/.tmp/
