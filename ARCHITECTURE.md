@@ -9,7 +9,7 @@ on purpose — nothing here is product code until measured against a corpus.
 ```
 fetch (curl CLI, corpus/) -> parse (lexbor) -> flow layout (own)
   -> shape (kb_text_shape) -> raster (stb_truetype blits into RGBA)
-  -> backends: SDL3 texture | PNG file | Kitty graphics | plain text
+  -> backends: SDL3 texture | PNG file | Kitty graphics (Ghostty)
 ```
 
 One shared framebuffer feeds every backend, so all outputs agree by
@@ -36,7 +36,7 @@ construction. Diagnostics go to stderr; stdout stays clean for Kitty bytes.
 | Events | own capture/target/bubble dispatch | stop/remove/once; listener exceptions reported, dispatch continues |
 | Browse session | heap-held store, retained lines, viewport slicing | fullscreen raster removed: 146 MB -> ~2 MB viewport |
 | TUI loop | raw termios, CSI metrics, shared input buffer | typeahead survives queries; ASCII fast path |
-| TUI drivers | Kitty PNG slices + text fallback | GUI (`show`) manual-only until GUI suites exist |
+| TUI drivers | Kitty PNG slices (Ghostty assumed, no text fallback) | GUI (`show`) manual-only until GUI suites exist |
 | Forms | own fields/dataset/submit + Tab focus + cursor | per-form scoping; GET+POST; select/checkbox out of scope |
 | Images | stb_image decode + stb_image_resize to display size | eager bounded pre-pass; SVG/WebP/data-URLs fall back |
 
@@ -108,6 +108,6 @@ assumes games — week-one sugar against a week-three ceiling.
 - Images: PNG/JPEG/GIF-first-frame/BMP via stb; SVG/WebP, data: URLs,
   and srcset out of scope. 12 images / 8 MB each / 24 MB per page max.
 - woff2/variable fonts untested (shipped TTFs are static instances).
-- Kitty detection is environmental (`TERM`/`KITTY_WINDOW_ID`, `--kitty=`).
+- Ghostty assumed: graphics detection is environmental (`TERM` containing `ghostty`/`kitty`, or `KITTY_WINDOW_ID`); no text-driver fallback.
 - Profile: `$SPIKE_PROFILE` or `~/.config/spikebrowser`; cache caps
   32 MB RAM / 256 MB disk; localStorage quota 5 MB/origin.

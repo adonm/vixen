@@ -6,11 +6,15 @@ package spike
 
 import "core:fmt"
 import "core:os"
+import "core:strings"
 import base64 "core:encoding/base64"
 
+// Graphics-capable terminal detection: Ghostty is assumed (Kitty graphics
+// protocol); real Kitty honors the same check. Environmental only (no
+// interactive query, keeps stdout pipe-safe).
 kitty_env_supported :: proc() -> bool {
 	term := os.get_env("TERM", context.temp_allocator)
-	if term == "xterm-kitty" {
+	if strings.contains(term, "kitty") || strings.contains(term, "ghostty") {
 		return true
 	}
 	if os.get_env("KITTY_WINDOW_ID", context.temp_allocator) != "" {

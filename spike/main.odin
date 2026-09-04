@@ -336,8 +336,8 @@ main :: proc() {
 			os.exit(1)
 		}
 	case "tui":
-		// spike tui [--kitty auto|force|off] [--width N] page.html
-		kitty_mode := "auto"
+		// vixen tui [--width N] page.html — one-shot render to the
+		// terminal. Ghostty (Kitty graphics) assumed, like the loop.
 		width := 900
 		page := ""
 		i := 2
@@ -345,13 +345,6 @@ main :: proc() {
 			arg := os.args[i]
 			key, _, val := strings.partition(arg, "=")
 			switch key {
-			case "--kitty":
-				if val != "" {
-					kitty_mode = val
-				} else {
-					i += 1
-					kitty_mode = os.args[i]
-				}
 			case "--width":
 				if val != "" {
 					width = parse_int_or(val, 900)
@@ -365,7 +358,7 @@ main :: proc() {
 			i += 1
 		}
 		if page == "" {
-			fmt.eprintln("usage: vixen tui [--kitty auto|force|off] [--width N] page.html")
+			fmt.eprintln("usage: vixen tui [--width N] page.html")
 			os.exit(2)
 		}
 		bank, bok := font_bank_load(20)
@@ -378,19 +371,13 @@ main :: proc() {
 			os.exit(1)
 		}
 		defer delete(fr.px)
-		use_kitty := kitty_mode == "force" || (kitty_mode == "auto" && kitty_env_supported())
-		if use_kitty {
-			png, pok := frame_encode_png(&fr)
-			if !pok {
-				os.exit(1)
-			}
-			defer delete(png)
-			if !kitty_transmit_png(png, fr.w, fr.h) {
-				os.exit(1)
-			}
-		} else {
-			// Plain-text fallback: the laid-out line texts.
-			tui_print_text(page, width)
+		png, pok := frame_encode_png(&fr)
+		if !pok {
+			os.exit(1)
+		}
+		defer delete(png)
+		if !kitty_transmit_png(png, fr.w, fr.h) {
+			os.exit(1)
 		}
 	case:
 		fmt.println("usage: vixen (rss|parse <html...>|js <js...>|shapetest)")
@@ -412,26 +399,6 @@ parse_int_or :: proc(s: string, dflt: int) -> int {
 	return n
 }
 
-// Plain-text TUI fallback: laid-out line texts, no graphics.
-tui_print_text :: proc(page: string, width: int) {
-	bank, bok := font_bank_load(20)
-	if !bok {
-		return
-	}
-	defer font_bank_free(&bank)
-	rc, ok := layout_page(page, width, &bank)
-	if !ok {
-		return
-	}
-	defer render_ctx_free(&rc)
-	for ln in rc.lines {
-		if len(ln.text) == 0 {
-			fmt.println()
-		} else {
-			fmt.println(ln.text)
-		}
-	}
-}
 
 // Headless dump: navigate once, print laid-out text. No display needed.
 browse_dump :: proc(prof, url: string, width: int) -> bool {

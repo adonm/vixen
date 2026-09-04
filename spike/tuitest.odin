@@ -81,8 +81,42 @@ tuitest_main :: proc() -> bool {
 	if !tuitest_images() {
 		return false
 	}
+	if !tuitest_truncate() {
+		return false
+	}
 	// Server-backed browse section: navigate, back, forward, dump content.
 	return tuitest_browse()
+}
+
+// Cell-width truncation: ASCII, CJK wide, combining, emoji. No allocation;
+// every result borrows the input.
+tuitest_truncate :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	check(&fails, "trunc/ascii", truncate_cells("hello", 3) == "hel", "")
+	check(&fails, "trunc/exact", truncate_cells("hello", 5) == "hello", "")
+	check(&fails, "trunc/over", truncate_cells("hi", 10) == "hi", "")
+	check(&fails, "trunc/empty", truncate_cells("", 5) == "", "")
+	check(&fails, "trunc/zero", truncate_cells("hello", 0) == "", "")
+	// CJK ideographs are 2 cells: "日本語" = 6 cells.
+	check(&fails, "trunc/cjk-fit", truncate_cells("日本語", 6) == "日本語", "")
+	check(&fails, "trunc/cjk-cut", truncate_cells("日本語", 5) == "日本", "")
+	check(&fails, "trunc/cjk-one", truncate_cells("日本語", 1) == "", "")
+	check(&fails, "trunc/width-cjk", term_str_width("日本語") == 6, "")
+	// Combining mark adds no width and never strands.
+	check(&fails, "trunc/combining", truncate_cells("éx", 2) == "éx", "")
+	check(&fails, "trunc/width-comb", term_str_width("é") == 1, "")
+	// Grinning face (U+1F600) is wide; its 4 bytes never split.
+	check(&fails, "trunc/width-emoji", term_char_width('😀') == 2, "")
+	check(&fails, "trunc/emoji-cut", truncate_cells("a😀b", 2) == "a", "")
+	check(&fails, "trunc/mixed", truncate_cells("a日本b", 4) == "a日", "")
+	fmt.printfln("tuitest-truncate: %d failures", fails)
+	return fails == 0
 }
 
 // Image pipeline against the test server: fetch, decode, resize, place.
@@ -148,6 +182,16 @@ tuitest_images :: proc() -> bool {
 	}
 	check(&fails, "images/text-dims", found_dims, "")
 	check(&fails, "images/text-missing", found_missing, "")
+	// Relayout keeps decoded images and placements (no refetch).
+	nimg, nplc := len(sess.page.images), len(sess.page.placements)
+	if browse_relayout(&sess, 450) {
+		check(&fails, "images/relayout-imgs", len(sess.page.images) == nimg,
+			fmt.tprintf("%d", len(sess.page.images)))
+		check(&fails, "images/relayout-plc", len(sess.page.placements) == nplc,
+			fmt.tprintf("%d", len(sess.page.placements)))
+	} else {
+		check(&fails, "images/relayout", false, "")
+	}
 	// End-to-end raster: slice the viewport and require non-background
 	// pixels inside the first image placement.
 	bank, bok := font_bank_load(20)
@@ -505,6 +549,53 @@ tuitest_browse :: proc() -> bool {
 		check(&fails, "browse/follow", browse_navigate(&sess, u, true), "")
 		check(&fails, "browse/back", browse_back(&sess) && sess.page.title == "Test Article", sess.page.title)
 		check(&fails, "browse/forward", browse_forward(&sess), "")
+	}
+	// Relayout: narrower measure re-wraps without refetch, keeps title,
+	// links, and typed field values; same width is a no-op.
+	form_url := fmt.aprintf("%s/form", base)
+	defer delete(form_url)
+	if !browse_navigate(&sess, form_url, true) {
+		check(&fails, "relayout/navigate", false, "")
+	} else {
+		qi := -1
+		for &f, i in sess.page.fields {
+			if f.name == "q" {
+				qi = i
+			}
+		}
+		if qi >= 0 {
+			f := &sess.page.fields[qi]
+			delete(f.value)
+			f.value = strings.clone("typed")
+		}
+		narrow_links := len(sess.page.links)
+		check(&fails, "relayout/noop", !browse_relayout(&sess, sess.width), "")
+		check(&fails, "relayout/narrow", browse_relayout(&sess, 450) && sess.width == 450, "")
+		check(&fails, "relayout/title", sess.page.title == "Form Test", sess.page.title)
+		kept := false
+		for &f in sess.page.fields {
+			if f.name == "q" && f.value == "typed" {
+				kept = true
+			}
+		}
+		check(&fails, "relayout/values", kept, "")
+		check(&fails, "relayout/links", len(sess.page.links) == narrow_links,
+			fmt.tprintf("%d", len(sess.page.links)))
+	}
+	// Long prose re-wraps measurably between 450 and 900px.
+	art2 := fmt.aprintf("%s/article", base)
+	defer delete(art2)
+	if !browse_navigate(&sess, art2, true) {
+		check(&fails, "relayout/article", false, "")
+	} else {
+		before := len(sess.page.lines)
+		if browse_relayout(&sess, 900) {
+			check(&fails, "relayout/rewrap", len(sess.page.lines) != before,
+				fmt.tprintf("%d -> %d", before, len(sess.page.lines)))
+			check(&fails, "relayout/article-title", sess.page.title == "Test Article", sess.page.title)
+		} else {
+			check(&fails, "relayout/article-relayout", false, "")
+		}
 	}
 	fmt.printfln("tuitest-browse: %d failures", fails)
 	return fails == 0

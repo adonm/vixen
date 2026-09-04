@@ -196,6 +196,59 @@ term_enter_alt :: proc() {
 	os.write_string(os.stdout, "\x1b[?1049h\x1b[H\x1b[?25l")
 }
 
+// Display cell width of a rune: 0 for combining marks, 2 for East Asian
+// wide/fullwidth (incl. emoji most terminals render wide), 1 otherwise.
+// Control chars report 1 so truncation loops always advance.
+term_char_width :: proc(r: rune) -> int {
+	switch r {
+	case 0x0300 ..= 0x036F,
+	     0x0483 ..= 0x0489,
+	     0x0591 ..= 0x05BD, 0x05BF, 0x05C1 ..= 0x05C2, 0x05C4 ..= 0x05C5, 0x05C7,
+	     0x0610 ..= 0x061A, 0x064B ..= 0x065F, 0x0670,
+	     0x06D6 ..= 0x06DC, 0x06DF ..= 0x06E4, 0x06E7 ..= 0x06EB, 0x06EE ..= 0x06EF,
+	     0x1AB0 ..= 0x1AFF, 0x1DC0 ..= 0x1DFF, 0x20D0 ..= 0x20FF, 0xFE20 ..= 0xFE2F,
+	     0xE0100 ..= 0xE01EF:
+		return 0
+	case 0x1100 ..= 0x115F,
+	     0x231A ..= 0x231B, 0x2329 ..= 0x232A,
+	     0x2E80 ..= 0x303E, 0x3041 ..= 0x33FF, 0x3400 ..= 0x4DBF,
+	     0x4E00 ..= 0x9FFF, 0xA000 ..= 0xA4CF, 0xAC00 ..= 0xD7A3,
+	     0xF900 ..= 0xFAFF, 0xFE30 ..= 0xFE4F, 0xFF00 ..= 0xFF60, 0xFFE0 ..= 0xFFE6,
+	     0x20000 ..= 0x2FFFD, 0x30000 ..= 0x3FFFD,
+	     0x1F300 ..= 0x1F64F, 0x1F900 ..= 0x1F9FF:
+		return 2
+	}
+	return 1
+}
+
+term_str_width :: proc(s: string) -> int {
+	w, i := 0, 0
+	for i < len(s) {
+		r, size := utf8.decode_rune(s[i:])
+		w += term_char_width(r)
+		i += size
+	}
+	return w
+}
+
+// Truncate to max_cells display cells, cutting at a rune boundary.
+// Returns a borrow of s; never allocates.
+truncate_cells :: proc(s: string, max_cells: int) -> string {
+	if max_cells <= 0 {
+		return ""
+	}
+	w, i := 0, 0
+	for i < len(s) {
+		r, size := utf8.decode_rune(s[i:])
+		w += term_char_width(r)
+		if w > max_cells {
+			return s[:i]
+		}
+		i += size
+	}
+	return s
+}
+
 term_exit_alt :: proc() {
 	os.write_string(os.stdout, "\x1b[?25h\x1b[?1049l")
 }

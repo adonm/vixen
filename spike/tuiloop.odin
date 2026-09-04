@@ -17,9 +17,7 @@ import edit "core:text/edit"
 
 Tui :: struct {
 	sess:       ^Browse_Session,
-	scroll_y:   int, // px offset (graphical) 
-	scroll_ln:  int, // line offset (text)
-	kitty:      bool,
+	scroll_y:   int, // px viewport offset
 	cols, rows: int,
 	cell_w, cell_h: int,
 	slice:      []u8, // reused viewport RGBA buffer
@@ -27,7 +25,6 @@ Tui :: struct {
 	inbuf:      [dynamic]u8, // all terminal input flows through here
 	hint:       [dynamic]u8, // typed hint digits
 	url_active: bool,
-	show_list:  bool, // text-mode link list overlay
 	url_state:  edit.State,
 	url_build:  strings.Builder,
 	focus:      int, // focused field edit index (-1 = none)
@@ -65,24 +62,15 @@ tui_clamp_scroll :: proc(t: ^Tui) {
 	view_h := (t.rows - 2) * t.cell_h
 	max_y := max(fr_h - view_h, 0)
 	t.scroll_y = clamp(t.scroll_y, 0, max_y)
-	n := len(t.sess.page.text)
-	max_ln := max(n - (t.rows - 2), 0)
-	t.scroll_ln = clamp(t.scroll_ln, 0, max_ln)
 }
 
 // Collect visible link indices for the current viewport.
 tui_visible_links :: proc(t: ^Tui) {
 	clear(&t.vis)
-	if t.kitty {
-		y0 := f32(t.scroll_y)
-		y1 := f32(t.scroll_y + (t.rows - 2) * t.cell_h)
-		for l, i in t.sess.page.links {
-			if l.y1 >= y0 && l.y0 <= y1 {
-				append(&t.vis, i)
-			}
-		}
-	} else {
-		for i in 0 ..< len(t.sess.page.links) {
+	y0 := f32(t.scroll_y)
+	y1 := f32(t.scroll_y + (t.rows - 2) * t.cell_h)
+	for l, i in t.sess.page.links {
+		if l.y1 >= y0 && l.y0 <= y1 {
 			append(&t.vis, i)
 		}
 	}
@@ -177,7 +165,7 @@ tui_follow_hint :: proc(t: ^Tui) {
 	}
 	url := t.sess.page.links[t.vis[n-1]].url
 	t.scroll_y = 0
-	t.scroll_ln = 0
+	t.scroll_y = 0
 	if !browse_navigate(t.sess, url, true) {
 		tui_status(t, "navigation failed")
 		return
@@ -185,20 +173,22 @@ tui_follow_hint :: proc(t: ^Tui) {
 	tui_sync_fields(t)
 }
 
-tui_draw_graphical :: proc(t: ^Tui) {
+tui_draw :: proc(t: ^Tui) {
 	sess := t.sess
 	view_h := (t.rows - 2) * t.cell_h
 	if view_h < t.cell_h {
 		view_h = t.cell_h
 	}
 	tui_clamp_scroll(t)
-	sw := min(sess.page.width, t.cols * t.cell_w)
-	sh := min(view_h, max(sess.page.height - t.scroll_y, 0))
+	// Terminal-sized frames, always: a short last page would otherwise
+	// leave stale pixels right/below it, and the status row would wander.
+	sw := t.cols * t.cell_w
+	sh := view_h
 	if sh <= 0 || sw <= 0 {
 		return
 	}
 	// Rasterize only the viewport slice from retained lines.
-	vfr := raster_slice(&sess.bank, sess.page.lines, sess.page.placements[:], sess.page.images[:], sess.page.width, t.scroll_y, sh)
+	vfr := raster_slice(&sess.bank, sess.page.lines, sess.page.placements[:], sess.page.images[:], sw, t.scroll_y, sh)
 	defer delete(vfr.px)
 	if len(t.slice) != sw*sh*4 || t.slice_w != sw || t.slice_h != sh {
 		delete(t.slice)
@@ -231,50 +221,31 @@ tui_status_line :: proc(t: ^Tui) {
 	if sess.page.height > 0 {
 		pct = 100 * t.scroll_y / max(sess.page.height, 1)
 	}
-	msg := t.status
-	fmt.printf("\x1b[7m %-60.60s %3d%% links=%d \x1b[0m",
-		sess.page.url, pct, len(sess.page.links))
+	// Cell-truncate (never byte-slice: %-60.60s would split UTF-8), then
+	// pad to keep the columns stable.
+	url := truncate_cells(sess.page.url, 56)
+	fmt.printf("\x1b[7m %s", url)
+	for _ in 0 ..< 56 - term_str_width(url) {
+		fmt.print(" ")
+	}
+	fmt.printf(" %3d%% links=%d \x1b[0m", pct, len(sess.page.links))
 	// NOTE: hint digits print inline (no tprintf): tprintf is
 	// temp-allocator backed and must NEVER be delete()d — freeing temp
 	// memory corrupts the heap (this segfaulted the TUI).
 	if len(t.hint) > 0 {
 		fmt.printf(" link: %s", string(t.hint[:]))
-	} else if len(msg) > 0 {
-		fmt.printf(" %s", msg)
+	} else if len(t.status) > 0 {
+		fmt.printf(" %s", truncate_cells(t.status, t.cols))
 	}
+	help := "[q]uit [u]rl [b]ack [f]wd [r]eload [tab]field"
 	if t.url_active {
-		fmt.printf("\nURL: %s\x1b[K", strings.to_string(t.url_build))
+		bar := truncate_cells(strings.to_string(t.url_build), max(t.cols - 5, 0))
+		fmt.printf("\nURL: %s\x1b[K", bar)
 	} else {
-		fmt.printf("\n[q]uit [u]rl [b]ack [f]wd [r]eload [l]inks [tab]field\x1b[K")
+		fmt.printf("\n%s\x1b[K", truncate_cells(help, t.cols))
 	}
 }
 
-tui_draw_text :: proc(t: ^Tui) {
-	sess := t.sess
-	tui_clamp_scroll(t)
-	fline, fcaret, has_focus := tui_focused_line(t)
-	n := len(sess.page.text)
-	rows := t.rows - 2
-	for i in 0 ..< rows {
-		li := t.scroll_ln + i
-		if li < n {
-			line := sess.page.text[li]
-			if has_focus && fline == li {
-				// Caret overlay on a temp copy; never mutates page text.
-				c := clamp(fcaret, 0, len(line))
-				line = strings.concatenate([]string{line[:c], "|", line[c:]}, context.temp_allocator)
-			}
-			if len(line) > t.cols {
-				line = line[:t.cols]
-			}
-			fmt.println(line)
-		} else {
-			fmt.println("~")
-		}
-	}
-	tui_status_line(t)
-	fmt.println()
-}
 
 tui_url_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 	// Returns true when the bar closes (commit or cancel).
@@ -317,7 +288,7 @@ tui_navigate_bar :: proc(t: ^Tui, text: string) {
 		url = strings.concatenate([]string{"https://", url}, context.temp_allocator)
 	}
 	t.scroll_y = 0
-	t.scroll_ln = 0
+	t.scroll_y = 0
 	clear(&t.hint)
 	if !browse_navigate(t.sess, url, true) {
 		tui_status(t, "navigation failed")
@@ -424,7 +395,7 @@ tui_field_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 					tui_status(t, "submission failed")
 				}
 			} else {
-				t.scroll_y, t.scroll_ln = 0, 0
+				t.scroll_y = 0
 				tui_sync_fields(t)
 			}
 		case .Esc:
@@ -444,11 +415,7 @@ tui_field_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 			tui_focus_move(t, -1)
 		case .Up, .Down:
 			t.focus = -1
-			if t.kitty {
 				t.scroll_y += -40 if v == .Up else 40
-			} else {
-				t.scroll_ln += -1 if v == .Up else 1
-			}
 			tui_clamp_scroll(t)
 		case .CtrlC, .CtrlD:
 			return false
@@ -473,35 +440,23 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 		case 'q':
 			return false
 		case 'j':
-			if t.kitty {
 				t.scroll_y += 40
-			} else {
-				t.scroll_ln += 1
-			}
 		case 'k':
-			if t.kitty {
 				t.scroll_y -= 40
-			} else {
-				t.scroll_ln -= 1
-			}
 		case ' ':
-			if t.kitty {
 				t.scroll_y += (t.rows - 2) * t.cell_h
-			} else {
-				t.scroll_ln += t.rows - 2
-			}
 		case 'b':
 			if !browse_back(t.sess) {
 				tui_status(t, "no back history")
 			} else {
-				t.scroll_y, t.scroll_ln = 0, 0
+				t.scroll_y = 0
 				tui_sync_fields(t)
 			}
 		case 'f':
 			if !browse_forward(t.sess) {
 				tui_status(t, "no forward history")
 			} else {
-				t.scroll_y, t.scroll_ln = 0, 0
+				t.scroll_y = 0
 				tui_sync_fields(t)
 			}
 		case 'r':
@@ -512,31 +467,18 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 			strings.builder_reset(&t.url_build)
 			edit.setup_once(&t.url_state, &t.url_build)
 		case 'g':
-			t.scroll_y, t.scroll_ln = 0, 0
+			t.scroll_y = 0
 		case 'G':
 			t.scroll_y = 1 << 30
-			t.scroll_ln = 1 << 30
-		case 'l':
-			if !t.kitty {
-				t.show_list = !t.show_list
-			}
 		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
 			append(&t.hint, u8(v))
 		}
 	case Key_Special:
 		switch v {
 		case .Up:
-			if t.kitty {
 				t.scroll_y -= 40
-			} else {
-				t.scroll_ln -= 1
-			}
 		case .Down:
-			if t.kitty {
 				t.scroll_y += 40
-			} else {
-				t.scroll_ln += 1
-			}
 		case .Enter:
 			tui_follow_hint(t)
 		case .Esc:
@@ -551,7 +493,7 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 			if !browse_back(t.sess) {
 				tui_status(t, "no back history")
 			} else {
-				t.scroll_y, t.scroll_ln = 0, 0
+				t.scroll_y = 0
 				tui_sync_fields(t)
 			}
 		case .Left, .Right, .Unknown:
@@ -744,7 +686,10 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) {
 	defer term_exit_alt()
 	t: Tui
 	t.sess = sess
-	t.kitty = kitty_env_supported()
+	if !kitty_env_supported() {
+		fmt.eprintln("tui: Ghostty (or another Kitty-graphics terminal) required")
+		return
+	}
 	tui_cell_size(&t)
 	if t.cell_w <= 0 {
 		t.cell_w = 8
@@ -752,6 +697,10 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) {
 	if t.cell_h <= 0 {
 		t.cell_h = 16
 	}
+	// Lay out at the terminal width from the first paint: no crop, no
+	// relayout churn on startup. Dump/file modes keep the --width flag.
+	tui_frame_geom(&t)
+	sess.width = max(t.cols * t.cell_w, 200)
 	t.status = strings.clone("")
 	defer delete(t.status)
 	defer delete(t.slice)
@@ -775,25 +724,20 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) {
 	tui_sync_fields(&t)
 	for {
 		tui_frame_geom(&t)
-		if t.show_list && !t.kitty {
-			tui_draw_link_list(&t)
-		} else if t.kitty {
-			tui_draw_graphical(&t)
-		} else {
-			tui_draw_text(&t)
+		// Width-aware layout: terminal resizes re-layout the live page
+		// (no refetch) instead of cropping or leaving a narrow column.
+		want_w := max(t.cols * t.cell_w, 200)
+		if want_w != sess.width && want_w > 0 {
+			if browse_relayout(sess, want_w) {
+				tui_sync_fields(&t)
+			} else {
+				sess.width = want_w // error/empty page: track width anyway
+			}
 		}
+		tui_draw(&t)
 		if !tui_handle_key(&t, tui_read_key(&t)) {
 			break
 		}
 	}
 }
 
-// Text-mode link list overlay.
-tui_draw_link_list :: proc(t: ^Tui) {
-	tui_visible_links(t)
-	fmt.println("links (number+enter, l to close):")
-	for n in t.vis {
-		l := &t.sess.page.links[n]
-		fmt.printfln("  %d. %s", n + 1, l.url)
-	}
-}

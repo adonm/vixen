@@ -10,6 +10,7 @@ import "core:strings"
 Page :: struct {
 	url:   string, // owned absolute URL
 	title: string, // owned
+	src:   []u8,   // owned HTML source (enables width-change relayout)
 	lines: [dynamic]Line, // owned laid-out lines (glyphs + text)
 	links: [dynamic]Link, // owned urls
 	fields: [dynamic]Field, // form controls in tree order (owned)
@@ -99,6 +100,8 @@ browse_drop_page :: proc(sess: ^Browse_Session) {
 	}
 	delete(sess.page.url)
 	delete(sess.page.title)
+	delete(sess.page.src)
+	sess.page.src = nil
 	for &ln in sess.page.lines {
 		delete(ln.glyphs)
 		delete(ln.text)
@@ -192,9 +195,22 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 		clear(&sess.fwd)
 	}
 	browse_drop_page(sess)
+	sess.page.src = make([]u8, len(r.body))
+	copy(sess.page.src, r.body)
+	page_install(sess, &rc, url, rc.title, sess.width)
+	sess.has = true
+	fmt.eprintfln("browse %-40s %dx%d lines=%d links=%d fields=%d images=%d title=%q", url, sess.width, sess.page.height, len(rc.lines), len(sess.page.links), len(rc.fields), len(sess.page.images), sess.page.title)
+	return true
+}
+
+// Install a finished layout as the live page: sets url/title/width,
+// deep-copies lines/links/fields/text, moves images+placements. Shared by
+// navigate and relayout so ownership crosses in exactly one place.
+// url/title are plain values, never page aliases (drop frees those first).
+page_install :: proc(sess: ^Browse_Session, rc: ^Render_Ctx, url, title: string, width: int) {
 	sess.page.url = strings.clone(url)
-	sess.page.title = strings.clone(rc.title)
-	sess.page.width = sess.width
+	sess.page.title = strings.clone(title)
+	sess.page.width = width
 	// Deep-copy laid-out lines (glyphs are plain structs; texts cloned).
 	// The framebuffer is rasterized per viewport on demand — never whole.
 	for &ln in rc.lines {
@@ -225,14 +241,57 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 	for &ln in rc.lines {
 		append(&sess.page.text, strings.clone(ln.text))
 	}
-	// Move decoded pixels + placements into the page (single owner each).
+	// Move decoded pixels into the page: struct copy shares backing, so
+	// clear the source (keeps its backing for the deferred free to drop).
 	for &im in rc.images {
 		append(&sess.page.images, im)
 	}
 	clear(&rc.images)
 	append(&sess.page.placements, ..rc.placements[:])
-	sess.has = true
-	fmt.eprintfln("browse %-40s %dx%d lines=%d links=%d fields=%d images=%d title=%q", url, sess.width, sess.page.height, len(rc.lines), len(sess.page.links), len(rc.fields), len(sess.page.images), sess.page.title)
+}
+
+// Re-layout the live page at a new measure width (terminal resize)
+// without refetching: source is retained, decoded images are reused at
+// their existing display sizes, typed field values survive by index.
+// No history push; the caller re-clamps scroll and resyncs fields.
+browse_relayout :: proc(sess: ^Browse_Session, width: int) -> bool {
+	if !sess.has || width == sess.width || len(sess.page.src) == 0 {
+		return false
+	}
+	saved: [dynamic]string
+	defer {
+		for s in saved {
+			delete(s)
+		}
+		delete(saved)
+	}
+	for &f in sess.page.fields {
+		append(&saved, strings.clone(f.value))
+	}
+	doc, dok := parse_document(sess.page.src)
+	if !dok {
+		return false
+	}
+	defer lxb_html_document_destroy(doc)
+	sess.width = width
+	self_url := strings.clone(sess.page.url)
+	defer delete(self_url)
+	rc := render_ctx_new(&sess.bank, 20, f32(width), self_url)
+	for &im in sess.page.images {
+		append(&rc.images, im)
+	}
+	clear(&sess.page.images)
+	layout_html(&rc, doc)
+	finalize_links(&rc)
+	defer render_ctx_free(&rc)
+	browse_drop_page(sess)
+	page_install(sess, &rc, self_url, rc.title, width)
+	for &f, i in sess.page.fields {
+		if i < len(saved) {
+			delete(f.value)
+			f.value = strings.clone(saved[i])
+		}
+	}
 	return true
 }
 
