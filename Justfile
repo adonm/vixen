@@ -19,12 +19,16 @@ default:
     @just --list
 
 # Full one-shot provision: native libraries, then fonts.
-setup: setup-native setup-fonts
+setup: setup-dirs setup-native setup-fonts
+
+setup-dirs:
+    mkdir -p thirdparty fonts .tmp
 
 setup-native: setup-quickjs setup-lexbor setup-sqlite setup-wamr setup-stb setup-kb setup-sdl
 
 setup-quickjs:
     #!/usr/bin/env bash
+    set -euo pipefail
     test -f "quickjs-{{ QUICKJS_VERSION }}/libquickjs.a" && exit 0
     curl -fsSL -o "{{ TP }}/quickjs.tar.xz" "https://bellard.org/quickjs/quickjs-{{ QUICKJS_VERSION }}.tar.xz"
     tar -xf "{{ TP }}/quickjs.tar.xz" -C "{{ justfile_directory() }}"
@@ -33,6 +37,7 @@ setup-quickjs:
 
 setup-lexbor:
     #!/usr/bin/env bash
+    set -euo pipefail
     test -f "lexbor-{{ LEXBOR_VERSION }}/build/liblexbor_static.a" && exit 0
     curl -fsSL -o "{{ TP }}/lexbor.tar.gz" "https://github.com/lexbor/lexbor/archive/refs/tags/v{{ LEXBOR_VERSION }}.tar.gz"
     tar -xzf "{{ TP }}/lexbor.tar.gz" -C "{{ justfile_directory() }}"
@@ -41,6 +46,7 @@ setup-lexbor:
 
 setup-sqlite:
     #!/usr/bin/env bash
+    set -euo pipefail
     test -f spike/sqlite3.o && exit 0
     curl -fsSL -o "{{ TP }}/sqlite.zip" "https://www.sqlite.org/2026/sqlite-amalgamation-{{ SQLITE_VERSION }}.zip"
     rm -rf "{{ TP }}/sqlite-amalgamation-{{ SQLITE_VERSION }}"
@@ -50,6 +56,7 @@ setup-sqlite:
 
 setup-wamr:
     #!/usr/bin/env bash
+    set -euo pipefail
     test -f "{{ TP }}/wasm-micro-runtime-WAMR-{{ WAMR_VERSION }}/build/libiwasm.a" && exit 0
     curl -fsSL -o "{{ TP }}/wamr.tar.gz" "https://github.com/bytecodealliance/wasm-micro-runtime/archive/refs/tags/WAMR-{{ WAMR_VERSION }}.tar.gz"
     rm -rf "{{ TP }}"/wasm-micro-runtime-WAMR-*
@@ -59,6 +66,7 @@ setup-wamr:
 
 setup-stb:
     #!/usr/bin/env bash
+    set -euo pipefail
     # Resolve the real SDK (mise shims must not be used as a base path).
     ODIN_BIN="$(mise which odin 2>/dev/null || command -v odin)"
     STB="$(dirname "$ODIN_BIN")/vendor/stb/src"
@@ -69,6 +77,7 @@ setup-stb:
 
 setup-kb:
     #!/usr/bin/env bash
+    set -euo pipefail
     # kb_text_shape ships unbuilt inside the Odin SDK; build it in place
     # (user-writable, version-scoped; rebuilt automatically per Odin pin).
     ODIN_BIN="$(mise which odin 2>/dev/null || command -v odin)"
@@ -79,6 +88,7 @@ setup-kb:
 # SDL from source (Ubuntu 24.04 has no package; pinned build everywhere).
 setup-sdl:
     #!/usr/bin/env bash
+    set -euo pipefail
     test -f "{{ SDL_LIB }}/libSDL3.so" && exit 0
     curl -fsSL -o "{{ TP }}/SDL.tar.gz" "https://github.com/libsdl-org/SDL/releases/download/release-{{ SDL_VERSION }}/SDL3-{{ SDL_VERSION }}.tar.gz"
     rm -rf "{{ TP }}/SDL3-{{ SDL_VERSION }}"

@@ -16,7 +16,7 @@ System packages (Debian/Ubuntu):
 
 ```sh
 sudo apt-get install -y --no-install-recommends \
-  build-essential cmake curl python3 pkg-config \
+  build-essential cmake curl python3 pkg-config unzip \
   libcurl4-openssl-dev libpsl-dev libx11-dev libxext-dev \
   libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
   libxkbcommon-dev libwayland-dev libegl-dev libasound2-dev \
