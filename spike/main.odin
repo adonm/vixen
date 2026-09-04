@@ -192,12 +192,57 @@ main :: proc() {
 		os.exit(0 if wasmtest_main(os.args[2]) else 1)
 	case "nettest":
 		os.exit(0 if nettest_main() else 1)
+	case "browse":
+		// vixen browse [--dump] [--profile DIR] [--width N] <url>
+		dump := false
+		prof := ""
+		width := 900
+		url := ""
+		i := 2
+		for i < len(os.args) {
+			arg := os.args[i]
+			key, _, val := strings.partition(arg, "=")
+			switch key {
+			case "--dump":
+				dump = true
+			case "--profile":
+				if val != "" {
+					prof = val
+				} else {
+					i += 1
+					prof = os.args[i]
+				}
+			case "--width":
+				if val != "" {
+					width = parse_int_or(val, 900)
+				} else {
+					i += 1
+					width = parse_int_or(os.args[i], 900)
+				}
+			case:
+				url = arg
+			}
+			i += 1
+		}
+		if url == "" {
+			fmt.eprintln("usage: vixen browse [--dump] [--profile DIR] [--width N] <url>")
+			os.exit(2)
+		}
+		if !strings.contains(url, "://") {
+			url = strings.concatenate([]string{"https://", url}, context.temp_allocator)
+		}
+		if dump {
+			os.exit(0 if browse_dump(prof, url, width) else 1)
+		}
+		os.exit(0 if browse_interactive(prof, url, width) else 1)
 	case "domtest":
 		path := "corpus/domtest.html"
 		if len(os.args) >= 3 {
 			path = os.args[2]
 		}
 		os.exit(0 if domtest_main(path) else 1)
+	case "tuitest":
+		os.exit(0 if tuitest_main() else 1)
 	case "fetch":
 		// spike fetch [--profile DIR] <url>
 		prof := ""
@@ -257,7 +302,12 @@ main :: proc() {
 			fmt.eprintln("usage: vixen render --out f.png [--width N] page.html")
 			os.exit(2)
 		}
-		fr, ok := render_page(page, width)
+		bank, bok := font_bank_load(20)
+		if !bok {
+			os.exit(1)
+		}
+		defer font_bank_free(&bank)
+		fr, ok := render_page(page, width, &bank)
 		if !ok {
 			os.exit(1)
 		}
@@ -271,7 +321,12 @@ main :: proc() {
 			fmt.eprintln("usage: vixen show page.html")
 			os.exit(2)
 		}
-		fr, ok := render_page(os.args[2], 900)
+		bank, bok := font_bank_load(20)
+		if !bok {
+			os.exit(1)
+		}
+		defer font_bank_free(&bank)
+		fr, ok := render_page(os.args[2], 900, &bank)
 		if !ok {
 			os.exit(1)
 		}
@@ -313,7 +368,12 @@ main :: proc() {
 			fmt.eprintln("usage: vixen tui [--kitty auto|force|off] [--width N] page.html")
 			os.exit(2)
 		}
-		fr, ok := render_page(page, width)
+		bank, bok := font_bank_load(20)
+		if !bok {
+			os.exit(1)
+		}
+		defer font_bank_free(&bank)
+		fr, ok := render_page(page, width, &bank)
 		if !ok {
 			os.exit(1)
 		}
@@ -354,7 +414,12 @@ parse_int_or :: proc(s: string, dflt: int) -> int {
 
 // Plain-text TUI fallback: laid-out line texts, no graphics.
 tui_print_text :: proc(page: string, width: int) {
-	rc, ok := layout_page(page, width)
+	bank, bok := font_bank_load(20)
+	if !bok {
+		return
+	}
+	defer font_bank_free(&bank)
+	rc, ok := layout_page(page, width, &bank)
 	if !ok {
 		return
 	}
@@ -366,4 +431,33 @@ tui_print_text :: proc(page: string, width: int) {
 			fmt.println(ln.text)
 		}
 	}
+}
+
+// Headless dump: navigate once, print laid-out text. No display needed.
+browse_dump :: proc(prof, url: string, width: int) -> bool {
+	sess, ok := browse_open(prof == "" ? "/tmp/opencode/vixen-profile" : prof, width)
+	if !ok {
+		return false
+	}
+	defer browse_close(&sess)
+	if !browse_navigate(&sess, url, true) {
+		return false
+	}
+	fmt.printfln("# %s", sess.page.title)
+	fmt.printfln("# %s", sess.page.url)
+	for t in sess.page.text {
+		fmt.println(t)
+	}
+	fmt.eprintfln("dump lines=%d links=%d", len(sess.page.text), len(sess.page.links))
+	return true
+}
+
+browse_interactive :: proc(prof, url: string, width: int) -> bool {
+	sess, ok := browse_open(prof == "" ? "/tmp/opencode/vixen-profile" : prof, width)
+	if !ok {
+		return false
+	}
+	defer browse_close(&sess)
+	tui_loop(&sess, url)
+	return true
 }

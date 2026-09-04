@@ -70,7 +70,8 @@ store_exec :: proc(st: ^Store, sql: string) -> bool {
 store_prepare :: proc(st: ^Store, sql: string) -> ^Sqlite_Stmt {
 	cs := strings.clone_to_cstring(sql, context.temp_allocator)
 	stmt: ^Sqlite_Stmt
-	if sqlite3_prepare_v2(st.db, cs, -1, &stmt, nil) != SQLITE_OK {
+	rc := sqlite3_prepare_v2(st.db, cs, -1, &stmt, nil)
+	if rc != SQLITE_OK {
 		fmt.eprintfln("store: prepare failed: %s :: %s", sql, sqlite3_errmsg(st.db))
 		return nil
 	}

@@ -124,13 +124,15 @@ test: build
     mkdir -p .tmp
     ./{{ BIN }} shapetest
     ./{{ BIN }} domtest
+    ./{{ BIN }} tuitest
     ./{{ BIN }} nettest
     ./{{ BIN }} wasmtest corpus/wtest.wasm
     ./{{ BIN }} parse corpus/example.html corpus/github.html
     ./{{ BIN }} js corpus/bench.js
     ./{{ BIN }} render --out .tmp/example.png corpus/example.html
-    SDL_VIDEODRIVER=dummy ./{{ BIN }} show corpus/example.html
     ./{{ BIN }} tui --kitty=off corpus/app-shell.html > /dev/null
+    # NOTE: `show` (SDL window) stays manual-only until a GUI suite exists.
+    # GUI work is gated behind green TUI+headless suites (ARCHITECTURE.md).
 
 clean:
     rm -rf {{ BIN }} spike/*.o spike/*.a .tmp

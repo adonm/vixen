@@ -33,6 +33,9 @@ construction. Diagnostics go to stderr; stdout stays clean for Kitty bytes.
 | JS/WASM | QuickJS + WAMR interpreter (`libiwasm.a`) | native-call round trip proven; JS bridge is next |
 | JS↔DOM | own table-driven binding DSL (`jsbind`) + lexbor | selectors/serializer collapse query/HTML; no IDL gen yet |
 | Events | own capture/target/bubble dispatch | stop/remove/once; listener exceptions reported, dispatch continues |
+| Browse session | heap-held store, retained lines, viewport slicing | fullscreen raster removed: 146 MB -> ~2 MB viewport |
+| TUI loop | raw termios, CSI metrics, shared input buffer | typeahead survives queries; ASCII fast path |
+| TUI drivers | Kitty PNG slices + text fallback | GUI (`show`) manual-only until GUI suites exist |
 | Fonts    | Pinned TTFs in `fonts/` | Self-contained corpus; no fontconfig yet |
 
 SDL3 over raylib: a browser needs a platform layer (window/events/IME/GPU)
@@ -70,6 +73,11 @@ assumes games — week-one sugar against a week-three ceiling.
 - `fmt.tprintf` is temp-allocator backed: stored strings need `aprintf`.
 - Odin map headers don't propagate mutations via old copies: re-store after
   mutating nested maps; `delete_key` doesn't free key strings.
+- `delete()` on dynamic arrays frees backing but leaves headers: nil anything
+  reused later (browse pages), or appends write into freed memory.
+- Never store pointers to own-struct fields across returns (`&sess.store`
+  dangles after `browse_open` returns): heap-hold shared state.
+- Double `defer` of one closer double-frees; audit teardown for duplicates.
 - `JS_NewClass` references the class def (no copy): static defs with literal
   names, or typeof lies and builtins segfault.
 - QuickJS setters take ownership of set values; getters/setters/methods
