@@ -20,9 +20,11 @@ jobs:
             libasound2-dev \
             fonts-noto-core fonts-lohit-deva fonts-thai-tlwg \
             fonts-wqy-microhei fonts-sil-ezra fonts-dejavu-core
-      - uses: jdx/mise-action@v3
-        with:
-          install_args: just
+      - name: Install just
+        run: |
+          curl -fsSL -o /tmp/opencode/just.tar.gz https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz
+          mkdir -p "$HOME/.local/bin" && tar -xzf /tmp/opencode/just.tar.gz -C "$HOME/.local/bin" just
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
       - name: Setup pinned toolchains
         run: just setup
       - name: Build
