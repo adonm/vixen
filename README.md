@@ -17,10 +17,15 @@ System packages (Debian/Ubuntu):
 ```sh
 sudo apt-get install -y --no-install-recommends \
   build-essential cmake curl python3 pkg-config \
-  libsdl3-dev libcurl4-openssl-dev libpsl-dev \
+  libcurl4-openssl-dev libpsl-dev libx11-dev libxext-dev \
+  libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev libxss-dev \
+  libxkbcommon-dev libwayland-dev libegl-dev libasound2-dev \
   fonts-noto-core fonts-lohit-deva fonts-thai-tlwg fonts-wqy-microhei \
   fonts-sil-ezra fonts-dejavu-core
 ```
+
+SDL3 is built pinned from source by `just setup` (Ubuntu 24.04 has no
+SDL3 package); no sudo is needed for that step.
 
 Then fetch the pinned toolchains and build the native libraries
 (Odin SDK, QuickJS, lexbor, SQLite, WAMR, stb objects, corpus fonts):

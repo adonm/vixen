@@ -73,6 +73,23 @@ gcc -O2 -c "$STB/stb_truetype.c" -o "$root/spike/stb_truetype.o" -I"$STB"
 gcc -O2 -c "$STB/stb_image_write.c" -o "$root/spike/stb_image_write.o" -I"$STB"
 ar rcs "$root/spike/stb_native.a" "$root/spike/stb_truetype.o" "$root/spike/stb_image_write.o"
 
+# SDL 3.2.10 from source (Ubuntu 24.04 has no libsdl3-dev; a pinned local
+# build keeps dev and CI identical). Installed under thirdparty/sdl3; the
+# Justfile links with -L/-rpath to it, so no sudo is ever needed.
+SDL_VERSION=3.2.10
+if [[ ! -f "$tp/sdl3/lib/libSDL3.so" ]]; then
+  echo "build: SDL $SDL_VERSION"
+  curl -fsSL -o "$tp/SDL.tar.gz" \
+    "https://github.com/libsdl-org/SDL/releases/download/release-$SDL_VERSION/SDL3-$SDL_VERSION.tar.gz"
+  rm -rf "$tp/SDL3-$SDL_VERSION"
+  tar -xzf "$tp/SDL.tar.gz" -C "$tp"
+  (cd "$tp/SDL3-$SDL_VERSION" && cmake -B build -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_INSTALL_PREFIX="$tp/sdl3" > /dev/null \
+    && cmake --build build -j"$(nproc)" > /dev/null \
+    && cmake --install build > /dev/null)
+  rm -rf "$tp/SDL3-$SDL_VERSION" "$tp/SDL.tar.gz"
+fi
+
 # kb_text_shape static lib (ships unbuilt inside the SDK).
 if [[ ! -f "$ODIN_DIR/vendor/kb_text_shape/lib/kb_text_shape.a" ]]; then
   echo "build: kb_text_shape"

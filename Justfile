@@ -3,6 +3,7 @@
 
 ODIN := "thirdparty/odin-sdk/odin"
 BIN  := "vixen"
+SDL_LIB := justfile_directory() / "thirdparty/sdl3/lib"
 
 default:
     @just --list
@@ -12,7 +13,8 @@ setup:
 
 build:
     test -x {{ ODIN }} || { echo "run 'just setup' first" >&2; exit 1; }
-    {{ ODIN }} build spike -out:{{ BIN }} -o:speed
+    test -f {{ SDL_LIB }}/libSDL3.so || { echo "run 'just setup' first" >&2; exit 1; }
+    {{ ODIN }} build spike -out:{{ BIN }} -o:speed -extra-linker-flags:"-L{{ SDL_LIB }} -Wl,-rpath,\\\$ORIGIN/thirdparty/sdl3/lib"
 
 test: build
     ./{{ BIN }} shapetest

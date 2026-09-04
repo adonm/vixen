@@ -24,7 +24,7 @@ construction. Diagnostics go to stderr; stdout stays clean for Kitty bytes.
 | Shape    | `vendor:kb_text_shape` | Segmentation + OpenType shaping + BiDi, in-tree |
 | Raster   | `vendor:stb/truetype` sources compiled in | Per-glyph-ID bitmaps (shaped IDs, not codepoints) |
 | PNG      | `stb_image_write` compiled in | One call, no new dep |
-| Window   | `vendor:sdl3` renderer API | Platform layer, not a framework (see below) |
+| Window   | `vendor:sdl3` renderer API + pinned source build (`thirdparty/sdl3`) | Ubuntu 24.04 has no SDL3 package; Justfile links `-L/-rpath`, no sudo |
 | Fetch    | curl CLI (corpus pre-fetched) | In-spike fetch is future work; `vendor:curl` exists |
 | Net fetch | system libcurl via own `mincurl` binding | `vendor:curl` links a nonexistent `mbedtls` lib; 15-proc surface owned instead |
 | Cookies/jar | own RFC 6265 + libpsl | curl engine OFF; supercookie defense via builtin PSL |
