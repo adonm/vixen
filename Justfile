@@ -1,22 +1,117 @@
 # Vixen justfile. Run from the repo root: asset paths are root-relative.
-# `just setup` first (pinned toolchains + native libraries, idempotent).
+# Toolchain: mise (odin, just). Provision pinned natives/fonts once:
+#     mise trust && mise install && just setup
 
-ODIN := "thirdparty/odin-sdk/odin"
-BIN  := "vixen"
-SDL_LIB := justfile_directory() / "thirdparty/sdl3/lib"
+set shell := ["bash", "-euo", "pipefail", "-c"]
+
+BIN     := "vixen"
+TP      := justfile_directory() / "thirdparty"
+SDL_LIB := TP / "sdl3/lib"
+
+ODIN_VERSION    := "dev-2026-03"
+QUICKJS_VERSION := "2024-01-13"
+LEXBOR_VERSION  := "2.5.0"
+SQLITE_VERSION  := "3530400"
+WAMR_VERSION    := "2.4.4"
+SDL_VERSION     := "3.2.10"
 
 default:
     @just --list
 
-setup:
-    bash setup.sh
+# Full one-shot provision: native libraries, then fonts.
+setup: setup-native setup-fonts
+
+setup-native: setup-quickjs setup-lexbor setup-sqlite setup-wamr setup-stb setup-kb setup-sdl
+
+setup-quickjs:
+    #!/usr/bin/env bash
+    test -f "quickjs-{{ QUICKJS_VERSION }}/libquickjs.a" && exit 0
+    curl -fsSL -o "{{ TP }}/quickjs.tar.xz" "https://bellard.org/quickjs/quickjs-{{ QUICKJS_VERSION }}.tar.xz"
+    tar -xf "{{ TP }}/quickjs.tar.xz" -C "{{ justfile_directory() }}"
+    (cd "quickjs-{{ QUICKJS_VERSION }}" && make "libquickjs.a" -j"$(nproc)")
+    rm -f "{{ TP }}/quickjs.tar.xz"
+
+setup-lexbor:
+    #!/usr/bin/env bash
+    test -f "lexbor-{{ LEXBOR_VERSION }}/build/liblexbor_static.a" && exit 0
+    curl -fsSL -o "{{ TP }}/lexbor.tar.gz" "https://github.com/lexbor/lexbor/archive/refs/tags/v{{ LEXBOR_VERSION }}.tar.gz"
+    tar -xzf "{{ TP }}/lexbor.tar.gz" -C "{{ justfile_directory() }}"
+    (cd "lexbor-{{ LEXBOR_VERSION }}" && cmake -B build -DCMAKE_BUILD_TYPE=Release -DLEXBOR_BUILD_SHARED=OFF -DLEXBOR_BUILD_STATIC=ON > /dev/null && cmake --build build -j"$(nproc)")
+    rm -f "{{ TP }}/lexbor.tar.gz"
+
+setup-sqlite:
+    #!/usr/bin/env bash
+    test -f spike/sqlite3.o && exit 0
+    curl -fsSL -o "{{ TP }}/sqlite.zip" "https://www.sqlite.org/2026/sqlite-amalgamation-{{ SQLITE_VERSION }}.zip"
+    rm -rf "{{ TP }}/sqlite-amalgamation-{{ SQLITE_VERSION }}"
+    unzip -o -q "{{ TP }}/sqlite.zip" -d "{{ TP }}"
+    gcc -O2 -c "{{ TP }}/sqlite-amalgamation-{{ SQLITE_VERSION }}/sqlite3.c" -o spike/sqlite3.o -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_SYNCHRONOUS=1
+    rm -f "{{ TP }}/sqlite.zip"
+
+setup-wamr:
+    #!/usr/bin/env bash
+    test -f "{{ TP }}/wasm-micro-runtime-WAMR-{{ WAMR_VERSION }}/build/libiwasm.a" && exit 0
+    curl -fsSL -o "{{ TP }}/wamr.tar.gz" "https://github.com/bytecodealliance/wasm-micro-runtime/archive/refs/tags/WAMR-{{ WAMR_VERSION }}.tar.gz"
+    rm -rf "{{ TP }}"/wasm-micro-runtime-WAMR-*
+    tar -xzf "{{ TP }}/wamr.tar.gz" -C "{{ TP }}"
+    (cd "{{ TP }}/wasm-micro-runtime-WAMR-{{ WAMR_VERSION }}" && cmake -B build -S product-mini/platforms/linux -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_JIT=0 -DWAMR_BUILD_FAST_JIT=0 -DWAMR_BUILD_LIBC_BUILTIN=1 -DWAMR_BUILD_LIBC_WASI=1 -DCMAKE_BUILD_TYPE=MinSizeRel > /dev/null && cmake --build build -j"$(nproc)")
+    rm -f "{{ TP }}/wamr.tar.gz"
+
+setup-stb:
+    #!/usr/bin/env bash
+    # Resolve the real SDK (mise shims must not be used as a base path).
+    ODIN_BIN="$(mise which odin 2>/dev/null || command -v odin)"
+    STB="$(dirname "$ODIN_BIN")/vendor/stb/src"
+    gcc -O2 -c spike/shim.c -o spike/shim.o -I. -I"$STB"
+    gcc -O2 -c "$STB/stb_truetype.c" -o spike/stb_truetype.o -I"$STB"
+    gcc -O2 -c "$STB/stb_image_write.c" -o spike/stb_image_write.o -I"$STB"
+    ar rcs spike/stb_native.a spike/stb_truetype.o spike/stb_image_write.o
+
+setup-kb:
+    #!/usr/bin/env bash
+    # kb_text_shape ships unbuilt inside the Odin SDK; build it in place
+    # (user-writable, version-scoped; rebuilt automatically per Odin pin).
+    ODIN_BIN="$(mise which odin 2>/dev/null || command -v odin)"
+    KB="$(dirname "$ODIN_BIN")/vendor/kb_text_shape"
+    test -f "$KB/lib/kb_text_shape.a" && exit 0
+    (cd "$KB/src" && bash build_unix.sh)
+
+# SDL from source (Ubuntu 24.04 has no package; pinned build everywhere).
+setup-sdl:
+    #!/usr/bin/env bash
+    test -f "{{ SDL_LIB }}/libSDL3.so" && exit 0
+    curl -fsSL -o "{{ TP }}/SDL.tar.gz" "https://github.com/libsdl-org/SDL/releases/download/release-{{ SDL_VERSION }}/SDL3-{{ SDL_VERSION }}.tar.gz"
+    rm -rf "{{ TP }}/SDL3-{{ SDL_VERSION }}"
+    tar -xzf "{{ TP }}/SDL.tar.gz" -C "{{ TP }}"
+    (cd "{{ TP }}/SDL3-{{ SDL_VERSION }}" && cmake -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="{{ TP }}/sdl3" > /dev/null && cmake --build build -j"$(nproc)" > /dev/null && cmake --install build > /dev/null)
+    rm -rf "{{ TP }}/SDL3-{{ SDL_VERSION }}" "{{ TP }}/SDL.tar.gz"
+
+setup-fonts:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    missing=0
+    for fam in "DejaVu Sans" "Noto Sans Arabic" "Noto Sans Hebrew" "Noto Sans Devanagari" "WenQuanYi Micro Hei"; do
+      fc-match "$fam" file > /dev/null 2>&1 || { echo "missing font family: $fam (see README apt list)"; missing=1; }
+    done
+    if [ ! -f "fonts/NotoNaskhArabic[wght].ttf" ]; then
+      curl -fsSL -o "fonts/NotoNaskhArabic[wght].ttf" "https://raw.githubusercontent.com/google/fonts/main/ofl/notonaskharabic/NotoNaskhArabic%5Bwght%5D.ttf"
+    fi
+    copy_font() { src=$(fc-match -f "%{file}\n" "$1" 2>/dev/null) && cp "$src" "fonts/$2"; }
+    copy_font "DejaVu Sans" DejaVuSans.ttf
+    copy_font "Noto Sans Arabic" NotoSansArabic-Regular.ttf
+    copy_font "Noto Sans Hebrew" NotoSansHebrew-Regular.ttf
+    copy_font "Noto Sans Devanagari" NotoSansDevanagari-Regular.ttf
+    copy_font "Noto Serif Thai:style=Regular" NotoSerifThai-Regular.ttf || cp /usr/share/fonts/truetype/tlwg/Waree.ttf fonts/Waree.ttf
+    copy_font "WenQuanYi Micro Hei" wqy-microhei.ttc
+    test "$missing" = 0 || { echo "install the README apt list and rerun" >&2; exit 1; }
 
 build:
-    test -x {{ ODIN }} || { echo "run 'just setup' first" >&2; exit 1; }
+    command -v odin > /dev/null || { echo "activate mise (eval \"$(mise activate bash)\") or run: mise exec -- just build" >&2; exit 1; }
     test -f {{ SDL_LIB }}/libSDL3.so || { echo "run 'just setup' first" >&2; exit 1; }
-    {{ ODIN }} build spike -out:{{ BIN }} -o:speed -extra-linker-flags:"-L{{ SDL_LIB }} -Wl,-rpath,\\\$ORIGIN/thirdparty/sdl3/lib"
+    odin build spike -out:{{ BIN }} -o:speed -extra-linker-flags:"-L{{ SDL_LIB }} -Wl,-rpath,\\\$ORIGIN/thirdparty/sdl3/lib"
 
 test: build
+    mkdir -p .tmp
     ./{{ BIN }} shapetest
     ./{{ BIN }} domtest
     ./{{ BIN }} nettest

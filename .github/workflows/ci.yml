@@ -20,14 +20,15 @@ jobs:
             libasound2-dev \
             fonts-noto-core fonts-lohit-deva fonts-thai-tlwg \
             fonts-wqy-microhei fonts-sil-ezra fonts-dejavu-core
-      - name: Install just
-        run: |
-          curl -fsSL -o /tmp/opencode/just.tar.gz https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz
-          mkdir -p "$HOME/.local/bin" && tar -xzf /tmp/opencode/just.tar.gz -C "$HOME/.local/bin" just
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Setup pinned toolchains
-        run: just setup
+      - uses: jdx/mise-action@c2a87611a18de5b3828c5652fe268e992400cb5c # v4.3.0
+        with:
+          cache: true
+          install: true
+      - name: Trust repo config
+        run: mise trust
+      - name: Setup pinned natives
+        run: mise exec -- just setup
       - name: Build
-        run: just build
+        run: mise exec -- just build
       - name: Gates
-        run: just test
+        run: mise exec -- just test

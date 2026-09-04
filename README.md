@@ -31,12 +31,14 @@ Then fetch the pinned toolchains and build the native libraries
 (Odin SDK, QuickJS, lexbor, SQLite, WAMR, stb objects, corpus fonts):
 
 ```sh
-just setup
+mise trust && mise install && just setup
 ```
 
-`setup.sh` is idempotent and recreates the exact `thirdparty/` layout the
+`just setup` is idempotent and recreates the exact `thirdparty/` layout the
 build expects. Nothing under `thirdparty/`, `fonts/`, or `*.o`/`*.a` is
-committed; versions are pinned in `setup.sh`.
+committed; versions are pinned in `.mise.toml` (Odin, just) and the
+`setup-*` recipes. Run recipes from an activated shell
+(`eval "$(mise activate bash)"`) or prefix with `mise exec --`.
 
 ## Build and gates
 
