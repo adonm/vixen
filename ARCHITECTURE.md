@@ -1,63 +1,170 @@
-# odin-spike architecture
+# Vixen architecture
 
-Experimental minimal-browser spike: HTML fetch/parse, JS eval, shaped-text
-render, SDL3 window, and Kitty-graphics TUI. Lives outside `flutter-dev`
-on purpose — nothing here is product code until measured against a corpus.
+Status: experimental Odin alpha. The active package is still named `spike`.
+The Flutter/Rust implementation under `flutter/` is archived, not a runtime
+dependency. Milestone status and acceptance criteria live in
+[`ROADMAP.md`](ROADMAP.md).
 
-## Pipeline
+## Implemented pipelines
 
+Interactive browsing and headless URL dumps currently use:
+
+```text
+libcurl -> cookie jar/cache -> HTML bytes -> lexbor DOM
+  -> eager image fetch/decode -> reader-style flow + shaped text
+  -> retained Page (lines, links, fields, images, placements)
+     -> viewport raster + hints/caret -> PNG -> Kitty graphics
+     -> laid-out text -> headless dump
 ```
-fetch (curl CLI, corpus/) -> parse (lexbor) -> flow layout (own)
-  -> shape (kb_text_shape) -> raster (stb_truetype blits into RGBA)
-  -> backends: SDL3 texture | PNG file | Kitty graphics (Ghostty)
+
+The parsed DOM is currently destroyed after layout. Source bytes are retained
+for relayout. Forms are separate page records, not a live scripted DOM.
+
+Local `render`, one-shot `tui`, and `show` use a separate file-loading path
+and full-page rasterization. `show` uploads a static SDL texture and waits
+briefly; it has no browsing event loop. The paths share layout/raster code,
+but image loading and presentation differ. Output parity must be tested,
+not assumed from a shared framebuffer.
+
+QuickJS execution, JS↔DOM bindings/events, storage bindings, and WAMR native
+calls are separate experiments/tests. The browsing path does not execute
+page scripts, pump JS jobs, or instantiate page WASM.
+
+## Components and boundaries
+
+| Layer | Implementation | Current boundary |
+|---|---|---|
+| HTML | lexbor 2.5.0, static | Parsing/selectors, not a complete CSS renderer |
+| Text | Odin SDK `kb_text_shape` + stb_truetype | Shaped glyph rasterization; document line breaking is custom and incomplete |
+| Fonts | System fontconfig, runtime loaded | No checked-in runtime font assets; system fonts affect metrics and screenshots |
+| Images/PNG | stb_image, stb_image_resize, stb_image_write | Supported raster formats only; viewport PNG transport for browsing |
+| Network | System libcurl through `mincurl` | Synchronous easy handle, manual redirects; no responsive resource scheduler yet |
+| Cookies | Custom jar + system libpsl | curl cookie engine disabled; partial browser policy coverage |
+| Cache | Memory LRU + SQLite metadata + body files | HTTP caching subset, not full RFC/browser conformance |
+| Profile | SQLite 3530400 + body files | Cookie/cache/localStorage helpers; history schema exists, browsing history is currently in RAM |
+| Session storage | RAM | Helper implementation, not a complete live-page API |
+| JavaScript | QuickJS 2024-01-13, static | Standalone evaluation and DOM/event tests only |
+| WebAssembly | WAMR 2.4.4 interpreter, static | Native round trip; no page integration or execution budget |
+| TUI | Linux termios + Kitty protocol | Ghostty primary; no text fallback; input/geometry handling still incomplete |
+| Desktop | SDL3 3.2.10, static | Static demonstration, not an interactive browser |
+
+Mise owns tool/system provisioning through `mise bootstrap`; Just owns
+repository recipes. CI uses `jdx/mise-action` and those same recipes.
+Static native dependencies do not make the executable fully static: libcurl,
+libpsl, glibc and their dependencies remain, and fontconfig is loaded at
+runtime. Supported distribution/ABI and relocation checks are release work.
+
+## Target design (not all implemented)
+
+Three frontends should invoke the same browser actions and consume the same
+document/layout state:
+
+```text
+headless commands | Kitty input | desktop input
+                   -> browser/session actions
+resource scheduler -> document -> layout snapshot + text/hit-test mapping
+                                      -> viewport paint
+                                      -> PNG | Kitty | SDL texture
+profile services <-> browser/session and resource scheduler
 ```
 
-One shared framebuffer feeds every backend, so all outputs agree by
-construction. Diagnostics go to stderr; stdout stays clean for Kitty bytes.
+### Ownership and lifecycle
 
-## Component choices
+- **Session:** owns profile services, navigation state, loading/error state,
+  and eventually tabs. Async completions carry a navigation generation so
+  obsolete requests cannot replace a newer document.
+- **Document:** owns source/DOM, final URL/title, stable element identifiers,
+  current form values, and resource handles. Input state is not recreated
+  from the original HTML every time the viewport changes.
+- **Layout snapshot:** owns derived geometry, shaped runs, links/control
+  rectangles, and selection mappings. Construct a replacement before
+  publishing it. Relayout must not navigate, refetch, or mutate history.
+- **Viewport:** owns dimensions, scale, scroll anchor, focus, and selection.
+  Reflow preserves logical position/focus rather than blindly retaining
+  stale pixel coordinates or array indices.
+- **Painter:** clips to the viewport and reuses buffers. Full-page exports
+  need explicit size limits or tiled/streamed output.
 
-| Layer    | Choice | Why |
-|----------|--------|-----|
-| Parse    | lexbor 2.5.0 static | HTML5 + CSS selectors in one C lib; ~1 MB pages in ms |
-| JS       | QuickJS 2024-01-13 static | Tiny heap (~7 MB on bench), bit-identical answers to V8 on the shared workload |
-| Shape    | `vendor:kb_text_shape` | Segmentation + OpenType shaping + BiDi, in-tree |
-| Raster   | `vendor:stb/truetype` sources compiled in | Per-glyph-ID bitmaps (shaped IDs, not codepoints) |
-| PNG      | `stb_image_write` compiled in | One call, no new dep |
-| Fonts    | fontconfig discovery (dlopen, zero link deps) | no vendored files; coverage-checked by setup |
-| Window   | pinned static SDL3 (`-Bstatic` fence) | shared system SDL would win the link without fencing |
-| Fetch    | curl CLI (corpus pre-fetched) | In-spike fetch is future work; `vendor:curl` exists |
-| Net fetch | system libcurl via own `mincurl` binding | `vendor:curl` links a nonexistent `mbedtls` lib; 15-proc surface owned instead |
-| Cookies/jar | own RFC 6265 + libpsl | curl engine OFF; supercookie defense via builtin PSL |
-| HTTP cache | memory LRU + SQLite index + body files | RFC 9111 subset: max-age/Expires, ETag/LM revalidation, Vary |
-| Storage | SQLite (localStorage/history) + RAM (session) | one amalgamation, zero runtime deps |
-| JS/WASM | QuickJS + WAMR interpreter (`libiwasm.a`) | native-call round trip proven; JS bridge is next |
-| JS↔DOM | own table-driven binding DSL (`jsbind`) + lexbor | selectors/serializer collapse query/HTML; no IDL gen yet |
-| Events | own capture/target/bubble dispatch | stop/remove/once; listener exceptions reported, dispatch continues |
-| Browse session | heap-held store, retained lines, viewport slicing | fullscreen raster removed: 146 MB -> ~2 MB viewport |
-| TUI loop | raw termios, CSI metrics, shared input buffer | typeahead survives queries; ASCII fast path |
-| TUI drivers | Kitty PNG slices (Ghostty assumed, no text fallback) | GUI (`show`) manual-only until GUI suites exist |
-| Forms | own fields/dataset/submit + Tab focus + cursor | per-form scoping; GET+POST; select/checkbox out of scope |
-| Images | stb_image decode + stb_image_resize to display size | eager bounded pre-pass; SVG/WebP/data-URLs fall back |
+M1 initially repairs ownership in the existing `Page` representation rather
+than requiring a wholesale package rewrite. Stable document/layout
+separation can then be introduced behind passing lifecycle tests.
 
-SDL3 over raylib: a browser needs a platform layer (window/events/IME/GPU)
-it fully owns. raylib's text story ends at unshaped TTF and its loop model
-assumes games — week-one sugar against a week-three ceiling.
+### Scheduling and presentation
 
-## Measured results (this host, 2026-09-03/04)
+Use bounded, cancellable libcurl resource work rather than blocking the UI
+for each image. Initial text/placeholder paint should not wait for optional
+images. Visible resources get priority, and image completion preserves the
+reading anchor. Resource services and profile mutation need explicit owner
+threads if workers are introduced.
 
-| Metric | spike | vixen (control) |
-|--------|-------|-----------------|
-| Binary | 12.4 MB, no sidecars (static SDL3; dynamic tail is libc + curl stack only) | 58.7 MB release |
-| Cold-start RSS | 2.1 MB | 6.8 MB |
-| app-shell page | 0.2 ms / 2.4 MB | 160 ms / 54 MB |
-| JS bench, same file+answer | ~320 ms / 7 MB heap | ~230 ms / 71 MB RSS |
-| Shaping suite | 8/8 (lam-alef, conjunct, BiDi, CJK uniformity) | n/a |
-| Net suite (`nettest`) | 58/58 (URL, cookies, cache, Vary, redirects, storage) | n/a |
-| DOM suite (`domtest`) | 20/20 (query, attrs, tree edit, events) | n/a |
-| Form suite (`tuitest`) | encode/dataset/submit/layout/live GET+POST | n/a |
-| Image suite (`tuitest`) | fetch/decode/resize/place/raster pixels | n/a |
-| WASM round trip | add(40,2)=42, import callback=210 | n/a |
+Track layout, page-paint, chrome, and geometry invalidation separately.
+Coalesce input/resize events; unchanged state must not trigger another
+layout/raster/PNG upload. The Kitty backend owns its image IDs and placement
+cleanup. Terminal rows/cells and document pixels are distinct coordinate
+systems, with validated conversion and no fictional minimum window size.
+
+Interactive TUI assumes Kitty graphics capability, with Ghostty primary.
+Environment-name whitelisting is a current implementation limitation, not
+the intended contract. Headless output is an explicit separate mode, never
+an automatic TUI fallback. In fullscreen mode, diagnostics must go to a
+log or UI channel: stderr often points to the same terminal as stdout.
+
+### Reuse rather than mandatory DIY
+
+SDL3 remains the platform layer. Before desktop implementation, evaluate a
+small toolkit (for example Dear ImGui) for address bar, tabs, menus, text
+input, clipboard, IME, and accessibility. Measure startup, memory, integration
+work, and usability before choosing. A UI toolkit does not implement HTML/CSS
+document layout; neither that fact nor current code size justifies building
+every widget ourselves. Prefer tested Unicode segmentation/line-break data
+over handwritten range tables. Further document-layout dependencies should
+be evaluated against the declared HTML/CSS subset and shared shaping needs.
+
+## Resource and trust model
+
+This is currently a single-process, unsandboxed alpha. Not executing page JS
+does not make native HTML/image parsers safe against arbitrary input. Before
+beta, bound response/header bytes, decompressed data, document size/depth,
+decoded pixel counts, concurrent requests, viewport allocations, and cache
+usage. Apply limits before expensive allocations, with overflow checks.
+
+Keep TLS verification enabled, constrain supported URL schemes, validate
+redirect/origin/cookie behavior, and make failures recoverable. Page scripting
+stays disabled until execution budgets, lifecycle, origin policy, and network
+integration have dedicated tests. Process isolation and a broader security
+model are requirements to evaluate before claiming hardened general-web use.
+
+Current cache defaults are 32 MB RAM / 256 MB disk; localStorage has a 5 MB
+per-origin helper quota. Image constants are 12 images, 8 MB decoded display
+pixels per image, and 24 MB per page. They are **not proof of peak memory
+bounds**: network buffering, natural-image decoding, and cumulative checks
+need work. Images are also currently downscaled before layout, complicating
+quality and sizing on later resizes.
+
+## Measurement and verification
+
+The primary performance metric is process launch to first usable page,
+including fonts, layout, rasterization, encoding, and backend submission.
+Measure cache-cold/cache-warm and process-cold starts separately; report
+network time and image settlement separately. Kitty upload completion is an
+observable proxy, not proof the terminal has presented the image. Desktop
+tests should record first present.
+
+Record commit/build flags, host, viewport, font versions, fixture hash,
+cache state, and repeated p50/p95 results. Check peak RSS, allocation/resource
+caps, steady-state memory, input latency, and bytes/frames transmitted.
+
+Early September 2026 spike measurements compared different feature sets and
+sometimes different memory metrics (JS heap versus process RSS). They are
+historical observations, not a current performance baseline or evidence that
+this browser is smaller/faster at equivalent work. Establish a reproducible
+baseline in M0 before using benchmark claims in releases.
+
+`tuitest` currently exercises helpers and session/layout operations headlessly.
+It does not model terminal cursor movement, image placement, or fragmented
+terminal input. Committed PTY/protocol tests and real Ghostty/Kitty checks are
+required. Desktop implementation is gated behind credible headless and TUI
+suites; desktop beta additionally requires real window/input tests.
 
 ## Gotchas found (for the record)
 
@@ -94,20 +201,26 @@ assumes games — week-one sugar against a week-three ceiling.
   reads the argv pointer as a value.
 - `lxb_html_serialize_cb` is single-node; subtree HTML needs `tree_cb`.
 
-## Known limitations (not bugs for spike scope)
+## Current compatibility limitations
 
-- No mid-word break: words wider than the measure overflow the line.
-- Mixed-direction lines assume kb returns runs in visual order.
-- No glyph atlas: direct framebuffer blits (fine at corpus scale).
-- `head`/`script`/`style` subtrees skipped; media/inputs absent.
-- No JS DOM bindings; WASM has no JS bridge yet (native round trip only).
-- No sandbox/fuel metering on wasm execution yet.
-- Forms: text/hidden/submit/button/textarea only; select, checkbox/radio,
-  file, image-button, and `type=button` skipped. Controls render even
-  inside skipped landmarks (a header search box is UI, not noise).
-- Images: PNG/JPEG/GIF-first-frame/BMP via stb; SVG/WebP, data: URLs,
-  and srcset out of scope. 12 images / 8 MB each / 24 MB per page max.
-- woff2/variable fonts untested (shipped TTFs are static instances).
-- Ghostty assumed: graphics detection is environmental (`TERM` containing `ghostty`/`kitty`, or `KITTY_WINDOW_ID`); no text-driver fallback.
-- Profile: `$SPIKE_PROFILE` or `~/.config/spikebrowser`; cache caps
-  32 MB RAM / 256 MB disk; localStorage quota 5 MB/origin.
+- Reader-style greedy word wrapping, not author-CSS layout; long words can
+  overflow. Tables are flattened, and whitespace/preformatted text is limited.
+- Word-by-word shaping does not establish paragraph-level BiDi correctness.
+  Current terminal truncation is rune-based with partial width tables, not
+  complete grapheme/emoji handling.
+- `head`/`script`/`style` and several other subtrees are skipped. Landmark
+  filtering can omit useful content; this is a readability heuristic, not
+  a guarantee that those elements contain no article content.
+- Forms are a partial text/search/hidden/submit/button/textarea subset.
+  Select, checkbox/radio, file, image-button, and `type=button` are skipped.
+  Controls in skipped landmarks are specially handled.
+- Images: PNG/JPEG/GIF-first-frame/BMP through stb; SVG/WebP, data URLs,
+  srcset, and animation are not supported by the current browsing path.
+- No live page-script execution, JS job pump, timers, fetch/XHR bridge,
+  JS↔WASM integration, media, or extension platform.
+- Runtime system fonts; webfonts/variable fonts are not established support.
+- Profile defaults differ by command; see README. Browsing history is not
+  yet persisted despite the database schema.
+- Terminal input, geometry, focus, repaint, and memory defects are bugs to
+  fix, not accepted compatibility omissions. Milestones track the remaining
+  work without treating a helper-suite pass as frontend certification.
