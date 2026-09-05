@@ -15,7 +15,7 @@ Usage: testserver.py <portfile>
 import json
 import sys
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
 COUNTS = {}
@@ -183,6 +183,27 @@ class H(BaseHTTPRequestHandler):
                           '<img src="/img.png" alt="dup">'
                           '<img src="/img.png" width="4" height="3">'
                           "</body></html>")
+        elif p == "/slowpage":
+            filler = "".join(f"<p>Filler paragraph {i} to make the page scrollable during slow image flight.</p>" for i in range(15))
+            self._send(200, [("Content-Type", "text/html; charset=utf-8")],
+                          "<!DOCTYPE html><html><head><title>Slow</title></head><body>"
+                          "<h1>Slow gallery</h1>" + filler +
+                          '<img src="/slow.png" alt="slow" width="8" height="6">' +
+                          '<img src="/img.png" alt="fast" width="8" height="6">' +
+                          filler + "</body></html>")
+        elif p == "/slow.png":
+            import time as _time
+            _time.sleep(2.0)
+            import struct, zlib
+            w, h = 8, 6
+            raw = b"".join(b"\x00" + bytes([c for x in range(w) for c in (x * 32 % 256, y * 43 % 256, 128, 255)]) for y in range(h))
+            ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+            def chunk(t, d):
+                c = t + d
+                return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c))
+            png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) +
+                   chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+            self._send(200, [("Content-Type", "image/png"), ("Cache-Control", "max-age=60")], png)
         elif p == "/search":
             self._send(200, [("Content-Type", "text/html; charset=utf-8")],
                           f"<html><head><title>Results</title></head><body><p>results for [{u.query}]</p></body></html>")
@@ -216,7 +237,7 @@ class H(BaseHTTPRequestHandler):
 
 
 def main():
-    srv = HTTPServer(("127.0.0.1", 0), H)
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), H)
     with open(sys.argv[1], "w") as f:
         f.write(str(srv.server_address[1]))
     srv.serve_forever()

@@ -118,7 +118,7 @@ for sensitive accounts.
 | HTTP(S), cookies, cache | Integrated through system libcurl, libpsl, SQLite, and body files; partial policy coverage |
 | Documents | Reader-style HTML flow with mid-word breaks (grapheme-safe), shaped text, links, fragment jumps, find-in-page, simple lists/tables; no author-CSS layout engine |
 | Forms | Text/search/hidden/submit/button/textarea with visible editing (textarea: multi-row, Enter=newlines, vertical scroll), urlencoded GET/POST; skipped controls show notes; passwords not masked |
-| Images | Eager fetching and stb decoding of supported raster formats; placeholders otherwise |
+| Images | Async background fetch (text-first paint, progressive install, attr-space reserve); stb decode of supported raster formats; placeholders otherwise |
 | JavaScript and DOM | Standalone QuickJS/DOM experiments with helper tests; not executed during live browsing |
 | WebAssembly | Native WAMR round-trip experiment; no page/JS integration |
 | Desktop | Static SDL demonstration only |
@@ -140,7 +140,7 @@ mise exec -- just test-sanitize
 |---|---|
 | `vixen shapetest` | Selected shaping and font-fallback cases |
 | `vixen domtest` | Standalone DOM queries, mutations, and events |
-| `vixen browsetest` | Helpers for layout, wrapping, fragments, find, limits, textarea, session, forms, images, visible field paint, scroll anchors, and TUI handlers; `tuitest` remains a compatibility alias |
+| `vixen browsetest` | Helpers for layout, wrapping, fragments, find, limits, textarea, async images, session, forms, images, visible field paint, scroll anchors, and TUI handlers; `tuitest` remains a compatibility alias |
 | `vixen termtest` | Pure incremental input, metrics, chrome bounds, and invalidation tests |
 | `just test-tui` | Decoder tests and independent PTY/Kitty output-model tests in `tests/tui_protocol.py` |
 | `tests/profiles.py` | Profile precedence, old-data preservation, and headless commands run outside the checkout |

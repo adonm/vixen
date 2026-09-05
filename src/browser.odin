@@ -43,6 +43,10 @@ Browse_Session :: struct {
 	// False when the last navigate was a same-document fragment (no fetch,
 	// layout, or field rebuild; frontend skips tui_sync_fields).
 	page_rebuilt: bool,
+	// Background image transfers (interactive browsing; file rendering uses
+	// the synchronous path). Abandoned synchronously on each full navigate.
+	img_multi: ^CurlM,
+	img_queue: [dynamic]^Img_Transfer, // heap-held pointees (curl addresses stable)
 }
 
 browse_open :: proc(profile: string, width: int) -> (Browse_Session, bool) {
@@ -68,8 +72,10 @@ browse_open :: proc(profile: string, width: int) -> (Browse_Session, bool) {
 	sess.ss = session_storage_open()
 	sess.tab = 1
 	sess.width = width
+	img_async_open(&sess)
 	bank, bok := font_bank_load(20)
 	if !bok {
+		img_async_close(&sess)
 		fetch_ctx_free(&sess.fc)
 		jar_close(&sess.jar)
 		cache_close(&sess.cache)
@@ -85,6 +91,7 @@ browse_open :: proc(profile: string, width: int) -> (Browse_Session, bool) {
 
 browse_close :: proc(sess: ^Browse_Session) {
 	browse_drop_page(sess)
+	img_async_close(sess)
 	history_clear(&sess.back)
 	delete(sess.back)
 	history_clear(&sess.fwd)
@@ -173,6 +180,8 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 	}
 	pc := phase_start(url)
 	now := tnow()
+	// New document abandons this page's background images synchronously.
+	img_async_abandon(sess)
 	extra: []string
 	if method == "POST" {
 		extra = []string{"Content-Type: application/x-www-form-urlencoded"}
@@ -203,17 +212,19 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 		return browse_error_page(sess, final_url, "parse failed")
 	}
 	defer lxb_html_document_destroy(doc)
-	// Eager image pre-pass: layout reserves display sizes. Existing image
-	// caps do not yet bound all network buffering/natural-size decoding.
+	// Two-phase images: cache hits decode now (first paint complete when
+	// warm); misses queue in document order (visible first) and stream in
+	// via img_async_poll without ever blocking paint or input.
 	refs := collect_image_urls(doc, final_url, MAX_PAGE_IMAGES)
-	imgs := page_load_images(sess, refs[:])
-	delete_image_refs(refs)
+	defer delete_image_refs(refs)
+	ready := img_async_begin(sess, refs[:])
+	defer delete(ready)
 	rc := render_ctx_new(&sess.bank, 20, f32(sess.width), final_url)
-	// Move decoded pixels into the layout context BEFORE layout runs.
-	for &im in imgs {
+	// Move cache-hit pixels into the layout context BEFORE layout runs.
+	for &im in ready {
 		append(&rc.images, im)
 	}
-	delete(imgs)
+	clear(&ready)
 	layout_html(&rc, doc)
 	finalize_links(&rc)
 	rok := true
@@ -291,8 +302,9 @@ page_from_layout :: proc(rc: ^Render_Ctx, url, title: string, width: int) -> Pag
 // without refetching: source is retained, decoded images are reused at
 // their existing display sizes, typed field values survive by index.
 // No history push; the caller re-clamps scroll and resyncs fields.
-browse_relayout :: proc(sess: ^Browse_Session, width: int) -> bool {
-	if !sess.has || width <= 0 || width == sess.width || len(sess.page.src) == 0 {
+// Force refreshes at the same width (newly arrived background images).
+browse_relayout :: proc(sess: ^Browse_Session, width: int, force := false) -> bool {
+	if !sess.has || width <= 0 || (!force && width == sess.width) || len(sess.page.src) == 0 {
 		return false
 	}
 	doc, dok := parse_document(sess.page.src)

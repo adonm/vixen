@@ -17,6 +17,32 @@ MAX_IMAGE_DIM   :: 2048 // clamp absurd natural dimensions early
 NATURAL_IMAGE_DIM :: 8192
 NATURAL_IMAGE_PX  :: 16 * 1024 * 1024
 
+// Display size from width/height attrs alone (no natural yet): fit the
+// content measure, clamp absurd values, enforce the per-image byte cap.
+// Used to reserve space for pending async images (no layout shift when the
+// bytes arrive) and by the decoder when attrs win. Single source of truth.
+image_attr_display :: proc(attr_w, attr_h, target_w: int) -> (dw, dh: int, ok: bool) {
+	if attr_w <= 0 || attr_h <= 0 {
+		return 0, 0, false
+	}
+	dw, dh = attr_w, attr_h
+	for dw > MAX_IMAGE_DIM || dh > MAX_IMAGE_DIM {
+		dw /= 2
+		dh /= 2
+	}
+	if dw <= 0 || dh <= 0 {
+		return 0, 0, false
+	}
+	if target_w > 0 && dw > target_w {
+		dh = dh * target_w / dw
+		dw = target_w
+	}
+	if dh <= 0 || dw * dh * 4 > MAX_IMAGE_BYTES {
+		return 0, 0, false
+	}
+	return dw, dh, true
+}
+
 Image :: struct {
 	url: string, // owned absolute URL
 	w, h: int,  // display px (post-scale)
@@ -155,28 +181,35 @@ decode_image :: proc(url: string, body: []u8, target_w, attr_w, attr_h: int) -> 
 		return im, false
 	}
 	defer stbi_image_free(raw)
-	// Display size: attrs win when both valid, else natural; fit target.
+	// Display size: attrs win when both valid (shared helper, stable reserve
+	// matches final size so attr-sized images never shift layout on arrival);
+	// else natural, fitted to the target.
 	dw, dh := int(nw), int(nh)
 	if attr_w > 0 && attr_h > 0 {
-		dw, dh = attr_w, attr_h
-	}
-	// Clamp absurd dimensions before allocating anything.
-	for dw > MAX_IMAGE_DIM || dh > MAX_IMAGE_DIM {
-		dw /= 2
-		dh /= 2
-	}
-	if dw <= 0 || dh <= 0 {
-		return im, false
-	}
-	if target_w > 0 && dw > target_w {
-		dh = dh * target_w / dw
-		dw = target_w
-	}
-	if dh <= 0 {
-		return im, false
-	}
-	if dw * dh * 4 > MAX_IMAGE_BYTES {
-		return im, false
+		if aw, ah, ok := image_attr_display(attr_w, attr_h, target_w); ok {
+			dw, dh = aw, ah
+		} else {
+			return im, false
+		}
+	} else {
+		// Clamp absurd naturals before allocating anything.
+		for dw > MAX_IMAGE_DIM || dh > MAX_IMAGE_DIM {
+			dw /= 2
+			dh /= 2
+		}
+		if dw <= 0 || dh <= 0 {
+			return im, false
+		}
+		if target_w > 0 && dw > target_w {
+			dh = dh * target_w / dw
+			dw = target_w
+		}
+		if dh <= 0 {
+			return im, false
+		}
+		if dw * dh * 4 > MAX_IMAGE_BYTES {
+			return im, false
+		}
 	}
 	px := make([]u8, dw * dh * 4)
 	if dw == int(nw) && dh == int(nh) {

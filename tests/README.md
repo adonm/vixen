@@ -12,8 +12,9 @@ mise exec -- just test-sanitize # instrumented Odin helpers and frontend runs
 exercises browser/session helpers (the old `tuitest` spelling is an alias),
 including paint (field overlay pixels), scroll (anchors), wrap (mid-word
 grapheme breaks), fragments (targets, same-document, history), find
-(matches, cycling, highlights, relayout), limits (caps, schemes), and area
-(multiline textarea). `vixen termtest` checks the pure incremental decoder, metrics, and chrome bounds. These are separate from the
+(matches, cycling, highlights, relayout), limits (caps, schemes), area
+(multiline textarea), and async (slow/abandon/warm image flows).
+`vixen termtest` checks the pure incremental decoder, metrics, and chrome bounds. These are separate from the
 frontend harnesses below.
 
 ## `tui_protocol.py`
@@ -27,7 +28,8 @@ Journeys cover tiny/oversized windows, idle resize, cell-pixel changes, no-op
 input, URL-only redraws, fragmented/missing metrics with typeahead, bracketed paste,
 slow/fragmented UTF-8, reverse tab, focus/value preservation through resize,
 visible typing (PNG bytes must change), find bar with live highlights/jump,
-n/N cycling, no-matches state, Esc, form submission, EOF/hangup,
+n/N cycling, no-matches state, Esc, slow-image non-blocking first paint with
+progressive refresh and mid-flight input, form submission, EOF/hangup,
 SIGTERM/SIGHUP restoration (termios, image delete, exit 128+sig), and
 refusing a non-terminal interactive invocation.
 An empty focused field is deliberately painted before completing its first

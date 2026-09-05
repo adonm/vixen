@@ -6,6 +6,7 @@ package vixen
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:time"
 import "core:unicode/utf8"
 
 import edit "core:text/edit"
@@ -86,6 +87,9 @@ tuitest_main :: proc() -> bool {
 		return false
 	}
 	if !tuitest_images() {
+		return false
+	}
+	if !tuitest_img_async() {
 		return false
 	}
 	if !tuitest_truncate() {
@@ -1226,6 +1230,108 @@ tuitest_truncate :: proc() -> bool {
 	return fails == 0
 }
 
+// Async images: slow transfers never block paint, abandonment is clean,
+// warm cache paints complete immediately.
+tuitest_img_async :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	port, srv, ok := server_start()
+	if !ok {
+		check(&fails, "async/server", false)
+		return false
+	}
+	defer {
+		_ = os.process_kill(srv)
+		_, _ = os.process_wait(srv)
+	}
+	defer delete(port)
+	base := fmt.aprintf("http://127.0.0.1:%s", port)
+	defer delete(base)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
+	sess, sok := browse_open(prof, 900)
+	if !sok {
+		check(&fails, "async/open", false)
+		return false
+	}
+	defer browse_close(&sess)
+	slowpage := fmt.aprintf("%s/slowpage", base)
+	defer delete(slowpage)
+	if !browse_navigate(&sess, slowpage, true) {
+		check(&fails, "async/navigate", false)
+		return false
+	}
+	// Both miss (cold): placeholders immediately, queue holds two.
+	check(&fails, "async/pending", len(sess.page.images) == 0 && len(sess.img_queue) == 2, "")
+	// Fast completes while slow is still flying (2s delay): poll briefly.
+	got_fast := false
+	for _ in 0 ..< 50 {
+		img_async_poll(&sess)
+		if len(sess.page.images) == 1 {
+			got_fast = true
+			break
+		}
+		time.sleep(20 * time.Millisecond)
+	}
+	check(&fails, "async/fast-first", got_fast && len(sess.img_queue) == 1, "")
+	// Abandon: navigate away mid-flight; stale completion must never land.
+	art := fmt.aprintf("%s/article", base)
+	defer delete(art)
+	if !browse_navigate(&sess, art, true) {
+		check(&fails, "async/leave", false)
+		return false
+	}
+	// Article shares /img.png (cached fresh by the fast completion above),
+	// so it paints immediately with nothing queued (slow abandoned cleanly).
+	check(&fails, "async/abandoned", len(sess.page.images) == 1 && len(sess.img_queue) == 0, "")
+	// Drain (no-op, queue already empty) then refresh for placements.
+	if !browse_poll_blocking(&sess, 10000) {
+		check(&fails, "async/drain", false, "")
+		return false
+	}
+	browse_relayout(&sess, sess.width, true)
+	slow_leaked := false
+	for &im in sess.page.images {
+		if strings.contains(im.url, "slow.png") {
+			slow_leaked = true
+		}
+	}
+	check(&fails, "async/no-stale", !slow_leaked && len(sess.page.images) == 1, "")
+	// Warm cache: revisit slowpage, both paint immediately (no queue).
+	if !browse_navigate(&sess, slowpage, true) {
+		check(&fails, "async/revisit", false)
+		return false
+	}
+	// Slow was abandoned before completion (never cached); fast was cached
+	// on the article page (same /img.png URL). Expect fast ready, slow queued.
+	check(&fails, "async/warm-partial", len(sess.page.images) == 1 && len(sess.img_queue) == 1, "")
+	if !browse_poll_blocking(&sess, 10000) {
+		check(&fails, "async/drain2", false, "")
+		return false
+	}
+	browse_relayout(&sess, sess.width, true)
+	check(&fails, "async/slow-done", len(sess.page.images) == 2 && len(sess.img_queue) == 0, "")
+	// Now fully warm: revisit paints complete with empty queue.
+	if !browse_navigate(&sess, slowpage, true) {
+		check(&fails, "async/revisit2", false)
+		return false
+	}
+	check(&fails, "async/warm-full", len(sess.page.images) == 2 && len(sess.img_queue) == 0, "")
+	fmt.printfln("browsetest-async: %d failures", fails)
+	return fails == 0
+}
+
 // Image pipeline against the test server: fetch, decode, resize, place.
 // /img.png is a hand-rolled 8x6 RGBA PNG; /missing.png 404s.
 tuitest_images :: proc() -> bool {
@@ -1268,17 +1374,27 @@ tuitest_images :: proc() -> bool {
 		check(&fails, "images/navigate", false)
 		return false
 	}
+	// Cold cache: first paint has placeholders (no blocking fetch).
+	check(&fails, "images/async-pending", len(sess.page.images) == 0 && len(sess.img_queue) == 4, fmt.tprintf("%d imgs %d queued", len(sess.page.images), len(sess.img_queue)))
+	if !browse_poll_blocking(&sess, 10000) {
+		check(&fails, "images/poll", false, "")
+		return false
+	}
+	browse_relayout(&sess, sess.width, true)
 	// Three size variants decode (dup shares the unadorned one);
 	// the 404 falls back to a text placeholder.
 	check(&fails, "images/count", len(sess.page.images) == 3, fmt.tprintf("%d", len(sess.page.images)))
 	check(&fails, "images/placements", len(sess.page.placements) == 3, fmt.tprintf("%d", len(sess.page.placements)))
-	if len(sess.page.images) == 1 {
-		im := &sess.page.images[0]
-		check(&fails, "images/dims", im.w == 8 && im.h == 6, fmt.tprintf("%dx%d", im.w, im.h))
-		check(&fails, "images/pixels", len(im.px) == 8 * 6 * 4, "")
-		// First pixel is deterministic: (0,0,128,255) per the generator.
-		check(&fails, "images/content", im.px[0] == 0 && im.px[1] == 0 && im.px[2] == 128 && im.px[3] == 255, "")
+	// Completion order is nondeterministic under concurrency; find by size.
+	found8 := false
+	for &im in sess.page.images {
+		if im.w == 8 && im.h == 6 && len(im.px) == 8 * 6 * 4 {
+			found8 = true
+			// First pixel is deterministic: (0,0,128,255) per the generator.
+			check(&fails, "images/content", im.px[0] == 0 && im.px[1] == 0 && im.px[2] == 128 && im.px[3] == 255, "")
+		}
 	}
+	check(&fails, "images/dims", found8, "")
 	if len(sess.page.placements) == 3 {
 		// Third img carries width/height attrs: 4x3 display block.
 		pl := &sess.page.placements[2]

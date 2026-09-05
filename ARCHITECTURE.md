@@ -94,8 +94,9 @@ separation can then be introduced behind passing lifecycle tests.
 
 ### Source organization
 
-- `src/browser.odin`, `scroll.odin`: session, navigation with history anchors
-  and same-document fragments, retained page, and relayout ownership.
+- `src/browser.odin`, `scroll.odin`, `img_async.odin`: session, navigation
+  with history anchors and same-document fragments, background image transfers
+  (cache-hit sync + miss async), retained page, and relayout ownership.
 - `src/render.odin`, `forms.odin`, `images.odin`: document geometry (grapheme-
   safe mid-word breaks, fragment targets, explicit unsupported notes) and painting.
 - `src/tui.odin`, `tui_fields.odin`, `tui_find.odin`, `tui_chrome.odin`:
@@ -116,11 +117,15 @@ share them. Standalone DOM/JS/WASM experiments are not part of live navigation.
 
 ### Scheduling and presentation
 
-Use bounded, cancellable libcurl resource work rather than blocking the UI
-for each image. Initial text/placeholder paint should not wait for optional
-images. Visible resources get priority, and image completion preserves the
-reading anchor. Resource services and profile mutation need explicit owner
-threads if workers are introduced.
+Image loading is single-threaded async: cache hits decode synchronously for
+first paint; misses queue in document order (visible first, 4 concurrent via
+curl multi pumped each TUI tick, 15s per-transfer timeouts, 3 manual redirects
+with per-hop cookies). Completions decode (header-gated, budgeted), cache
+(direct only), and trigger one anchor-preserving refresh per batch. Attr-sized
+boxes reserve exact space (zero shift); unsized settle via reading anchors.
+Full navigations abandon pending synchronously (no stale landings); relayout
+keeps the queue (same document). One-shot file rendering keeps the blocking
+path (deterministic output). No threads, no locks; generations unnecessary.
 
 The current event loop coalesces buffered input, marks page/chrome changes
 separately, and checks geometry on a 100 ms idle poll. Unchanged state does

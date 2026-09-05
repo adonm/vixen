@@ -105,9 +105,13 @@ clean child exit. Retain real-terminal checks for emulator behavior.
   post-redirect URL, fragments preserved; redirect bodies never cached under
   the original key) and explicit `[unsupported]`/`[disabled]` notes for
   skipped controls (labels/options suppressed, never silent gaps).
-- [ ] Bounded, cancellable resource scheduling; ignore stale completions.
-  First text/placeholder paint must not wait for optional images. Prioritize
-  visible images and preserve the reading anchor as they arrive.
+- [x] Bounded, cancellable resource scheduling with anchor-preserving
+  progressive install (`src/img_async.odin`, `browsetest-async`, PTY slowimg).
+  Cache hits decode synchronously for first paint; misses fetch in document
+  order (visible first, 4 concurrent, 15s timeouts, 3 manual redirects with
+  per-hop cookies) via single-threaded curl multi pumped each tick. Attr-sized
+  boxes reserve space (zero shift on arrival); unsized settle via reading
+  anchors. Navigations abandon pending synchronously (no stale landings).
 - [x] Enforce response/header/decompressed-byte, document/depth, image-pixel,
   viewport and cache limits before expensive allocations, with overflow checks.
   (32MB transfer/256KB headers aborted mid-transfer, 8MB HTML cap, 50k lines
@@ -344,6 +348,12 @@ Shipped with both gates green (release + ASan, including PTY/profile/CLI):
   (49 cases), JSON/meta fields, PNG IHDR geometry, truncation, outside-
   checkout runs, and byte reproducibility. `corpus/tall.html` fixtures the
   cap. M3 exit met; deliverable shipped.
+- Async images (M2 complete): text/placeholder first paint never waits;
+  `browsetest-async` proves fast-before-slow completion, abandonment without
+  stale landings, and warm-cache immediacy; PTY proves first paint <1.5s
+  with a 2s-delayed image, input responsiveness mid-flight, and progressive
+  refresh frames. M2 exit met on all items.
 
-Remaining M2: responsive/cancellable images (first paint must not wait;
-currently eager blocking fetch before layout). Then M4 TUI beta journeys.
+M2 and M3 are done and gated. Remaining pre-M4: M0 concurrent-gate output
+isolation (helper concurrency is covered; `just test` runs serially). Next:
+M4 TUI beta journeys (zoom, copy workflows, soak) on the proven base.

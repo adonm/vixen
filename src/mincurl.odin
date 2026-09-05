@@ -9,10 +9,22 @@ import "core:c"
 foreign import mincurl {"system:curl"}
 
 Curl :: struct{}
+CurlM :: struct{}
 Curl_Slist :: struct {
 	data: cstring,
 	next: ^Curl_Slist,
 }
+
+// Matches libcurl's CURLMsg layout on 64-bit (msg + pad + easy + result + pad).
+CurlMsg :: struct {
+	msg:    c.int, // 1 = DONE
+	_pad0:  c.int,
+	easy:   ^Curl,
+	result: c.int, // CURLcode (0 = OK)
+	_pad1:  c.int,
+}
+
+CURLMSG_DONE :: 1
 
 Curl_Code :: enum c.int {
 	E_OK = 0,
@@ -53,4 +65,10 @@ foreign mincurl {
 	easy_strerror  :: proc(code: Curl_Code) -> cstring ---
 	slist_append   :: proc(list: ^Curl_Slist, data: cstring) -> ^Curl_Slist ---
 	slist_free_all :: proc(list: ^Curl_Slist) ---
+	multi_init          :: proc() -> ^CurlM ---
+	multi_add_handle    :: proc(multi: ^CurlM, easy: ^Curl) -> c.int ---
+	multi_remove_handle :: proc(multi: ^CurlM, easy: ^Curl) -> c.int ---
+	multi_perform       :: proc(multi: ^CurlM, running: ^c.int) -> c.int ---
+	multi_info_read     :: proc(multi: ^CurlM, msgs_left: ^c.int) -> ^CurlMsg ---
+	multi_cleanup       :: proc(multi: ^CurlM) -> c.int ---
 }

@@ -189,6 +189,18 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) -> bool {
 				}
 			}
 		}
+		// Background images stream in without blocking input or paint. Each
+		// batch triggers one anchor-preserving refresh (attr-sized boxes
+		// don't shift at all; unsized ones settle via the reading anchor).
+		if img_async_poll(sess) {
+			anchor := page_char_offset(&sess.page, t.scroll_y) if sess.has else 0
+			if browse_relayout(sess, sess.width, true) {
+				t.scroll_y = page_scroll_for_offset(&sess.page, anchor, tui_view_height(&t))
+				tui_clamp_scroll(&t)
+				t.page_dirty, t.chrome_dirty = true, true
+				tui_ensure_field_visible(&t)
+			}
+		}
 		if !tui_draw(&t) { return false }
 		// Persistent session/edit state owns its strings; transient format
 		// and layout scratch must not accumulate across an idle session.

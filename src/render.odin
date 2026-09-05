@@ -1128,6 +1128,7 @@ img_block :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, node:
 	defer if aok { delete(alt) }
 	idx := -1
 	dw, dh := -1, -1
+	pending := false
 	if len(rc.page_url) > 0 {
 		if src, ok := dom_attr_val(node, "src"); ok {
 			defer delete(src)
@@ -1137,6 +1138,12 @@ img_block :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, node:
 				if ii, found := image_lookup(rc, abs, aw, ah); found {
 					idx = ii
 					dw, dh = rc.images[ii].w, rc.images[ii].h
+				} else if rw, rh, rok := image_attr_display(aw, ah, int(rc.max_width)); rok {
+					// Not yet loaded (async pending, failed, or file mode
+					// without base fetch): reserve attr size so arrival never
+					// shifts layout. Placement points at nothing (skipped).
+					pending = true
+					dw, dh = rw, rh
 				}
 			}
 		}
@@ -1148,6 +1155,9 @@ img_block :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, node:
 	}
 	if dw > 0 {
 		dims := fmt.tprintf("%dx%d", dw, dh)
+		if pending {
+			dims = fmt.tprintf("%dx%d loading", dw, dh)
+		}
 		if len(atext) > 0 {
 			mark = fmt.tprintf("[image: %s %s]", atext, dims)
 		} else {
@@ -1166,7 +1176,7 @@ img_block :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, node:
 	}
 	flush_line(rc, line, size_px, y, true)
 	// NOTE: mark aliases temp/literal memory; never deleted.
-	if idx >= 0 {
+	if dw > 0 {
 		lh := size_px * 1.35
 		extra := f32(dh) + 6 - lh
 		if extra > 0 {

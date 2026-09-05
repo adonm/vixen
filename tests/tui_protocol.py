@@ -383,6 +383,19 @@ def main():
                 b.quit()
             print("PASS pty find bar, live highlight/jump, n/N, no-matches, Esc")
 
+            with browser(binary, root / "slowimg", base + "/slowpage", cols=80, rows=24) as b:
+                t0 = time.monotonic()
+                b.until(lambda: b.screen.frames > 0)
+                first_ms = (time.monotonic() - t0) * 1000
+                assert first_ms < 1500, f"first paint waited for slow image ({first_ms:.0f}ms)"
+                frames0 = b.screen.frames
+                b.until(lambda: b.screen.frames > frames0, timeout=5)  # fast refresh
+                b.send(b"j")  # input during slow flight must not freeze
+                b.until(lambda: b.screen.frames > frames0 + 1, timeout=2)
+                b.until(lambda: b.screen.frames > frames0 + 2, timeout=5)  # slow refresh
+                b.quit()
+            print("PASS pty slow images never block paint/input; progressive refresh")
+
             with browser(binary, root / "hangup", base + "/relayout") as b:
                 b.start()
                 os.close(b.master)
