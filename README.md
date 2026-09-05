@@ -54,9 +54,9 @@ using it as an output directory if the test recipe has not done so.
 | Command | Current behavior |
 |---|---|
 | `browse <url>` | Interactive, keyboard-driven Kitty-graphics browser; requires a terminal |
-| `browse --dump [--width N] <url>` | Fetch once and print laid-out text; no display required |
-| `render --out file.png [--width N] page.html` | Render a local HTML file to a full-page PNG |
-| `tui [--width N] page.html` | One-shot Kitty image output, **not** the interactive browser; emits graphics even to a pipe |
+| `browse --dump [--format text\|json] [--width N] <url>` | Fetch once and print laid-out text or JSON (`url,title,width,height,is_error,lines[],links[]`); no display required; exit 1 on error pages |
+| `render [--out PNG] [--meta JSON] [--width N] [--profile DIR] [--base-url URL] HTML` | Render local HTML via the shared session pipeline (links/images resolve against `--base-url` through the image cache) to a capped full-page PNG (4000px, warns) plus machine-readable meta (`source,base_url,title,width,height,full_height,lines,links,fields,images,truncated`) |
+| `tui [same file flags as render]` | One-shot Kitty image output, **not** the interactive browser; emits graphics even to a pipe |
 | `show page.html` | Experimental SDL window showing a static render briefly, not a desktop browser |
 | `fetch [--profile DIR] <url>` | Fetch through cookies/cache and print response statistics, not the response body |
 | `parse`, `js`, `rss` | Developer probes, not headless browser automation APIs |

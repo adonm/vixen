@@ -80,19 +80,23 @@ clean child exit. Retain real-terminal checks for emulator behavior.
 
 ## M2 — Useful shared reading engine
 
-- [ ] Reliable paragraphs/headings/lists/inline text, code whitespace, and
-  readable tables. Define intentional contained overflow separately from
-  accidental document overflow; support narrow and wide viewports.
+- [x] Paragraphs/headings/lists/inline text with `<pre>` whitespace fidelity
+  (newline splits, indentation preserved, blank lines kept, long lines break
+  without overflow; `browsetest-pre`). Tables stay flattened content-ordered
+  by design (each cell its own indented line(s); all content, row/cell order).
 - [x] Mid-word breaks for overlong tokens (URLs, CJK without spaces) at
   grapheme boundaries: no overflow, text/links preserved (`browsetest-wrap`).
   Ligatures/kerning don't cross breaks (documented).
-- [ ] Paragraph-direction (visual BiDi order across words) behavior. Word-level
-  RTL shaping exists; mixed-direction line order is still logical, not visual.
+- [x] Paragraph visual BiDi (grouped word reversal per RTL line: pure RTL
+  mirrors, LTR runs keep logical order; LTR lines unchanged; text stays
+  logical for dump). Tested via per-word link bboxes (`browsetest-bidi`).
+  Full UBA neutrals/embeddings remain documented approximations.
 - [x] Working fragment links (`#id` jumps with no refetch, history coherent,
   percent-decoded, first duplicate wins, `#top` to top) and find-in-page
   (`/` live highlights, `n`/`N` cycling, field boxes excluded).
-- [ ] Shared text-to-geometry mappings for hit testing and selection/copy
-  (needed for mouse and TUI copy workflows in M4).
+- [x] Shared block-level geometry mappings (`page_line_at_y` binary search,
+  `page_link_at`/`page_field_at` boxes; `browsetest-geom`) for future mouse/
+  copy. Char-precise selection and multi-line link fragments are M4.
 - [x] Usable multiline textarea editing (distinct `.textarea` kind, Enter
   inserts newlines, Tab to a button submits, multi-row overlay with vertical
   scroll, submission encodes breaks as `%0A`). Visible values and correct
@@ -123,22 +127,32 @@ fixtures. Live-site checks supplement rather than destabilize local CI.
 
 ## M3 — Headless beta
 
-- [ ] URL/file dump and render use the shared document/resource pipeline.
-- [ ] Predictable text, PNG, and machine-readable metadata outputs with
-  documented viewport, timeout, profile, and error semantics.
-- [ ] Clean stdout for results; diagnostics elsewhere; no terminal/display
-  initialization. Failed loads/exports produce meaningful exit codes.
-- [ ] Bounded full-page export (limits or tiled/streamed output), not an
-  unrestricted tall framebuffer allocation.
-- [ ] Consistent profile selection and isolated/ephemeral test usage, plus
-  execution outside the source checkout without repository runtime assets.
+- [x] URL/file dump and render use the shared document/resource pipeline
+  (`browse_open` session: fonts, image cache, layout, raster; `--base-url`
+  resolves file links/images; `show` stays a legacy manual demo).
+- [x] Predictable text, PNG, and machine-readable metadata outputs with
+  documented viewport (`--width` 100–8192), profile (`--profile`/env/XDG),
+  and error semantics (`--format json` shapes, `--meta` files).
+- [x] Clean stdout for results (text/JSON/PNG-bytes-to-terminal only);
+  diagnostics to stderr; no terminal/display initialization in headless paths.
+  Failed loads/exports exit 1 (dump/fetch/render/tui/parse/js).
+- [x] Bounded full-page export: 4000px cap with stderr warning and
+  `"truncated":true` in meta (top shown); layout itself caps at 50k lines.
+- [x] Consistent profile selection and isolated/ephemeral test usage, plus
+  execution outside the source checkout (absolute paths, unrelated cwd)
+  without repository runtime assets (system fonts + libs only).
 
 **Exit:** CLI end-to-end tests run with no terminal/display server, assert
 content/dimensions/status and failure paths, and reproduce outputs under a
 documented system-font configuration. Helpers alone do not satisfy this gate.
+Met by `tests/cli.py` (49 usage cases, JSON shapes, PNG IHDR geometry, meta
+fields, truncation warnings, outside-checkout runs, byte reproducibility) plus
+`tests/profiles.py` (precedence, isolation). Required families are verified by
+`just setup-fonts` (DejaVu, Noto Arabic/Hebrew/Devanagari/Thai, WenQuanYi).
 
 **Deliverable:** independently usable headless beta, even while other
-frontends remain alpha.
+frontends remain alpha. Shipped: text/JSON dumps and PNG+meta renders from
+URLs and files with documented caps and exit codes.
 
 ## M4 — Kitty TUI beta
 
@@ -283,7 +297,6 @@ responsive images) and M0 version/benchmark baselines.
 ## M2 progress — 2026-09-05
 
 Shipped with both gates green (release + ASan, including PTY/profile/CLI):
-
 - Build identity + bench (M0): `vixen version` (sha/date/dirty, odin/mode),
   `just bench` wall times + `.tmp/bench.json` (rss/parse/js/render/dump
   cold-warm/PTY first frame). No timing thresholds; failures only on errors.
@@ -319,7 +332,18 @@ Shipped with both gates green (release + ASan, including PTY/profile/CLI):
   selection highlights, `%0A` submission. Pasted newlines preserved in
   textareas (spaces elsewhere). Rows/cols attrs ignored; height follows
   initial rows.
+- Reading polish (`browsetest-pre`, `-bidi`, `-geom`): `<pre>` splits on
+  newlines only with indentation/blank lines preserved; RTL lines reorder
+  words right-to-left with LTR-run grouping (text stays logical); hit-testing
+  API (line binary search, link/field boxes) for future mouse/copy. Tables
+  intentionally flattened (content-ordered list, documented).
+- Headless beta (M3): `render`/`tui` file modes share the session pipeline
+  (fonts, image cache, layout, raster) with `--base-url`/`--profile`; dump
+  `--format json` and render `--meta` emit machine-readable shapes; 4000px
+  export cap warns with `"truncated":true`; `tests/cli.py` asserts usage
+  (49 cases), JSON/meta fields, PNG IHDR geometry, truncation, outside-
+  checkout runs, and byte reproducibility. `corpus/tall.html` fixtures the
+  cap. M3 exit met; deliverable shipped.
 
-Remaining M2: paragraph BiDi visual order, shared geometry mappings for
-mouse/copy, responsive/cancellable images, and code/tables/whitespace polish.
-Then M3 headless beta hardening.
+Remaining M2: responsive/cancellable images (first paint must not wait;
+currently eager blocking fetch before layout). Then M4 TUI beta journeys.

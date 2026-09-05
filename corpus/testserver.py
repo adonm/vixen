@@ -176,7 +176,7 @@ class H(BaseHTTPRequestHandler):
             self._send(200, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "max-age=60")], html)
         elif p == "/imgpage":
             self._send(200, [("Content-Type", "text/html; charset=utf-8")],
-                          "<html><head><title>Pics</title></head><body>"
+                          "<!DOCTYPE html><html><head><title>Pics</title></head><body>"
                           "<h1>Gallery</h1>"
                           '<img src="/img.png" alt="tiny" width="8" height="6">'
                           '<img src="/missing.png" alt="gone">'

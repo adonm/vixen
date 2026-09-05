@@ -52,10 +52,10 @@ cli_parse_width :: proc(s: string) -> (int, bool) {
 	return n, true
 }
 
-CLI_BROWSE_USAGE :: "usage: vixen browse [--dump] [--profile DIR] [--width N] <url>"
+CLI_BROWSE_USAGE :: "usage: vixen browse [--dump [--format text|json]] [--profile DIR] [--width N] <url>"
 CLI_FETCH_USAGE  :: "usage: vixen fetch [--profile DIR] <url>"
-CLI_RENDER_USAGE :: "usage: vixen render [--out PNG] [--width N] <page.html>"
-CLI_TUI_USAGE    :: "usage: vixen tui [--width N] <page.html>"
+CLI_RENDER_USAGE :: "usage: vixen render [--out PNG] [--meta JSON] [--width N] [--profile DIR] [--base-url URL] <page.html>"
+CLI_TUI_USAGE    :: "usage: vixen tui [--width N] [--profile DIR] [--base-url URL] [--meta JSON] <page.html>"
 CLI_SHOW_USAGE   :: "usage: vixen show <page.html>"
 
 cli_help_requested :: proc(arg: string) -> bool {

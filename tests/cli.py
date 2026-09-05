@@ -52,6 +52,10 @@ def main():
                 (["browse", "--width=99", f"{base}/ok"], "usage: vixen browse"),
                 (["browse", "--width=8193", f"{base}/ok"], "usage: vixen browse"),
                 (["browse", "--dump=x", f"{base}/ok"], "usage: vixen browse"),
+                (["browse", "--format", f"{base}/ok"], "usage: vixen browse"),
+                (["browse", "--dump", "--format", "xml", f"{base}/ok"], "usage: vixen browse"),
+                (["browse", "--dump", "--format=xml", f"{base}/ok"], "usage: vixen browse"),
+                (["browse", "--format", "json", f"{base}/ok"], "usage: vixen browse"),
                 (["browse", f"{base}/ok", f"{base}/ok"], "usage: vixen browse"),
                 (["browse"], "usage: vixen browse"),
                 (["fetch", "--bogus", f"{base}/ok"], "usage: vixen fetch"),
@@ -60,11 +64,17 @@ def main():
                 (["fetch"], "usage: vixen fetch"),
                 (["render", "--bogus", "corpus/form.html"], "usage: vixen render"),
                 (["render", "--out"], "usage: vixen render"),
+                (["render", "--meta"], "usage: vixen render"),
+                (["render", "--profile"], "usage: vixen render"),
+                (["render", "--base-url"], "usage: vixen render"),
                 (["render", "--width", "0", "corpus/form.html"], "usage: vixen render"),
                 (["render", "a.html", "b.html"], "usage: vixen render"),
                 (["render"], "usage: vixen render"),
                 (["tui", "--bogus", "corpus/form.html"], "usage: vixen tui"),
                 (["tui", "--width", "xx", "corpus/form.html"], "usage: vixen tui"),
+                (["tui", "--profile"], "usage: vixen tui"),
+                (["tui", "--base-url"], "usage: vixen tui"),
+                (["tui", "--meta"], "usage: vixen tui"),
                 (["tui"], "usage: vixen tui"),
                 (["show", "a.html", "b.html"], "usage: vixen show"),
                 (["show"], "usage: vixen show"),
@@ -130,12 +140,74 @@ def main():
             p = run(binary, "browse", "--dump", f"--profile={prof}", "--width=600", f"{base}/ok")
             assert p.returncode == 0, p.stderr
             assert b"cli fixture" in p.stdout
+            assert b"\x1b_G" not in p.stdout and b"\x1b[" not in p.stdout
             out = work / "ok.png"
             p = run(binary, "render", "--out", str(out), "--width", "600", "corpus/form.html")
             assert p.returncode == 0 and out.is_file() and out.stat().st_size > 100, p.stderr
             p = run(binary, "browse", "--dump", "--profile", str(prof), "--", f"{base}/ok")
             assert p.returncode == 0, ("-- separator", p.stderr)
             print("PASS cli success paths through strict parser")
+
+            # M3 headless: JSON dump, render meta/PNG geometry, truncation,
+            # outside-checkout execution, byte reproducibility.
+            import json as _json, struct as _struct
+            def png_size(path):
+                with open(path, "rb") as f:
+                    head = f.read(24)
+                assert head[:8] == b"\x89PNG\r\n\x1a\n" and head[12:16] == b"IHDR"
+                return _struct.unpack(">II", head[16:24])
+            p = run(binary, "browse", "--dump", "--format", "json", "--profile", str(prof),
+                    "--width", "600", f"{base}/ok")
+            assert p.returncode == 0, p.stderr
+            assert b"\x1b_G" not in p.stdout
+            doc = _json.loads(p.stdout.decode())
+            assert doc["title"] == "OK" and "cli fixture" in " ".join(doc["lines"]), doc
+            assert doc["width"] == 600 and doc["is_error"] is False
+            assert isinstance(doc["lines"], list) and isinstance(doc["links"], list)
+            p = run(binary, "browse", "--dump", "--format=json", "--profile", str(prof), f"{base}/missing")
+            assert p.returncode == 1, ("dump json 404", p.returncode)
+            doc = _json.loads(p.stdout.decode())
+            assert doc["is_error"] is True
+            print("PASS cli dump --format json (success + error shapes)")
+
+            meta, img = work / "r.json", work / "r.png"
+            p = run(binary, "render", "--out", str(img), "--meta", str(meta), "--width", "600",
+                    "--profile", str(prof), "corpus/form.html")
+            assert p.returncode == 0, p.stderr
+            w, h = png_size(img)
+            assert (w, h) == (600, _json.loads(meta.read_text())["height"]), (w, h)
+            m = _json.loads(meta.read_text())
+            assert m["source"] == "corpus/form.html" and m["base_url"] == ""
+            assert m["width"] == 600 and m["truncated"] is False and m["lines"] > 0
+            # Outside the checkout: absolute paths, unrelated cwd, no repo assets.
+            outside = work / "cwd"
+            outside.mkdir()
+            img2, meta2 = work / "o2.png", work / "o2.json"
+            p = run(binary, "render", "--out", str(img2), "--meta", str(meta2), "--width", "600",
+                    "--profile", str(prof), str(ROOT / "corpus" / "form.html"), cwd=outside)
+            assert p.returncode == 0, p.stderr
+            assert png_size(img2) == (w, h)
+            assert img.read_bytes() == img2.read_bytes(), "render not reproducible"
+            print("PASS cli render meta/PNG geometry, outside checkout, reproducibility")
+
+            timg, tmeta = work / "t.png", work / "t.json"
+            p = run(binary, "render", "--out", str(timg), "--meta", str(tmeta), "--width", "400",
+                    "--profile", str(prof), "corpus/tall.html")
+            assert p.returncode == 0, p.stderr
+            assert b"truncated to 4000px" in p.stderr, p.stderr[-300:]
+            w, h = png_size(timg)
+            m = _json.loads(tmeta.read_text())
+            assert (w, h) == (400, 4000) and m["truncated"] is True
+            assert m["full_height"] > 4000 and m["lines"] > 100
+            print("PASS cli render truncation warns, caps at 4000px, meta flags it")
+
+            p = run(binary, "tui", "--width", "600", "--profile", str(prof),
+                    "--meta", str(work / "tui.json"), "corpus/form.html")
+            assert p.returncode == 0, p.stderr
+            assert b"\x1b_G" in p.stdout, "one-shot Kitty missing"
+            m = _json.loads((work / "tui.json").read_text())
+            assert m["width"] == 600 and m["lines"] > 0
+            print("PASS cli one-shot tui carries base/profile/meta pipeline")
     finally:
         server.shutdown()
         thread.join(timeout=5)

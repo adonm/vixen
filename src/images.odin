@@ -52,8 +52,14 @@ collect_image_urls :: proc(doc: ^Html_Document, page_url: string, cap: int) -> [
 	defer delete(stack)
 	kids: [dynamic]^Dom_Node
 	defer delete(kids)
-	if c := node_field((^Dom_Node)(doc), NODE_OFF_FIRST_CHILD); c != nil {
+	// Seed every top-level child: starting from first-child alone strands
+	// <html> whenever a doctype (or comment) comes first.
+	for c := node_field((^Dom_Node)(doc), NODE_OFF_FIRST_CHILD); c != nil; c = node_field(c, NODE_OFF_NEXT) {
 		append(&stack, c)
+	}
+	// Reverse so the first child pops first (pre-order, tree order).
+	for i, j := 0, len(stack)-1; i < j; i, j = i+1, j-1 {
+		stack[i], stack[j] = stack[j], stack[i]
 	}
 	for len(stack) > 0 {
 		n := pop(&stack)

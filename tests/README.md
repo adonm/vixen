@@ -43,12 +43,16 @@ passthrough. Those remain separate manual milestone requirements.
 
 ## `cli.py`
 
-Checks strict CLI contracts without a terminal: 39 invalid invocations exit 2
-with usage (unknown flags, missing values, bad widths, extra positionals),
-`--help` and `version`/`--version`/`-V` exit 0 with identity, and failed
-loads/exports exit 1 (dump 404/refused, fetch bad-URL, parse/js missing,
-render/tui missing). Success paths cover both `--opt=value` and `--opt value`
-forms plus the `--` separator.
+Checks strict CLI contracts without a terminal: 49 invalid invocations exit 2
+with usage (unknown flags, missing values, bad widths/formats, extra
+positionals), `--help` and `version`/`--version`/`-V` exit 0 with identity,
+and failed loads/exports exit 1 (dump 404/refused, fetch bad-URL, parse/js
+missing, render/tui missing). Success paths cover both `--opt=value` and
+`--opt value` forms plus the `--` separator. M3 headless checks: dump
+`--format json` shapes (success + `is_error`), render `--meta` fields and PNG
+IHDR geometry, 4000px truncation warnings/flags, outside-checkout runs with
+absolute paths, byte-identical reproducibility, and one-shot `tui` Kitty
+bytes with shared base/profile/meta flags.
 
 ## `bench.py` (`just bench`)
 

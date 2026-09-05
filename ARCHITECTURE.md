@@ -21,11 +21,13 @@ libcurl -> cookie jar/cache -> HTML bytes -> lexbor DOM
 The parsed DOM is currently destroyed after layout. Source bytes are retained
 for relayout. Forms are separate page records, not a live scripted DOM.
 
-Local `render`, one-shot `tui`, and `show` use a separate file-loading path
-and full-page rasterization. `show` uploads a static SDL texture and waits
-briefly; it has no browsing event loop. The paths share layout/raster code,
-but image loading and presentation differ. Output parity must be tested,
-not assumed from a shared framebuffer.
+Local `render`, one-shot `tui`, and `show` use file input. `render` and `tui`
+go through the same `Browse_Session` pipeline as URL browsing (fonts, image
+cache, layout, raster) with `--base-url` resolving links/images (`""` skips
+both); `show` stays a legacy direct render (manual demo, not gated). All
+three cap full-page height at 4000px with truncation metadata. Output parity
+between file and URL paths is asserted by CLI geometry/meta tests, not
+assumed from shared code.
 
 QuickJS execution, JS↔DOM bindings/events, storage helpers, and WAMR native
 calls are separate experiments/tests. The browsing path does not execute
@@ -101,10 +103,11 @@ separation can then be introduced behind passing lifecycle tests.
 - `src/tui_runtime.odin`: event pump, terminal geometry, and invalidation.
 - `src/terminal.odin`, `terminal_input.odin`, `kitty.odin`: terminal I/O with
   signal-safe restore, pure incremental decoding, and image transport.
-- `src/cli.odin`, `version.odin`: strict argument parsing and build identity.
+- `src/cli.odin`, `version.odin`, `file_render.odin`: strict argument parsing,
+  build identity, and shared file→PNG/meta rendering used by `render`/`tui`.
 - `src/test_*.odin`: in-package helper tests. `tests/` holds independent
   end-to-end harnesses (`tui_protocol`, `profiles`, `cli`, `bench`);
-  `corpus/` holds fixtures.
+  `corpus/` holds fixtures (`tall.html` exercises export truncation).
 - `native/`: C adapters. Compiled objects/archives go to `.tmp/native/`.
 
 Keep a single Odin package while these ownership interfaces settle. Splitting

@@ -216,8 +216,9 @@ main :: proc() {
 		}
 		os.exit(0 if nettest_main() else 1)
 	case "browse":
-		// vixen browse [--dump] [--profile DIR] [--width N] <url>
+		// vixen browse [--dump [--format text|json]] [--profile DIR] [--width N] <url>
 		dump := false
+		format := "text"
 		prof := ""
 		width := 900
 		url := ""
@@ -242,6 +243,12 @@ main :: proc() {
 						cli_usage_error(CLI_BROWSE_USAGE)
 					}
 					dump = true
+				case "--format":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					if !ok || (v != "text" && v != "json") {
+						cli_usage_error(CLI_BROWSE_USAGE)
+					}
+					format = v
 				case "--profile":
 					v, ok := cli_take_value(os.args, &i, arg, val)
 					if !ok {
@@ -270,10 +277,16 @@ main :: proc() {
 		if url == "" {
 			cli_usage_error(CLI_BROWSE_USAGE)
 		}
+		if format != "text" && !dump {
+			cli_usage_error(CLI_BROWSE_USAGE) // --format needs --dump
+		}
 		if !strings.contains(url, "://") {
 			url = strings.concatenate([]string{"https://", url}, context.temp_allocator)
 		}
 		if dump {
+			if format == "json" {
+				os.exit(0 if browse_dump_json(prof, url, width) else 1)
+			}
 			os.exit(0 if browse_dump(prof, url, width) else 1)
 		}
 		os.exit(0 if browse_interactive(prof, url, width) else 1)
@@ -339,9 +352,12 @@ main :: proc() {
 		}
 		os.exit(0 if fetch_main(prof, url) else 1)
 	case "render":
-		// vixen render [--out PNG] [--width N] <page.html>
+		// vixen render [--out PNG] [--meta JSON] [--width N] [--profile DIR] [--base-url URL] <page.html>
 		out := "vixen.png"
+		metapath := ""
 		width := 900
+		prof := ""
+		base := ""
 		page := ""
 		flags_ended := false
 		i := 2
@@ -365,6 +381,12 @@ main :: proc() {
 						cli_usage_error(CLI_RENDER_USAGE)
 					}
 					out = v
+				case "--meta":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					if !ok {
+						cli_usage_error(CLI_RENDER_USAGE)
+					}
+					metapath = v
 				case "--width":
 					v, ok := cli_take_value(os.args, &i, arg, val)
 					w, wok := cli_parse_width(v)
@@ -372,6 +394,18 @@ main :: proc() {
 						cli_usage_error(CLI_RENDER_USAGE)
 					}
 					width = w
+				case "--profile":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					if !ok {
+						cli_usage_error(CLI_RENDER_USAGE)
+					}
+					prof = v
+				case "--base-url":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					if !ok {
+						cli_usage_error(CLI_RENDER_USAGE)
+					}
+					base = v
 				case:
 					cli_usage_error(CLI_RENDER_USAGE)
 				}
@@ -387,18 +421,22 @@ main :: proc() {
 		if page == "" {
 			cli_usage_error(CLI_RENDER_USAGE)
 		}
-		bank, bok := font_bank_load(20)
-		if !bok {
-			os.exit(1)
-		}
-		defer font_bank_free(&bank)
-		fr, ok := render_page(page, width, &bank)
+		fr, meta, ok := file_render_page(prof, page, width, base)
 		if !ok {
 			os.exit(1)
 		}
 		defer delete(fr.px)
+		defer delete_file_meta(&meta)
 		if !frame_write_png(&fr, out) {
 			os.exit(1)
+		}
+		if len(metapath) > 0 {
+			js := file_meta_json(&meta)
+			defer delete(js)
+			if err := os.write_entire_file(metapath, transmute([]u8)js); err != nil {
+				fmt.eprintfln("render: cannot write %s", metapath)
+				os.exit(1)
+			}
 		}
 	case "show":
 		// vixen show page.html — experimental static SDL3 window.
@@ -419,9 +457,12 @@ main :: proc() {
 			os.exit(1)
 		}
 	case "tui":
-		// vixen tui [--width N] page.html — one-shot render to the
-		// terminal. Ghostty (Kitty graphics) assumed, like the loop.
+		// vixen tui [--width N] [--profile DIR] [--base-url URL] [--meta JSON] page.html
+		// One-shot render to the terminal. Ghostty (Kitty graphics) assumed.
 		width := 900
+		prof := ""
+		base := ""
+		metapath := ""
 		page := ""
 		flags_ended := false
 		i := 2
@@ -446,6 +487,24 @@ main :: proc() {
 						cli_usage_error(CLI_TUI_USAGE)
 					}
 					width = w
+				case "--profile":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					if !ok {
+						cli_usage_error(CLI_TUI_USAGE)
+					}
+					prof = v
+				case "--base-url":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					if !ok {
+						cli_usage_error(CLI_TUI_USAGE)
+					}
+					base = v
+				case "--meta":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					if !ok {
+						cli_usage_error(CLI_TUI_USAGE)
+					}
+					metapath = v
 				case:
 					cli_usage_error(CLI_TUI_USAGE)
 				}
@@ -461,16 +520,12 @@ main :: proc() {
 		if page == "" {
 			cli_usage_error(CLI_TUI_USAGE)
 		}
-		bank, bok := font_bank_load(20)
-		if !bok {
-			os.exit(1)
-		}
-		defer font_bank_free(&bank)
-		fr, ok := render_page(page, width, &bank)
+		fr, meta, ok := file_render_page(prof, page, width, base)
 		if !ok {
 			os.exit(1)
 		}
 		defer delete(fr.px)
+		defer delete_file_meta(&meta)
 		png, pok := frame_encode_png(&fr)
 		if !pok {
 			os.exit(1)
@@ -478,6 +533,14 @@ main :: proc() {
 		defer delete(png)
 		if !kitty_transmit_png(png, fr.w, fr.h) {
 			os.exit(1)
+		}
+		if len(metapath) > 0 {
+			js := file_meta_json(&meta)
+			defer delete(js)
+			if err := os.write_entire_file(metapath, transmute([]u8)js); err != nil {
+				fmt.eprintfln("tui: cannot write %s", metapath)
+				os.exit(1)
+			}
 		}
 	case:
 		fmt.eprintln("unknown command:", os.args[1])
@@ -488,10 +551,10 @@ main :: proc() {
 
 print_usage :: proc() {
 	fmt.println("Vixen — experimental reading browser")
-	fmt.println("  vixen browse [--dump] [--profile DIR] [--width N] <url>   Kitty-graphics browser / headless text")
-	fmt.println("  vixen render [--out PNG] [--width N] HTML   local HTML to PNG")
+	fmt.println("  vixen browse [--dump [--format text|json]] [--profile DIR] [--width N] <url>")
+	fmt.println("  vixen render [--out PNG] [--meta JSON] [--width N] [--profile DIR] [--base-url URL] HTML")
 	fmt.println("  vixen fetch [--profile DIR] <url>          response statistics")
-	fmt.println("  vixen tui [--width N] HTML                 one-shot Kitty image")
+	fmt.println("  vixen tui [--width N] [--profile DIR] [--base-url URL] [--meta JSON] HTML")
 	fmt.println("  vixen show HTML                            static SDL demo")
 	fmt.println("  vixen version                              build identity")
 	fmt.println("Developer commands: parse, js, rss, shapetest, domtest, termtest, browsetest, nettest, wasmtest")
@@ -529,6 +592,50 @@ browse_dump :: proc(prof, url: string, width: int) -> bool {
 	for t in sess.page.text {
 		fmt.println(t)
 	}
+	fmt.eprintfln("dump lines=%d links=%d", len(sess.page.text), len(sess.page.links))
+	return !sess.page.is_error
+}
+
+// Headless JSON dump: same navigation, machine-readable stdout.
+browse_dump_json :: proc(prof, url: string, width: int) -> bool {
+	sess, ok := browse_open(prof, width)
+	if !ok {
+		return false
+	}
+	defer browse_close(&sess)
+	if !browse_navigate(&sess, url, true) {
+		return false
+	}
+	u := json_escape(sess.page.url)
+	defer delete(u)
+	t := json_escape(sess.page.title)
+	defer delete(t)
+	b: strings.Builder
+	strings.write_byte(&b, '{')
+	fmt.sbprintf(&b, "\"url\":\"%s\",\"title\":\"%s\",", u, t)
+	fmt.sbprintf(&b, "\"width\":%d,\"height\":%d,\"is_error\":%s,\"lines\":[",
+		sess.page.width, sess.page.height, "true" if sess.page.is_error else "false")
+	for text, i in sess.page.text {
+		e := json_escape(text)
+		defer delete(e)
+		fmt.sbprintf(&b, "%s\"%s\"", "," if i > 0 else "", e)
+	}
+	strings.write_string(&b, "],\"links\":[")
+	for &l, i in sess.page.links {
+		e := json_escape(l.url)
+		defer delete(e)
+		if i > 0 {
+			strings.write_byte(&b, ',')
+		}
+		strings.write_byte(&b, '{')
+		fmt.sbprintf(&b, "\"url\":\"%s\",", e)
+		fmt.sbprintf(&b, "\"x0\":%.1f,\"y0\":%.1f,\"x1\":%.1f,\"y1\":%.1f",
+			l.x0, l.y0, l.x1, l.y1)
+		strings.write_byte(&b, '}')
+	}
+	strings.write_string(&b, "]}")
+	fmt.println(strings.to_string(b))
+	delete(b.buf)
 	fmt.eprintfln("dump lines=%d links=%d", len(sess.page.text), len(sess.page.links))
 	return !sess.page.is_error
 }
