@@ -104,6 +104,7 @@ Render_Ctx :: struct {
 	pending:   [dynamic]int, // button/textarea fields awaiting exit finalization (-1 = skipped)
 	label_depth: int, // >0 while inside button/textarea (suppress prose layout)
 	select_depth: int, // >0 while inside select (options suppressed, placeholder shown)
+	pre_depth: int, // >0 while inside pre (whitespace preserved, see below)
 	images:    [dynamic]Image, // decoded page images (owned pixels)
 	placements: [dynamic]Image_Placement, // image blocks in paint order
 	targets:   [dynamic]Anchor_Target, // fragment ids in tree order (owned)
@@ -313,6 +314,132 @@ Cur_Line :: struct {
 	words:  [dynamic]string, // owned copies for the text fallback
 	width:  f32,
 	x0:     f32, // indent origin for this line, px
+	word_starts: [dynamic]int, // glyph index where each word begins (BiDi reorder)
+}
+
+// Strong right-to-left scripts (Hebrew, Arabic + friends). Used for
+// paragraph base direction and RTL word grouping. Other letters count
+// as LTR; numbers/punctuation/controls are weak (skipped for direction).
+is_rtlStrong :: proc(r: rune) -> bool {
+	switch r {
+	case 0x0590 ..= 0x05FF, 0xFB1D ..= 0xFB4F, // Hebrew
+	     0x0600 ..= 0x06FF, 0x0750 ..= 0x077F, 0x08A0 ..= 0x08FF, // Arabic
+	     0xFB50 ..= 0xFDFF, 0xFE70 ..= 0xFEFF, // Arabic presentation
+	     0x0700 ..= 0x074F, // Syriac
+	     0x0780 ..= 0x07BF, // Thaana
+	     0x07C0 ..= 0x07FF: // NKo
+		return true
+	}
+	return false
+}
+
+// First strong direction in words (logical order): true = RTL paragraph
+// line (needs visual reorder), false = LTR (as laid out). No strong =
+// LTR (UBA default embedding level 0).
+line_is_rtl :: proc(words: []string) -> bool {
+	for w in words {
+		for r in w {
+			if is_rtlStrong(r) {
+				return true
+			}
+			if unicode.is_letter(r) {
+				return false
+			}
+		}
+	}
+	return false
+}
+
+// Word direction for RTL grouping: LTR iff first strong is a letter
+// outside RTL scripts; all else (RTL, numbers, neutrals, empty) groups
+// as RTL (numbers position with surrounding RTL, neutrals take sides).
+word_is_ltr :: proc(w: string) -> bool {
+	for r in w {
+		if is_rtlStrong(r) {
+			return false
+		}
+		if unicode.is_letter(r) {
+			return true
+		}
+	}
+	return false
+}
+
+// Reorder an RTL line's glyphs to visual order (right-to-left). Words stay
+// in logical order for text/dump; only glyph x positions change. Groups of
+// consecutive same-direction words reverse as blocks (LTR runs keep internal
+// order, RTL runs reverse word-by-word); within-word glyph relatives (from
+// shaping, including RTL run reversal) are preserved by shifting.
+reorder_line_visual :: proc(rc: ^Render_Ctx, line: ^Cur_Line) {
+	n := len(line.words)
+	if n == 0 || len(line.word_starts) != n || len(line.glyphs) == 0 {
+		return
+	}
+	// Group consecutive same-direction words (indices into words).
+	groups: [dynamic][dynamic]int
+	defer {
+		for &g in groups {
+			delete(g)
+		}
+		delete(groups)
+	}
+	cur_ltr := word_is_ltr(line.words[0])
+	cur: [dynamic]int
+	for i in 0 ..< n {
+		ltr := word_is_ltr(line.words[i])
+		if ltr != cur_ltr {
+			append(&groups, cur)
+			cur = nil
+			cur_ltr = ltr
+		}
+		append(&cur, i)
+	}
+	append(&groups, cur)
+	// Visual word order: reverse groups; LTR groups keep order, RTL reverse.
+	visual: [dynamic]int
+	defer delete(visual)
+	for gi := len(groups)-1; gi >= 0; gi -= 1 {
+		g := &groups[gi]
+		ltr := word_is_ltr(line.words[g[0]])
+		if ltr {
+			for wi in g^ {
+				append(&visual, wi)
+			}
+		} else {
+			for k := len(g)-1; k >= 0; k -= 1 {
+				append(&visual, g[k])
+			}
+		}
+	}
+	// Reposition glyphs sequentially from x0 in visual order.
+	space_adv := rc.bank.fonts[0].scale * 280
+	ng := len(line.glyphs)
+	packed: [dynamic]Placed
+	defer delete(packed)
+	pen := line.x0
+	for vi in visual {
+		gs := line.word_starts[vi]
+		ge := ng if vi+1 >= n else line.word_starts[vi+1]
+		if ge <= gs {
+			continue
+		}
+		minx := line.glyphs[gs].x
+		maxx := minx
+		for gi in gs ..< ge {
+			p := &line.glyphs[gi]
+			minx = min(minx, p.x)
+			maxx = max(maxx, p.x + p.adv)
+		}
+		for gi in gs ..< ge {
+			q := line.glyphs[gi]
+			q.x = pen + (q.x - minx)
+			append(&packed, q)
+		}
+		pen += (maxx - minx) + space_adv
+	}
+	for q, i in packed {
+		line.glyphs[i] = q
+	}
 }
 
 // Layout caps (robustness, not features). Overlong pages truncate with a
@@ -390,10 +517,15 @@ flush_line :: proc(rc: ^Render_Ctx, line: ^Cur_Line, size_px: f32, y: ^f32, forc
 			delete(w)
 		}
 		delete(line.words)
+		delete(line.word_starts)
 		line.glyphs = nil
 		line.words = nil
+		line.word_starts = nil
 		line.width = 0
 		return
+	}
+	if line_is_rtl(line.words[:]) {
+		reorder_line_visual(rc, line)
 	}
 	lh := size_px * 1.35
 	ln: Line
@@ -409,6 +541,8 @@ flush_line :: proc(rc: ^Render_Ctx, line: ^Cur_Line, size_px: f32, y: ^f32, forc
 	line.glyphs = nil
 	delete(line.words)
 	line.words = nil
+	delete(line.word_starts)
+	line.word_starts = nil
 	line.width = 0
 }
 
@@ -491,6 +625,7 @@ layout_place_word :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f3
 		for chunk, ci in chunks {
 			cprobe: Cur_Line
 			cw := shape_word(rc, chunk, size_px, &cprobe)
+			append(&line.word_starts, len(line.glyphs))
 			for p in cprobe.glyphs {
 				q := p
 				q.x += line.width + line.x0
@@ -511,6 +646,7 @@ layout_place_word :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f3
 		}
 		return
 	}
+	append(&line.word_starts, len(line.glyphs))
 	for p in probe.glyphs {
 		q := p
 		q.x += line.width + line.x0
@@ -759,6 +895,7 @@ layout_place_word_nowrap :: proc(rc: ^Render_Ctx, line: ^Cur_Line, size_px: f32,
 	}
 	probe: Cur_Line
 	w := shape_word(rc, word, size_px, &probe)
+	append(&line.word_starts, len(line.glyphs))
 	for p in probe.glyphs {
 		q := p
 		q.x += line.width + line.x0
@@ -1113,6 +1250,7 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 		flush_line(rc, &line, size_px, &y, false)
 		delete(line.glyphs)
 		delete(line.words)
+		delete(line.word_starts)
 	}
 	// Iterative walk with enter/exit events. Index-based: the stack may
 	// reallocate on append, so never hold &stack[i] across one.
@@ -1173,6 +1311,9 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 					} else if tag == "td" || tag == "th" {
 						flush_line(rc, &line, size_px, &y, false)
 						rc.indent += 26
+					} else if tag == "pre" {
+						flush_line(rc, &line, size_px, &y, false)
+						rc.pre_depth += 1
 					} else if is_block_tag(tag) {
 						flush_line(rc, &line, size_px, &y, false)
 						size_px = heading_px(rc, tag)
@@ -1193,6 +1334,23 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 					if rc.label_depth > 0 || rc.select_depth > 0 {
 						// Button/textarea/select children: collected at exit
 						// or suppressed (never laid out as prose).
+					} else if rc.pre_depth > 0 && !rc.in_title {
+						// Preformatted: split on newlines only; spaces preserved by
+						// shaping each source line as one unit (wraps via grapheme
+						// breaks when overlong). Strips one leading newline per spec.
+						if strings.has_prefix(text, "\r\n") {
+							text = text[2:]
+						} else if strings.has_prefix(text, "\n") {
+							text = text[1:]
+						}
+						for seg, si in strings.split(text, "\n", context.temp_allocator) {
+							if si > 0 {
+								flush_line(rc, &line, size_px, &y, true)
+							}
+							if len(seg) > 0 {
+								layout_place_word(rc, &line, &y, size_px, seg)
+							}
+						}
 					} else if rc.in_title {
 						old := rc.title
 						rc.title = strings.concatenate([]string{old, text})
@@ -1248,6 +1406,11 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 					} else if tag == "table" {
 						flush_line(rc, &line, size_px, &y, false)
 						y += 4
+					} else if tag == "pre" {
+						flush_line(rc, &line, size_px, &y, false)
+						if rc.pre_depth > 0 {
+							rc.pre_depth -= 1
+						}
 					} else if is_block_tag(tag) {
 						flush_line(rc, &line, size_px, &y, false)
 						size_px = rc.body_px

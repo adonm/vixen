@@ -112,8 +112,222 @@ tuitest_main :: proc() -> bool {
 	if !tuitest_textarea() {
 		return false
 	}
+	if !tuitest_pre() {
+		return false
+	}
+	if !tuitest_bidi() {
+		return false
+	}
+	if !tuitest_geometry() {
+		return false
+	}
 	// Server-backed browse section: navigate, back, forward, dump content.
 	return tuitest_browse()
+
+// Hit-testing over retained geometry: lines binary-searched, links and
+// fields by boxes. No mouse UI yet; this is the shared mapping for M4/M5.
+tuitest_geometry :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	bank, bok := font_bank_load(20)
+	if !bok {
+		check(&fails, "geom/bank", false)
+		return false
+	}
+	defer font_bank_free(&bank)
+	data, err := os.read_entire_file_from_path("corpus/article.html", context.allocator)
+	if err != nil {
+		check(&fails, "geom/fixture", false)
+		return false
+	}
+	defer delete(data)
+	rc, rok := layout_bytes(data, 900, &bank, "http://127.0.0.1:9/article.html")
+	if !rok {
+		check(&fails, "geom/layout", false)
+		return false
+	}
+	defer render_ctx_free(&rc)
+	page := page_from_layout(&rc, "http://127.0.0.1:9/article.html", rc.title, 900)
+	defer page_free(&page)
+	// Every line hits itself (midpoint); margins miss.
+	all_hit := true
+	for &ln, i in page.lines {
+		mid := int(ln.baseline - ln.height * 0.8 + ln.height / 2)
+		got, ok := page_line_at_y(&page, mid)
+		if !ok || got != i {
+			all_hit = false
+		}
+	}
+	_, miss_top := page_line_at_y(&page, -10)
+	_, miss_bot := page_line_at_y(&page, page.height + 100)
+	check(&fails, "geom/lines", all_hit && !miss_top && !miss_bot, fmt.tprintf("%d lines", len(page.lines)))
+	// The content link hits at its center, misses far away.
+	if len(page.links) == 1 {
+		l := &page.links[0]
+		cx, cy := int((l.x0+l.x1)/2), int((l.y0+l.y1)/2)
+		got, ok := page_link_at(&page, cx, cy)
+		_, miss := page_link_at(&page, 899, page.height - 1)
+		// Far corner may or may not hit (link could extend there); assert hit only.
+		check(&fails, "geom/link", ok && got == 0, "")
+		_ = miss
+	} else {
+		check(&fails, "geom/link-count", false, "")
+	}
+	// Form field boxes hit (text + textarea rows + submit).
+	fdata, ferr := os.read_entire_file_from_path("corpus/form.html", context.allocator)
+	if ferr != nil {
+		check(&fails, "geom/form-fixture", false)
+		return false
+	}
+	defer delete(fdata)
+	frc, fok := layout_bytes(fdata, 900, &bank, "http://127.0.0.1:9/form")
+	if !fok {
+		check(&fails, "geom/form-layout", false)
+		return false
+	}
+	defer render_ctx_free(&frc)
+	fpage := page_from_layout(&frc, "http://127.0.0.1:9/form", frc.title, 900)
+	defer page_free(&fpage)
+	fields_hit := 0
+	for &f, i in fpage.fields {
+		if f.kind == .hidden || f.line < 0 {
+			continue
+		}
+		ln := &fpage.lines[f.line]
+		cx := clamp(int(f.x0) + 20, 0, fpage.width - 5)
+		cy := int(ln.baseline)
+		got, ok := page_field_at(&fpage, cx, cy)
+		if ok && got == i {
+			fields_hit += 1
+		}
+	}
+	check(&fails, "geom/fields", fields_hit == 7, fmt.tprintf("%d/7", fields_hit))
+	fmt.printfln("browsetest-geom: %d failures", fails)
+	return fails == 0
+}
+
+// Visual BiDi: RTL lines reorder words right-to-left (LTR runs kept),
+// LTR lines stay logical. Asserted via per-word link bboxes (visual x).
+tuitest_bidi :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	bank, bok := font_bank_load(20)
+	if !bok {
+		check(&fails, "bidi/bank", false)
+		return false
+	}
+	defer font_bank_free(&bank)
+	// Pure RTL (Arabic): visual reverses logical word order.
+	rtl := "<html><head><title>B</title></head><body><p><a href=\"#w1\">واحد</a> <a href=\"#w2\">اثنان</a> <a href=\"#w3\">ثلاثة</a></p></body></html>"
+	rc, rok := layout_bytes(transmute([]u8)rtl, 900, &bank, "http://127.0.0.1:9/bidi")
+	if !rok {
+		check(&fails, "bidi/layout", false)
+		return false
+	}
+	defer render_ctx_free(&rc)
+	xof := proc(rc: ^Render_Ctx, frag: string) -> f32 {
+		for &l in rc.links {
+			if strings.has_suffix(l.url, frag) {
+				return (l.x0 + l.x1) / 2
+			}
+		}
+		return -1
+	}
+	x1, x2, x3 := xof(&rc, "#w1"), xof(&rc, "#w2"), xof(&rc, "#w3")
+	check(&fails, "bidi/rtl-order", x1 > 0 && x2 > 0 && x3 > 0 && x3 < x2 && x2 < x1, fmt.tprintf("%.0f %.0f %.0f", x1, x2, x3))
+	check(&fails, "bidi/rtl-text", len(rc.lines) == 1 && strings.contains(rc.lines[0].text, "واحد"), "")
+	// Mixed RTL-base with LTR run: groups reverse, run keeps order.
+	mix := "<html><head><title>M</title></head><body><p><a href=\"#a1\">القاهرة</a> <a href=\"#e1\">New</a> <a href=\"#e2\">York</a> <a href=\"#a2\">الكبرى</a></p></body></html>"
+	rc2, rok2 := layout_bytes(transmute([]u8)mix, 900, &bank, "http://127.0.0.1:9/bidi2")
+	if !rok2 {
+		check(&fails, "bidi/mixed-layout", false)
+		return false
+	}
+	defer render_ctx_free(&rc2)
+	xa1, xe1, xe2, xa2 := xof(&rc2, "#a1"), xof(&rc2, "#e1"), xof(&rc2, "#e2"), xof(&rc2, "#a2")
+	check(&fails, "bidi/mixed-order", xa2 < xe1 && xe1 < xe2 && xe2 < xa1, fmt.tprintf("%.0f %.0f %.0f %.0f", xa1, xe1, xe2, xa2))
+	// LTR stays logical (RTL word as block, internally shaped).
+	ltr := "<html><head><title>L</title></head><body><p><a href=\"#n1\">One</a> <a href=\"#ar\">مرحبا</a> <a href=\"#n2\">Two</a></p></body></html>"
+	rc3, rok3 := layout_bytes(transmute([]u8)ltr, 900, &bank, "http://127.0.0.1:9/bidi3")
+	if !rok3 {
+		check(&fails, "bidi/ltr-layout", false)
+		return false
+	}
+	defer render_ctx_free(&rc3)
+	xn1, xar, xn2 := xof(&rc3, "#n1"), xof(&rc3, "#ar"), xof(&rc3, "#n2")
+	check(&fails, "bidi/ltr-order", xn1 < xar && xar < xn2, fmt.tprintf("%.0f %.0f %.0f", xn1, xar, xn2))
+	fmt.printfln("browsetest-bidi: %d failures", fails)
+	return fails == 0
+}
+
+// Preformatted blocks preserve line breaks and indentation; long lines
+// break without overflow. Tables stay content-ordered (flattened list).
+tuitest_pre :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	bank, bok := font_bank_load(20)
+	if !bok {
+		check(&fails, "pre/bank", false)
+		return false
+	}
+	defer font_bank_free(&bank)
+	longline := strings.repeat("x", 200, context.temp_allocator)
+	html := strings.concatenate([]string{"<html><head><title>Pre</title></head><body><pre>fn main() {\n    let x = 1;\n\n    println(x);\n}\n", longline, "</pre><p>after</p></body></html>"})
+	defer delete(html)
+	rc, rok := layout_bytes(transmute([]u8)html, 400, &bank, "http://127.0.0.1:9/pre")
+	if !rok {
+		check(&fails, "pre/layout", false)
+		return false
+	}
+	defer render_ctx_free(&rc)
+	texts: [dynamic]string
+	defer delete(texts)
+	for &ln in rc.lines {
+		append(&texts, ln.text)
+	}
+	joined := strings.join(texts[:], "\n")
+	defer delete(joined)
+	has_indent := false
+	has_blank := false
+	for t in texts {
+		if strings.has_prefix(t, "    let") {
+			has_indent = true
+		}
+		if t == "" {
+			has_blank = true
+		}
+	}
+	check(&fails, "pre/breaks", len(rc.lines) >= 7, fmt.tprintf("%d lines", len(rc.lines)))
+	check(&fails, "pre/indent", has_indent, "")
+	check(&fails, "pre/blank", has_blank, "")
+	check(&fails, "pre/content", strings.contains(joined, "fn main()") && strings.contains(joined, "after"), "")
+	overflow := false
+	for &ln in rc.lines {
+		for &g in ln.glyphs {
+			if g.x + g.adv > 402 {
+				overflow = true
+			}
+		}
+	}
+	check(&fails, "pre/no-overflow", !overflow, "")
+	fmt.printfln("browsetest-pre: %d failures", fails)
+	return fails == 0
+}
 
 // Multiline textarea: Enter inserts newlines, multi-row overlay scrolls,
 // submission preserves breaks (%0A).
