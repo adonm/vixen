@@ -12,6 +12,10 @@ MAX_PAGE_IMAGES :: 12
 MAX_IMAGE_BYTES :: 8 * 1024 * 1024 // decoded RGBA cap per image
 MAX_IMAGE_TOTAL :: 24 * 1024 * 1024
 MAX_IMAGE_DIM   :: 2048 // clamp absurd natural dimensions early
+// Natural-size gate (checked via header-only stbi_info, before any pixel
+// allocation): rejects 100k×100k bombs without a 40GB malloc.
+NATURAL_IMAGE_DIM :: 8192
+NATURAL_IMAGE_PX  :: 16 * 1024 * 1024
 
 Image :: struct {
 	url: string, // owned absolute URL
@@ -130,6 +134,13 @@ attr_dim :: proc(node: ^Dom_Node, name: string) -> int {
 decode_image :: proc(url: string, body: []u8, target_w, attr_w, attr_h: int) -> (Image, bool) {
 	im: Image
 	if len(body) == 0 || len(body) > MAX_IMAGE_BYTES * 4 {
+		return im, false
+	}
+	// Header-only gate: refuse absurd naturals before allocating pixels.
+	iw, ih, ic: i32
+	if stbi_info_from_memory(raw_data(body), i32(len(body)), &iw, &ih, &ic) == 0 ||
+	   iw <= 0 || ih <= 0 || iw > NATURAL_IMAGE_DIM || ih > NATURAL_IMAGE_DIM ||
+	   int(iw) * int(ih) > NATURAL_IMAGE_PX {
 		return im, false
 	}
 	nw, nh, nc: i32

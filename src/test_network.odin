@@ -293,6 +293,29 @@ test_redirect_cookies :: proc(env: ^Test_Env) {
 	}
 }
 
+test_limits_schemes :: proc(env: ^Test_Env) {
+	now := tnow()
+	// Rejected schemes never hit the network.
+	for bad in ([]string{"ftp://127.0.0.1/x", "javascript:alert(1)", "data:text/plain,hi", "file:///etc/passwd"}) {
+		_, _, ok := cached_fetch(&env.cache, &env.fc, &env.jar, "GET", bad, nil, nil, now)
+		tcheck(env, "scheme/reject", !ok, bad)
+	}
+	// Redirect loop and bad-scheme Location fail instead of hanging.
+	loop := fmt.aprintf("%s/redir-loop", env.base)
+	defer delete(loop)
+	_, _, lok := cached_fetch(&env.cache, &env.fc, &env.jar, "GET", loop, nil, nil, now)
+	tcheck(env, "redir/loop", !lok, "")
+	badloc := fmt.aprintf("%s/redir-badscheme", env.base)
+	defer delete(badloc)
+	_, _, bok := cached_fetch(&env.cache, &env.fc, &env.jar, "GET", badloc, nil, nil, now)
+	tcheck(env, "redir/bad-scheme", !bok, "")
+	// 40MB body aborts mid-transfer (cap, not OOM).
+	big := fmt.aprintf("%s/big-body", env.base)
+	defer delete(big)
+	_, _, bigok := cached_fetch(&env.cache, &env.fc, &env.jar, "GET", big, nil, nil, now)
+	tcheck(env, "limit/body-cap", !bigok, "")
+}
+
 test_storage :: proc(env: ^Test_Env) {
 	ls := local_storage_open(&env.st, "http", "127.0.0.1", -1)
 	defer local_storage_close(&ls)
@@ -426,6 +449,7 @@ nettest_main :: proc() -> bool {
 	test_cache(&env)
 	test_vary(&env)
 	test_redirect_cookies(&env)
+	test_limits_schemes(&env)
 	test_storage(&env)
 
 	// Persistence across reopen: pref cookie + localStorage survive.

@@ -19,6 +19,7 @@ foreign stb {
 	stbtt_GetGlyphBitmap        :: proc(info: ^Stbtt_Info, scale_x, scale_y: f32, glyph: i32, w, h, xoff, yoff: ^i32) -> [^]u8 ---
 	stbtt_FreeBitmap            :: proc(bitmap: [^]u8, userdata: rawptr) ---
 	stbi_write_png_to_mem       :: proc(pixels: [^]u8, stride: i32, w, h, comp: i32, out_len: ^i32) -> [^]u8 ---
+	stbi_info_from_memory       :: proc(buf: [^]u8, len: i32, w, h, comp: ^i32) -> i32 ---
 	stbi_load_from_memory       :: proc(buf: [^]u8, len: i32, w, h, comp: ^i32, req_comp: i32) -> [^]u8 ---
 	stbi_image_free             :: proc(ptr: rawptr) ---
 	stbir_resize_uint8          :: proc(input: [^]u8, in_w, in_h, in_stride: i32, output: [^]u8, out_w, out_h, out_stride: i32, num_channels: i32) -> i32 ---

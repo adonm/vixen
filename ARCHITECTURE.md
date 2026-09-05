@@ -175,11 +175,15 @@ integration have dedicated tests. Process isolation and a broader security
 model are requirements to evaluate before claiming hardened general-web use.
 
 Current cache defaults are 32 MB RAM / 256 MB disk; localStorage has a 5 MB
-per-origin helper quota. Image constants are 12 images, 8 MB decoded display
-pixels per image, and 24 MB per page. They are **not proof of peak memory
-bounds**: network buffering, natural-image decoding, and cumulative checks
-need work. Images are also currently downscaled before layout, complicating
-quality and sizing on later resizes.
+per-origin helper quota. Enforced transfer/layout caps: 32 MB response bodies
+(aborted mid-transfer, post-decompression), 256 KB headers, 8 MB HTML
+documents, 50k layout lines with an explicit truncation notice, 10k links and
+fragment targets, 1k form fields, image header gate (8192 px per side,
+16M pixels) before any pixel allocation plus 8 MB decoded per image and
+24 MB per page, 12 images per page, 4096 px viewports. Deep DOM nesting is
+bounded by the 8 MB input cap; all walks are iterative (no stack overflow).
+Images are downscaled before layout, complicating quality/sizing on resizes
+(async reload is future work).
 
 ## Measurement and verification
 

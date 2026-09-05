@@ -103,9 +103,16 @@ clean child exit. Retain real-terminal checks for emulator behavior.
 - [ ] Bounded, cancellable resource scheduling; ignore stale completions.
   First text/placeholder paint must not wait for optional images. Prioritize
   visible images and preserve the reading anchor as they arrive.
-- [ ] Enforce response/header/decompressed-byte, document/depth, image-pixel,
+- [x] Enforce response/header/decompressed-byte, document/depth, image-pixel,
   viewport and cache limits before expensive allocations, with overflow checks.
-- [ ] Verify TLS, scheme restrictions, redirect/cookie/origin boundaries.
+  (32MB transfer/256KB headers aborted mid-transfer, 8MB HTML cap, 50k lines
+  + truncation notice, 10k links/targets, 1k fields, image header gate
+  8192px/16M px before pixel allocation, 4096px viewports, 32/256MB cache.
+  Deep nesting bounded by input size; walks are iterative, never recursive.)
+- [x] Verify scheme restrictions (ftp/javascript/data/file rejected, redirect
+  loops and bad-scheme Locations fail), redirect/cookie boundaries (existing
+  suites). TLS peer+host verification is curl defaults, never disabled (the
+  binding exposes no switches); no live MITM fixture yet.
   Keep live scripting disabled until its own limits/policy/lifecycle gates exist.
 
 **Exit:** a versioned local Wikipedia/documentation corpus stays readable and
@@ -299,6 +306,12 @@ Shipped with both gates green (release + ASan, including PTY/profile/CLI):
 - Unsupported controls are explicit: `[unsupported: type]`/`[disabled]` notes
   inline (select/buttons/checkbox/file/disabled); labels/options suppressed
   rather than laid out as prose. No new fields; count stays 8.
+- Resource caps (`browsetest-limits`, `nettest` schemes/redirects): 32MB
+  bodies and 256KB headers abort mid-transfer; 8MB HTML errors cleanly;
+  100000px image headers refused pre-allocation; 60k-paragraph pages truncate
+  to 50k lines with notice; 10k links/targets and 1k fields bound pathological
+  pages. Non-http(s) schemes, redirect loops, and bad-scheme Locations fail
+  instead of hanging. TLS is curl peer+host defaults (no disabling binding).
 
 Remaining M2: paragraph BiDi visual order, multiline textarea (Enter for
 newlines, multi-row boxes), shared geometry mappings for mouse/copy,

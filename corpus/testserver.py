@@ -97,6 +97,67 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.send_header("Connection", "close")
             self.end_headers()
+        elif p == "/redir-loop":
+            self.send_response(302)
+            self.send_header("Location", "/redir-loop")
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+        elif p == "/redir-badscheme":
+            self.send_response(302)
+            self.send_header("Location", "ftp://127.0.0.1/x")
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
+        elif p == "/big-body":
+            # 40MB of HTML-typed bytes: exceeds the 32MB transfer cap.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(40 * 1024 * 1024))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            chunk = b"x" * (1024 * 1024)
+            for _ in range(40):
+                try:
+                    self.wfile.write(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+        elif p == "/big-html":
+            # 9MB HTML: passes transfer cap, fails the 8MB document cap.
+            body = b"<html><title>Big</title><p>" + b"y" * (9 * 1024 * 1024) + b"</p></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+        elif p == "/big.png":
+            # Fake PNG header claiming 100000x100000: header gate must refuse
+            # without allocating pixels. (Not a valid PNG; info fails fast.)
+            import struct
+            ihdr = struct.pack(">IIBBBBB", 100000, 100000, 8, 6, 0, 0, 0)
+            def chunk(t, d):
+                import zlib
+                c = t + d
+                return struct.pack(">I", len(d)) + c + struct.pack(">I", zlib.crc32(c))
+            png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IEND", b"")
+            self._send(200, [("Content-Type", "image/png")], png)
+        elif p == "/many-lines":
+            # 60k tiny paragraphs: exercises the 50k line cap + notice.
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            try:
+                self.wfile.write(b"<html><title>Many</title><body>")
+                for i in range(60000):
+                    self.wfile.write(f"<p>line {i}</p>".encode())
+                self.wfile.write(b"</body></html>")
+            except (BrokenPipeError, ConnectionResetError):
+                pass
         elif p == "/echo":
             ck = self.headers.get("Cookie", "-")
             foo = self.headers.get("X-Foo", "-")

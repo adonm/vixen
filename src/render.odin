@@ -107,6 +107,7 @@ Render_Ctx :: struct {
 	images:    [dynamic]Image, // decoded page images (owned pixels)
 	placements: [dynamic]Image_Placement, // image blocks in paint order
 	targets:   [dynamic]Anchor_Target, // fragment ids in tree order (owned)
+	truncated: bool, // lines cap hit; remaining prose skipped (notice appended)
 }
 
 delete_render_ctx :: proc(rc: ^Render_Ctx) {
@@ -314,6 +315,14 @@ Cur_Line :: struct {
 	x0:     f32, // indent origin for this line, px
 }
 
+// Layout caps (robustness, not features). Overlong pages truncate with a
+// notice; excess links/fields/targets are dropped silently (caps far above
+// Wikipedia scale: Rust article ~1.5k lines, ~1.1k links, handful of fields).
+MAX_LAYOUT_LINES :: 50000
+MAX_LINKS        :: 10000
+MAX_FIELDS       :: 1000
+MAX_TARGETS      :: 10000
+
 // Shape one whitespace-free word and append its glyphs at the pen.
 shape_word :: proc(rc: ^Render_Ctx, word: string, size_px: f32, line: ^Cur_Line) -> f32 {
 	// Empty caret prefixes are valid. The native shaper expects a nonempty
@@ -372,6 +381,18 @@ shape_word :: proc(rc: ^Render_Ctx, word: string, size_px: f32, line: ^Cur_Line)
 
 flush_line :: proc(rc: ^Render_Ctx, line: ^Cur_Line, size_px: f32, y: ^f32, force: bool) {
 	if len(line.glyphs) == 0 && !force {
+		return
+	}
+	if len(rc.lines) >= MAX_LAYOUT_LINES {
+		rc.truncated = true
+		delete(line.glyphs)
+		for w in line.words {
+			delete(w)
+		}
+		delete(line.words)
+		line.glyphs = nil
+		line.words = nil
+		line.width = 0
 		return
 	}
 	lh := size_px * 1.35
@@ -438,6 +459,9 @@ tag_name_of :: proc(node: ^Dom_Node) -> string {
 // without spaces) break mid-word so no line overflows. Chunks are shaped
 // separately, so ligatures/kerning don't cross breaks (documented).
 layout_place_word :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, word: string) {
+	if rc.truncated {
+		return
+	}
 	if len(line.glyphs) == 0 {
 		line.x0 = rc.indent
 	}
@@ -727,6 +751,9 @@ layout_field_box :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32
 // Place one word without wrapping. Field boxes are single-line controls;
 // overflow is clipped at raster time and scrolled in the TUI overlay.
 layout_place_word_nowrap :: proc(rc: ^Render_Ctx, line: ^Cur_Line, size_px: f32, word: string) {
+	if rc.truncated {
+		return
+	}
 	if len(line.glyphs) == 0 {
 		line.x0 = rc.indent
 	}
@@ -773,6 +800,9 @@ input_enter :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, nod
 		layout_unsupported_note(rc, line, y, size_px, note)
 		return
 	}
+	if len(rc.fields) >= MAX_FIELDS {
+		return // capped: silent drop (page already has 1000 controls)
+	}
 	name, _ := dom_attr_val(node, "name")
 	value, _ := dom_attr_val(node, "value")
 	action := strings.clone("")
@@ -817,6 +847,11 @@ button_enter :: proc(rc: ^Render_Ctx, node: ^Dom_Node, textarea: bool) {
 		rc.label_depth += 1
 		return
 	}
+	if len(rc.fields) >= MAX_FIELDS {
+		append(&rc.pending, -2)
+		rc.label_depth += 1
+		return
+	}
 	// type=button never submits; no dead controls (placeholder at exit).
 	if !textarea {
 		if tval, tok := dom_attr_val(node, "type"); tok {
@@ -852,6 +887,12 @@ button_exit :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, nod
 		return
 	}
 	idx := pop(&rc.pending)
+	if idx == -2 {
+		if rc.label_depth > 0 {
+			rc.label_depth -= 1
+		}
+		return // capped: silent
+	}
 	if idx < 0 {
 		if rc.label_depth > 0 {
 			rc.label_depth -= 1
@@ -988,6 +1029,10 @@ img_block :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, node:
 // Resolve link spans to rendered bboxes after layout.
 finalize_links :: proc(rc: ^Render_Ctx) {
 	for s in rc.spans {
+		if len(rc.links) >= MAX_LINKS {
+			delete(s.url)
+			continue
+		}
 		l: Link
 		l.url = strings.clone(s.url)
 		found := false
@@ -1023,7 +1068,7 @@ finalize_links :: proc(rc: ^Render_Ctx) {
 // First id wins; duplicates are ignored. y is the current layout top.
 layout_record_target :: proc(rc: ^Render_Ctx, node: ^Dom_Node, tag: string, y: f32) {
 	record :: proc(rc: ^Render_Ctx, id: string, y: f32) {
-		if len(id) == 0 {
+		if len(id) == 0 || len(rc.targets) >= MAX_TARGETS {
 			return
 		}
 		for &t in rc.targets {
@@ -1198,6 +1243,30 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 			}
 			pop(&stack)
 		}
+	}
+	if rc.truncated {
+		nline: Cur_Line
+		for w in ([]string{"[truncated:", "page", "too", "long]"}) {
+			probe: Cur_Line
+			cw := shape_word(rc, w, rc.body_px, &probe)
+			for p in probe.glyphs {
+				q := p
+				q.x += nline.width
+				append(&nline.glyphs, q)
+			}
+			nline.width += cw + rc.bank.fonts[0].scale * 280
+			for wd in probe.words {
+				append(&nline.words, wd)
+			}
+			delete(probe.glyphs)
+			delete(probe.words)
+		}
+		lh := rc.body_px * 1.35
+		append(&rc.lines, Line{nline.glyphs, strings.join(nline.words[:], " "), y + lh * 0.8, lh})
+		for w in nline.words {
+			delete(w)
+		}
+		delete(nline.words)
 	}
 }
 

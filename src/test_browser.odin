@@ -106,8 +106,80 @@ tuitest_main :: proc() -> bool {
 	if !tuitest_find() {
 		return false
 	}
+	if !tuitest_limits() {
+		return false
+	}
 	// Server-backed browse section: navigate, back, forward, dump content.
 	return tuitest_browse()
+
+// Resource caps: oversized documents/images rejected, long pages truncated.
+tuitest_limits :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	port, srv, ok := server_start()
+	if !ok {
+		check(&fails, "limit/server", false)
+		return false
+	}
+	defer {
+		_ = os.process_kill(srv)
+		_, _ = os.process_wait(srv)
+	}
+	defer delete(port)
+	base := fmt.aprintf("http://127.0.0.1:%s", port)
+	defer delete(base)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
+	sess, sok := browse_open(prof, 900)
+	if !sok {
+		check(&fails, "limit/open", false)
+		return false
+	}
+	defer browse_close(&sess)
+	// 9MB HTML passes transfer cap, fails document cap (error page).
+	bigh := fmt.aprintf("%s/big-html", base)
+	defer delete(bigh)
+	if browse_navigate(&sess, bigh, true) {
+		check(&fails, "limit/html-cap", sess.page.is_error && sess.page.title == "document too large", sess.page.title)
+	} else {
+		check(&fails, "limit/html-nav", false, "")
+	}
+	// 100000x100000 PNG header refused without pixel allocation.
+	bigimg := fmt.aprintf("%s/big.png", base)
+	defer delete(bigimg)
+	r, _, rok := cached_fetch(&sess.cache, &sess.fc, &sess.jar, "GET", bigimg, nil, nil, tnow())
+	defer delete_response(&r)
+	if rok {
+		_, dok := decode_image(bigimg, r.body, 900, 0, 0)
+		check(&fails, "limit/image-dim", !dok, "")
+	} else {
+		check(&fails, "limit/image-fetch", false, "")
+	}
+	// 60k paragraphs truncate at 50k lines + notice (not error).
+	many := fmt.aprintf("%s/many-lines", base)
+	defer delete(many)
+	if browse_navigate(&sess, many, true) {
+		n := len(sess.page.lines)
+		last := sess.page.text[len(sess.page.text)-1] if len(sess.page.text) > 0 else ""
+		check(&fails, "limit/truncate", !sess.page.is_error && n == MAX_LAYOUT_LINES+1 && strings.contains(last, "[truncated"), fmt.tprintf("%d", n))
+	} else {
+		check(&fails, "limit/many-nav", false, "")
+	}
+	fmt.printfln("browsetest-limits: %d failures", fails)
+	return fails == 0
+}
+
 
 // Find-in-page: live matches, jump, n/N cycling, highlights, relayout.
 tuitest_find :: proc() -> bool {

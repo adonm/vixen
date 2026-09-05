@@ -194,6 +194,9 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 		defer delete(msg)
 		return browse_error_page(sess, final_url, msg)
 	}
+	if len(r.body) > DOC_HTML_MAX {
+		return browse_error_page(sess, final_url, "document too large")
+	}
 	_ = info
 	doc, dok := parse_document(r.body)
 	if !dok {

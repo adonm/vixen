@@ -1,7 +1,8 @@
 package vixen
 
 // HTTP fetch over curl easy (one reusable handle, manual redirects).
-// Cookie engine OFF (jar owns policy); TLS verification always on.
+// Cookie engine OFF (jar owns policy); TLS verification always on (curl
+// defaults for peer+host; the mincurl binding exposes no way to disable).
 
 import "base:runtime"
 import "core:c"
@@ -83,10 +84,19 @@ Fetch_State :: struct {
 	rawhead: [dynamic]u8,
 }
 
+// Transfer caps (decompressed bytes, enforced mid-transfer by aborting).
+// HTML pages larger than DOC_HTML_MAX are rejected after fetch (see browser).
+FETCH_BODY_MAX   :: 32 * 1024 * 1024
+FETCH_HEADER_MAX :: 256 * 1024
+DOC_HTML_MAX     :: 8 * 1024 * 1024
+
 fetch_write_cb :: proc "c" (ptr: rawptr, size, nmemb: c.size_t, userdata: rawptr) -> c.size_t {
 	context = runtime.default_context()
 	st := (^Fetch_State)(userdata)
 	n := int(size * nmemb)
+	if len(st.body) + n > FETCH_BODY_MAX {
+		return 0 // abort transfer (curl reports WRITE_ERROR)
+	}
 	append(&st.body, ..([^]u8)(ptr)[:n])
 	return c.size_t(n)
 }
@@ -95,6 +105,9 @@ fetch_head_cb :: proc "c" (ptr: rawptr, size, nmemb: c.size_t, userdata: rawptr)
 	context = runtime.default_context()
 	st := (^Fetch_State)(userdata)
 	n := int(size * nmemb)
+	if len(st.rawhead) + n > FETCH_HEADER_MAX {
+		return 0
+	}
 	append(&st.rawhead, ..([^]u8)(ptr)[:n])
 	return c.size_t(n)
 }
@@ -144,7 +157,11 @@ fetch_once :: proc(fc: ^Fetch_Ctx, method, url: string, extra: []string, body: [
 		easy_setopt(h, .HTTPHEADER, nil)
 	}
 	if easy_perform(h) != .E_OK {
-		fmt.eprintfln("fetch: %s %s failed", method, url)
+		if len(st.body) >= FETCH_BODY_MAX || len(st.rawhead) >= FETCH_HEADER_MAX {
+			fmt.eprintfln("fetch: %s %s too large (>%d/%d bytes)", method, url, FETCH_BODY_MAX, FETCH_HEADER_MAX)
+		} else {
+			fmt.eprintfln("fetch: %s %s failed", method, url)
+		}
 		return r, false
 	}
 	code: c.long
