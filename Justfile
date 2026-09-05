@@ -127,7 +127,7 @@ build:
     command -v odin > /dev/null || { echo "activate mise (eval \"$(mise activate bash)\") or run: mise exec -- just build" >&2; exit 1; }
     test -f {{ SDL_LIB }}/libSDL3.a || { echo "run 'just setup' first" >&2; exit 1; }
     test -f "{{ NATIVE }}/shim.o" && test -f "{{ NATIVE }}/sqlite3.o" && test -f "{{ NATIVE }}/stb_native.a" || { echo "run 'mise bootstrap --yes' to provision native objects" >&2; exit 1; }
-    odin build src -out:{{ BIN }} -o:speed -extra-linker-flags:"`./scripts/sdl-flags.sh`"
+    SHA="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"; DIRTY="clean"; git diff --quiet 2>/dev/null || DIRTY="dirty"; DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; odin build src -out:{{ BIN }} -o:speed -define:VIXEN_SHA="$SHA" -define:VIXEN_DATE="$DATE" -define:VIXEN_DIRTY="$DIRTY" -extra-linker-flags:"`./scripts/sdl-flags.sh`"
 
 test: build
     mkdir -p .tmp
@@ -157,13 +157,18 @@ test-tui: build
 # instrumented; separately compiled native dependencies are not rebuilt here.
 test-sanitize:
     mkdir -p .tmp
-    odin build src -out:.tmp/vixen-asan -o:none -debug -sanitize:address -extra-linker-flags:"`./scripts/sdl-flags.sh`"
+    SHA="$(git rev-parse --short HEAD 2>/dev/null || echo dev)"; DIRTY="clean"; git diff --quiet 2>/dev/null || DIRTY="dirty"; DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"; odin build src -out:.tmp/vixen-asan -o:none -debug -sanitize:address -define:VIXEN_SHA="$SHA" -define:VIXEN_DATE="$DATE" -define:VIXEN_DIRTY="$DIRTY" -extra-linker-flags:"`./scripts/sdl-flags.sh`"
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 ./.tmp/vixen-asan termtest
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 ./.tmp/vixen-asan browsetest
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 ./.tmp/vixen-asan nettest
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 python3 tests/tui_protocol.py ./.tmp/vixen-asan
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 python3 tests/profiles.py ./.tmp/vixen-asan
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 python3 tests/cli.py ./.tmp/vixen-asan
+
+# Repeatable startup/render measurements (local fixtures + PTY first frame).
+# Prints JSON + table; does not fail on timing (no thresholds yet).
+bench: build
+    python3 tests/bench.py ./{{ BIN }}
 
 clean:
     rm -rf {{ BIN }} .tmp

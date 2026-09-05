@@ -78,6 +78,8 @@ def main():
                 (["domtest", "a", "b"], "usage: vixen domtest"),
                 (["wasmtest"], "usage: vixen wasmtest"),
                 (["wasmtest", "a", "b"], "usage: vixen wasmtest"),
+                (["version", "extra"], "usage: vixen version"),
+                (["--version", "extra"], "usage: vixen version"),
                 (["frobnicate"], "unknown command"),
                 ([], "usage: vixen"),
             ]
@@ -93,6 +95,12 @@ def main():
                 assert p.returncode == 0, (argv, p.returncode)
                 assert b"usage:" in p.stdout or b"Vixen" in p.stdout, argv
             print("PASS cli help exits 0")
+
+            for argv in (["version"], ["--version"], ["-V"]):
+                p = run(binary, *argv)
+                assert p.returncode == 0, (argv, p.returncode)
+                assert p.stdout.startswith(b"vixen ") and b"odin " in p.stdout, (argv, p.stdout)
+            print("PASS cli version reports build identity")
 
             # Failed loads/exports exit 1 (not 0, not 2, no panic).
             p = run(binary, "fetch", "--profile", str(prof), f"{base}/missing")

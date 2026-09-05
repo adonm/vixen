@@ -162,6 +162,11 @@ main :: proc() {
 	switch os.args[1] {
 	case "help", "--help", "-h":
 		print_usage()
+	case "version", "--version", "-V":
+		if len(os.args) != 2 {
+			cli_usage_error("usage: vixen version")
+		}
+		version_main()
 	case "rss":
 		if len(os.args) != 2 {
 			cli_usage_error("usage: vixen rss")
@@ -488,6 +493,7 @@ print_usage :: proc() {
 	fmt.println("  vixen fetch [--profile DIR] <url>          response statistics")
 	fmt.println("  vixen tui [--width N] HTML                 one-shot Kitty image")
 	fmt.println("  vixen show HTML                            static SDL demo")
+	fmt.println("  vixen version                              build identity")
 	fmt.println("Developer commands: parse, js, rss, shapetest, domtest, termtest, browsetest, nettest, wasmtest")
 	fmt.println("Run 'vixen <command> --help' for command usage.")
 }
