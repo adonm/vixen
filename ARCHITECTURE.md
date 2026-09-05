@@ -263,6 +263,12 @@ desktop beta additionally requires real window/input tests.
 - Property setters use the generic argc/argv form; a (ctx,this,val) shape
   reads the argv pointer as a value.
 - `lxb_html_serialize_cb` is single-node; subtree HTML needs `tree_cb`.
+- `odin build -define:NAME=value` infers scalar types: a git SHA like
+  `6e14534` parses as float syntax and fails the build. Quote define values
+  in recipes and strip one quote layer where consumed.
+- `for &f, i in array` binds `f` by value in this toolchain despite the `&`;
+  take `&array[i]` explicitly for element pointers (the compiler error is the
+  only hint — field reads work either way, hiding the bug).
 
 ## Current compatibility limitations
 
@@ -285,6 +291,9 @@ desktop beta additionally requires real window/input tests.
   inside ligatures.
 - Find searches document prose (field boxes excluded), line-level highlights,
   ASCII case-folding; exact-substring boxes and caret-in-chrome are future.
+- Mouse: left-click and wheel only; middle/right buttons, modified clicks,
+  motion/drag-select, horizontal wheel, and chrome-row clicks are ignored.
+  X10 reports are consumed, never parsed (1006 is always on with mouse).
 - Images: PNG/JPEG/GIF-first-frame/BMP through stb; SVG/WebP, data URLs,
   srcset, and animation are not supported by the current browsing path.
 - No live page-script execution, JS job pump, timers, fetch/XHR bridge,
