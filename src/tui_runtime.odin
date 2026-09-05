@@ -71,11 +71,23 @@ tui_input :: proc(t: ^Tui, timeout_ms: int) -> bool {
 			key := e
 			if t.pasting {
 				// Pasted content never runs navigation/submit/quit shortcuts.
-				// Current single-line editors normalize pasted line breaks.
+				// Single-line editors normalize pasted breaks to spaces;
+				// textareas keep newlines (multi-row display scrolls).
 				if !t.url_active && !t.find_active && t.focus < 0 { continue }
 				if special, ok := e.(Key_Special); ok {
 					if special != .Enter && special != .Tab { continue }
-					key = rune(' ')
+					is_area := false
+					if t.focus >= 0 && t.focus < len(t.field_edits) {
+						fe := &t.field_edits[t.focus]
+						if fe.field >= 0 && fe.field < len(t.sess.page.fields) {
+							is_area = t.sess.page.fields[fe.field].kind == .textarea
+						}
+					}
+					if special == .Enter && is_area {
+						key = rune('\n')
+					} else {
+						key = rune(' ')
+					}
 				}
 			}
 			if !tui_handle_key(t, key) { return false }

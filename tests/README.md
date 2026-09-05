@@ -11,9 +11,9 @@ mise exec -- just test-sanitize # instrumented Odin helpers and frontend runs
 `src/test_*.odin` contains in-package helper suites. `vixen browsetest`
 exercises browser/session helpers (the old `tuitest` spelling is an alias),
 including paint (field overlay pixels), scroll (anchors), wrap (mid-word
-grapheme breaks), fragments (targets, same-document, history), and find
-(matches, cycling, highlights, relayout). `vixen termtest` checks the pure
-incremental decoder, metrics, and chrome bounds. These are separate from the
+grapheme breaks), fragments (targets, same-document, history), find
+(matches, cycling, highlights, relayout), limits (caps, schemes), and area
+(multiline textarea). `vixen termtest` checks the pure incremental decoder, metrics, and chrome bounds. These are separate from the
 frontend harnesses below.
 
 ## `tui_protocol.py`

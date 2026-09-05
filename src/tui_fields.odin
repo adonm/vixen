@@ -4,8 +4,8 @@ package vixen
 // caret, focus ring, and scroll-into-view. Layout glyphs are stale as soon
 // as the user types (and after relayout, which preserves edited values but
 // re-lays-out from source), so every page frame repaints all visible field
-// boxes from sess.page.fields. Single-line display: newlines/tabs in
-// textarea values render as spaces; the stored value keeps them.
+// boxes from sess.page.fields. Textareas show multiple rows with vertical
+// scroll; tabs render as spaces (stored intact).
 
 import "core:strings"
 import "core:unicode/utf8"
@@ -54,6 +54,7 @@ tui_text_width :: proc(bank: ^Font_Bank, text: string, px: f32) -> f32 {
 }
 
 // Ensure the focused field's box is fully inside the viewport.
+// For textareas, ensures the caret row (not just the box top) is visible.
 tui_ensure_field_visible :: proc(t: ^Tui) {
 	if t.focus < 0 || t.focus >= len(t.field_edits) {
 		return
@@ -66,7 +67,15 @@ tui_ensure_field_visible :: proc(t: ^Tui) {
 	if f.line < 0 || f.line >= len(t.sess.page.lines) {
 		return
 	}
-	ln := &t.sess.page.lines[f.line]
+	line_idx := f.line
+	if f.kind == .textarea && f.nlines > 1 {
+		// Caret row → visible box row → layout line.
+		caret := tui_rune_clamp(f.value, fe.state.selection[0])
+		cr, _ := tui_textarea_caret_row(f.value, caret)
+		br := clamp(cr - fe.voff, 0, f.nlines-1)
+		line_idx = clamp(f.line + br, 0, len(t.sess.page.lines)-1)
+	}
+	ln := &t.sess.page.lines[line_idx]
 	top := int(ln.baseline - ln.height * 0.8)
 	bot := int(ln.baseline + ln.height * 0.2)
 	view_h := tui_view_height(t)
@@ -79,6 +88,53 @@ tui_ensure_field_visible :: proc(t: ^Tui) {
 		t.scroll_y = bot - view_h + 8
 	}
 	tui_clamp_scroll(t)
+}
+
+// Split a textarea value into rows (borrowed substrings, no copy).
+// Empty value gives one empty row; trailing newline gives trailing empty row.
+tui_textarea_rows :: proc(value: string) -> []string {
+	if len(value) == 0 {
+		r := make([]string, 1, context.temp_allocator)
+		r[0] = ""
+		return r
+	}
+	// Count rows first (newlines + 1).
+	n := 1
+	for c in value {
+		if c == '\n' {
+			n += 1
+		}
+	}
+	rows := make([]string, n, context.temp_allocator)
+	ri, start := 0, 0
+	for i in 0 ..< len(value) {
+		if value[i] == '\n' {
+			rows[ri] = value[start:i]
+			ri += 1
+			start = i+1
+		}
+	}
+	rows[ri] = value[start:]
+	return rows
+}
+
+// Map a byte caret to (row, col_byte) in split rows. Col is a byte offset
+// within the row (rune-clamped by the caller when shaping).
+tui_textarea_caret_row :: proc(value: string, caret: int) -> (row, col: int) {
+	rows := tui_textarea_rows(value)
+	pos := 0
+	for r, i in rows {
+		// Row byte range is [pos, pos+len(r)]; newline (if any) at pos+len(r).
+		if caret <= pos + len(r) {
+			return i, caret - pos
+		}
+		pos += len(r) + 1 // skip newline
+	}
+	// Caret at/past end (e.g., trailing newline): last row, end.
+	if len(rows) > 0 {
+		return len(rows)-1, len(rows[len(rows)-1])
+	}
+	return 0, 0
 }
 
 // Repaint all visible field boxes from current values. Call after
@@ -96,6 +152,10 @@ tui_draw_fields :: proc(t: ^Tui, sw, sh: int) {
 		}
 		f := &sess.page.fields[fe.field]
 		if f.kind == .hidden || f.line < 0 || f.line >= len(sess.page.lines) {
+			continue
+		}
+		if f.kind == .textarea {
+			tui_draw_textarea(t, fe, fe_idx == t.focus, sw, sh, &rc)
 			continue
 		}
 		ln := &sess.page.lines[f.line]
@@ -253,5 +313,191 @@ tui_draw_fields :: proc(t: ^Tui, sw, sh: int) {
 			delete(display)
 		}
 		_ = utf8.rune_size // keep utf8 import referenced for future grapheme caret work
+	}
+}
+
+// Multi-row textarea overlay: fixed box height (layout rows), vertical
+// scroll to keep the caret visible, per-row horizontal scroll for the caret
+// row only (other rows show from the start). Selection highlights span rows.
+tui_draw_textarea :: proc(t: ^Tui, fe: ^Field_Edit, focused: bool, sw, sh: int, rc: ^Render_Ctx) {
+	sess := t.sess
+	f := &sess.page.fields[fe.field]
+	nlines := max(f.nlines, 1)
+	if f.line + nlines - 1 >= len(sess.page.lines) {
+		nlines = len(sess.page.lines) - f.line
+	}
+	if nlines <= 0 {
+		return
+	}
+	top_ln := &sess.page.lines[f.line]
+	bot_ln := &sess.page.lines[f.line + nlines - 1]
+	top := int(top_ln.baseline - top_ln.height * 0.8) - t.scroll_y
+	bot := int(bot_ln.baseline + bot_ln.height * 0.2) - t.scroll_y
+	if bot <= 0 || top >= sh {
+		return
+	}
+	ctop, cbot := max(top, 0), min(bot, sh)
+	bx0 := clamp(int(f.x0) - 4, 0, sw - 1)
+	bx1 := sw - 4
+	if sw < 32 {
+		bx0, bx1 = 0, sw
+	}
+	if bx1 <= bx0 + 12 {
+		return
+	}
+	bg := [4]u8{28, 28, 36, 255}
+	border := [4]u8{80, 80, 90, 255}
+	if focused {
+		bg = [4]u8{40, 40, 55, 255}
+		border = [4]u8{255, 255, 255, 255}
+	}
+	for yy in ctop ..< cbot {
+		for xx in bx0 ..< bx1 {
+			o := (yy * sw + xx) * 4
+			t.slice[o + 0], t.slice[o + 1], t.slice[o + 2] = bg[0], bg[1], bg[2]
+		}
+	}
+	for xx in bx0 ..< bx1 {
+		if ctop < cbot {
+			o0 := (ctop * sw + xx) * 4
+			o1 := ((cbot - 1) * sw + xx) * 4
+			t.slice[o0 + 0], t.slice[o0 + 1], t.slice[o0 + 2] = border[0], border[1], border[2]
+			t.slice[o1 + 0], t.slice[o1 + 1], t.slice[o1 + 2] = border[0], border[1], border[2]
+		}
+	}
+	for yy in ctop ..< cbot {
+		o0 := (yy * sw + bx0) * 4
+		o1 := (yy * sw + bx1 - 1) * 4
+		t.slice[o0 + 0], t.slice[o0 + 1], t.slice[o0 + 2] = border[0], border[1], border[2]
+		t.slice[o1 + 0], t.slice[o1 + 1], t.slice[o1 + 2] = border[0], border[1], border[2]
+	}
+	tx0, tx1 := bx0 + 8, bx1 - 8
+	if tx1 <= tx0 {
+		return
+	}
+	rows := tui_textarea_rows(f.value)
+	// Caret row/col (byte offsets, rune-clamped when shaping).
+	caret_byte := 0
+	sel_lo, sel_hi := 0, 0
+	has_sel := false
+	caret_row, caret_col := 0, 0
+	if focused {
+		caret_byte = tui_rune_clamp(f.value, fe.state.selection[0])
+		lo, hi := edit.sorted_selection(&fe.state)
+		sel_lo = tui_rune_clamp(f.value, lo)
+		sel_hi = tui_rune_clamp(f.value, hi)
+		has_sel = sel_lo != sel_hi
+		caret_row, caret_col = tui_textarea_caret_row(f.value, caret_byte)
+		// Vertical scroll: keep the caret row in the box viewport.
+		if caret_row < fe.voff {
+			fe.voff = caret_row
+		} else if caret_row >= fe.voff + nlines {
+			fe.voff = caret_row - nlines + 1
+		}
+		fe.voff = max(fe.voff, 0)
+	}
+	voff := clamp(fe.voff, 0, max(len(rows) - 1, 0))
+	// Byte offset of each value row start (for selection mapping).
+	row_starts := make([]int, len(rows), context.temp_allocator)
+	pos := 0
+	for r, i in rows {
+		row_starts[i] = pos
+		pos += len(r) + 1
+	}
+	fg := [4]u8{232, 232, 238, 255}
+	for bi in 0 ..< nlines {
+		vi := voff + bi
+		li := f.line + bi
+		if li < 0 || li >= len(sess.page.lines) {
+			continue
+		}
+		ln := &sess.page.lines[li]
+		rtop := int(ln.baseline - ln.height * 0.8) - t.scroll_y
+		rbot := int(ln.baseline + ln.height * 0.2) - t.scroll_y
+		if rbot <= 0 || rtop >= sh {
+			continue
+		}
+		if vi >= len(rows) {
+			continue // box taller than value: blank row
+		}
+		disp := tui_field_display(rows[vi])
+		defer delete(disp)
+		// Horizontal scroll: caret row keeps the caret visible, others at 0.
+		xoff := 0
+		if focused && vi == caret_row {
+			interior := tx1 - tx0
+			cc := clamp(caret_col, 0, len(disp))
+			// Clamp to rune boundary within the row.
+			for cc > 0 && cc < len(disp) && (disp[cc] & 0xc0) == 0x80 {
+				cc -= 1
+			}
+			caret_w := tui_text_width(&sess.bank, disp[:cc], f.px)
+			if interior > 20 && caret_w - f32(fe.xoff) > f32(interior - 12) {
+				fe.xoff = int(caret_w) - (interior - 12)
+			} else if caret_w < f32(fe.xoff) {
+				fe.xoff = max(int(caret_w) - 8, 0)
+			}
+			if tui_text_width(&sess.bank, disp, f.px) <= f32(interior) {
+				fe.xoff = 0
+			}
+			xoff = max(fe.xoff, 0)
+		}
+		baseline := ln.baseline - f32(t.scroll_y)
+		// Selection highlight for this row (if overlapping).
+		if focused && has_sel {
+			rs := row_starts[vi]
+			re := rs + len(rows[vi])
+			lo := max(sel_lo, rs) - rs
+			hi := min(sel_hi, re) - rs
+			if hi > lo {
+				lo_w := tui_text_width(&sess.bank, disp[:clamp(lo, 0, len(disp))], f.px)
+				hi_w := tui_text_width(&sess.bank, disp[:clamp(hi, 0, len(disp))], f.px)
+				sx0 := int(f32(tx0) + lo_w - f32(xoff))
+				sx1 := int(f32(tx0) + hi_w - f32(xoff))
+				sx0, sx1 = max(sx0, tx0), min(sx1, tx1)
+				if sx1 > sx0 {
+					for yy in max(rtop + 2, 0) ..< min(rbot - 2, sh) {
+						for xx in sx0 ..< sx1 {
+							o := (yy * sw + xx) * 4
+							t.slice[o + 0], t.slice[o + 1], t.slice[o + 2] = 80, 80, 120
+						}
+					}
+				}
+			}
+		}
+		line: Cur_Line
+		shape_word(rc, disp, f.px, &line)
+		for p in line.glyphs {
+			pen_x := f32(tx0) + p.x - f32(xoff)
+			if pen_x + p.adv < f32(tx0) || pen_x > f32(tx1) {
+				continue
+			}
+			blit_glyph_px(t.slice, sw, sh, &sess.bank.fonts[p.font],
+				p.gid, pen_x + p.off_x, baseline + p.off_y, fg)
+		}
+		for wd in line.words {
+			delete(wd)
+		}
+		delete(line.glyphs)
+		delete(line.words)
+		// Caret bar on the caret row.
+		if focused && vi == caret_row {
+			cc := clamp(caret_col, 0, len(disp))
+			for cc > 0 && cc < len(disp) && (disp[cc] & 0xc0) == 0x80 {
+				cc -= 1
+			}
+			caret_w := tui_text_width(&sess.bank, disp[:cc], f.px)
+			cx := int(f32(tx0) + caret_w - f32(xoff) + 0.5)
+			cx = clamp(cx, tx0, tx1 - 2)
+			for yy in max(rtop + 2, 0) ..< min(rbot - 2, sh) {
+				for xx in max(cx, 0) ..< min(cx + 2, sw) {
+					if xx < tx0 || xx >= tx1 {
+						continue
+					}
+					o := (yy * sw + xx) * 4
+					t.slice[o + 0], t.slice[o + 1], t.slice[o + 2] = 255, 255, 255
+				}
+			}
+		}
 	}
 }

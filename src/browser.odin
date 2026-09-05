@@ -272,7 +272,7 @@ page_from_layout :: proc(rc: ^Render_Ctx, url, title: string, width: int) -> Pag
 			strings.clone(f.action),
 			strings.clone(f.method),
 			f.form,
-			f.line, f.x0, f.px,
+			f.line, f.nlines, f.x0, f.px,
 		})
 	}
 	for &ln in rc.lines {

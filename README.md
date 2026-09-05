@@ -73,7 +73,8 @@ graphics passthrough is not implemented. `--kitty=off` is no longer supported.
 - `u`: edit a URL; Enter opens it, Escape cancels.
 - `b`/`f`: back/forward; `r`: reload through the cache.
 - Tab/Shift-Tab: move field focus (scrolls into view); type to edit with
-  visible caret/selection; Enter submits; Escape leaves the field.
+  visible caret/selection; Enter submits (textarea: Enter=new line, Tab to
+  a submit button + Enter to send); Escape leaves the field.
 - `/`: find in page (live highlights, Enter keeps for `n`/`N`, Esc clears);
   `n`/`N`: next/previous match. Fragment `#links` jump without refetch.
 - `q`: quit outside an editor; Ctrl-C/Ctrl-D also quit from either editor.
@@ -116,7 +117,7 @@ for sensitive accounts.
 |---|---|
 | HTTP(S), cookies, cache | Integrated through system libcurl, libpsl, SQLite, and body files; partial policy coverage |
 | Documents | Reader-style HTML flow with mid-word breaks (grapheme-safe), shaped text, links, fragment jumps, find-in-page, simple lists/tables; no author-CSS layout engine |
-| Forms | Text/search/hidden/submit/button/textarea with visible editing, urlencoded GET/POST; skipped controls show `[unsupported]`/`[disabled]` notes; textarea newlines shown as spaces (stored intact); passwords not masked |
+| Forms | Text/search/hidden/submit/button/textarea with visible editing (textarea: multi-row, Enter=newlines, vertical scroll), urlencoded GET/POST; skipped controls show notes; passwords not masked |
 | Images | Eager fetching and stb decoding of supported raster formats; placeholders otherwise |
 | JavaScript and DOM | Standalone QuickJS/DOM experiments with helper tests; not executed during live browsing |
 | WebAssembly | Native WAMR round-trip experiment; no page/JS integration |
@@ -139,7 +140,7 @@ mise exec -- just test-sanitize
 |---|---|
 | `vixen shapetest` | Selected shaping and font-fallback cases |
 | `vixen domtest` | Standalone DOM queries, mutations, and events |
-| `vixen browsetest` | Helpers for layout, wrapping, fragments, find, session, forms, images, visible field paint, scroll anchors, and TUI handlers; `tuitest` remains a compatibility alias |
+| `vixen browsetest` | Helpers for layout, wrapping, fragments, find, limits, textarea, session, forms, images, visible field paint, scroll anchors, and TUI handlers; `tuitest` remains a compatibility alias |
 | `vixen termtest` | Pure incremental input, metrics, chrome bounds, and invalidation tests |
 | `just test-tui` | Decoder tests and independent PTY/Kitty output-model tests in `tests/tui_protocol.py` |
 | `tests/profiles.py` | Profile precedence, old-data preservation, and headless commands run outside the checkout |

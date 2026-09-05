@@ -817,7 +817,7 @@ input_enter :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, nod
 		form_id = f.id
 	}
 	if kind == .hidden {
-		append(&rc.fields, Field{kind, name, value, strings.clone(""), action, method, form_id, -1, 0, 0})
+		append(&rc.fields, Field{kind, name, value, strings.clone(""), action, method, form_id, -1, 0, 0, 0})
 		return
 	}
 	label := strings.clone("")
@@ -834,7 +834,7 @@ input_enter :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, nod
 		box = label
 	}
 	lineno, x0 := layout_field_box(rc, line, y, size_px, box)
-	append(&rc.fields, Field{kind, name, value, label, action, method, form_id, lineno, x0, size_px})
+	append(&rc.fields, Field{kind, name, value, label, action, method, form_id, lineno, 1, x0, size_px})
 }
 
 // <button>/<textarea>: label/value finalized at exit (children not yet seen).
@@ -876,8 +876,8 @@ button_enter :: proc(rc: ^Render_Ctx, node: ^Dom_Node, textarea: bool) {
 		method = strings.clone(f.method)
 		form_id = f.id
 	}
-	kind := Field_Kind.text if textarea else Field_Kind.submit
-	append(&rc.fields, Field{kind, name, strings.clone(""), strings.clone(""), action, method, form_id, -1, 0, 0})
+	kind := Field_Kind.textarea if textarea else Field_Kind.submit
+	append(&rc.fields, Field{kind, name, strings.clone(""), strings.clone(""), action, method, form_id, -1, 0, 0, 0})
 	append(&rc.pending, len(rc.fields) - 1)
 	rc.label_depth += 1
 }
@@ -927,9 +927,21 @@ button_exit :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, nod
 		delete(f.value)
 		f.value = strings.clone(strings.trim(raw, "\n"))
 		f.px = size_px
-		lineno, x0 := layout_field_box(rc, line, y, size_px, f.value)
-		f.line = lineno
-		f.x0 = x0
+		// One layout line per value row (empty value still gets one box).
+		rows := strings.split(f.value, "\n", context.temp_allocator)
+		if len(rows) == 0 {
+			rows = []string{""}
+		}
+		first := true
+		for row in rows {
+			lineno, x0 := layout_field_box(rc, line, y, size_px, row)
+			if first {
+				f.line = lineno
+				f.x0 = x0
+				first = false
+			}
+		}
+		f.nlines = len(rows)
 		return
 	}
 	text := collapse_space(raw)
@@ -951,6 +963,7 @@ button_exit :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, nod
 	f.px = size_px
 	lineno, x0 := layout_field_box(rc, line, y, size_px, f.label)
 	f.line = lineno
+	f.nlines = 1
 	f.x0 = x0
 }
 

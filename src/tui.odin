@@ -47,6 +47,7 @@ Field_Edit :: struct {
 	state: edit.State,
 	build: strings.Builder,
 	xoff:  int, // horizontal scroll offset, px (keeps caret visible)
+	voff:  int, // textarea vertical scroll, rows (first visible value row)
 }
 
 tui_status :: proc(t: ^Tui, msg: string) {
@@ -363,36 +364,35 @@ tui_focus_move :: proc(t: ^Tui, dir: int) {
 	}
 	f := &t.sess.page.fields[t.field_edits[t.focus].field]
 	if len(f.name) > 0 {
-		tui_status(t, fmt.tprintf("field %s", f.name))
+		if f.kind == .textarea {
+			tui_status(t, fmt.tprintf("field %s (Enter=new line)", f.name))
+		} else {
+			tui_status(t, fmt.tprintf("field %s", f.name))
+		}
+	} else if f.kind == .textarea {
+		tui_status(t, "textarea field (Enter=new line, Tab+Enter=submit)")
 	} else {
 		tui_status(t, fmt.tprintf("%s field", "text" if f.kind == .text else "button"))
 	}
 	tui_ensure_field_visible(t)
 }
 
-// Focused field's line + caret byte offset for cursor display.
-tui_focused_line :: proc(t: ^Tui) -> (line, caret: int, ok: bool) {
-	if t.focus < 0 || t.focus >= len(t.field_edits) {
-		return 0, 0, false
-	}
-	fe := &t.field_edits[t.focus]
-	f := &t.sess.page.fields[fe.field]
-	if f.line < 0 {
-		return 0, 0, false
-	}
-	caret = clamp(fe.state.selection[0], 0, len(f.value))
-	return f.line, caret, true
-}
 
 // Keys while a field is focused. Returns false to quit.
 tui_field_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 	fe := &t.field_edits[t.focus]
 	f := &t.sess.page.fields[fe.field]
 	_ = f
+	editable := t.sess.page.fields[fe.field].kind == .text ||
+		t.sess.page.fields[fe.field].kind == .textarea
+	is_area := t.sess.page.fields[fe.field].kind == .textarea
 	switch v in k {
 	case rune:
-		if v >= 32 && v != 127 {
-			if t.sess.page.fields[fe.field].kind == .text {
+		if v == '\n' && is_area {
+			edit.input_rune(&fe.state, v)
+			tui_field_sync(t)
+		} else if v >= 32 && v != 127 {
+			if editable {
 				edit.input_rune(&fe.state, v)
 				tui_field_sync(t)
 			}
@@ -400,6 +400,11 @@ tui_field_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 	case Key_Special:
 		switch v {
 		case .Enter:
+			if is_area {
+				edit.input_rune(&fe.state, '\n')
+				tui_field_sync(t)
+				return true
+			}
 			idx := fe.field
 			t.focus = -1
 			tui_save_anchor(t)
@@ -416,7 +421,7 @@ tui_field_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 		case .Esc:
 			t.focus = -1
 		case .Backspace:
-			if t.sess.page.fields[fe.field].kind == .text {
+			if editable {
 				edit.delete_to(&fe.state, .Left)
 				tui_field_sync(t)
 			}

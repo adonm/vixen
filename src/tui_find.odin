@@ -54,7 +54,7 @@ find_occurrences :: proc(hay, needle: string, line: int, out: ^[dynamic]Find_Mat
 
 tui_find_is_field_line :: proc(t: ^Tui, line: int) -> bool {
 	for &f in t.sess.page.fields {
-		if f.line == line {
+		if f.line >= 0 && line >= f.line && line < f.line + max(f.nlines, 1) {
 			return true
 		}
 	}

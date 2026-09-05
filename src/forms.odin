@@ -7,7 +7,7 @@ package vixen
 
 import "core:strings"
 
-Field_Kind :: enum { text, hidden, submit }
+Field_Kind :: enum { text, textarea, hidden, submit }
 
 Field :: struct {
 	kind:   Field_Kind,
@@ -17,7 +17,8 @@ Field :: struct {
 	action: string, // owned absolute form action URL ("" = no form owner)
 	method: string, // owned, "GET" or "POST"
 	form:   int,    // owning form id (-1 = no form owner)
-	line:   int,    // laid-out line index (-1 = hidden / not rendered)
+	line:   int,    // first laid-out line index (-1 = hidden / not rendered)
+	nlines: int,    // layout rows reserved (1, or textarea value rows)
 	x0:     f32,    // framebuffer x of the field box origin
 	px:     f32,    // laid-out type size (cursor metrics)
 }
@@ -131,7 +132,7 @@ form_dataset :: proc(fields: []Field, form_id, clicked: int) -> string {
 			continue
 		}
 		switch f.kind {
-		case .text, .hidden:
+		case .text, .textarea, .hidden:
 			emit(&b, &first, f.name, f.value)
 		case .submit:
 			if i == clicked {

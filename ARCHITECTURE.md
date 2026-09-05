@@ -206,7 +206,7 @@ baseline in M0 before using benchmark claims in releases.
 
 `browsetest` (legacy alias `tuitest`) exercises helpers/session/layout headlessly,
 including visible field paint, scroll anchors, mid-word wrapping, fragments,
-and find. `termtest` exercises pure decoding and geometry.
+find, limits, and textarea. `termtest` exercises pure decoding and geometry.
 `tests/tui_protocol.py` independently models output cursor bounds, Kitty
 placement/chunk dimensions, image lifetime, raw-mode restoration, and idle
 behavior while driving a real PTY. It covers fragmented input, paste, visible
@@ -267,8 +267,10 @@ desktop beta additionally requires real window/input tests.
 - Forms are a partial text/search/hidden/submit/button/textarea subset.
   Select, checkbox/radio, file, image-button, `type=button`, and disabled
   controls show `[unsupported]`/`[disabled]` notes (labels/options suppressed).
-  Textarea values keep newlines but display single-line; passwords not masked;
-  caret re-shapes prefixes and can sit slightly off inside ligatures.
+  Textareas are multi-row with vertical scroll (Enter inserts newlines, Tab to
+  a button submits; rows/cols attrs ignored, height follows initial rows).
+  Passwords are not masked; caret re-shapes prefixes and can sit slightly off
+  inside ligatures.
 - Find searches document prose (field boxes excluded), line-level highlights,
   ASCII case-folding; exact-substring boxes and caret-in-chrome are future.
 - Images: PNG/JPEG/GIF-first-frame/BMP through stb; SVG/WebP, data URLs,

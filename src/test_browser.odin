@@ -109,8 +109,142 @@ tuitest_main :: proc() -> bool {
 	if !tuitest_limits() {
 		return false
 	}
+	if !tuitest_textarea() {
+		return false
+	}
 	// Server-backed browse section: navigate, back, forward, dump content.
 	return tuitest_browse()
+
+// Multiline textarea: Enter inserts newlines, multi-row overlay scrolls,
+// submission preserves breaks (%0A).
+tuitest_textarea :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	// Inline multi-row layout: three value rows reserve three lines.
+	bank, bok := font_bank_load(20)
+	if !bok {
+		check(&fails, "area/bank", false)
+		return false
+	}
+	defer font_bank_free(&bank)
+	html := "<html><head><title>Area</title></head><body><form action=\"/post\" method=\"post\"><textarea name=\"t\">one\ntwo\nthree</textarea><input type=\"submit\" value=\"Go\"></form></body></html>"
+	rc, rok := layout_bytes(transmute([]u8)html, 600, &bank, "http://127.0.0.1:9/area")
+	if !rok {
+		check(&fails, "area/layout", false)
+		return false
+	}
+	defer render_ctx_free(&rc)
+	ai := -1
+	for &f, i in rc.fields {
+		if f.name == "t" {
+			ai = i
+		}
+	}
+	check(&fails, "area/kind-rows", ai >= 0 && rc.fields[ai].kind == .textarea && rc.fields[ai].nlines == 3, "")
+	if ai >= 0 {
+		f := &rc.fields[ai]
+		texts := ""
+		for li in f.line ..< f.line + f.nlines {
+			if li >= 0 && li < len(rc.lines) {
+				texts = strings.concatenate([]string{texts, rc.lines[li].text, "|"}, context.temp_allocator)
+			}
+		}
+		check(&fails, "area/rows", strings.contains(texts, "one") && strings.contains(texts, "two") && strings.contains(texts, "three"), texts)
+	}
+	// Live editing: Enter inserts newlines (no submit), overlay vscrolls,
+	// submission encodes breaks.
+	port, srv, ok := server_start()
+	if !ok {
+		check(&fails, "area/server", false)
+		return false
+	}
+	defer {
+		_ = os.process_kill(srv)
+		_, _ = os.process_wait(srv)
+	}
+	defer delete(port)
+	base := fmt.aprintf("http://127.0.0.1:%s", port)
+	defer delete(base)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
+	sess, sok := browse_open(prof, 640)
+	if !sok {
+		check(&fails, "area/open", false)
+		return false
+	}
+	defer browse_close(&sess)
+	form_url := fmt.aprintf("%s/form", base)
+	defer delete(form_url)
+	if !browse_navigate(&sess, form_url, true) {
+		check(&fails, "area/navigate", false)
+		return false
+	}
+	tt: Tui
+	tt.sess = &sess
+	tt.cols, tt.rows = 80, 24
+	tt.cell_w, tt.cell_h = 8, 16
+	tt.focus, tt.find_current = -1, -1
+	tt.status = strings.clone("")
+	defer delete(tt.status)
+	defer delete(tt.slice)
+	defer {
+		for &fe in tt.field_edits {
+			edit.destroy(&fe.state)
+			strings.builder_destroy(&fe.build)
+		}
+		delete(tt.field_edits)
+	}
+	tui_sync_fields(&tt)
+	// Focus body (q=0, Go=1, body=2). Tab three times from -1.
+	tui_handle_key(&tt, Key_Special.Tab)
+	tui_handle_key(&tt, Key_Special.Tab)
+	tui_handle_key(&tt, Key_Special.Tab)
+	bi := -1
+	for &f, i in sess.page.fields {
+		if f.name == "body" {
+			bi = i
+		}
+	}
+	check(&fails, "area/focus", tt.focus >= 0 && tt.field_edits[tt.focus].field == bi, "")
+	tui_handle_key(&tt, Term_Key('a'))
+	tui_handle_key(&tt, Key_Special.Enter)
+	tui_handle_key(&tt, Term_Key('b'))
+	tui_handle_key(&tt, Key_Special.Enter)
+	tui_handle_key(&tt, Term_Key('c'))
+	bv := strings.clone(sess.page.fields[bi].value)
+	defer delete(bv)
+	check(&fails, "area/newlines", bv == "helloa\nb\nc" && sess.page.url == form_url, bv)
+	// Single-row box (initial 1 row) vscrolls to show the caret row (2).
+	sw, sh := tt.cols*tt.cell_w, tui_view_height(&tt)
+	vfr := raster_slice(&sess.bank, sess.page.lines, sess.page.placements[:], sess.page.images[:], sw, tt.scroll_y, sh)
+	tt.slice = vfr.px
+	tt.slice_w, tt.slice_h = sw, sh
+	tui_draw_fields(&tt, sw, sh)
+	check(&fails, "area/vscroll", tt.field_edits[tt.focus].voff == 2, "")
+	// Tab to Send and submit: breaks encoded as %0A.
+	tui_handle_key(&tt, Key_Special.Tab)
+	tui_handle_key(&tt, Key_Special.Enter)
+	found := false
+	for t in sess.page.text {
+		if strings.contains(t, "helloa%0Ab%0Ac") {
+			found = true
+		}
+	}
+	check(&fails, "area/submit", found && sess.page.title == "Posted", sess.page.url)
+	fmt.printfln("browsetest-area: %d failures", fails)
+	return fails == 0
+}
 
 // Resource caps: oversized documents/images rejected, long pages truncated.
 tuitest_limits :: proc() -> bool {
@@ -1147,7 +1281,7 @@ tuitest_forms :: proc() -> bool {
 		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
 	}
 	mkfield := proc(kind: Field_Kind, name, value, action, method: string, form := 0) -> Field {
-		return Field{kind, strings.clone(name), strings.clone(value), strings.clone(""), strings.clone(action), strings.clone(method), form, -1, 0, 0}
+		return Field{kind, strings.clone(name), strings.clone(value), strings.clone(""), strings.clone(action), strings.clone(method), form, -1, 0, 0, 0}
 	}
 	// Percent-encoding.
 	e := form_url_encode("a b+c&d=e/f~ok-._")
@@ -1239,7 +1373,7 @@ tuitest_forms :: proc() -> bool {
 		check(&fails, "form/hidden", false, "missing")
 	}
 	if b, found := find(&rc, "body"); found {
-		check(&fails, "form/textarea", b.kind == .text && b.value == "hello" && b.method == "POST", b.value)
+		check(&fails, "form/textarea", b.kind == .textarea && b.value == "hello" && b.method == "POST", b.value)
 	} else {
 		check(&fails, "form/textarea", false, "missing")
 	}

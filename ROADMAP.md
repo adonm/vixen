@@ -93,9 +93,10 @@ clean child exit. Retain real-terminal checks for emulator behavior.
   (`/` live highlights, `n`/`N` cycling, field boxes excluded).
 - [ ] Shared text-to-geometry mappings for hit testing and selection/copy
   (needed for mouse and TUI copy workflows in M4).
-- [ ] Usable multiline textarea editing (Enter inserts newlines, multi-row
-  layout/overlay). Visible single-line values and correct successful-control/
-  submission behavior are done (M1).
+- [x] Usable multiline textarea editing (distinct `.textarea` kind, Enter
+  inserts newlines, Tab to a button submits, multi-row overlay with vertical
+  scroll, submission encodes breaks as `%0A`). Visible values and correct
+  successful-control behavior done (M1).
 - [x] Final-URL-aware relative links/resources (redirects resolve against the
   post-redirect URL, fragments preserved; redirect bodies never cached under
   the original key) and explicit `[unsupported]`/`[disabled]` notes for
@@ -312,8 +313,13 @@ Shipped with both gates green (release + ASan, including PTY/profile/CLI):
   to 50k lines with notice; 10k links/targets and 1k fields bound pathological
   pages. Non-http(s) schemes, redirect loops, and bad-scheme Locations fail
   instead of hanging. TLS is curl peer+host defaults (no disabling binding).
+- Multiline textarea (`browsetest-area`): distinct kind, one layout line per
+  value row, Enter inserts newlines (Tab to a button submits), tall overlay
+  with vertical scroll to the caret row, per-row hscroll and multi-row
+  selection highlights, `%0A` submission. Pasted newlines preserved in
+  textareas (spaces elsewhere). Rows/cols attrs ignored; height follows
+  initial rows.
 
-Remaining M2: paragraph BiDi visual order, multiline textarea (Enter for
-newlines, multi-row boxes), shared geometry mappings for mouse/copy,
-responsive/cancellable images, resource limits, TLS/scheme verification, and
-code/tables/whitespace polish. Then M3 headless beta hardening.
+Remaining M2: paragraph BiDi visual order, shared geometry mappings for
+mouse/copy, responsive/cancellable images, and code/tables/whitespace polish.
+Then M3 headless beta hardening.
