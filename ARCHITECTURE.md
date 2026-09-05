@@ -46,7 +46,7 @@ page scripts, pump JS jobs, or instantiate page WASM.
 | Session storage | RAM | Helper implementation, not a complete live-page API |
 | JavaScript | QuickJS 2024-01-13, static | Standalone evaluation and DOM/event tests only |
 | WebAssembly | WAMR 2.4.4 interpreter, static | Native round trip; no page integration or execution budget |
-| TUI | Linux termios + Kitty protocol | Ghostty primary; visible fields, scroll anchors, signal-safe restore, strict CLI; real-terminal validation pending |
+| TUI | Linux termios + Kitty protocol | Ghostty primary; visible fields, find, fragments, scroll anchors, signal-safe restore, strict CLI; real-terminal validation pending |
 | Desktop | SDL3 3.2.10, static | Static demonstration, not an interactive browser |
 
 Mise owns tool/system provisioning through `mise bootstrap`; Just owns
@@ -92,18 +92,19 @@ separation can then be introduced behind passing lifecycle tests.
 
 ### Source organization
 
-- `src/browser.odin`, `scroll.odin`: session, navigation with history anchors,
-  retained page, and relayout ownership.
-- `src/render.odin`, `forms.odin`, `images.odin`: document geometry and painting.
-  Field boxes are single-line; the TUI overlay repaints current values.
-- `src/tui.odin`, `tui_fields.odin`, `tui_chrome.odin`: interaction state,
-  visible field overlay (caret/selection/focus/hscroll), and bounded chrome.
+- `src/browser.odin`, `scroll.odin`: session, navigation with history anchors
+  and same-document fragments, retained page, and relayout ownership.
+- `src/render.odin`, `forms.odin`, `images.odin`: document geometry (grapheme-
+  safe mid-word breaks, fragment targets, explicit unsupported notes) and painting.
+- `src/tui.odin`, `tui_fields.odin`, `tui_find.odin`, `tui_chrome.odin`:
+  interaction state, visible field overlay, find highlights, bounded chrome.
 - `src/tui_runtime.odin`: event pump, terminal geometry, and invalidation.
 - `src/terminal.odin`, `terminal_input.odin`, `kitty.odin`: terminal I/O with
   signal-safe restore, pure incremental decoding, and image transport.
-- `src/cli.odin`: strict argument parsing (exit 2 usage, exit 1 failures).
+- `src/cli.odin`, `version.odin`: strict argument parsing and build identity.
 - `src/test_*.odin`: in-package helper tests. `tests/` holds independent
-  end-to-end harnesses; `corpus/` holds fixtures.
+  end-to-end harnesses (`tui_protocol`, `profiles`, `cli`, `bench`);
+  `corpus/` holds fixtures.
 - `native/`: C adapters. Compiled objects/archives go to `.tmp/native/`.
 
 Keep a single Odin package while these ownership interfaces settle. Splitting
@@ -200,13 +201,14 @@ this browser is smaller/faster at equivalent work. Establish a reproducible
 baseline in M0 before using benchmark claims in releases.
 
 `browsetest` (legacy alias `tuitest`) exercises helpers/session/layout headlessly,
-including visible field paint (`browsetest-paint`) and scroll anchors
-(`browsetest-scroll`). `termtest` exercises pure decoding and geometry.
+including visible field paint, scroll anchors, mid-word wrapping, fragments,
+and find. `termtest` exercises pure decoding and geometry.
 `tests/tui_protocol.py` independently models output cursor bounds, Kitty
 placement/chunk dimensions, image lifetime, raw-mode restoration, and idle
 behavior while driving a real PTY. It covers fragmented input, paste, visible
-typing (PNG bytes change), form submission through resize, hangup, and
-SIGTERM/SIGHUP restoration. `tests/cli.py` covers strict usage/exit codes.
+typing (PNG bytes change), find bar/highlights/n/N, form submission through
+resize, hangup, and SIGTERM/SIGHUP restoration. `tests/cli.py` covers strict
+usage/exit codes and version; `tests/bench.py` records repeatable timings.
 None is an actual graphics terminal; Ghostty presentation needs manual checks.
 Desktop implementation remains gated behind headless/TUI beta criteria;
 desktop beta additionally requires real window/input tests.
@@ -248,19 +250,23 @@ desktop beta additionally requires real window/input tests.
 
 ## Current compatibility limitations
 
-- Reader-style greedy word wrapping, not author-CSS layout; long words can
-  overflow. Tables are flattened, and whitespace/preformatted text is limited.
+- Reader-style greedy word wrapping with grapheme-safe mid-word breaks for
+  overlong tokens (ligatures/kerning don't cross breaks). Tables are
+  flattened, and whitespace/preformatted text is limited. No author-CSS layout.
 - Word-by-word shaping does not establish paragraph-level BiDi correctness.
   Rune-width helpers use SDK Unicode data, not full terminal-specific
   grapheme/emoji handling. Chrome avoids that ambiguity with ASCII escapes.
+  (The SDK grapheme iterator slices by cells; layout uses its own boundaries.)
 - `head`/`script`/`style` and several other subtrees are skipped. Landmark
   filtering can omit useful content; this is a readability heuristic, not
   a guarantee that those elements contain no article content.
 - Forms are a partial text/search/hidden/submit/button/textarea subset.
-  Select, checkbox/radio, file, image-button, and `type=button` are skipped.
-  Controls in skipped landmarks are specially handled. Textarea values keep
-  newlines but display single-line; passwords are not masked; caret placement
-  re-shapes prefixes and can sit slightly off inside ligatures.
+  Select, checkbox/radio, file, image-button, `type=button`, and disabled
+  controls show `[unsupported]`/`[disabled]` notes (labels/options suppressed).
+  Textarea values keep newlines but display single-line; passwords not masked;
+  caret re-shapes prefixes and can sit slightly off inside ligatures.
+- Find searches document prose (field boxes excluded), line-level highlights,
+  ASCII case-folding; exact-substring boxes and caret-in-chrome are future.
 - Images: PNG/JPEG/GIF-first-frame/BMP through stb; SVG/WebP, data URLs,
   srcset, and animation are not supported by the current browsing path.
 - No live page-script execution, JS job pump, timers, fetch/XHR bridge,

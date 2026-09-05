@@ -40,8 +40,9 @@ parent-repository/submodule maintenance.
   directories. Reap owned server children on startup failure as well as normal
   cleanup; concurrent helper suites must not delete each other's state.
 - [ ] Isolate gate output artifacts and add a committed concurrency regression.
-- [ ] Identify release/debug binaries with commit/build information and
-  establish repeatable benchmark inputs and measurement scripts.
+- [x] Identify release/debug binaries (`vixen version`: sha/date/dirty via
+  `-define`, odin version/mode) and repeatable bench inputs/scripts
+  (`just bench` → `.tmp/bench.json`: rss/parse/js/render/dump/PTY first frame).
 
 **Exit:** a fresh `mise bootstrap --yes` plus documented Just recipes work;
 intentional fixture/command failures fail the gate; known defects have
@@ -82,14 +83,23 @@ clean child exit. Retain real-terminal checks for emulator behavior.
 - [ ] Reliable paragraphs/headings/lists/inline text, code whitespace, and
   readable tables. Define intentional contained overflow separately from
   accidental document overflow; support narrow and wide viewports.
-- [ ] Tested Unicode segmentation/line breaking and paragraph-direction
-  behavior; do not split grapheme clusters or silently reorder/drop text.
-- [ ] Working fragment links, Wikipedia references, find-in-page, and shared
-  text-to-geometry mappings for hit testing and selection/copy.
-- [ ] Complete the declared form subset, including usable multiline editing,
-  visible values, and correct successful-control/submission behavior.
-- [ ] Final-URL-aware relative links/resources, history and scroll restoration,
-  recoverable error documents, and explicit unsupported-content handling.
+- [x] Mid-word breaks for overlong tokens (URLs, CJK without spaces) at
+  grapheme boundaries: no overflow, text/links preserved (`browsetest-wrap`).
+  Ligatures/kerning don't cross breaks (documented).
+- [ ] Paragraph-direction (visual BiDi order across words) behavior. Word-level
+  RTL shaping exists; mixed-direction line order is still logical, not visual.
+- [x] Working fragment links (`#id` jumps with no refetch, history coherent,
+  percent-decoded, first duplicate wins, `#top` to top) and find-in-page
+  (`/` live highlights, `n`/`N` cycling, field boxes excluded).
+- [ ] Shared text-to-geometry mappings for hit testing and selection/copy
+  (needed for mouse and TUI copy workflows in M4).
+- [ ] Usable multiline textarea editing (Enter inserts newlines, multi-row
+  layout/overlay). Visible single-line values and correct successful-control/
+  submission behavior are done (M1).
+- [x] Final-URL-aware relative links/resources (redirects resolve against the
+  post-redirect URL, fragments preserved; redirect bodies never cached under
+  the original key) and explicit `[unsupported]`/`[disabled]` notes for
+  skipped controls (labels/options suppressed, never silent gaps).
 - [ ] Bounded, cancellable resource scheduling; ignore stale completions.
   First text/placeholder paint must not wait for optional images. Prioritize
   visible images and preserve the reading anchor as they arrive.
@@ -261,3 +271,36 @@ M1 exit is met for automated coverage; real Ghostty/Kitty presentation,
 multiline textarea layout, and M0 build-identification/concurrency items
 remain open. Next: M2 reading engine (fragments, find, long-word wrapping,
 responsive images) and M0 version/benchmark baselines.
+
+## M2 progress — 2026-09-05
+
+Shipped with both gates green (release + ASan, including PTY/profile/CLI):
+
+- Build identity + bench (M0): `vixen version` (sha/date/dirty, odin/mode),
+  `just bench` wall times + `.tmp/bench.json` (rss/parse/js/render/dump
+  cold-warm/PTY first frame). No timing thresholds; failures only on errors.
+- Final URLs: page identity and link/image bases use the post-redirect URL;
+  fragments preserved through resolve and redirect chains (fetch strips for
+  the wire, cache keys ignore). Redirect bodies are never cached under the
+  original key (avoids wrong-base hits; redirects revalidate cheaply).
+- Wrapping (`browsetest-wrap`): overlong tokens split at grapheme boundaries
+  using layout-owned rules (the SDK grapheme iterator slices by cells — not
+  used). No line overflows; URL/CJK/grapheme text and links preserved.
+- Fragments (`browsetest-fragments`, `corpus/fragments.html`): element ids
+  recorded during layout; same-document `#` updates history/URL with no
+  fetch/layout/field rebuild and scrolls to the decoded target (first
+  duplicate wins, `#top`/empty to top, missing shows status). Back/forward
+  restore fragment positions via history anchors.
+- Find (`browsetest-find`, PTY): `/` live search (ASCII case-folding, field
+  lines excluded), line-level highlights (current orange), `n`/`N` cycling,
+  Enter keeps for later `n`/`N`, Esc clears, relayout recomputes from the
+  kept query. PTY asserts the find bar, PNG changes, `n`/`N` frames, and
+  no-matches state.
+- Unsupported controls are explicit: `[unsupported: type]`/`[disabled]` notes
+  inline (select/buttons/checkbox/file/disabled); labels/options suppressed
+  rather than laid out as prose. No new fields; count stays 8.
+
+Remaining M2: paragraph BiDi visual order, multiline textarea (Enter for
+newlines, multi-row boxes), shared geometry mappings for mouse/copy,
+responsive/cancellable images, resource limits, TLS/scheme verification, and
+code/tables/whitespace polish. Then M3 headless beta hardening.

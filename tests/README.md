@@ -10,9 +10,9 @@ mise exec -- just test-sanitize # instrumented Odin helpers and frontend runs
 
 `src/test_*.odin` contains in-package helper suites. `vixen browsetest`
 exercises browser/session helpers (the old `tuitest` spelling is an alias),
-including `browsetest-paint` (field overlay pixels, caret, selection,
-scroll-into-view, horizontal scroll) and `browsetest-scroll` (anchor
-roundtrip, reflow, history, reload). `vixen termtest` checks the pure
+including paint (field overlay pixels), scroll (anchors), wrap (mid-word
+grapheme breaks), fragments (targets, same-document, history), and find
+(matches, cycling, highlights, relayout). `vixen termtest` checks the pure
 incremental decoder, metrics, and chrome bounds. These are separate from the
 frontend harnesses below.
 
@@ -26,7 +26,8 @@ image/placement identity, replacement/deletion, and restored termios/modes.
 Journeys cover tiny/oversized windows, idle resize, cell-pixel changes, no-op
 input, URL-only redraws, fragmented/missing metrics with typeahead, bracketed paste,
 slow/fragmented UTF-8, reverse tab, focus/value preservation through resize,
-visible typing (PNG bytes must change), form submission, EOF/hangup,
+visible typing (PNG bytes must change), find bar with live highlights/jump,
+n/N cycling, no-matches state, Esc, form submission, EOF/hangup,
 SIGTERM/SIGHUP restoration (termios, image delete, exit 128+sig), and
 refusing a non-terminal interactive invocation.
 An empty focused field is deliberately painted before completing its first
@@ -42,11 +43,21 @@ passthrough. Those remain separate manual milestone requirements.
 
 ## `cli.py`
 
-Checks strict CLI contracts without a terminal: 37 invalid invocations exit 2
+Checks strict CLI contracts without a terminal: 39 invalid invocations exit 2
 with usage (unknown flags, missing values, bad widths, extra positionals),
-`--help` exits 0, and failed loads/exports exit 1 (dump 404/refused, fetch
-bad-URL, parse/js missing, render/tui missing). Success paths cover both
-`--opt=value` and `--opt value` forms plus the `--` separator.
+`--help` and `version`/`--version`/`-V` exit 0 with identity, and failed
+loads/exports exit 1 (dump 404/refused, fetch bad-URL, parse/js missing,
+render/tui missing). Success paths cover both `--opt=value` and `--opt value`
+forms plus the `--` separator.
+
+## `bench.py` (`just bench`)
+
+Repeatable wall-time evidence (no thresholds): rss cold start (+RSS via
+GNU time when available), parse/js corpus, render-to-PNG, dump cold/warm
+(same profile), and PTY time-to-first-Kitty-frame (transfer completion, not
+presentation). Records `vixen version`, fixture hashes, and cache state to
+`.tmp/bench.json` plus a human table. Exits nonzero only when a command
+fails, never on timing.
 
 ## `profiles.py`
 

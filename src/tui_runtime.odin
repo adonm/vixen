@@ -72,7 +72,7 @@ tui_input :: proc(t: ^Tui, timeout_ms: int) -> bool {
 			if t.pasting {
 				// Pasted content never runs navigation/submit/quit shortcuts.
 				// Current single-line editors normalize pasted line breaks.
-				if !t.url_active && t.focus < 0 { continue }
+				if !t.url_active && !t.find_active && t.focus < 0 { continue }
 				if special, ok := e.(Key_Special); ok {
 					if special != .Enter && special != .Tab { continue }
 					key = rune(' ')
@@ -115,12 +115,13 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) -> bool {
 	term_enter_alt()
 	defer term_exit_alt()
 	defer kitty_delete_viewport()
-	t := Tui{sess = sess, focus = -1, cell_w = 8, cell_h = 16, page_dirty = true, chrome_dirty = true}
+	t := Tui{sess = sess, focus = -1, find_current = -1, cell_w = 8, cell_h = 16, page_dirty = true, chrome_dirty = true}
 	defer delete(t.inbuf)
 	defer delete(t.slice)
 	defer delete(t.hint)
 	defer delete(t.vis)
 	defer delete(t.status)
+	defer delete(t.find_matches)
 	defer {
 		for &fe in t.field_edits {
 			edit.destroy(&fe.state)
@@ -132,6 +133,10 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) -> bool {
 	defer edit.destroy(&t.url_state)
 	strings.builder_init(&t.url_build)
 	defer strings.builder_destroy(&t.url_build)
+	edit.init(&t.find_state, context.allocator, context.allocator)
+	defer edit.destroy(&t.find_state)
+	strings.builder_init(&t.find_build)
+	defer strings.builder_destroy(&t.find_build)
 	tui_frame_geom(&t)
 	if tui_drawable(&t) { sess.width = t.cols * t.cell_w }
 	if !browse_navigate(sess, start_url, true) { tui_status(&t, "initial navigation failed") }
@@ -154,6 +159,7 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) -> bool {
 			width := t.cols * t.cell_w
 			if width != sess.width {
 				anchor := page_char_offset(&sess.page, t.scroll_y) if sess.has else 0
+				keep_find := t.find_current
 				if browse_relayout(sess, width) {
 					// Source/control order is unchanged: keep builders, selection,
 					// and focus rather than rebuilding field editors on resize.
@@ -161,6 +167,13 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) -> bool {
 					tui_clamp_scroll(&t)
 					t.page_dirty, t.chrome_dirty = true, true
 					tui_ensure_field_visible(&t)
+					// Line breaks moved: recompute find from the kept query.
+					if len(strings.to_string(t.find_build)) > 0 {
+						tui_find_update(&t, keep_find)
+					} else {
+						clear(&t.find_matches)
+						t.find_current = -1
+					}
 				}
 			}
 		}

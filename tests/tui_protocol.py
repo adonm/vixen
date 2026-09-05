@@ -361,6 +361,28 @@ def main():
                 b.quit()
             print("PASS pty fragmented Unicode, reverse tab, focus/value preservation, submission, visible paint")
 
+            with browser(binary, root / "find", base + "/relayout", cols=80, rows=10) as b:
+                b.start()
+                png_before = b.screen.last_png
+                b.send(b"/viewport")
+                b.settle()
+                assert b.screen.line(b.screen.rows).startswith("/viewport"), "find bar not shown"
+                assert b.screen.last_png != png_before, "find highlight/jump produced no pixels"
+                frames = b.screen.frames
+                b.send(b"\r")
+                b.settle()
+                assert not b.screen.line(b.screen.rows).startswith("/"), "find bar did not close"
+                b.send(b"nN")
+                b.settle()
+                assert b.screen.frames > frames, "n/N produced no frame"
+                b.send(b"/xyz-no-such-word")
+                b.settle()
+                assert "no matches" in b.screen.line(b.screen.rows), "missing no-matches state"
+                b.send(b"\x1b")
+                b.settle(0.1)
+                b.quit()
+            print("PASS pty find bar, live highlight/jump, n/N, no-matches, Esc")
+
             with browser(binary, root / "hangup", base + "/relayout") as b:
                 b.start()
                 os.close(b.master)

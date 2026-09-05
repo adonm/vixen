@@ -28,6 +28,11 @@ Tui :: struct {
 	url_active: bool,
 	url_state:  edit.State,
 	url_build:  strings.Builder,
+	find_active: bool,
+	find_state:  edit.State,
+	find_build:  strings.Builder,
+	find_matches: [dynamic]Find_Match,
+	find_current: int, // index into matches (-1 = none)
 	focus:      int, // focused field edit index (-1 = none)
 	field_edits: [dynamic]Field_Edit,
 	status:     string, // owned transient message
@@ -194,6 +199,7 @@ tui_draw :: proc(t: ^Tui) -> bool {
 		t.slice = vfr.px
 		t.slice_w, t.slice_h = sw, sh
 		tui_visible_links(t)
+		tui_draw_find(t, sw, sh)
 		tui_draw_fields(t, sw, sh)
 		tui_draw_hints(t, sw, sh)
 		png, ok := frame_encode_slice(t.slice, sw, sh)
@@ -221,8 +227,18 @@ tui_status_line :: proc(t: ^Tui) {
 	if !tui_drawable(t) { line = "Viewport too small or too large; resize or q to quit" }
 	tui_chrome_row(t, max(t.rows-1, 1), line, true)
 	if t.rows < 2 { return }
-	line = "[q]uit [u]rl [b]ack [f]wd [r]eload [tab]field"
+	line = "[q]uit [u]rl [/]find [b]ack [f]wd [r]eload [tab]field [n]ext"
 	if t.url_active { line = fmt.tprintf("URL: %s", strings.to_string(t.url_build)) }
+	else if t.find_active {
+		q := strings.to_string(t.find_build)
+		if len(t.find_matches) > 0 {
+			line = fmt.tprintf("/%s %d/%d", q, t.find_current+1, len(t.find_matches))
+		} else if len(q) > 0 {
+			line = fmt.tprintf("/%s no matches", q)
+		} else {
+			line = "/"
+		}
+	}
 	tui_chrome_row(t, t.rows, line, false)
 }
 
@@ -286,10 +302,15 @@ tui_navigate_bar :: proc(t: ^Tui, text: string) {
 	tui_sync_fields(t)
 }
 
-// Rebuild per-field edit states after navigation; drops focus. Call after
-// every successful browse_* that replaces the page.
+// Rebuild per-field edit states after navigation; drops focus and find.
+// Call after every successful browse_* that replaces the page.
 tui_sync_fields :: proc(t: ^Tui) {
 	t.page_dirty, t.chrome_dirty = true, true
+	t.find_active = false
+	strings.builder_reset(&t.find_build)
+	t.find_state.selection = {0, 0}
+	clear(&t.find_matches)
+	t.find_current = -1
 	for &fe in t.field_edits {
 		edit.destroy(&fe.state)
 		strings.builder_destroy(&fe.build)
@@ -441,6 +462,10 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 		if special, ok := k.(Key_Special); !ok || special != .Unknown { t.chrome_dirty = true }
 		return true
 	}
+	if t.find_active {
+		tui_find_key(t, k)
+		return true
+	}
 	if t.focus >= 0 {
 		return tui_field_key(t, k)
 	}
@@ -470,6 +495,12 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 			t.chrome_dirty = true
 			strings.builder_reset(&t.url_build)
 			edit.setup_once(&t.url_state, &t.url_build)
+		case '/':
+			tui_find_start(t)
+		case 'n':
+			tui_find_next(t, 1)
+		case 'N':
+			tui_find_next(t, -1)
 		case 'g':
 			t.scroll_y = 0
 		case 'G':

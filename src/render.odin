@@ -9,6 +9,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:time"
+import "core:unicode"
 import "core:unicode/utf8"
 
 import "base:runtime"
@@ -102,6 +103,7 @@ Render_Ctx :: struct {
 	next_form: int, // form identity counter (dataset scoping)
 	pending:   [dynamic]int, // button/textarea fields awaiting exit finalization (-1 = skipped)
 	label_depth: int, // >0 while inside button/textarea (suppress prose layout)
+	select_depth: int, // >0 while inside select (options suppressed, placeholder shown)
 	images:    [dynamic]Image, // decoded page images (owned pixels)
 	placements: [dynamic]Image_Placement, // image blocks in paint order
 	targets:   [dynamic]Anchor_Target, // fragment ids in tree order (owned)
@@ -500,27 +502,63 @@ layout_place_word :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f3
 	line.width += rc.bank.fonts[0].scale * 280
 }
 
+// Grapheme boundaries (byte offsets) for safe mid-word breaks. Simplified
+// UAX#29: never split Extend/SpacingMark/emoji-modifier/ZWJ sequences,
+// Prepend, or regional-indicator pairs. Control/CR/LF need no special
+// handling here (overlong words are whitespace-free by construction).
+grapheme_bounds :: proc(s: string) -> [dynamic]int {
+	bounds: [dynamic]int
+	append(&bounds, 0)
+	prev: rune = 0
+	ri_run := 0
+	i := 0
+	first := true
+	for i < len(s) {
+		r, n := utf8.decode_rune(s[i:])
+		n = max(n, 1)
+		if !first {
+			allow := true
+			if unicode.is_grapheme_extend(r) || unicode.is_spacing_mark(r) ||
+			   unicode.is_emoji_modifier(r) || r == unicode.ZERO_WIDTH_JOINER ||
+			   prev == unicode.ZERO_WIDTH_JOINER ||
+			   unicode.is_prepended_concatenation_mark(prev) {
+				allow = false
+			} else if unicode.is_regional_indicator(r) {
+				if ri_run % 2 == 1 {
+					allow = false
+				}
+			}
+			if allow {
+				append(&bounds, i)
+			}
+		}
+		if unicode.is_regional_indicator(r) {
+			ri_run += 1
+		} else {
+			ri_run = 0
+		}
+		prev = r
+		first = false
+		i += n
+	}
+	append(&bounds, len(s))
+	return bounds
+}
+
 // Split an overlong word into chunks that each fit avail (by shaping).
-// Owns the returned strings. Single runes wider than avail are returned
-// as-is (unavoidable overflow, clipped at raster).
+// Owns the returned strings. Breaks at grapheme boundaries (never splits
+// combining sequences, ZWJ emoji, or regional flags). Single graphemes
+// wider than avail are returned as-is (unavoidable overflow, clipped).
 layout_break_word :: proc(rc: ^Render_Ctx, word: string, size_px, avail: f32) -> [dynamic]string {
 	out: [dynamic]string
-	// Rune boundaries for slicing.
-	bounds: [dynamic]int
+	bounds := grapheme_bounds(word)
 	defer delete(bounds)
-	append(&bounds, 0)
-	i := 0
-	for i < len(word) {
-		_, n := utf8.decode_rune(word[i:])
-		i += max(n, 1)
-		append(&bounds, i)
-	}
-	total_runes := len(bounds)-1
-	if total_runes <= 1 {
+	total := len(bounds)-1
+	if total <= 1 {
 		append(&out, strings.clone(word))
 		return out
 	}
-	// Estimate runes per chunk from the full-word width.
+	// Estimate graphemes per chunk from the full-word width.
 	probe: Cur_Line
 	w := shape_word(rc, word, size_px, &probe)
 	for wd in probe.words {
@@ -528,25 +566,24 @@ layout_break_word :: proc(rc: ^Render_Ctx, word: string, size_px, avail: f32) ->
 	}
 	delete(probe.glyphs)
 	delete(probe.words)
-	per := total_runes
+	per := total
 	if w > 0 {
-		per = max(1, int(f32(total_runes) * avail / w * 0.9))
+		per = max(1, int(f32(total) * avail / w * 0.9))
 	}
 	start := 0
-	for start < total_runes {
-		end := min(start+per, total_runes)
-		// Grow while the chunk fits (at most a few shapes per chunk).
+	for start < total {
+		end := min(start+per, total)
+		// Shrink while too wide.
 		for {
 			chunk := word[bounds[start]:bounds[end]]
 			cw := tui_text_width(rc.bank, chunk, size_px)
 			if cw <= avail || end-start <= 1 {
 				break
 			}
-			// Too wide: halve the chunk.
 			end = start + max((end-start)/2, 1)
 		}
-		// Try to extend one rune at a time while fitting (bounded).
-		for end < total_runes {
+		// Extend while fitting (bounded).
+		for end < total {
 			chunk := word[bounds[start]:bounds[end+1]]
 			if tui_text_width(rc.bank, chunk, size_px) > avail {
 				break
@@ -709,15 +746,31 @@ layout_place_word_nowrap :: proc(rc: ^Render_Ctx, line: ^Cur_Line, size_px: f32,
 	line.width += rc.bank.fonts[0].scale * 280
 }
 
+// Inline note for skipped controls (never silent gaps). Not a field.
+layout_unsupported_note :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, note: string) {
+	for seg in strings.split(note, " ", context.temp_allocator) {
+		if len(seg) > 0 {
+			layout_place_word(rc, line, y, size_px, seg)
+		}
+	}
+}
+
 // <input>: void element, handled fully at enter.
 input_enter :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, node: ^Dom_Node) {
 	if dom_attr_has(node, "disabled") {
+		layout_unsupported_note(rc, line, y, size_px, "[disabled]")
 		return
 	}
 	typ, _ := dom_attr_val(node, "type")
 	defer delete(typ)
 	kind, supported := classify_input(typ)
 	if !supported {
+		lower := strings.to_lower(strings.trim_space(typ), context.temp_allocator)
+		if len(lower) == 0 {
+			lower = "input"
+		}
+		note := fmt.tprintf("[unsupported: %s]", lower)
+		layout_unsupported_note(rc, line, y, size_px, note)
 		return
 	}
 	name, _ := dom_attr_val(node, "name")
@@ -756,19 +809,22 @@ input_enter :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, nod
 
 // <button>/<textarea>: label/value finalized at exit (children not yet seen).
 // Pushes the field index (or -1 sentinel for skipped controls) so exit
-// stays balanced even for type=button/disabled.
+// stays balanced even for type=button/disabled. Skipped controls suppress
+// their children (label_depth) and show an explicit placeholder at exit.
 button_enter :: proc(rc: ^Render_Ctx, node: ^Dom_Node, textarea: bool) {
 	if dom_attr_has(node, "disabled") {
 		append(&rc.pending, -1)
+		rc.label_depth += 1
 		return
 	}
-	// type=button never submits; skip it (no dead controls).
+	// type=button never submits; no dead controls (placeholder at exit).
 	if !textarea {
 		if tval, tok := dom_attr_val(node, "type"); tok {
 			defer delete(tval)
 			lower := strings.to_lower(tval, context.temp_allocator)
 			if lower == "button" || (lower != "" && lower != "submit") {
 				append(&rc.pending, -1)
+				rc.label_depth += 1
 				return
 			}
 		}
@@ -797,7 +853,25 @@ button_exit :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, nod
 	}
 	idx := pop(&rc.pending)
 	if idx < 0 {
-		return // skipped control; nothing to finalize
+		if rc.label_depth > 0 {
+			rc.label_depth -= 1
+		}
+		if dom_attr_has(node, "disabled") {
+			layout_unsupported_note(rc, line, y, size_px, "[disabled]")
+		} else if !textarea {
+			note := "[unsupported: button]"
+			if tval, tok := dom_attr_val(node, "type"); tok {
+				defer delete(tval)
+				lower := strings.to_lower(strings.trim_space(tval), context.temp_allocator)
+				if len(lower) > 0 {
+					note = fmt.tprintf("[unsupported: %s]", lower)
+				}
+			}
+			layout_unsupported_note(rc, line, y, size_px, note)
+		} else {
+			layout_unsupported_note(rc, line, y, size_px, "[disabled]")
+		}
+		return
 	}
 	if rc.label_depth > 0 {
 		rc.label_depth -= 1
@@ -837,6 +911,22 @@ button_exit :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, nod
 	lineno, x0 := layout_field_box(rc, line, y, size_px, f.label)
 	f.line = lineno
 	f.x0 = x0
+}
+
+// <select>: unsupported (no dropdown UI); children suppressed, explicit note.
+select_enter :: proc(rc: ^Render_Ctx, node: ^Dom_Node) {
+	rc.select_depth += 1
+}
+
+select_exit :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, node: ^Dom_Node) {
+	if rc.select_depth > 0 {
+		rc.select_depth -= 1
+	}
+	if dom_attr_has(node, "disabled") {
+		layout_unsupported_note(rc, line, y, size_px, "[disabled]")
+	} else {
+		layout_unsupported_note(rc, line, y, size_px, "[unsupported: select]")
+	}
 }
 
 // <img>: decoded image block when loaded, text placeholder otherwise.
@@ -1004,6 +1094,8 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 					button_enter(rc, node, false)
 				} else if tag == "textarea" {
 					button_enter(rc, node, true)
+				} else if tag == "select" {
+					select_enter(rc, node)
 				}
 				if is_skip_tag(tag) {
 					skip_depth += 1
@@ -1040,9 +1132,9 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 				ptr := lxb_dom_node_text_content(node, &tlen)
 				if ptr != nil && tlen > 0 {
 					text := strings.string_from_ptr(ptr, int(tlen))
-					if rc.label_depth > 0 {
-						// Button/textarea children: collected at exit,
-						// never laid out as prose (no double render).
+					if rc.label_depth > 0 || rc.select_depth > 0 {
+						// Button/textarea/select children: collected at exit
+						// or suppressed (never laid out as prose).
 					} else if rc.in_title {
 						old := rc.title
 						rc.title = strings.concatenate([]string{old, text})
@@ -1083,6 +1175,8 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 					button_exit(rc, &line, &y, size_px, xnode, false)
 				} else if tag == "textarea" {
 					button_exit(rc, &line, &y, size_px, xnode, true)
+				} else if tag == "select" {
+					select_exit(rc, &line, &y, size_px, xnode)
 				}
 				if is_skip_tag(tag) {
 					skip_depth -= 1

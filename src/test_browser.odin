@@ -6,6 +6,7 @@ package vixen
 import "core:fmt"
 import "core:os"
 import "core:strings"
+import "core:unicode/utf8"
 
 import edit "core:text/edit"
 
@@ -102,8 +103,150 @@ tuitest_main :: proc() -> bool {
 	if !tuitest_fragments() {
 		return false
 	}
+	if !tuitest_find() {
+		return false
+	}
 	// Server-backed browse section: navigate, back, forward, dump content.
 	return tuitest_browse()
+
+// Find-in-page: live matches, jump, n/N cycling, highlights, relayout.
+tuitest_find :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	port, srv, ok := server_start()
+	if !ok {
+		check(&fails, "find/server", false)
+		return false
+	}
+	defer {
+		_ = os.process_kill(srv)
+		_, _ = os.process_wait(srv)
+	}
+	defer delete(port)
+	base := fmt.aprintf("http://127.0.0.1:%s", port)
+	defer delete(base)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
+	sess, sok := browse_open(prof, 640)
+	if !sok {
+		check(&fails, "find/open", false)
+		return false
+	}
+	defer browse_close(&sess)
+	relayout_url := fmt.aprintf("%s/relayout", base)
+	defer delete(relayout_url)
+	if !browse_navigate(&sess, relayout_url, true) {
+		check(&fails, "find/navigate", false)
+		return false
+	}
+	tt: Tui
+	tt.sess = &sess
+	tt.cols, tt.rows = 80, 10
+	tt.cell_w, tt.cell_h = 8, 16
+	tt.focus, tt.find_current = -1, -1
+	tt.status = strings.clone("")
+	defer delete(tt.status)
+	defer delete(tt.slice)
+	defer {
+		for &fe in tt.field_edits {
+			edit.destroy(&fe.state)
+			strings.builder_destroy(&fe.build)
+		}
+		delete(tt.field_edits)
+	}
+	edit.init(&tt.find_state, context.allocator, context.allocator)
+	defer edit.destroy(&tt.find_state)
+	strings.builder_init(&tt.find_build)
+	defer strings.builder_destroy(&tt.find_build)
+	tui_sync_fields(&tt)
+	// Full UI path: / starts, typing live-searches and jumps.
+	tui_handle_key(&tt, Term_Key('/'))
+	check(&fails, "find/active", tt.find_active, "")
+	for r in "viewport" {
+		tui_handle_key(&tt, Term_Key(r))
+	}
+	check(&fails, "find/matches", len(tt.find_matches) > 0 && tt.find_current == 0, fmt.tprintf("%d", len(tt.find_matches)))
+	check(&fails, "find/jump", tt.scroll_y > 0, fmt.tprintf("y=%d", tt.scroll_y))
+	// Case-insensitive: ANCHOR finds the same lines.
+	tui_handle_key(&tt, Key_Special.Esc)
+	tui_handle_key(&tt, Term_Key('/'))
+	for r in "VIEWPORT" {
+		tui_handle_key(&tt, Term_Key(r))
+	}
+	check(&fails, "find/ci", len(tt.find_matches) > 0, "")
+	// n/N cycle (Enter keeps matches for later n/N).
+	tui_handle_key(&tt, Key_Special.Enter)
+	check(&fails, "find/enter-keeps", !tt.find_active && len(tt.find_matches) > 0, "")
+	tui_handle_key(&tt, Key_Special.Esc)
+	tui_handle_key(&tt, Term_Key('/'))
+	for r in "the" {
+		tui_handle_key(&tt, Term_Key(r))
+	}
+	check(&fails, "find/multi", len(tt.find_matches) > 1, "")
+	if len(tt.find_matches) > 1 {
+		c0 := tt.find_current
+		tui_handle_key(&tt, Key_Special.Enter)
+		tui_handle_key(&tt, Term_Key('n'))
+		check(&fails, "find/next", tt.find_current == (c0+1)%len(tt.find_matches), "")
+		tui_handle_key(&tt, Term_Key('N'))
+		ln := &sess.page.lines[tt.find_matches[c0].line]
+		top := int(ln.baseline - ln.height * 0.8)
+		bot := int(ln.baseline + ln.height * 0.2)
+		vis := top >= tt.scroll_y && bot <= tt.scroll_y + tui_view_height(&tt)
+		check(&fails, "find/prev", tt.find_current == c0 && vis, "")
+	}
+	// Highlights paint (current orange).
+	sw, sh := tt.cols*tt.cell_w, tui_view_height(&tt)
+	vfr := raster_slice(&sess.bank, sess.page.lines, sess.page.placements[:], sess.page.images[:], sw, tt.scroll_y, sh)
+	tt.slice = vfr.px
+	tt.slice_w, tt.slice_h = sw, sh
+	tui_draw_find(&tt, sw, sh)
+	orange := 0
+	for i := 0; i + 3 < len(tt.slice); i += 4 {
+		if tt.slice[i] == 160 && tt.slice[i+1] == 100 && tt.slice[i+2] == 30 {
+			orange += 1
+		}
+	}
+	check(&fails, "find/highlight", orange > 100, fmt.tprintf("%d px", orange))
+	// Field boxes are excluded from prose search.
+	form_url := fmt.aprintf("%s/form", base)
+	defer delete(form_url)
+	browse_navigate(&sess, form_url, true)
+	tui_sync_fields(&tt)
+	check(&fails, "find/cleared-nav", !tt.find_active && len(tt.find_matches) == 0, "")
+	tui_handle_key(&tt, Term_Key('/'))
+	for r in "Go" {
+		tui_handle_key(&tt, Term_Key(r))
+	}
+	check(&fails, "find/skips-fields", len(tt.find_matches) == 0, fmt.tprintf("%d", len(tt.find_matches)))
+	// Relayout recomputes from the kept query.
+	browse_navigate(&sess, relayout_url, true)
+	tui_sync_fields(&tt)
+	tui_handle_key(&tt, Term_Key('/'))
+	for r in "viewport" {
+		tui_handle_key(&tt, Term_Key(r))
+	}
+	if browse_relayout(&sess, 400) {
+		keep := tt.find_current
+		tui_find_update(&tt, keep)
+		check(&fails, "find/relayout", len(tt.find_matches) > 0, "")
+	} else {
+		check(&fails, "find/relayout", false, "")
+	}
+	fmt.printfln("browsetest-find: %d failures", fails)
+	return fails == 0
+}
 
 // Fragment targets and same-document navigation: no refetch, URL updates,
 // scroll jumps to the id (percent-decoded, first duplicate wins).
@@ -264,7 +407,9 @@ tuitest_wrapping :: proc() -> bool {
 	long_url := strings.concatenate([]string{"https://example.com/", strings.repeat("a", 300, context.temp_allocator), "/end"})
 	defer delete(long_url)
 	cjk := strings.repeat("日本語", 100, context.temp_allocator) // 300 CJK chars, no spaces
-	html := fmt.aprintf("<html><head><title>Wrap</title></head><body><p><a href=\"/target\">%s</a></p><p>%s</p><p>after</p></body></html>", long_url, cjk)
+	grapheme := strings.concatenate([]string{strings.repeat("e\xCC\x81", 50, context.temp_allocator), strings.repeat("👨‍👩‍👧", 10, context.temp_allocator), strings.repeat("🇺🇸", 20, context.temp_allocator)})
+	defer delete(grapheme)
+	html := fmt.aprintf("<html><head><title>Wrap</title></head><body><p><a href=\"/target\">%s</a></p><p>%s</p><p>%s</p><p>after</p></body></html>", long_url, cjk, grapheme)
 	defer delete(html)
 	rc, rok := layout_bytes(transmute([]u8)html, 300, &bank, "http://127.0.0.1:9/wrap")
 	if !rok {
@@ -293,6 +438,34 @@ tuitest_wrapping :: proc() -> bool {
 	check(&fails, "wrap/cjk-preserved", strings.contains(flat, cjk), "")
 	check(&fails, "wrap/after", strings.contains(flat, "after"), "")
 	check(&fails, "wrap/link", len(rc.links) == 1 && rc.links[0].url == "http://127.0.0.1:9/target", "")
+	check(&fails, "wrap/grapheme-preserved", strings.contains(flat, grapheme), "")
+	// Every chunk boundary must be a grapheme boundary in the original.
+	gbounds := grapheme_bounds(grapheme)
+	defer delete(gbounds)
+	grapheme_ok := true
+	pos := 0
+	for &ln in rc.lines {
+		if len(ln.text) == 0 || !strings.contains(grapheme, ln.text) {
+			continue
+		}
+		// Find this chunk at the expected position (chunks are contiguous).
+		if !strings.has_prefix(grapheme[pos:], ln.text) {
+			grapheme_ok = false
+			break
+		}
+		pos += len(ln.text)
+		at_boundary := false
+		for b in gbounds {
+			if b == pos {
+				at_boundary = true
+			}
+		}
+		if !at_boundary {
+			grapheme_ok = false
+			break
+		}
+	}
+	check(&fails, "wrap/grapheme-boundaries", grapheme_ok && pos == len(grapheme), "")
 	fmt.printfln("browsetest-wrap: %d failures", fails)
 	return fails == 0
 }
@@ -1010,7 +1183,20 @@ tuitest_forms :: proc() -> bool {
 	}
 	_, has_c := find(&rc, "c")
 	_, has_t2 := find(&rc, "t2")
-	check(&fails, "form/skipped", !has_c && !has_t2, "")
+	_, has_s := find(&rc, "s")
+	_, has_f := find(&rc, "f")
+	check(&fails, "form/skipped", !has_c && !has_t2 && !has_s && !has_f, "")
+	// Skipped controls show explicit notes (never silent gaps); their
+	// labels/options are suppressed, not laid out as prose.
+	flat_b: strings.Builder
+	for ln in rc.lines {
+		strings.write_string(&flat_b, ln.text)
+		strings.write_string(&flat_b, " ")
+	}
+	flat_forms := strings.to_string(flat_b)
+	defer delete(flat_b.buf)
+	check(&fails, "form/notes", strings.contains(flat_forms, "[unsupported: checkbox]") && strings.contains(flat_forms, "[disabled]") && strings.contains(flat_forms, "[unsupported: select]") && strings.contains(flat_forms, "[unsupported: button]") && strings.contains(flat_forms, "[unsupported: reset]") && strings.contains(flat_forms, "[unsupported: file]"), "")
+	check(&fails, "form/labels-suppressed", !strings.contains(flat_forms, "ClickMe") && !strings.contains(flat_forms, "ResetMe") && !strings.contains(flat_forms, "DisabledBtn") && !strings.contains(flat_forms, "One") && !strings.contains(flat_forms, "Two"), "")
 	// Submit buttons: Go (value), Send (inner text), Nowhere (orphan form).
 	named := 0
 	for &f in rc.fields {
