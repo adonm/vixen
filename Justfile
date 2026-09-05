@@ -144,6 +144,7 @@ test: build
     ./{{ BIN }} tui corpus/app-shell.html > /dev/null
     python3 tests/tui_protocol.py ./{{ BIN }}
     python3 tests/profiles.py ./{{ BIN }}
+    python3 tests/cli.py ./{{ BIN }}
     # NOTE: `show` (SDL window) stays manual-only until a GUI suite exists.
     # GUI work is gated behind green TUI+headless suites (ARCHITECTURE.md).
 
@@ -162,6 +163,7 @@ test-sanitize:
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 ./.tmp/vixen-asan nettest
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 python3 tests/tui_protocol.py ./.tmp/vixen-asan
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 python3 tests/profiles.py ./.tmp/vixen-asan
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 python3 tests/cli.py ./.tmp/vixen-asan
 
 clean:
     rm -rf {{ BIN }} .tmp

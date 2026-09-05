@@ -19,6 +19,7 @@ Page :: struct {
 	text:  [dynamic]string, // owned laid-out line texts (headless dump, tests)
 	width: int,   // layout width, px
 	height: int,  // total content height, px
+	is_error: bool, // failed fetch/parse/non-HTML (navigable, but dump fails)
 }
 
 Browse_Session :: struct {
@@ -29,11 +30,15 @@ Browse_Session :: struct {
 	cache: Cache,
 	ss:    Session_Storage,
 	tab:   int,
-	back:  [dynamic]string, // owned, oldest-first
-	fwd:   [dynamic]string, // owned
+	back:  [dynamic]History_Entry, // owned, oldest-first
+	fwd:   [dynamic]History_Entry, // owned
 	page:  Page,
 	has:   bool,
 	width: int,
+	// Char offset of the current top line (set by the frontend before any
+	// navigation that pushes history; updated to the restored anchor after
+	// back/forward). Direct session callers leave it 0 (top).
+	cur_anchor: int,
 }
 
 browse_open :: proc(profile: string, width: int) -> (Browse_Session, bool) {
@@ -76,13 +81,9 @@ browse_open :: proc(profile: string, width: int) -> (Browse_Session, bool) {
 
 browse_close :: proc(sess: ^Browse_Session) {
 	browse_drop_page(sess)
-	for s in sess.back {
-		delete(s)
-	}
+	history_clear(&sess.back)
 	delete(sess.back)
-	for s in sess.fwd {
-		delete(s)
-	}
+	history_clear(&sess.fwd)
 	delete(sess.fwd)
 	font_bank_free(&sess.bank)
 	fetch_ctx_free(&sess.fc)
@@ -183,11 +184,8 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 	defer render_ctx_free(&rc)
 	phase_end(&pc, "parse+layout")
 	if push_hist && sess.has {
-		append(&sess.back, strings.clone(sess.page.url))
-		for s in sess.fwd {
-			delete(s)
-		}
-		clear(&sess.fwd)
+		history_push(&sess.back, sess.page.url, sess.cur_anchor)
+		history_clear(&sess.fwd)
 	}
 	// Build before dropping: url may alias a link in the current page.
 	page := page_from_layout(&rc, url, rc.title, sess.width)
@@ -196,6 +194,9 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 	browse_drop_page(sess)
 	sess.page = page
 	sess.has = true
+	if push_hist {
+		sess.cur_anchor = 0 // fresh page starts at the top
+	}
 	fmt.eprintfln("browse %-40s %dx%d lines=%d links=%d fields=%d images=%d title=%q", sess.page.url, sess.width, sess.page.height, len(rc.lines), len(sess.page.links), len(rc.fields), len(sess.page.images), sess.page.title)
 	return true
 }
@@ -289,7 +290,7 @@ browse_relayout :: proc(sess: ^Browse_Session, width: int) -> bool {
 browse_error_page :: proc(sess: ^Browse_Session, url, msg: string) -> bool {
 	// Navigable error state: keeps back/forward coherent.
 	if sess.has {
-		append(&sess.back, strings.clone(sess.page.url))
+		history_push(&sess.back, sess.page.url, sess.cur_anchor)
 	}
 	// Error URLs can also alias current-page links.
 	page: Page
@@ -298,9 +299,11 @@ browse_error_page :: proc(sess: ^Browse_Session, url, msg: string) -> bool {
 	append(&page.text, strings.clone(msg))
 	page.width = sess.width
 	page.height = 120
+	page.is_error = true
 	browse_drop_page(sess)
 	sess.page = page
 	sess.has = true
+	sess.cur_anchor = 0
 	return true
 }
 
@@ -308,24 +311,36 @@ browse_back :: proc(sess: ^Browse_Session) -> bool {
 	if len(sess.back) == 0 {
 		return false
 	}
-	u := pop(&sess.back)
-	defer delete(u)
+	target := pop(&sess.back)
+	defer delete_history_entry(&target)
 	if sess.has {
-		append(&sess.fwd, strings.clone(sess.page.url))
+		history_push(&sess.fwd, sess.page.url, sess.cur_anchor)
 	}
-	return browse_navigate(sess, u, false)
+	u := strings.clone(target.url)
+	defer delete(u)
+	if !browse_navigate(sess, u, false) {
+		return false
+	}
+	sess.cur_anchor = target.anchor
+	return true
 }
 
 browse_forward :: proc(sess: ^Browse_Session) -> bool {
 	if len(sess.fwd) == 0 {
 		return false
 	}
-	u := pop(&sess.fwd)
-	defer delete(u)
+	target := pop(&sess.fwd)
+	defer delete_history_entry(&target)
 	if sess.has {
-		append(&sess.back, strings.clone(sess.page.url))
+		history_push(&sess.back, sess.page.url, sess.cur_anchor)
 	}
-	return browse_navigate(sess, u, false)
+	u := strings.clone(target.url)
+	defer delete(u)
+	if !browse_navigate(sess, u, false) {
+		return false
+	}
+	sess.cur_anchor = target.anchor
+	return true
 }
 
 browse_reload :: proc(sess: ^Browse_Session) -> bool {

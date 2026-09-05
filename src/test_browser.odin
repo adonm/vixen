@@ -90,8 +90,318 @@ tuitest_main :: proc() -> bool {
 	if !tuitest_truncate() {
 		return false
 	}
+	if !tuitest_field_paint() {
+		return false
+	}
+	if !tuitest_scroll() {
+		return false
+	}
 	// Server-backed browse section: navigate, back, forward, dump content.
 	return tuitest_browse()
+}
+
+// Reading-position anchors survive reflow, history, and reload.
+tuitest_scroll :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	top_line_text :: proc(page: ^Page, scroll_y: int) -> string {
+		for &ln in page.lines {
+			bot := int(ln.baseline + ln.height * 0.2)
+			if scroll_y < bot {
+				return ln.text
+			}
+		}
+		return ""
+	}
+	port, srv, ok := server_start()
+	if !ok {
+		check(&fails, "scroll/server", false)
+		return false
+	}
+	defer {
+		_ = os.process_kill(srv)
+		_, _ = os.process_wait(srv)
+	}
+	defer delete(port)
+	base := fmt.aprintf("http://127.0.0.1:%s", port)
+	defer delete(base)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
+	sess, sok := browse_open(prof, 900)
+	if !sok {
+		check(&fails, "scroll/open", false)
+		return false
+	}
+	defer browse_close(&sess)
+	t: Tui
+	t.sess = &sess
+	t.cols, t.rows = 80, 10
+	t.cell_w, t.cell_h = 8, 16
+	t.focus = -1
+	t.status = strings.clone("")
+	defer delete(t.status)
+	defer {
+		for &fe in t.field_edits {
+			edit.destroy(&fe.state)
+			strings.builder_destroy(&fe.build)
+		}
+		delete(t.field_edits)
+	}
+	view_h := tui_view_height(&t)
+	relayout_url := fmt.aprintf("%s/relayout", base)
+	defer delete(relayout_url)
+	if !browse_navigate(&sess, relayout_url, true) {
+		check(&fails, "scroll/navigate", false)
+		return false
+	}
+	tui_sync_fields(&t)
+	// Roundtrip on the same layout stays within a line.
+	max_y := max(sess.page.height - view_h, 0)
+	stable := true
+	for frac in ([]f32{0, 0.25, 0.5, 0.75, 1.0}) {
+		t.scroll_y = int(frac * f32(max_y))
+		off := page_char_offset(&sess.page, t.scroll_y)
+		back := page_scroll_for_offset(&sess.page, off, view_h)
+		if abs(back - t.scroll_y) > 40 {
+			stable = false
+		}
+	}
+	check(&fails, "scroll/roundtrip", stable, "")
+	// Reflow keeps the same content at the top (within nearby lines).
+	t.scroll_y = max_y / 2
+	tui_clamp_scroll(&t)
+	anchor := page_char_offset(&sess.page, t.scroll_y)
+	top_snippet := strings.clone(top_line_text(&sess.page, t.scroll_y))
+	defer delete(top_snippet)
+	words := strings.fields(top_snippet, context.temp_allocator)
+	needle := words[0] if len(words) > 0 else ""
+	if browse_relayout(&sess, 450) {
+		t.scroll_y = page_scroll_for_offset(&sess.page, anchor, view_h)
+		tui_clamp_scroll(&t)
+		found := false
+		top_idx := -1
+		for &ln, i in sess.page.lines {
+			if t.scroll_y < int(ln.baseline + ln.height * 0.2) {
+				top_idx = i
+				break
+			}
+		}
+		if top_idx >= 0 {
+			for i in max(top_idx - 2, 0) ..< min(top_idx + 3, len(sess.page.lines)) {
+				if len(needle) > 0 && strings.contains(sess.page.lines[i].text, needle) {
+					found = true
+				}
+			}
+		}
+		check(&fails, "scroll/reflow-anchor", found, needle)
+	} else {
+		check(&fails, "scroll/reflow", false, "")
+	}
+	// History restores the saved position instead of jumping to the top.
+	form_url := fmt.aprintf("%s/form", base)
+	defer delete(form_url)
+	mid := max(sess.page.height - view_h, 0) / 2
+	t.scroll_y = mid
+	tui_save_anchor(&t)
+	saved_anchor := sess.cur_anchor
+	if !browse_navigate(&sess, form_url, true) {
+		check(&fails, "scroll/leave", false)
+	} else {
+		t.scroll_y = 0
+		if browse_back(&sess) {
+			t.scroll_y = page_scroll_for_offset(&sess.page, sess.cur_anchor, view_h)
+			tui_clamp_scroll(&t)
+			check(&fails, "scroll/history-anchor", sess.cur_anchor == saved_anchor, "")
+			check(&fails, "scroll/history-pos", abs(t.scroll_y - mid) <= 60, fmt.tprintf("%d vs %d", t.scroll_y, mid))
+			if browse_forward(&sess) {
+				check(&fails, "scroll/forward", sess.page.url == form_url, "")
+			} else {
+				check(&fails, "scroll/forward", false, "")
+			}
+			if browse_back(&sess) {
+				t.scroll_y = page_scroll_for_offset(&sess.page, sess.cur_anchor, view_h)
+				check(&fails, "scroll/back-again", abs(t.scroll_y - mid) <= 60, "")
+			}
+		} else {
+			check(&fails, "scroll/back", false, "")
+		}
+	}
+	// Reload keeps position via the same anchor path.
+	if browse_reload(&sess) {
+		restored := page_scroll_for_offset(&sess.page, saved_anchor, view_h)
+		check(&fails, "scroll/reload", abs(restored - mid) <= 80, fmt.tprintf("%d", restored))
+	} else {
+		check(&fails, "scroll/reload", false, "")
+	}
+	fmt.printfln("browsetest-scroll: %d failures", fails)
+	return fails == 0
+}
+
+// Visible field overlay: current values repaint, caret/selection show,
+// focus scrolls into view, long values scroll horizontally.
+tuitest_field_paint :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	port, srv, ok := server_start()
+	if !ok {
+		check(&fails, "paint/server", false)
+		return false
+	}
+	defer {
+		_ = os.process_kill(srv)
+		_, _ = os.process_wait(srv)
+	}
+	defer delete(port)
+	base := fmt.aprintf("http://127.0.0.1:%s", port)
+	defer delete(base)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
+	cols, cell_w, cell_h := 80, 8, 16
+	sw := cols * cell_w
+	sess, sok := browse_open(prof, sw)
+	if !sok {
+		check(&fails, "paint/open", false)
+		return false
+	}
+	defer browse_close(&sess)
+	form_url := fmt.aprintf("%s/form", base)
+	defer delete(form_url)
+	if !browse_navigate(&sess, form_url, true) {
+		check(&fails, "paint/navigate", false)
+		return false
+	}
+	t: Tui
+	t.sess = &sess
+	t.cols, t.rows = cols, 24
+	t.cell_w, t.cell_h = cell_w, cell_h
+	t.focus = -1
+	t.status = strings.clone("")
+	defer delete(t.status)
+	defer delete(t.slice)
+	defer {
+		for &fe in t.field_edits {
+			edit.destroy(&fe.state)
+			strings.builder_destroy(&fe.build)
+		}
+		delete(t.field_edits)
+	}
+	tui_sync_fields(&t)
+	sh := tui_view_height(&t)
+	paint := proc(t: ^Tui, sw, sh: int) {
+		delete(t.slice)
+		t.slice = nil
+		vfr := raster_slice(&t.sess.bank, t.sess.page.lines, t.sess.page.placements[:], t.sess.page.images[:], sw, t.scroll_y, sh)
+		t.slice = vfr.px
+		t.slice_w, t.slice_h = sw, sh
+		tui_draw_fields(t, sw, sh)
+	}
+	count_color := proc(px: []u8, want: [3]u8) -> int {
+		n := 0
+		for i := 0; i + 3 < len(px); i += 4 {
+			if px[i] == want[0] && px[i+1] == want[1] && px[i+2] == want[2] {
+				n += 1
+			}
+		}
+		return n
+	}
+	// Unfocused boxes paint with gray borders, no caret.
+	paint(&t, sw, sh)
+	before := make([]u8, len(t.slice))
+	defer delete(before)
+	copy(before, t.slice)
+	check(&fails, "paint/box-border", count_color(t.slice, {80, 80, 90}) > 50, "")
+	check(&fails, "paint/no-caret", count_color(t.slice, {255, 255, 255}) == 0, "")
+	// Focus + type: pixels change, caret appears, value visible.
+	tui_handle_key(&t, Key_Special.Tab)
+	for r in "hi" {
+		tui_handle_key(&t, Term_Key(r))
+	}
+	paint(&t, sw, sh)
+	diff := 0
+	for i in 0 ..< min(len(before), len(t.slice)) {
+		if before[i] != t.slice[i] {
+			diff += 1
+		}
+	}
+	check(&fails, "paint/typing-visible", diff > 500, fmt.tprintf("%d bytes", diff))
+	check(&fails, "paint/caret", count_color(t.slice, {255, 255, 255}) > 10, "")
+	check(&fails, "paint/focus-ring", count_color(t.slice, {255, 255, 255}) > 10, "")
+	// Selection highlight: select-all shows highlight color.
+	fe := &t.field_edits[t.focus]
+	fe.state.selection = {0, len(strings.to_string(fe.build))}
+	paint(&t, sw, sh)
+	check(&fails, "paint/selection", count_color(t.slice, {80, 80, 120}) > 20, "")
+	fe.state.selection = {len(strings.to_string(fe.build)), len(strings.to_string(fe.build))}
+	// Scroll into view: hide the field, focus must bring it back.
+	t.rows = 10
+	sh = tui_view_height(&t)
+	t.scroll_y = 1 << 30
+	tui_clamp_scroll(&t)
+	top_before := t.scroll_y
+	t.focus = -1
+	tui_focus_move(&t, 1)
+	check(&fails, "paint/scroll-visible", t.scroll_y < top_before, fmt.tprintf("%d -> %d", top_before, t.scroll_y))
+	// Long value scrolls horizontally, caret stays in the box.
+	long := strings.repeat("w", 200, context.temp_allocator)
+	for r in long {
+		tui_handle_key(&t, Term_Key(r))
+	}
+	paint(&t, sw, sh)
+	check(&fails, "paint/hscroll", t.field_edits[t.focus].xoff > 0, fmt.tprintf("xoff=%d", t.field_edits[t.focus].xoff))
+	// Multiline textarea values don't crash the single-line overlay.
+	for &f, i in sess.page.fields {
+		if f.name == "body" {
+			delete(f.value)
+			f.value = strings.clone("one\ntwo\tthree\r\nfour")
+			// Mirror into the editor too (normally via tui_field_sync).
+			for &e in t.field_edits {
+				if e.field == i {
+					strings.builder_reset(&e.build)
+					strings.write_string(&e.build, f.value)
+					e.state.selection = {len(f.value), len(f.value)}
+				}
+			}
+		}
+	}
+	paint(&t, sw, sh)
+	check(&fails, "paint/multiline-safe", len(t.slice) == sw*sh*4, "")
+	// Relayout keeps the visible value (overlay repaints from fields).
+	if browse_relayout(&sess, 400) {
+		paint(&t, 400, sh)
+		kept := false
+		for &f in sess.page.fields {
+			if f.name == "q" && len(f.value) >= 2 && strings.has_prefix(f.value, "hi") {
+				kept = true
+			}
+		}
+		check(&fails, "paint/relayout-value", kept, "")
+	} else {
+		check(&fails, "paint/relayout", false, "")
+	}
+	fmt.printfln("browsetest-paint: %d failures", fails)
+	return fails == 0
 }
 
 // Cell-width truncation: ASCII, CJK wide, combining, emoji. No allocation;
@@ -610,9 +920,16 @@ tuitest_browse :: proc() -> bool {
 		narrow_links := len(sess.page.links)
 		source := strings.clone(string(sess.page.src))
 		defer delete(source)
-		back := strings.join(sess.back[:], "\n")
+		history_urls := proc(entries: []History_Entry) -> string {
+			urls := make([dynamic]string, context.temp_allocator)
+			for &e in entries {
+				append(&urls, e.url)
+			}
+			return strings.clone(strings.join(urls[:], "\n"))
+		}
+		back := history_urls(sess.back[:])
 		defer delete(back)
-		fwd := strings.join(sess.fwd[:], "\n")
+		fwd := history_urls(sess.fwd[:])
 		defer delete(fwd)
 		hits := tuitest_request_count(&sess, base, "/form")
 		check(&fails, "relayout/noop", !browse_relayout(&sess, sess.width), "")
@@ -643,9 +960,9 @@ tuitest_browse :: proc() -> bool {
 				qi < len(sess.page.fields) && sess.page.fields[qi].value == "typed", "")
 		}
 		check(&fails, "relayout/no-refetch", hits > 0 && tuitest_request_count(&sess, base, "/form") == hits, "")
-		back_after := strings.join(sess.back[:], "\n")
+		back_after := history_urls(sess.back[:])
 		defer delete(back_after)
-		fwd_after := strings.join(sess.fwd[:], "\n")
+		fwd_after := history_urls(sess.fwd[:])
 		defer delete(fwd_after)
 		check(&fails, "relayout/history", back_after == back && fwd_after == fwd, "")
 		before_width := sess.width

@@ -41,6 +41,7 @@ Field_Edit :: struct {
 	field: int, // index into sess.page.fields
 	state: edit.State,
 	build: strings.Builder,
+	xoff:  int, // horizontal scroll offset, px (keeps caret visible)
 }
 
 tui_status :: proc(t: ^Tui, msg: string) {
@@ -112,38 +113,6 @@ tui_draw_hints :: proc(t: ^Tui, sw, sh: int) {
 	}
 }
 
-// Caret bar for the focused text field, drawn into the viewport slice.
-// Prefix is re-shaped, so the caret can sit slightly off inside ligatures.
-tui_draw_cursor :: proc(t: ^Tui, sw, sh: int) {
-	if t.focus < 0 || t.focus >= len(t.field_edits) {
-		return
-	}
-	fe := &t.field_edits[t.focus]
-	f := &t.sess.page.fields[fe.field]
-	if f.kind != .text || f.line < 0 || f.line >= len(t.sess.page.lines) {
-		return
-	}
-	ln := &t.sess.page.lines[f.line]
-	caret := clamp(fe.state.selection[0], 0, len(f.value))
-	rc := Render_Ctx{bank = &t.sess.bank}
-	probe: Cur_Line
-	w := shape_word(&rc, f.value[:caret], f.px, &probe)
-	for wd in probe.words {
-		delete(wd)
-	}
-	delete(probe.glyphs)
-	delete(probe.words)
-	cx := int(f.x0 + w + 0.5)
-	top := int(ln.baseline - f.px + 0.5) - t.scroll_y
-	bot := int(ln.baseline + 2 + 0.5) - t.scroll_y
-	for yy in max(top, 0) ..< min(bot, sh) {
-		for xx in max(cx, 0) ..< min(cx + 2, sw) {
-			o := (yy * sw + xx) * 4
-			t.slice[o + 0], t.slice[o + 1], t.slice[o + 2] = 255, 255, 255
-		}
-	}
-}
-
 // Digits accumulate, Enter follows a visible link.
 tui_follow_hint :: proc(t: ^Tui) {
 	if len(t.hint) == 0 {
@@ -159,11 +128,39 @@ tui_follow_hint :: proc(t: ^Tui) {
 		return
 	}
 	url := t.sess.page.links[t.vis[n-1]].url
+	tui_save_anchor(t)
 	t.scroll_y = 0
 	if !browse_navigate(t.sess, url, true) {
 		tui_status(t, "navigation failed")
 		return
 	}
+	tui_sync_fields(t)
+}
+
+tui_go_back :: proc(t: ^Tui) -> bool {
+	tui_save_anchor(t)
+	if !browse_back(t.sess) {
+		return false
+	}
+	tui_restore_anchor(t)
+	tui_sync_fields(t)
+	return true
+}
+
+tui_go_forward :: proc(t: ^Tui) -> bool {
+	tui_save_anchor(t)
+	if !browse_forward(t.sess) {
+		return false
+	}
+	tui_restore_anchor(t)
+	tui_sync_fields(t)
+	return true
+}
+
+tui_reload :: proc(t: ^Tui) {
+	tui_save_anchor(t)
+	browse_reload(t.sess)
+	tui_restore_anchor(t)
 	tui_sync_fields(t)
 }
 
@@ -180,8 +177,8 @@ tui_draw :: proc(t: ^Tui) -> bool {
 		t.slice = vfr.px
 		t.slice_w, t.slice_h = sw, sh
 		tui_visible_links(t)
+		tui_draw_fields(t, sw, sh)
 		tui_draw_hints(t, sw, sh)
-		tui_draw_cursor(t, sw, sh)
 		png, ok := frame_encode_slice(t.slice, sw, sh)
 		if !ok { return false }
 		defer delete(png)
@@ -253,6 +250,7 @@ tui_navigate_bar :: proc(t: ^Tui, text: string) {
 	if !strings.contains(url, "://") {
 		url = strings.concatenate([]string{"https://", url}, context.temp_allocator)
 	}
+	tui_save_anchor(t)
 	t.scroll_y = 0
 	clear(&t.hint)
 	if !browse_navigate(t.sess, url, true) {
@@ -322,6 +320,7 @@ tui_focus_move :: proc(t: ^Tui, dir: int) {
 	} else {
 		tui_status(t, fmt.tprintf("%s field", "text" if f.kind == .text else "button"))
 	}
+	tui_ensure_field_visible(t)
 }
 
 // Focused field's line + caret byte offset for cursor display.
@@ -356,6 +355,7 @@ tui_field_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 		case .Enter:
 			idx := fe.field
 			t.focus = -1
+			tui_save_anchor(t)
 			if !browse_submit(t.sess, idx) {
 				if len(t.sess.page.fields[idx].action) == 0 {
 					tui_status(t, "not in a form")
@@ -430,22 +430,15 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 		case ' ':
 			t.scroll_y += tui_view_height(t)
 		case 'b':
-			if !browse_back(t.sess) {
+			if !tui_go_back(t) {
 				tui_status(t, "no back history")
-			} else {
-				t.scroll_y = 0
-				tui_sync_fields(t)
 			}
 		case 'f':
-			if !browse_forward(t.sess) {
+			if !tui_go_forward(t) {
 				tui_status(t, "no forward history")
-			} else {
-				t.scroll_y = 0
-				tui_sync_fields(t)
 			}
 		case 'r':
-			browse_reload(t.sess)
-			tui_sync_fields(t)
+			tui_reload(t)
 		case 'u':
 			t.url_active = true
 			t.chrome_dirty = true
@@ -475,11 +468,8 @@ tui_handle_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 		case .CtrlC, .CtrlD:
 			return false
 		case .Backspace:
-			if !browse_back(t.sess) {
+			if !tui_go_back(t) {
 				tui_status(t, "no back history")
-			} else {
-				t.scroll_y = 0
-				tui_sync_fields(t)
 			}
 		case .Left, .Right:
 			clear(&t.hint)

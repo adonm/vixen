@@ -108,6 +108,9 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) -> bool {
 	defer { os.stderr = stderr }
 	saved, ok := term_raw_enable()
 	if !ok { return false }
+	// Clear last (registered first): handlers stay active through cleanup.
+	term_install_signal_handlers(&saved)
+	defer term_clear_signal_handlers()
 	defer term_setattr(&saved)
 	term_enter_alt()
 	defer term_exit_alt()
@@ -146,10 +149,16 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) -> bool {
 		}
 		if tui_drawable(&t) {
 			width := t.cols * t.cell_w
-			if width != sess.width && browse_relayout(sess, width) {
-				// Source/control order is unchanged: keep builders, selection,
-				// and focus rather than rebuilding field editors on resize.
-				t.page_dirty, t.chrome_dirty = true, true
+			if width != sess.width {
+				anchor := page_char_offset(&sess.page, t.scroll_y) if sess.has else 0
+				if browse_relayout(sess, width) {
+					// Source/control order is unchanged: keep builders, selection,
+					// and focus rather than rebuilding field editors on resize.
+					t.scroll_y = page_scroll_for_offset(&sess.page, anchor, tui_view_height(&t))
+					tui_clamp_scroll(&t)
+					t.page_dirty, t.chrome_dirty = true, true
+					tui_ensure_field_visible(&t)
+				}
 			}
 		}
 		if !tui_draw(&t) { return false }

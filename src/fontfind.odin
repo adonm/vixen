@@ -28,6 +28,7 @@ Fc_Font_Match_Fn :: proc "c" (cfg, pat: rawptr, result: ^i32) -> rawptr
 Fc_Pat_Get_Str_Fn :: proc "c" (pat: rawptr, object: cstring, n: i32, s: ^cstring) -> i32
 Fc_Pat_Destroy_Fn :: proc "c" (pat: rawptr)
 Fc_Cfg_Destroy_Fn :: proc "c" (cfg: rawptr)
+Fc_Fini_Fn :: proc "c" ()
 
 Font_Discovery :: struct {
 	handle:      rawptr,
@@ -40,6 +41,7 @@ Font_Discovery :: struct {
 	pat_get_str: Fc_Pat_Get_Str_Fn,
 	pat_destroy: Fc_Pat_Destroy_Fn,
 	cfg_destroy: Fc_Cfg_Destroy_Fn,
+	fini:        Fc_Fini_Fn,
 }
 
 fontfind_open :: proc() -> (Font_Discovery, bool) {
@@ -65,9 +67,10 @@ fontfind_open :: proc() -> (Font_Discovery, bool) {
 	d.pat_get_str = transmute(Fc_Pat_Get_Str_Fn)load(&d, "FcPatternGetString")
 	d.pat_destroy = transmute(Fc_Pat_Destroy_Fn)load(&d, "FcPatternDestroy")
 	d.cfg_destroy = transmute(Fc_Cfg_Destroy_Fn)load(&d, "FcConfigDestroy")
+	d.fini = transmute(Fc_Fini_Fn)load(&d, "FcFini")
 	if d.init_cfg == nil || d.name_parse == nil || d.substitute == nil ||
 	   d.def_subst == nil || d.font_match == nil || d.pat_get_str == nil ||
-	   d.pat_destroy == nil || d.cfg_destroy == nil {
+	   d.pat_destroy == nil || d.cfg_destroy == nil || d.fini == nil {
 		dlclose(d.handle)
 		d.handle = nil
 		return d, false
@@ -85,6 +88,11 @@ fontfind_close :: proc(d: ^Font_Discovery) {
 	if d.cfg != nil {
 		d.cfg_destroy(d.cfg)
 		d.cfg = nil
+	}
+	// Free fontconfig global caches (config files, mutexes). Without this,
+	// short-lived processes (render) report one-time library leaks.
+	if d.fini != nil {
+		d.fini()
 	}
 	if d.handle != nil {
 		dlclose(d.handle)

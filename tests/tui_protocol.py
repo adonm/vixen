@@ -43,6 +43,7 @@ class Screen:
         self.deletes = 0
         self.current = None
         self.payload = bytearray()
+        self.last_png = b""
 
     def feed(self, chunk):
         self.buf.extend(chunk)
@@ -155,6 +156,7 @@ class Screen:
         self.ids.add(image_id)
         assert len(self.images) == len(self.ids) == 1, "images accumulating across frames"
         self.frames += 1
+        self.last_png = png
         self.current = None
 
     def line(self, row):
@@ -235,6 +237,24 @@ class Browser:
         assert termios.tcgetattr(self.slave) == self.original, "termios not restored"
         assert not self.screen.hidden and not self.screen.paste and not self.screen.images
         assert self.screen.current is None
+
+    def terminate(self, sig):
+        import signal as sigmod
+        self.proc.send_signal(sig)
+        deadline = time.monotonic() + 5
+        while not self.screen.restored:
+            assert time.monotonic() < deadline, "signal restoration timed out"
+            self.pump(0.05)
+            if self.proc.poll() is not None:
+                # Drain any final handler output after exit.
+                try:
+                    self.pump(0.2)
+                except OSError:
+                    pass
+                if self.screen.restored:
+                    break
+        self.proc.wait(timeout=5)
+        return self.proc.returncode
 
     def close(self):
         if self.proc.poll() is None:
@@ -321,6 +341,8 @@ def main():
 
             with browser(binary, root / "forms", base + "/form", cols=80, rows=24) as b:
                 b.start()
+                png_before = b.screen.last_png
+                frames_before = b.screen.frames
                 b.send(b"\t\t\x1b[Z")  # q -> submit -> q
                 b.send(b"\xc3")
                 b.settle(0.2)  # a slow UTF-8 continuation must not time out
@@ -329,13 +351,15 @@ def main():
                     b.send(bytes([byte]))
                     time.sleep(0.01)
                 b.settle()
+                assert b.screen.frames > frames_before, "typing produced no frame"
+                assert b.screen.last_png != png_before, "typed value not visible in pixels"
                 b.resize(55, 15)
                 b.resize(90, 25)
                 b.send(b"\r")
                 expected = urlencode({"q": "éhi日本😀", "src": "web"})
                 b.until(lambda: expected in b.log())
                 b.quit()
-            print("PASS pty fragmented Unicode, reverse tab, focus/value preservation, submission")
+            print("PASS pty fragmented Unicode, reverse tab, focus/value preservation, submission, visible paint")
 
             with browser(binary, root / "hangup", base + "/relayout") as b:
                 b.start()
@@ -344,6 +368,18 @@ def main():
                 b.proc.wait(timeout=5)
                 assert b.proc.returncode == 0, "hangup did not terminate cleanly"
             print("PASS pty hangup exits instead of redrawing in a busy loop")
+
+            import signal as sigmod
+            for sig, code in ((sigmod.SIGTERM, 143), (sigmod.SIGHUP, 129)):
+                with browser(binary, root / f"signal-{code}", base + "/relayout") as b:
+                    b.start()
+                    assert b.screen.frames > 0
+                    rc = b.terminate(sig)
+                    assert rc == code, (sig, rc)
+                    assert termios.tcgetattr(b.slave) == b.original, "termios not restored on signal"
+                    assert b.screen.deletes >= 1, "Kitty image not deleted on signal"
+                    assert not b.screen.images
+            print("PASS pty SIGTERM/SIGHUP restore terminal, delete image, exit 128+sig")
 
             p = subprocess.run([str(binary), "browse", "--profile", str(root / "headless"), base + "/form"],
                                cwd=ROOT, stdin=subprocess.DEVNULL, capture_output=True, timeout=10)

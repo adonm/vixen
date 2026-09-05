@@ -72,16 +72,19 @@ graphics passthrough is not implemented. `--kitty=off` is no longer supported.
 - Type a visible link number, then Enter: follow the link.
 - `u`: edit a URL; Enter opens it, Escape cancels.
 - `b`/`f`: back/forward; `r`: reload through the cache.
-- Tab/Shift-Tab: move field focus; type to edit; Enter submits; Escape leaves the field.
+- Tab/Shift-Tab: move field focus (scrolls into view); type to edit with
+  visible caret/selection; Enter submits; Escape leaves the field.
 - `q`: quit outside an editor; Ctrl-C/Ctrl-D also quit from either editor.
+  SIGTERM/SIGHUP restore the terminal and exit 128+sig.
 
-These are alpha controls. The PTY suite covers fragmented Unicode, reverse
-tab, focus/value preservation across resize, geometry, and idle redraws.
-Visible field-value painting, caret placement, reading-anchor preservation,
-and real-terminal presentation still need work. Chrome displays non-ASCII
-and control characters as `\u{...}` escapes for predictable row bounds;
-document rendering and submitted input retain their original Unicode.
-Fullscreen diagnostics go to `tui.log` inside the selected profile.
+The PTY suite covers fragmented Unicode, reverse tab, visible field paint
+(typing changes PNG bytes), focus/value preservation across resize, reading
+anchors across reflow/history/reload, geometry, idle redraws, and signal
+restoration. Chrome displays non-ASCII and control characters as `\u{...}`
+escapes for predictable row bounds; document rendering and submitted input
+retain their original Unicode. Fullscreen diagnostics go to `tui.log` inside
+the selected profile. Invalid CLI invocations exit 2 with usage; failed
+loads/exports exit 1. Real-terminal presentation still needs manual checks.
 
 ### Profiles
 
@@ -109,7 +112,7 @@ for sensitive accounts.
 |---|---|
 | HTTP(S), cookies, cache | Integrated through system libcurl, libpsl, SQLite, and body files; partial policy coverage |
 | Documents | Reader-style HTML flow, shaped text, links, simple lists/tables; no author-CSS layout engine |
-| Forms | Partial text/search/hidden/submit/button/textarea support and urlencoded GET/POST submission |
+| Forms | Text/search/hidden/submit/button/textarea with visible editing, urlencoded GET/POST; textarea newlines shown as spaces (stored intact); passwords not masked |
 | Images | Eager fetching and stb decoding of supported raster formats; placeholders otherwise |
 | JavaScript and DOM | Standalone QuickJS/DOM experiments with helper tests; not executed during live browsing |
 | WebAssembly | Native WAMR round-trip experiment; no page/JS integration |
@@ -132,10 +135,11 @@ mise exec -- just test-sanitize
 |---|---|
 | `vixen shapetest` | Selected shaping and font-fallback cases |
 | `vixen domtest` | Standalone DOM queries, mutations, and events |
-| `vixen browsetest` | **Headless helper tests** for layout, session, forms, images, and selected TUI handlers; `tuitest` remains a compatibility alias |
+| `vixen browsetest` | Helpers for layout, session, forms, images, visible field paint, scroll anchors, and TUI handlers; `tuitest` remains a compatibility alias |
 | `vixen termtest` | Pure incremental input, metrics, chrome bounds, and invalidation tests |
 | `just test-tui` | Decoder tests and independent PTY/Kitty output-model tests in `tests/tui_protocol.py` |
 | `tests/profiles.py` | Profile precedence, old-data preservation, and headless commands run outside the checkout |
+| `tests/cli.py` | Invalid invocations exit 2, failed loads/exports exit 1, `--help` exits 0 |
 | `vixen nettest` | URL, cookie, cache, redirect, and storage cases against local fixtures |
 | `vixen wasmtest corpus/wtest.wasm` | Native↔WASM calls |
 | Parse/JS/render/Kitty smoke commands | Invocation/output smoke, not frontend usability certification |

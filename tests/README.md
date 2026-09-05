@@ -9,9 +9,12 @@ mise exec -- just test-sanitize # instrumented Odin helpers and frontend runs
 ```
 
 `src/test_*.odin` contains in-package helper suites. `vixen browsetest`
-exercises browser/session helpers (the old `tuitest` spelling is an alias).
-`vixen termtest` checks the pure incremental decoder, metrics, and chrome
-bounds. These are separate from the frontend harnesses below.
+exercises browser/session helpers (the old `tuitest` spelling is an alias),
+including `browsetest-paint` (field overlay pixels, caret, selection,
+scroll-into-view, horizontal scroll) and `browsetest-scroll` (anchor
+roundtrip, reflow, history, reload). `vixen termtest` checks the pure
+incremental decoder, metrics, and chrome bounds. These are separate from the
+frontend harnesses below.
 
 ## `tui_protocol.py`
 
@@ -23,7 +26,9 @@ image/placement identity, replacement/deletion, and restored termios/modes.
 Journeys cover tiny/oversized windows, idle resize, cell-pixel changes, no-op
 input, URL-only redraws, fragmented/missing metrics with typeahead, bracketed paste,
 slow/fragmented UTF-8, reverse tab, focus/value preservation through resize,
-form submission, EOF/hangup, and refusing a non-terminal interactive invocation.
+visible typing (PNG bytes must change), form submission, EOF/hangup,
+SIGTERM/SIGHUP restoration (termios, image delete, exit 128+sig), and
+refusing a non-terminal interactive invocation.
 An empty focused field is deliberately painted before completing its first
 input rune: this catches the native empty-caret shaping crash.
 
@@ -32,9 +37,16 @@ ID. Capability is an interactive-mode contract, not an environment-name test.
 `VIXEN_TEST_TERM` can override that for regression checks against older builds.
 
 This is **not Ghostty or Kitty**. It does not validate actual terminal
-presentation, font rendering, compositor behavior, multiplexer passthrough,
-or catchable OS-signal restoration. Those remain separate manual/automated
-milestone requirements.
+presentation, font rendering, compositor behavior, or multiplexer
+passthrough. Those remain separate manual milestone requirements.
+
+## `cli.py`
+
+Checks strict CLI contracts without a terminal: 37 invalid invocations exit 2
+with usage (unknown flags, missing values, bad widths, extra positionals),
+`--help` exits 0, and failed loads/exports exit 1 (dump 404/refused, fetch
+bad-URL, parse/js missing, render/tui missing). Success paths cover both
+`--opt=value` and `--opt value` forms plus the `--` separator.
 
 ## `profiles.py`
 

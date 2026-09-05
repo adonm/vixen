@@ -31,8 +31,9 @@ parent-repository/submodule maintenance.
   profile behavior, dependency requirements, and benchmark qualifications.
 - [x] Replace the obsolete `tui --kitty=off` smoke with explicit one-shot
   Kitty output; label it as encoder smoke, not a terminal test.
-- [ ] Reject invalid/missing CLI arguments
-  and propagate load/evaluation/export failures as nonzero exit statuses.
+- [x] Reject invalid/missing CLI arguments (`tests/cli.py`: 37 cases exit 2
+  with usage) and propagate load/evaluation/export failures as exit 1
+  (dump 404/refused, fetch bad-URL, parse/js missing, render/tui missing).
 - [x] Separate core/headless tests from terminal protocol tests; name what
   each test actually proves rather than counting PASS lines.
 - [x] Isolate helper-test profiles and server port files in freshly created
@@ -52,8 +53,12 @@ explicit, not silently reported as frontend success.
 - [x] Build replacement layouts before publishing them. Repeated resize
   preserves source, URL/title, live state, images, form submission values, and
   history; performs no network requests; frees old state exactly once.
-- [ ] Edit controls visibly, not only in submission data. Keep focused input
-  and selection coherent across layout changes.
+- [x] Edit controls visibly via overlay repaint (current values, caret,
+  selection, focus ring, scroll-into-view, horizontal scroll). Builders,
+  selection, and focus survive relayout. Textarea newlines render as spaces
+  (stored value keeps them); true multiline layout remains M2.
+- [x] Preserve reading position with char-offset anchors across reflow,
+  history, and reload (`browsetest-scroll`; history entries carry anchors).
 - [x] Respect actual terminal rows/columns and cell/pixel metrics. Gracefully
   handle tiny windows rather than inventing larger minimum dimensions.
 - [x] Parse fragmented/coalesced terminal replies and UTF-8 input without
@@ -63,8 +68,9 @@ explicit, not silently reported as frontend success.
 - [x] Own Kitty image IDs/placements, replacement and cleanup. Handle short
   writes/errors without silently corrupting protocol output.
 - [x] React to resize while idle; restore terminal modes/cursor/alternate
-  screen on normal keyboard exit and recoverable output failures.
-- [ ] Add catchable OS-signal shutdown/restoration and fault-injection tests.
+  screen on normal keyboard exit, recoverable output failures, and catchable
+  HUP/INT/TERM (exit 128+sig; PTY signal tests). Fault injection covers
+  hangup, signals, 404/refused loads, missing files, and invalid CLI.
 
 **Exit:** committed navigation–resize–edit–submit regressions and PTY tests
 pass repeatedly. Sanitizer/lifetime checks find no attributable memory
@@ -221,5 +227,37 @@ both helper and delayed-input PTY regression coverage.
 The active package now lives in `src/` as `vixen`; C adapters are in `native/`,
 objects in `.tmp/native/`, and frontend harnesses in `tests/`. Profile defaults
 are unified with explicit access to old data, covered by `tests/profiles.py`.
-Next: CLI failure semantics, visible field painting and reading anchors,
-catchable signal restoration, and real-terminal checks. M0/M1 are still open.
+
+## M1 completion slice — 2026-09-05
+
+Visible editing (`src/tui_fields.odin`, `browsetest-paint`): the TUI repaints
+every visible field box from current values each page frame — focus ring,
+caret, selection highlight, scroll-into-view, and horizontal scroll. Field
+layout is single-line by construction so the overlay covers stale glyphs.
+Typing changes PNG bytes end-to-end (PTY asserts frames and payload differ).
+Textarea newlines are preserved in values but shown as spaces; password input
+is not masked. Caret placement re-shapes prefixes, so it can sit slightly off
+inside ligatures.
+
+Reading anchors (`src/scroll.odin`, `browsetest-scroll`): top-visible char
+offsets survive narrow/wide/narrow reflow (same words near the top),
+back/forward (history entries carry anchors), and reload (within a line).
+Fresh navigations reset to the top; focused fields keep visibility after
+reflow.
+
+CLI (`src/cli.odin`, `tests/cli.py` in both gates): unknown flags, missing
+values, bad widths (100–8192), extra/missing positionals, and unknown
+commands exit 2 with usage — no panics. Failed loads/exports exit 1: dump
+404/refused (error pages print but fail via `Page.is_error`), fetch bad-URL,
+parse/js missing, render/tui missing. `--help` exits 0. `FcFini` is now
+called so short-lived fontconfig users (render) pass LeakSanitizer.
+
+Signals (`src/terminal.odin`, PTY): HUP/INT/TERM restore termios, delete the
+owned Kitty image, leave the alternate screen, and exit 128+sig via
+async-signal-safe raw syscalls. Handlers stay installed through normal
+cleanup and are cleared last.
+
+M1 exit is met for automated coverage; real Ghostty/Kitty presentation,
+multiline textarea layout, and M0 build-identification/concurrency items
+remain open. Next: M2 reading engine (fragments, find, long-word wrapping,
+responsive images) and M0 version/benchmark baselines.

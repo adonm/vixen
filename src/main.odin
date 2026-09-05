@@ -155,6 +155,7 @@ do_js :: proc(path: string) -> bool {
 
 main :: proc() {
 	if len(os.args) < 2 {
+		fmt.eprintln("usage: vixen <command> [args]")
 		print_usage()
 		os.exit(2)
 	}
@@ -162,34 +163,52 @@ main :: proc() {
 	case "help", "--help", "-h":
 		print_usage()
 	case "rss":
+		if len(os.args) != 2 {
+			cli_usage_error("usage: vixen rss")
+		}
 		fmt.printfln("startup VmHWM=%d KB", vm_hwm_kb())
 	case "parse":
 		if len(os.args) < 3 {
-			fmt.println("usage: vixen parse <html...>")
-			os.exit(2)
+			cli_usage_error("usage: vixen parse <html...>")
 		}
+		ok := true
 		for path in os.args[2:] {
-			do_parse(path)
+			if !do_parse(path) {
+				ok = false
+			}
 		}
 		fmt.printfln("final VmHWM=%d KB", vm_hwm_kb())
+		if !ok {
+			os.exit(1)
+		}
 	case "js":
 		if len(os.args) < 3 {
-			fmt.println("usage: vixen js <js...>")
-			os.exit(2)
+			cli_usage_error("usage: vixen js <js...>")
 		}
+		ok := true
 		for path in os.args[2:] {
-			do_js(path)
+			if !do_js(path) {
+				ok = false
+			}
 		}
 		fmt.printfln("final VmHWM=%d KB", vm_hwm_kb())
+		if !ok {
+			os.exit(1)
+		}
 	case "shapetest":
+		if len(os.args) != 2 {
+			cli_usage_error("usage: vixen shapetest")
+		}
 		os.exit(0 if run_shapetests() else 1)
 	case "wasmtest":
-		if len(os.args) < 3 {
-			fmt.eprintln("usage: vixen wasmtest <module.wasm>")
-			os.exit(2)
+		if len(os.args) != 3 {
+			cli_usage_error("usage: vixen wasmtest <module.wasm>")
 		}
 		os.exit(0 if wasmtest_main(os.args[2]) else 1)
 	case "nettest":
+		if len(os.args) != 2 {
+			cli_usage_error("usage: vixen nettest")
+		}
 		os.exit(0 if nettest_main() else 1)
 	case "browse":
 		// vixen browse [--dump] [--profile DIR] [--width N] <url>
@@ -197,35 +216,54 @@ main :: proc() {
 		prof := ""
 		width := 900
 		url := ""
+		flags_ended := false
 		i := 2
 		for i < len(os.args) {
 			arg := os.args[i]
-			key, _, val := strings.partition(arg, "=")
-			switch key {
-			case "--dump":
-				dump = true
-			case "--profile":
-				if val != "" {
-					prof = val
-				} else {
-					i += 1
-					prof = os.args[i]
-				}
-			case "--width":
-				if val != "" {
-					width = parse_int_or(val, 900)
-				} else {
-					i += 1
-					width = parse_int_or(os.args[i], 900)
-				}
-			case:
-				url = arg
+			if !flags_ended && arg == "--" {
+				flags_ended = true
+				i += 1
+				continue
 			}
+			if !flags_ended && cli_is_flag(arg) {
+				if cli_help_requested(arg) {
+					fmt.println(CLI_BROWSE_USAGE)
+					os.exit(0)
+				}
+				key, _, val := strings.partition(arg, "=")
+				switch key {
+				case "--dump":
+					if strings.contains(arg, "=") {
+						cli_usage_error(CLI_BROWSE_USAGE)
+					}
+					dump = true
+				case "--profile":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					if !ok {
+						cli_usage_error(CLI_BROWSE_USAGE)
+					}
+					prof = v
+				case "--width":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					w, wok := cli_parse_width(v)
+					if !ok || !wok {
+						cli_usage_error(CLI_BROWSE_USAGE)
+					}
+					width = w
+				case:
+					cli_usage_error(CLI_BROWSE_USAGE)
+				}
+				i += 1
+				continue
+			}
+			if len(url) > 0 {
+				cli_usage_error(CLI_BROWSE_USAGE)
+			}
+			url = arg
 			i += 1
 		}
 		if url == "" {
-			fmt.eprintln("usage: vixen browse [--dump] [--profile DIR] [--width N] <url>")
-			os.exit(2)
+			cli_usage_error(CLI_BROWSE_USAGE)
 		}
 		if !strings.contains(url, "://") {
 			url = strings.concatenate([]string{"https://", url}, context.temp_allocator)
@@ -235,73 +273,114 @@ main :: proc() {
 		}
 		os.exit(0 if browse_interactive(prof, url, width) else 1)
 	case "domtest":
+		if len(os.args) != 2 && len(os.args) != 3 {
+			cli_usage_error("usage: vixen domtest [page.html]")
+		}
 		path := "corpus/domtest.html"
 		if len(os.args) >= 3 {
 			path = os.args[2]
 		}
 		os.exit(0 if domtest_main(path) else 1)
 	case "browsetest", "tuitest": // tuitest is the legacy helper-suite alias
+		if len(os.args) != 2 {
+			cli_usage_error("usage: vixen browsetest")
+		}
 		os.exit(0 if tuitest_main() else 1)
 	case "termtest":
+		if len(os.args) != 2 {
+			cli_usage_error("usage: vixen termtest")
+		}
 		os.exit(0 if termtest_main() else 1)
 	case "fetch":
 		// vixen fetch [--profile DIR] <url>
 		prof := ""
 		url := ""
+		flags_ended := false
 		i := 2
 		for i < len(os.args) {
 			arg := os.args[i]
-			key, _, val := strings.partition(arg, "=")
-			switch key {
-			case "--profile":
-				if val != "" {
-					prof = val
-				} else {
-					i += 1
-					prof = os.args[i]
-				}
-			case:
-				url = arg
+			if !flags_ended && arg == "--" {
+				flags_ended = true
+				i += 1
+				continue
 			}
+			if !flags_ended && cli_is_flag(arg) {
+				if cli_help_requested(arg) {
+					fmt.println(CLI_FETCH_USAGE)
+					os.exit(0)
+				}
+				key, _, val := strings.partition(arg, "=")
+				switch key {
+				case "--profile":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					if !ok {
+						cli_usage_error(CLI_FETCH_USAGE)
+					}
+					prof = v
+				case:
+					cli_usage_error(CLI_FETCH_USAGE)
+				}
+				i += 1
+				continue
+			}
+			if len(url) > 0 {
+				cli_usage_error(CLI_FETCH_USAGE)
+			}
+			url = arg
 			i += 1
 		}
 		if url == "" {
-			fmt.eprintln("usage: vixen fetch [--profile DIR] <url>")
-			os.exit(2)
+			cli_usage_error(CLI_FETCH_USAGE)
 		}
 		os.exit(0 if fetch_main(prof, url) else 1)
 	case "render":
-		// vixen render --out f.png [--width N] page.html
+		// vixen render [--out PNG] [--width N] <page.html>
 		out := "vixen.png"
 		width := 900
 		page := ""
+		flags_ended := false
 		i := 2
 		for i < len(os.args) {
 			arg := os.args[i]
-			key, _, val := strings.partition(arg, "=")
-			switch key {
-			case "--out":
-				if val != "" {
-					out = val
-				} else {
-					i += 1
-					out = os.args[i]
-				}
-			case "--width":
-				if val != "" {
-					width = parse_int_or(val, 900)
-				} else {
-					i += 1
-					width = parse_int_or(os.args[i], 900)
-				}
-			case:
-				page = arg
+			if !flags_ended && arg == "--" {
+				flags_ended = true
+				i += 1
+				continue
 			}
+			if !flags_ended && cli_is_flag(arg) {
+				if cli_help_requested(arg) {
+					fmt.println(CLI_RENDER_USAGE)
+					os.exit(0)
+				}
+				key, _, val := strings.partition(arg, "=")
+				switch key {
+				case "--out":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					if !ok {
+						cli_usage_error(CLI_RENDER_USAGE)
+					}
+					out = v
+				case "--width":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					w, wok := cli_parse_width(v)
+					if !ok || !wok {
+						cli_usage_error(CLI_RENDER_USAGE)
+					}
+					width = w
+				case:
+					cli_usage_error(CLI_RENDER_USAGE)
+				}
+				i += 1
+				continue
+			}
+			if len(page) > 0 {
+				cli_usage_error(CLI_RENDER_USAGE)
+			}
+			page = arg
 			i += 1
 		}
 		if page == "" {
-			fmt.eprintln("usage: vixen render --out f.png [--width N] page.html")
-			os.exit(2)
+			cli_usage_error(CLI_RENDER_USAGE)
 		}
 		bank, bok := font_bank_load(20)
 		if !bok {
@@ -318,9 +397,8 @@ main :: proc() {
 		}
 	case "show":
 		// vixen show page.html — experimental static SDL3 window.
-		if len(os.args) < 3 {
-			fmt.eprintln("usage: vixen show page.html")
-			os.exit(2)
+		if len(os.args) != 3 || cli_is_flag(os.args[2]) {
+			cli_usage_error(CLI_SHOW_USAGE)
 		}
 		bank, bok := font_bank_load(20)
 		if !bok {
@@ -340,26 +418,43 @@ main :: proc() {
 		// terminal. Ghostty (Kitty graphics) assumed, like the loop.
 		width := 900
 		page := ""
+		flags_ended := false
 		i := 2
 		for i < len(os.args) {
 			arg := os.args[i]
-			key, _, val := strings.partition(arg, "=")
-			switch key {
-			case "--width":
-				if val != "" {
-					width = parse_int_or(val, 900)
-				} else {
-					i += 1
-					width = parse_int_or(os.args[i], 900)
-				}
-			case:
-				page = arg
+			if !flags_ended && arg == "--" {
+				flags_ended = true
+				i += 1
+				continue
 			}
+			if !flags_ended && cli_is_flag(arg) {
+				if cli_help_requested(arg) {
+					fmt.println(CLI_TUI_USAGE)
+					os.exit(0)
+				}
+				key, _, val := strings.partition(arg, "=")
+				switch key {
+				case "--width":
+					v, ok := cli_take_value(os.args, &i, arg, val)
+					w, wok := cli_parse_width(v)
+					if !ok || !wok {
+						cli_usage_error(CLI_TUI_USAGE)
+					}
+					width = w
+				case:
+					cli_usage_error(CLI_TUI_USAGE)
+				}
+				i += 1
+				continue
+			}
+			if len(page) > 0 {
+				cli_usage_error(CLI_TUI_USAGE)
+			}
+			page = arg
 			i += 1
 		}
 		if page == "" {
-			fmt.eprintln("usage: vixen tui [--width N] page.html")
-			os.exit(2)
+			cli_usage_error(CLI_TUI_USAGE)
 		}
 		bank, bok := font_bank_load(20)
 		if !bok {
@@ -380,6 +475,7 @@ main :: proc() {
 			os.exit(1)
 		}
 	case:
+		fmt.eprintln("unknown command:", os.args[1])
 		print_usage()
 		os.exit(2)
 	}
@@ -387,13 +483,13 @@ main :: proc() {
 
 print_usage :: proc() {
 	fmt.println("Vixen — experimental reading browser")
-	fmt.println("  vixen browse [--profile DIR] <url>          Kitty-graphics browser")
-	fmt.println("  vixen browse --dump [--width N] <url>       headless text")
+	fmt.println("  vixen browse [--dump] [--profile DIR] [--width N] <url>   Kitty-graphics browser / headless text")
 	fmt.println("  vixen render [--out PNG] [--width N] HTML   local HTML to PNG")
 	fmt.println("  vixen fetch [--profile DIR] <url>          response statistics")
 	fmt.println("  vixen tui [--width N] HTML                 one-shot Kitty image")
 	fmt.println("  vixen show HTML                            static SDL demo")
 	fmt.println("Developer commands: parse, js, rss, shapetest, domtest, termtest, browsetest, nettest, wasmtest")
+	fmt.println("Run 'vixen <command> --help' for command usage.")
 }
 
 parse_int_or :: proc(s: string, dflt: int) -> int {
@@ -412,6 +508,7 @@ parse_int_or :: proc(s: string, dflt: int) -> int {
 
 
 // Headless dump: navigate once, print laid-out text. No display needed.
+// Error pages print (for debugging) but fail, so scripts detect bad loads.
 browse_dump :: proc(prof, url: string, width: int) -> bool {
 	sess, ok := browse_open(prof, width)
 	if !ok {
@@ -427,7 +524,7 @@ browse_dump :: proc(prof, url: string, width: int) -> bool {
 		fmt.println(t)
 	}
 	fmt.eprintfln("dump lines=%d links=%d", len(sess.page.text), len(sess.page.links))
-	return true
+	return !sess.page.is_error
 }
 
 browse_interactive :: proc(prof, url: string, width: int) -> bool {

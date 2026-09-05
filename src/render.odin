@@ -546,24 +546,48 @@ form_exit :: proc(rc: ^Render_Ctx) {
 	delete_form_ctx(&f)
 }
 
-// Lay out one field box on its own line: `[value]` or `[label]`.
-// Records the field with its line index and box x-origin for the TUI.
+// Lay out one field box on exactly one line: `[value]` or `[label]`.
+// Single-line by construction (no wrapping): the TUI overlay repaints the
+// current value with horizontal scroll, so the layout glyphs are only a
+// fallback for headless dump. Records the field's line index and x-origin.
 layout_field_box :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, text: string) -> (lineno: int, x0: f32) {
 	flush_line(rc, line, size_px, y, false)
 	lineno = len(rc.lines)
-	layout_place_word(rc, line, y, size_px, "[")
+	layout_place_word_nowrap(rc, line, size_px, "[")
 	for seg in strings.split_multi(text, []string{" ", "\t", "\n", "\r", "\f", "\v"}, context.temp_allocator) {
 		word := strings.trim_space(seg)
 		if len(word) == 0 {
 			continue
 		}
-		layout_place_word(rc, line, y, size_px, word)
+		layout_place_word_nowrap(rc, line, size_px, word)
 	}
-	layout_place_word(rc, line, y, size_px, "]")
+	layout_place_word_nowrap(rc, line, size_px, "]")
 	if len(line.glyphs) > 0 {
 		x0 = line.glyphs[0].x
 	}
 	return lineno, x0
+}
+
+// Place one word without wrapping. Field boxes are single-line controls;
+// overflow is clipped at raster time and scrolled in the TUI overlay.
+layout_place_word_nowrap :: proc(rc: ^Render_Ctx, line: ^Cur_Line, size_px: f32, word: string) {
+	if len(line.glyphs) == 0 {
+		line.x0 = rc.indent
+	}
+	probe: Cur_Line
+	w := shape_word(rc, word, size_px, &probe)
+	for p in probe.glyphs {
+		q := p
+		q.x += line.width + line.x0
+		append(&line.glyphs, q)
+	}
+	line.width += w
+	for wd in probe.words {
+		append(&line.words, wd)
+	}
+	delete(probe.glyphs)
+	delete(probe.words)
+	line.width += rc.bank.fonts[0].scale * 280
 }
 
 // <input>: void element, handled fully at enter.

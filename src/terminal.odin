@@ -66,6 +66,59 @@ term_enter_alt :: proc() {
 term_exit_alt :: proc() {
 	os.write_string(os.stdout, "\x1b[0m\x1b[?2004l\x1b[?25h\x1b[?1049l")
 }
+
+// Catchable shutdown: restore termios, delete the owned Kitty image, and
+// leave the alternate screen even when killed by HUP/INT/TERM. The handler
+// uses raw syscalls only (no allocation, no Odin runtime calls).
+@(private) term_saved: Termios
+@(private) term_saved_valid := false
+@(private) term_in_alt := false
+
+term_signal_handler :: proc "c" (sig: linux.Signal) {
+	if term_saved_valid {
+		_ = linux.ioctl(0, TCSETS, uintptr(rawptr(&term_saved)))
+	}
+	if term_in_alt {
+		msg := "\x1b_Ga=d,d=I,i=1986623589,q=2;\x1b\\\x1b[0m\x1b[?2004l\x1b[?25h\x1b[?1049l"
+		b := transmute([]u8)msg
+		_, _ = linux.write(1, b)
+	}
+	code: i32 = 128
+	#partial switch sig {
+	case .SIGHUP:
+		code = 129
+	case .SIGINT:
+		code = 130
+	case .SIGTERM:
+		code = 143
+	}
+	linux.exit_group(code)
+}
+
+term_install_signal_handlers :: proc(saved: ^Termios) {
+	term_saved = saved^
+	term_saved_valid = true
+	term_in_alt = true
+	sigs := [3]linux.Signal{linux.Signal.SIGHUP, linux.Signal.SIGINT, linux.Signal.SIGTERM}
+	for sig in sigs {
+		sa: linux.Sig_Action(u8)
+		sa.handler = term_signal_handler
+		old: linux.Sig_Action(u8)
+		_ = linux.rt_sigaction(sig, &sa, &old)
+	}
+}
+
+term_clear_signal_handlers :: proc() {
+	term_in_alt = false
+	term_saved_valid = false
+	sigs := [3]linux.Signal{linux.Signal.SIGHUP, linux.Signal.SIGINT, linux.Signal.SIGTERM}
+	for sig in sigs {
+		sa: linux.Sig_Action(u8)
+		sa.special = .SIG_DFL
+		old: linux.Sig_Action(u8)
+		_ = linux.rt_sigaction(sig, &sa, &old)
+	}
+}
 term_move :: proc(col, row: int) {
 	fmt.printf("\x1b[%d;%dH", row, col)
 }

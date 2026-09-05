@@ -46,7 +46,7 @@ page scripts, pump JS jobs, or instantiate page WASM.
 | Session storage | RAM | Helper implementation, not a complete live-page API |
 | JavaScript | QuickJS 2024-01-13, static | Standalone evaluation and DOM/event tests only |
 | WebAssembly | WAMR 2.4.4 interpreter, static | Native round trip; no page integration or execution budget |
-| TUI | Linux termios + Kitty protocol | Ghostty primary; incremental decoder, bounded viewport/chrome, explicit image replacement; real-terminal validation pending |
+| TUI | Linux termios + Kitty protocol | Ghostty primary; visible fields, scroll anchors, signal-safe restore, strict CLI; real-terminal validation pending |
 | Desktop | SDL3 3.2.10, static | Static demonstration, not an interactive browser |
 
 Mise owns tool/system provisioning through `mise bootstrap`; Just owns
@@ -92,12 +92,16 @@ separation can then be introduced behind passing lifecycle tests.
 
 ### Source organization
 
-- `src/browser.odin`: session, navigation, retained page, and relayout ownership.
+- `src/browser.odin`, `scroll.odin`: session, navigation with history anchors,
+  retained page, and relayout ownership.
 - `src/render.odin`, `forms.odin`, `images.odin`: document geometry and painting.
-- `src/tui.odin`, `tui_chrome.odin`: interaction state, overlays, and bounded chrome.
+  Field boxes are single-line; the TUI overlay repaints current values.
+- `src/tui.odin`, `tui_fields.odin`, `tui_chrome.odin`: interaction state,
+  visible field overlay (caret/selection/focus/hscroll), and bounded chrome.
 - `src/tui_runtime.odin`: event pump, terminal geometry, and invalidation.
-- `src/terminal.odin`, `terminal_input.odin`, `kitty.odin`: terminal I/O,
-  pure incremental decoding, and image transport.
+- `src/terminal.odin`, `terminal_input.odin`, `kitty.odin`: terminal I/O with
+  signal-safe restore, pure incremental decoding, and image transport.
+- `src/cli.odin`: strict argument parsing (exit 2 usage, exit 1 failures).
 - `src/test_*.odin`: in-package helper tests. `tests/` holds independent
   end-to-end harnesses; `corpus/` holds fixtures.
 - `native/`: C adapters. Compiled objects/archives go to `.tmp/native/`.
@@ -125,9 +129,12 @@ chrome without an image. These are not total pipeline memory bounds.
 
 The Kitty backend reuses an owned image/placement ID, suppresses implicit
 cursor movement with `C=1`, and deletes the image on exit. Geometry changes
-reflow without resetting field builders/focus. Incremental document edits,
-reading anchors, responsive network work, and real-terminal presentation
-remain incomplete. Temp-allocator scratch is released between event ticks.
+reflow with char-offset anchors (same content stays near the top) without
+resetting field builders/selection/focus; focused fields scroll into view.
+History entries carry anchors so back/forward/reload restore position.
+Responsive network work and real-terminal presentation remain incomplete.
+Temp-allocator scratch is released between event ticks. `FcFini` runs on
+fontconfig close so short-lived processes pass leak checks.
 
 Interactive TUI assumes Kitty graphics capability, with Ghostty primary.
 No environment-name whitelist is used. Headless output is an explicit
@@ -136,7 +143,10 @@ Odin diagnostics are redirected to the profile's private `tui.log`; native
 fd 2 is left intact for runtime/sanitizer failures. Current chrome uses
 bounded ASCII escapes for Unicode/control characters, never raw page escape
 bytes or guessed grapheme widths. Document pixels and input remain Unicode.
-Catchable OS-signal restoration still needs a dedicated lifecycle mechanism.
+HUP/INT/TERM restore termios, delete the owned image, leave the alternate
+screen, and exit 128+sig through async-signal-safe raw syscalls. CLI parsing
+is strict (exit 2 usage, exit 1 failed loads); `Page.is_error` lets headless
+dump print error pages but fail.
 
 ### Reuse rather than mandatory DIY
 
@@ -189,14 +199,17 @@ historical observations, not a current performance baseline or evidence that
 this browser is smaller/faster at equivalent work. Establish a reproducible
 baseline in M0 before using benchmark claims in releases.
 
-`browsetest` (legacy alias `tuitest`) exercises helpers/session/layout headlessly.
-`termtest` exercises pure decoding and geometry. `tests/tui_protocol.py`
-independently models output cursor bounds, Kitty placement/chunk dimensions,
-image lifetime, raw-mode restoration, and idle behavior while driving a real
-PTY. It covers fragmented input, paste, form submission through resize, and
-hangup. It is not an actual graphics terminal and does not certify Ghostty
-presentation. Desktop implementation remains gated behind headless/TUI beta
-criteria; desktop beta additionally requires real window/input tests.
+`browsetest` (legacy alias `tuitest`) exercises helpers/session/layout headlessly,
+including visible field paint (`browsetest-paint`) and scroll anchors
+(`browsetest-scroll`). `termtest` exercises pure decoding and geometry.
+`tests/tui_protocol.py` independently models output cursor bounds, Kitty
+placement/chunk dimensions, image lifetime, raw-mode restoration, and idle
+behavior while driving a real PTY. It covers fragmented input, paste, visible
+typing (PNG bytes change), form submission through resize, hangup, and
+SIGTERM/SIGHUP restoration. `tests/cli.py` covers strict usage/exit codes.
+None is an actual graphics terminal; Ghostty presentation needs manual checks.
+Desktop implementation remains gated behind headless/TUI beta criteria;
+desktop beta additionally requires real window/input tests.
 
 ## Gotchas found (for the record)
 
@@ -245,7 +258,9 @@ criteria; desktop beta additionally requires real window/input tests.
   a guarantee that those elements contain no article content.
 - Forms are a partial text/search/hidden/submit/button/textarea subset.
   Select, checkbox/radio, file, image-button, and `type=button` are skipped.
-  Controls in skipped landmarks are specially handled.
+  Controls in skipped landmarks are specially handled. Textarea values keep
+  newlines but display single-line; passwords are not masked; caret placement
+  re-shapes prefixes and can sit slightly off inside ligatures.
 - Images: PNG/JPEG/GIF-first-frame/BMP through stb; SVG/WebP, data URLs,
   srcset, and animation are not supported by the current browsing path.
 - No live page-script execution, JS job pump, timers, fetch/XHR bridge,
@@ -254,6 +269,5 @@ criteria; desktop beta additionally requires real window/input tests.
 - Profile selection is shared across commands; see README for precedence
   and explicit access to legacy profiles. Browsing history is not yet
   persisted despite the database schema.
-- Terminal input, geometry, focus, repaint, and memory defects are bugs to
-  fix, not accepted compatibility omissions. Milestones track the remaining
-  work without treating a helper-suite pass as frontend certification.
+- Multiplexer graphics passthrough is not implemented; real Ghostty/Kitty
+  presentation needs manual validation alongside the PTY model.
