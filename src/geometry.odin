@@ -37,20 +37,36 @@ page_link_at :: proc(page: ^Page, x, y: int) -> (int, bool) {
 	return -1, false
 }
 
-// Field box containing (x, y). Boxes span f.line..f.line+nlines-1 rows and
-// f.x0-4..page.width-4 horizontally (TUI overlay geometry; no h-scroll).
+// Field box x-geometry shared by both painters, hit-testing, and click
+// mapping. All call sites must use this so a click lands exactly where the
+// pixels are.
+tui_field_box_x :: proc(f: ^Field, sw: int) -> (bx0, bx1, tx0, tx1: int, ok: bool) {
+	if sw <= 0 { return 0, 0, 0, 0, false }
+	bx0 = clamp(int(f.x0) - 4, 0, sw - 1)
+	bx1 = sw - 4
+	if sw < 32 {
+		bx0, bx1 = 0, sw
+	}
+	if bx1 <= bx0 + 12 { return 0, 0, 0, 0, false }
+	tx0, tx1 = bx0 + 8, bx1 - 8
+	if tx1 <= tx0 { return 0, 0, 0, 0, false }
+	return bx0, bx1, tx0, tx1, true
+}
+
+// Field box containing (x, y). Boxes span f.line..f.line+nlines-1 rows;
+// x-range is the exact painter box above (unpainted boxes are unclickable).
 page_field_at :: proc(page: ^Page, x, y: int) -> (int, bool) {
 	for &f, i in page.fields {
 		if f.kind == .hidden || f.line < 0 || f.line >= len(page.lines) {
 			continue
 		}
+		bx0, bx1, _, _, ok := tui_field_box_x(&page.fields[i], page.width)
+		if !ok { continue }
 		nlines := max(f.nlines, 1)
 		last := min(f.line + nlines - 1, len(page.lines) - 1)
 		top := int(page.lines[f.line].baseline - page.lines[f.line].height * 0.8)
 		bot := int(page.lines[last].baseline + page.lines[last].height * 0.2)
-		x0 := max(int(f.x0) - 4, 0)
-		x1 := page.width - 4
-		if x >= x0 && x < x1 && y >= top && y < bot {
+		if x >= bx0 && x < bx1 && y >= top && y < bot {
 			return i, true
 		}
 	}

@@ -77,13 +77,17 @@ graphics passthrough is not implemented. `--kitty=off` is no longer supported.
   a submit button + Enter to send); Escape leaves the field.
 - `/`: find in page (live highlights, Enter keeps for `n`/`N`, Esc clears);
   `n`/`N`: next/previous match. Fragment `#links` jump without refetch.
+- Mouse (SGR cells, pixel taps where the terminal confirms 1016): left-click
+  follows links, focuses fields and places the caret, clicks buttons to
+  submit; wheel scrolls three rows. Modified/middle clicks are ignored.
 - `q`: quit outside an editor; Ctrl-C/Ctrl-D also quit from either editor.
   SIGTERM/SIGHUP restore the terminal and exit 128+sig.
 
 The PTY suite covers fragmented Unicode, reverse tab, visible field paint
 (typing changes PNG bytes), focus/value preservation across resize, reading
 anchors across reflow/history/reload, fragment jumps, find highlights,
-geometry, idle redraws, and signal restoration. Chrome displays non-ASCII
+mouse upgrade/plumbing in both coordinate modes, geometry, idle redraws,
+and signal restoration. Chrome displays non-ASCII
 and control characters as `\u{...}` escapes for predictable row bounds;
 document rendering and submitted input retain their original Unicode.
 Fullscreen diagnostics go to `tui.log` inside the selected profile. Invalid

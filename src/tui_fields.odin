@@ -167,12 +167,8 @@ tui_draw_fields :: proc(t: ^Tui, sw, sh: int) {
 			continue
 		}
 		ctop, cbot := max(top, 0), min(bot, sh)
-		bx0 := clamp(int(f.x0) - 4, 0, sw - 1)
-		bx1 := sw - 4
-		if sw < 32 {
-			bx0, bx1 = 0, sw
-		}
-		if bx1 <= bx0 + 12 {
+		bx0, bx1, tx0, tx1, bok := tui_field_box_x(f, sw)
+		if !bok {
 			continue
 		}
 		focused := fe_idx == t.focus
@@ -211,10 +207,6 @@ tui_draw_fields :: proc(t: ^Tui, sw, sh: int) {
 			o1 := (yy * sw + bx1 - 1) * 4
 			t.slice[o0 + 0], t.slice[o0 + 1], t.slice[o0 + 2] = border[0], border[1], border[2]
 			t.slice[o1 + 0], t.slice[o1 + 1], t.slice[o1 + 2] = border[0], border[1], border[2]
-		}
-		tx0, tx1 := bx0 + 8, bx1 - 8
-		if tx1 <= tx0 {
-			continue
 		}
 		// Text source: current value (text) or label (submit).
 		display: string
@@ -337,12 +329,8 @@ tui_draw_textarea :: proc(t: ^Tui, fe: ^Field_Edit, focused: bool, sw, sh: int, 
 		return
 	}
 	ctop, cbot := max(top, 0), min(bot, sh)
-	bx0 := clamp(int(f.x0) - 4, 0, sw - 1)
-	bx1 := sw - 4
-	if sw < 32 {
-		bx0, bx1 = 0, sw
-	}
-	if bx1 <= bx0 + 12 {
+	bx0, bx1, tx0, tx1, bok := tui_field_box_x(f, sw)
+	if !bok {
 		return
 	}
 	bg := [4]u8{28, 28, 36, 255}
@@ -370,10 +358,6 @@ tui_draw_textarea :: proc(t: ^Tui, fe: ^Field_Edit, focused: bool, sw, sh: int, 
 		o1 := (yy * sw + bx1 - 1) * 4
 		t.slice[o0 + 0], t.slice[o0 + 1], t.slice[o0 + 2] = border[0], border[1], border[2]
 		t.slice[o1 + 0], t.slice[o1 + 1], t.slice[o1 + 2] = border[0], border[1], border[2]
-	}
-	tx0, tx1 := bx0 + 8, bx1 - 8
-	if tx1 <= tx0 {
-		return
 	}
 	rows := tui_textarea_rows(f.value)
 	// Caret row/col (byte offsets, rune-clamped when shaping).

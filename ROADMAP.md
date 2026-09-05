@@ -160,6 +160,10 @@ URLs and files with documented caps and exit codes.
 
 ## M4 — Kitty TUI beta
 
+- [x] Mouse: SGR clicks/wheel with 1016 pixel upgrade via DECRQM confirm
+  (OpenTUI shape: batched startup probe, gated enable, cells fallback).
+  Clicks follow links, focus fields, place carets, submit buttons; wheel
+  scrolls; misses and modified/middle clicks are silent no-ops.
 - [ ] Complete navigation, scrolling/page movement, hints, URL editing,
   focus/edit/submit, find, zoom, and copy workflows. Keep focused controls
   visible and restore logical reading position through reflow/history.
@@ -353,7 +357,11 @@ Shipped with both gates green (release + ASan, including PTY/profile/CLI):
   stale landings, and warm-cache immediacy; PTY proves first paint <1.5s
   with a 2s-delayed image, input responsiveness mid-flight, and progressive
   refresh frames. M2 exit met on all items.
+- Mouse (M4, first slice): SGR clicks/wheel with DECRQM-gated 1016 pixels,
+  OpenTUI-shaped detection/enable hygiene; `termtest` parser cases,
+  `browsetest-mouse` behavior over live bboxes, PTY handshake/plumbing in
+  pixel/refused/timeout modes. Drag-select, zoom, and copy stay open.
 
 M2 and M3 are done and gated. Remaining pre-M4: M0 concurrent-gate output
 isolation (helper concurrency is covered; `just test` runs serially). Next:
-M4 TUI beta journeys (zoom, copy workflows, soak) on the proven base.
+M4 remainder (zoom, copy workflows incl. drag-select, soak) on the proven base.

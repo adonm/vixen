@@ -48,7 +48,7 @@ page scripts, pump JS jobs, or instantiate page WASM.
 | Session storage | RAM | Helper implementation, not a complete live-page API |
 | JavaScript | QuickJS 2024-01-13, static | Standalone evaluation and DOM/event tests only |
 | WebAssembly | WAMR 2.4.4 interpreter, static | Native round trip; no page integration or execution budget |
-| TUI | Linux termios + Kitty protocol | Ghostty primary; visible fields, find, fragments, scroll anchors, signal-safe restore, strict CLI; real-terminal validation pending |
+| TUI | Linux termios + Kitty protocol | Ghostty primary; visible fields, find, fragments, scroll anchors, SGR mouse (1016 pixels via DECRQM, cells fallback), signal-safe restore, strict CLI; real-terminal validation pending |
 | Desktop | SDL3 3.2.10, static | Static demonstration, not an interactive browser |
 
 Mise owns tool/system provisioning through `mise bootstrap`; Just owns
@@ -141,7 +141,11 @@ cursor movement with `C=1`, and deletes the image on exit. Geometry changes
 reflow with char-offset anchors (same content stays near the top) without
 resetting field builders/selection/focus; focused fields scroll into view.
 History entries carry anchors so back/forward/reload restore position.
-Responsive network work and real-terminal presentation remain incomplete.
+Mouse uses SGR cells (1000+1006, always on) with a 1016 pixel upgrade gated
+on a startup DECRQM confirm (both Ps 1/2 accepted; tmux answers 0/timeout
+and stays cells). Clicks hit-test retained link/field geometry; the field
+box helper is shared by painters and clicks so taps land on drawn pixels.
+Real-terminal presentation still needs manual Ghostty/Kitty validation.
 Temp-allocator scratch is released between event ticks. `FcFini` runs on
 fontconfig close so short-lived processes pass leak checks.
 

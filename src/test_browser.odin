@@ -125,8 +125,217 @@ tuitest_main :: proc() -> bool {
 	if !tuitest_geometry() {
 		return false
 	}
+	if !tuitest_mouse() {
+		return false
+	}
 	// Server-backed browse section: navigate, back, forward, dump content.
 	return tuitest_browse()
+
+// Mouse: wheel scrolls, clicks follow links / focus fields / place carets /
+// submit buttons, chrome and modified clicks are ignored. Coordinates are
+// derived from live layout bboxes (never hardcoded pixels); caret asserts
+// anchor to box edges so they hold under any font metrics.
+tuitest_mouse :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	port, srv, ok := server_start()
+	if !ok {
+		check(&fails, "mouse/server", false)
+		return false
+	}
+	defer {
+		_ = os.process_kill(srv)
+		_, _ = os.process_wait(srv)
+	}
+	defer delete(port)
+	base := fmt.aprintf("http://127.0.0.1:%s", port)
+	defer delete(base)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
+	sess, sok := browse_open(prof, 640)
+	if !sok {
+		check(&fails, "mouse/open", false)
+		return false
+	}
+	defer browse_close(&sess)
+	// Caret search: pure prefix math over one bank (metrics-independent).
+	last := -1
+	mono := true
+	for target in ([]f32{0, 1, 5, 10, 20, 40, 80, 1e9}) {
+		o := tui_caret_at_width(&sess.bank, "hello", 20, target)
+		if o < 0 || o > 5 || o < last { mono = false }
+		last = o
+	}
+	check(&fails, "mouse/caret-mono", mono, "")
+	check(&fails, "mouse/caret-ends", tui_caret_at_width(&sess.bank, "hello", 20, -5) == 0 &&
+		tui_caret_at_width(&sess.bank, "", 20, 99) == 0, "")
+	t: Tui
+	t.sess = &sess
+	t.cols, t.rows = 80, 24
+	t.cell_w, t.cell_h = 8, 16
+	t.focus, t.find_current = -1, -1
+	t.status = strings.clone("")
+	defer delete(t.status)
+	defer delete(t.slice)
+	defer {
+		for &fe in t.field_edits {
+			edit.destroy(&fe.state)
+			strings.builder_destroy(&fe.build)
+		}
+		delete(t.field_edits)
+	}
+	edit.init(&t.find_state, context.allocator, context.allocator)
+	defer edit.destroy(&t.find_state)
+	strings.builder_init(&t.find_build)
+	defer strings.builder_destroy(&t.find_build)
+	click_cells := proc(t: ^Tui, dx, dy: int) {
+		tui_handle_mouse(t, Term_Mouse{0, dx / t.cell_w + 1, dy / t.cell_h + 1, false, false})
+	}
+	// Link clicks, both units: /relayout links to the live /form page.
+	relayout_url := fmt.aprintf("%s/relayout", base)
+	defer delete(relayout_url)
+	for mode in 0 ..< 2 {
+		t.mouse_pixels = mode == 1
+		browse_navigate(&sess, relayout_url, true)
+		tui_sync_fields(&t)
+		t.scroll_y = 0
+		li := -1
+		for &l, i in sess.page.links {
+			if strings.has_suffix(l.url, "/form") {
+				li = i
+				break
+			}
+		}
+		check(&fails, "mouse/link-found", li >= 0, "")
+		if li < 0 { return false }
+		l := &sess.page.links[li]
+		cx, cy := int((l.x0+l.x1)/2), int((l.y0+l.y1)/2)
+		if t.mouse_pixels {
+			tui_handle_mouse(&t, Term_Mouse{0, cx + 1, cy + 1, false, false})
+		} else {
+			click_cells(&t, cx, cy)
+		}
+		check(&fails, "mouse/link-follow", strings.has_suffix(sess.page.url, "/form"), sess.page.url)
+	}
+	t.mouse_pixels = false
+	// Wheel scrolls exactly three rows per tick; modified/horizontal ignored.
+	browse_navigate(&sess, relayout_url, true)
+	tui_sync_fields(&t)
+	t.scroll_y = 0
+	t.rows = 10
+	t.page_dirty, t.chrome_dirty = false, false
+	tui_handle_mouse(&t, Term_Mouse{65, 1, 1, false, false})
+	check(&fails, "mouse/wheel-down", t.scroll_y == 48 && t.page_dirty && t.chrome_dirty, "")
+	t.page_dirty, t.chrome_dirty = false, false
+	tui_handle_mouse(&t, Term_Mouse{64, 1, 1, false, false})
+	check(&fails, "mouse/wheel-up", t.scroll_y == 0, "")
+	t.page_dirty, t.chrome_dirty = false, false
+	tui_handle_mouse(&t, Term_Mouse{68, 1, 1, false, false})
+	tui_handle_mouse(&t, Term_Mouse{66, 1, 1, false, false})
+	check(&fails, "mouse/wheel-ignore", t.scroll_y == 0 && !t.page_dirty && !t.chrome_dirty, "")
+	t.rows = 24
+	// Field focus + caret ends + button submit.
+	form_url := fmt.aprintf("%s/form", base)
+	defer delete(form_url)
+	browse_navigate(&sess, form_url, true)
+	tui_sync_fields(&t)
+	t.scroll_y = 0
+	qi := -1
+	for &f, i in sess.page.fields {
+		if f.name == "q" { qi = i }
+	}
+	tui_handle_key(&t, Key_Special.Tab)
+	tui_handle_key(&t, Term_Key('h'))
+	tui_handle_key(&t, Term_Key('i'))
+	q := &sess.page.fields[qi]
+	ln := &sess.page.lines[q.line]
+	_, _, tx0, tx1, bok := tui_field_box_x(q, 640)
+	check(&fails, "mouse/box", bok, "")
+	if bok {
+		midy := int(ln.baseline - ln.height * 0.8 + ln.height / 2)
+		click_cells(&t, tx0 - 4, midy)
+		fe := &t.field_edits[t.focus]
+		check(&fails, "mouse/focus-left", t.focus >= 0 && fe.field == qi && fe.state.selection == {0, 0}, "")
+		click_cells(&t, tx1 - 2, midy)
+		check(&fails, "mouse/focus-right", fe.state.selection == {2, 2}, "")
+		check(&fails, "mouse/announce", t.status == "field q", t.status)
+	}
+	si := -1
+	for &f, i in sess.page.fields {
+		if f.kind == .submit && len(f.action) > 0 {
+			si = i // Go (skips the orphan Nowhere button)
+			break
+		}
+	}
+	sf := &sess.page.fields[si]
+	sln := &sess.page.lines[sf.line]
+	click_cells(&t, 320, int(sln.baseline - sln.height * 0.8 + sln.height / 2))
+	check(&fails, "mouse/submit", strings.contains(sess.page.url, "/search?") && strings.contains(sess.page.url, "q=hi"), sess.page.url)
+	// Textarea rows: fresh page, three-row value, one-row box (voff path).
+	browse_navigate(&sess, form_url, true)
+	tui_sync_fields(&t)
+	t.scroll_y = 0
+	bi := -1
+	for &f, i in sess.page.fields {
+		if f.name == "body" { bi = i }
+	}
+	bf := &sess.page.fields[bi]
+	delete(bf.value)
+	bf.value = strings.clone("l1\nl222\nl3")
+	for &e in t.field_edits {
+		if e.field == bi {
+			strings.builder_reset(&e.build)
+			strings.write_string(&e.build, bf.value)
+			e.state.selection = {len(bf.value), len(bf.value)}
+		}
+	}
+	bln := &sess.page.lines[bf.line]
+	_, _, btx0, _, _ := tui_field_box_x(bf, 640)
+	click_cells(&t, btx0 - 4, int(bln.baseline - bln.height * 0.8 + bln.height / 2))
+	be := -1
+	for &e, i in t.field_edits {
+		if e.field == bi { be = i }
+	}
+	check(&fails, "mouse/area-row0", t.focus == be && t.field_edits[be].state.selection == {0, 0}, "")
+	click_cells(&t, 320, int(bln.baseline - bln.height * 0.8 + bln.height / 2))
+	check(&fails, "mouse/area-row0-end", t.field_edits[be].state.selection == {2, 2}, "")
+	// Ignores: chrome rows, release, leave, modified, middle button.
+	t.page_dirty, t.chrome_dirty = false, false
+	tui_handle_mouse(&t, Term_Mouse{0, 40, t.rows, false, false})
+	tui_handle_mouse(&t, Term_Mouse{0, 40, 5, true, false})
+	tui_handle_mouse(&t, Term_Mouse{160, 400, 300, false, true})
+	tui_handle_mouse(&t, Term_Mouse{4, 40, 5, false, false})
+	tui_handle_mouse(&t, Term_Mouse{1, 40, 5, false, false})
+	check(&fails, "mouse/ignores", !t.page_dirty && !t.chrome_dirty, "")
+	// Empty space blurs; chrome editors dismiss without acting.
+	click_cells(&t, 636, 100)
+	check(&fails, "mouse/blur", t.focus == -1, "")
+	t.url_active = true
+	t.page_dirty, t.chrome_dirty = false, false
+	click_cells(&t, 636, 100)
+	check(&fails, "mouse/url-dismiss", !t.url_active && !t.page_dirty && t.chrome_dirty, "")
+	tui_handle_key(&t, Term_Key('/'))
+	for r in "the" {
+		tui_handle_key(&t, Term_Key(r))
+	}
+	nm := len(t.find_matches)
+	t.page_dirty, t.chrome_dirty = false, false
+	click_cells(&t, 636, 100)
+	check(&fails, "mouse/find-dismiss", !t.find_active && len(t.find_matches) == nm && nm > 0 && !t.page_dirty && t.chrome_dirty, "")
+	fmt.printfln("browsetest-mouse: %d failures", fails)
+	return fails == 0
+}
 
 // Hit-testing over retained geometry: lines binary-searched, links and
 // fields by boxes. No mouse UI yet; this is the shared mapping for M4/M5.

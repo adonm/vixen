@@ -22,15 +22,18 @@ import time
 from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
-CSI = re.compile(rb"\x1b\[([0-9;?]*)([@-~])")
+CSI = re.compile(rb"\x1b\[([0-9;?$]*)([@-~])")
 
 
 class Screen:
-    def __init__(self, send, cols, rows, cw, ch, typeahead=False, replies=True):
+    def __init__(self, send, cols, rows, cw, ch, typeahead=False, replies=True, decrpm_ps=1):
         self.send = send
         self.cols, self.rows, self.cw, self.ch = cols, rows, cw, ch
         self.typeahead = typeahead
         self.replies = replies
+        self.decrpm_ps = decrpm_ps  # None: never answer DECRQM (timeout path)
+        self.mouse = False
+        self.modes_seen = set()
         self.buf = bytearray()
         self.alt = False
         self.entered = self.restored = False
@@ -79,7 +82,7 @@ class Screen:
 
     def csi(self, params, final):
         if final in ("h", "l"):
-            assert params in ("?1049", "?25", "?2004"), params
+            assert params in ("?1049", "?25", "?2004", "?1000", "?1006", "?1016"), params
             enabled = final == "h"
             if params == "?1049":
                 self.alt = enabled
@@ -88,8 +91,21 @@ class Screen:
                 self.row = self.col = 1
             elif params == "?25":
                 self.hidden = not enabled
+            elif params == "?1000":
+                self.mouse = enabled
+            elif params in ("?1006", "?1016"):
+                if enabled:
+                    self.modes_seen.add(params)
             else:
                 self.paste = enabled
+        elif final == "p":
+            # DECRQM capability query (pixel mouse today); reply fragmented.
+            assert params == "?1016$", params
+            if self.decrpm_ps is not None:
+                reply = f"\x1b[?1016;{self.decrpm_ps}$y".encode()
+                self.send(reply[:7])
+                time.sleep(0.005)
+                self.send(reply[7:])
         elif final == "t":
             assert params in ("14", "16"), params
             if not self.replies:
@@ -164,12 +180,12 @@ class Screen:
 
 
 class Browser:
-    def __init__(self, binary, root, url, cols=40, rows=10, cw=10, ch=20, pixels=True, typeahead=False, replies=True):
+    def __init__(self, binary, root, url, cols=40, rows=10, cw=10, ch=20, pixels=True, typeahead=False, replies=True, decrpm_ps=1):
         self.master, self.slave = pty.openpty()
         self.pixels = pixels
         self.root = root
         self.raw = bytearray()
-        self.screen = Screen(self.send, cols, rows, cw, ch, typeahead, replies)
+        self.screen = Screen(self.send, cols, rows, cw, ch, typeahead, replies, decrpm_ps)
         self.winsize(cols, rows, cw, ch)
         self.original = termios.tcgetattr(self.slave)
         env = dict(os.environ, TERM=os.environ.get("VIXEN_TEST_TERM", "xterm-256color"))
@@ -236,6 +252,7 @@ class Browser:
         assert self.proc.returncode == 0
         assert termios.tcgetattr(self.slave) == self.original, "termios not restored"
         assert not self.screen.hidden and not self.screen.paste and not self.screen.images
+        assert not self.screen.mouse, "mouse tracking left enabled on quit"
         assert self.screen.current is None
 
     def terminate(self, sig):
@@ -383,6 +400,47 @@ def main():
                 b.quit()
             print("PASS pty find bar, live highlight/jump, n/N, no-matches, Esc")
 
+            with browser(binary, root / "mouse-px", base + "/relayout", cols=80, rows=10) as b:
+                b.start()
+                assert "?1016" in b.screen.modes_seen, "pixel upgrade missing after DECRQM confirm"
+                frames = b.screen.frames
+                b.send(b"\x1b[<64;400;100M")  # pixel-range wheel: parser must accept
+                b.settle(0.2)
+                # Top of page: wheel-up is a no-op; wheel-down must scroll.
+                assert b.screen.frames == frames, "no-op wheel redrew"
+                b.send(b"\x1b[<65;400;100M")
+                b.until(lambda: b.screen.frames > frames, timeout=2)
+                b.settle(0.2)  # drain the wheel frame's trailing chrome bytes
+                frames, count = b.screen.frames, len(b.raw)
+                b.send(b"\x1b[<0;1;1M")  # top-left text: clean miss, zero output
+                b.settle(0.3)
+                assert b.screen.frames == frames and len(b.raw) == count, "miss-click redrew"
+                b.quit()
+            print("PASS pty pixel mouse upgrade, wheel, clean miss")
+
+            with browser(binary, root / "mouse-cells", base + "/relayout", cols=80, rows=10, decrpm_ps=0) as b:
+                b.start()
+                assert "?1016" not in b.screen.modes_seen, "pixels enabled despite DECRPM refusal"
+                frames = b.screen.frames
+                b.send(b"\x1b[<65;40;5M")  # cell wheel still scrolls
+                b.until(lambda: b.screen.frames > frames, timeout=2)
+                b.settle(0.2)  # drain trailing chrome before the byte snapshot
+                frames, count = b.screen.frames, len(b.raw)
+                b.send(b"\x1b[<z;z;zM\x1b[<0;0;0M\x1b[<0;1M")  # malformed: swallowed, no desync
+                b.settle(0.3)
+                assert b.screen.frames == frames and len(b.raw) == count, "malformed mouse redrew"
+                b.quit()
+            print("PASS pty DECRPM refusal stays cells; malformed mouse ignored")
+
+            with browser(binary, root / "mouse-timeout", base + "/relayout", cols=80, rows=10, decrpm_ps=None) as b:
+                b.start()
+                assert "?1016" not in b.screen.modes_seen, "pixels enabled without confirm"
+                frames = b.screen.frames
+                b.send(b"\x1b[<65;40;5M")
+                b.until(lambda: b.screen.frames > frames, timeout=2)
+                b.quit()
+            print("PASS pty missing DECRPM falls back to cells")
+
             with browser(binary, root / "slowimg", base + "/slowpage", cols=80, rows=24) as b:
                 t0 = time.monotonic()
                 b.until(lambda: b.screen.frames > 0)
@@ -414,6 +472,7 @@ def main():
                     assert termios.tcgetattr(b.slave) == b.original, "termios not restored on signal"
                     assert b.screen.deletes >= 1, "Kitty image not deleted on signal"
                     assert not b.screen.images
+                    assert not b.screen.mouse, "mouse tracking left enabled on signal"
             print("PASS pty SIGTERM/SIGHUP restore terminal, delete image, exit 128+sig")
 
             p = subprocess.run([str(binary), "browse", "--profile", str(root / "headless"), base + "/form"],

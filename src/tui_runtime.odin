@@ -67,6 +67,16 @@ tui_input :: proc(t: ^Tui, timeout_ms: int) -> bool {
 			if !t.pasting { tui_metrics_reply(t, e) }
 		case Term_Paste:
 			t.pasting = e.start
+		case Term_Decrpm:
+			// Pixel upgrade (OpenTUI shape: DECRQM at startup, enable on
+			// confirm). Accept Ps 1 or 2 (Ghostty reports set, kitty reset;
+			// stock OpenTUI only matches reset and misses Ghostty).
+			if !t.pasting && e.mode == 1016 && (e.ps == 1 || e.ps == 2) && !t.mouse_pixels {
+				t.mouse_pixels = true
+				os.write_string(os.stdout, "\x1b[?1016h")
+			}
+		case Term_Mouse:
+			if !t.pasting { tui_handle_mouse(t, e) }
 		case Term_Key:
 			key := e
 			if t.pasting {
@@ -151,6 +161,11 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) -> bool {
 	defer strings.builder_destroy(&t.find_build)
 	tui_frame_geom(&t)
 	if tui_drawable(&t) { sess.width = t.cols * t.cell_w }
+	// Pixel-mouse probe (terminal is fixed for the session: ask once).
+	// Base 1000+1006 tracking is already on via term_enter_alt; a 1016
+	// confirm upgrades later reports to pixels. No reply (timeout, tmux,
+	// older terminals) silently keeps cells — same parser, units flag only.
+	os.write_string(os.stdout, "\x1b[?1016$p")
 	if !browse_navigate(sess, start_url, true) { tui_status(&t, "initial navigation failed") }
 	if strings.index_byte(sess.page.url, '#') >= 0 {
 		tui_scroll_to_fragment(&t)

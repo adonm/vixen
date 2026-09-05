@@ -138,8 +138,9 @@ tui_find_start :: proc(t: ^Tui) {
 
 tui_find_close_keep :: proc(t: ^Tui) {
 	t.find_active = false
+	// Chrome-only: highlights paint from find_matches (unchanged), so the
+	// page pixels are identical with the bar open or closed.
 	t.chrome_dirty = true
-	t.page_dirty = true // highlight set unchanged, but chrome flips to help
 }
 
 tui_find_clear :: proc(t: ^Tui) {

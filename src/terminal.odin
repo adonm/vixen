@@ -61,10 +61,10 @@ term_read_timeout :: proc(buf: []u8, timeout_ms: int) -> int {
 }
 
 term_enter_alt :: proc() {
-	os.write_string(os.stdout, "\x1b[?1049h\x1b[H\x1b[?25l\x1b[?2004h")
+	os.write_string(os.stdout, "\x1b[?1049h\x1b[H\x1b[?25l\x1b[?2004h\x1b[?1000h\x1b[?1006h")
 }
 term_exit_alt :: proc() {
-	os.write_string(os.stdout, "\x1b[0m\x1b[?2004l\x1b[?25h\x1b[?1049l")
+	os.write_string(os.stdout, "\x1b[0m\x1b[?2004l\x1b[?25h\x1b[?1000l\x1b[?1006l\x1b[?1016l\x1b[?1049l")
 }
 
 // Catchable shutdown: restore termios, delete the owned Kitty image, and
@@ -79,7 +79,7 @@ term_signal_handler :: proc "c" (sig: linux.Signal) {
 		_ = linux.ioctl(0, TCSETS, uintptr(rawptr(&term_saved)))
 	}
 	if term_in_alt {
-		msg := "\x1b_Ga=d,d=I,i=1986623589,q=2;\x1b\\\x1b[0m\x1b[?2004l\x1b[?25h\x1b[?1049l"
+		msg := "\x1b_Ga=d,d=I,i=1986623589,q=2;\x1b\\\x1b[0m\x1b[?2004l\x1b[?25h\x1b[?1000l\x1b[?1006l\x1b[?1016l\x1b[?1049l"
 		b := transmute([]u8)msg
 		_, _ = linux.write(1, b)
 	}

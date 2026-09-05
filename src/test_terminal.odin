@@ -32,6 +32,24 @@ termtest_main :: proc() -> bool {
 		{"\x1b[200~", Term_Paste{true}},
 		{"\x1b[201~", Term_Paste{false}},
 		{"\x1b[99~", Term_Key(Key_Special.Unknown)},
+		{"\x1b[<0;10;20M", Term_Mouse{0, 10, 20, false, false}},
+		{"\x1b[<0;10;20m", Term_Mouse{0, 10, 20, true, false}},
+		{"\x1b[<64;1;1M", Term_Mouse{64, 1, 1, false, false}},
+		{"\x1b[<65;80;24M", Term_Mouse{65, 80, 24, false, false}},
+		{"\x1b[<4;5;6M", Term_Mouse{4, 5, 6, false, false}},
+		{"\x1b[<160;400;300M", Term_Mouse{160, 400, 300, false, true}},
+		{"\x1b[<0;1600;900M", Term_Mouse{0, 1600, 900, false, false}},
+		{"\x1b[<0;0;5M", Term_Key(Key_Special.Unknown)},
+		{"\x1b[<256;1;1M", Term_Key(Key_Special.Unknown)},
+		{"\x1b[<0;1M", Term_Key(Key_Special.Unknown)},
+		{"\x1b[MABC", Term_Key(Key_Special.Unknown)},
+		{"\x1b[?1016;2$y", Term_Decrpm{1016, 2}},
+		{"\x1b[?1016;1$y", Term_Decrpm{1016, 1}},
+		{"\x1b[?1016;0$y", Term_Decrpm{1016, 0}},
+		{"\x1b[?2004;1$y", Term_Decrpm{2004, 1}},
+		{"\x1b[?1016$y", Term_Key(Key_Special.Unknown)},
+		{"\x1b[?1016;5$y", Term_Key(Key_Special.Unknown)},
+		{"\x1b[?1016;1y", Term_Key(Key_Special.Unknown)},
 		{"\x1b_Gi=1;OK\x1b\\", Term_Key(Key_Special.Unknown)},
 		{"\x1b]0;title\x07", Term_Key(Key_Special.Unknown)},
 	}
@@ -57,6 +75,18 @@ termtest_main :: proc() -> bool {
 		_, ok := term_parse_metrics(bad)
 		check(&fails, "reject-metrics", !ok)
 	}
+	for bad in ([]string{"a;1;1", "0;0;5", "0;5;0", "256;1;1", "0;1", "0;1;1;2", "", "0;1;65536", "0;100000;1"}) {
+		_, ok := term_parse_mouse(bad, false)
+		check(&fails, "reject-mouse", !ok)
+	}
+	for bad in ([]string{"?1016", "?1016;", "?1016;5$", "?1016;1", "1016;1$", "?;1$", "?1016;12$"}) {
+		_, ok := term_parse_decrpm(bad)
+		check(&fails, "reject-decrpm", !ok)
+	}
+	e, n = term_decode(transmute([]u8)string("\x1b[<a;1;1M"))
+	check(&fails, "mouse-letter-final", n == 4)
+	e, n = term_decode(transmute([]u8)string(";1;1M"))
+	check(&fails, "mouse-recover", e == Term_Event(Term_Key(';')) && n == 1)
 	_, n = term_decode(transmute([]u8)string("\x1b[12;"), true)
 	check(&fails, "csi-slow-fragment", n == 0)
 	_, n = term_decode(transmute([]u8)string("\x1b[\x03"))
@@ -83,6 +113,22 @@ termtest_main :: proc() -> bool {
 	sess.page.height = 1000
 	t.sess = &sess
 	t.cols, t.rows, t.cell_h = 80, 24, 16
+	dx, dy, mok := tui_mouse_to_doc(&t, 1, 1)
+	check(&fails, "mouse-cells", mok && dx == 6 && dy == 8)
+	_, _, mok = tui_mouse_to_doc(&t, 5, 23)
+	check(&fails, "mouse-chrome", !mok)
+	_, _, mok = tui_mouse_to_doc(&t, 81, 5)
+	check(&fails, "mouse-cell-bound", !mok)
+	t.mouse_pixels = true
+	dx, dy, mok = tui_mouse_to_doc(&t, 1, 1)
+	check(&fails, "mouse-pixels", mok && dx == 0 && dy == 0)
+	_, _, mok = tui_mouse_to_doc(&t, 961, 1)
+	check(&fails, "mouse-pixel-bound", !mok)
+	t.mouse_pixels = false
+	t.find_active = true
+	t.page_dirty, t.chrome_dirty = false, false
+	tui_find_close_keep(&t)
+	check(&fails, "find-dismiss-chrome-only", !t.find_active && t.chrome_dirty && !t.page_dirty)
 	t.page_dirty, t.chrome_dirty = false, false
 	tui_handle_key(&t, Term_Key('x'))
 	tui_handle_key(&t, Term_Key(Key_Special.Unknown))

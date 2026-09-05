@@ -22,6 +22,7 @@ Tui :: struct {
 	input_at:   time.Time,
 	metrics_at: time.Time,
 	metrics_ready: bool,
+	mouse_pixels: bool, // SGR reports arrive in pixels (1016 confirmed)
 	pasting:    bool,
 	page_dirty, chrome_dirty: bool,
 	hint:       [dynamic]u8, // typed hint digits
@@ -134,6 +135,11 @@ tui_follow_hint :: proc(t: ^Tui) {
 		return
 	}
 	url := t.sess.page.links[t.vis[n-1]].url
+	tui_follow_url(t, url)
+}
+
+// Follow any URL (hint digits, mouse clicks): shared post-navigation dance.
+tui_follow_url :: proc(t: ^Tui, url: string) {
 	tui_save_anchor(t)
 	if !browse_navigate(t.sess, url, true) {
 		tui_status(t, "navigation failed")
@@ -362,6 +368,12 @@ tui_focus_move :: proc(t: ^Tui, dir: int) {
 	} else {
 		t.focus = (t.focus + dir + n) % n
 	}
+	tui_announce_focus(t)
+	tui_ensure_field_visible(t)
+}
+
+// Status line for the focused field (keyboard Tab and mouse clicks share it).
+tui_announce_focus :: proc(t: ^Tui) {
 	f := &t.sess.page.fields[t.field_edits[t.focus].field]
 	if len(f.name) > 0 {
 		if f.kind == .textarea {
@@ -374,9 +386,25 @@ tui_focus_move :: proc(t: ^Tui, dir: int) {
 	} else {
 		tui_status(t, fmt.tprintf("%s field", "text" if f.kind == .text else "button"))
 	}
-	tui_ensure_field_visible(t)
 }
 
+
+// Submit from the focused control (Enter key and button clicks share it).
+tui_press_button :: proc(t: ^Tui) {
+	idx := t.field_edits[t.focus].field
+	t.focus = -1
+	tui_save_anchor(t)
+	if !browse_submit(t.sess, idx) {
+		if len(t.sess.page.fields[idx].action) == 0 {
+			tui_status(t, "not in a form")
+		} else {
+			tui_status(t, "submission failed")
+		}
+	} else {
+		t.scroll_y = 0
+		tui_sync_fields(t)
+	}
+}
 
 // Keys while a field is focused. Returns false to quit.
 tui_field_key :: proc(t: ^Tui, k: Term_Key) -> bool {
@@ -405,19 +433,7 @@ tui_field_key :: proc(t: ^Tui, k: Term_Key) -> bool {
 				tui_field_sync(t)
 				return true
 			}
-			idx := fe.field
-			t.focus = -1
-			tui_save_anchor(t)
-			if !browse_submit(t.sess, idx) {
-				if len(t.sess.page.fields[idx].action) == 0 {
-					tui_status(t, "not in a form")
-				} else {
-					tui_status(t, "submission failed")
-				}
-			} else {
-				t.scroll_y = 0
-				tui_sync_fields(t)
-			}
+			tui_press_button(t)
 		case .Esc:
 			t.focus = -1
 		case .Backspace:

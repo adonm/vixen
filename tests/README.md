@@ -29,9 +29,11 @@ input, URL-only redraws, fragmented/missing metrics with typeahead, bracketed pa
 slow/fragmented UTF-8, reverse tab, focus/value preservation through resize,
 visible typing (PNG bytes must change), find bar with live highlights/jump,
 n/N cycling, no-matches state, Esc, slow-image non-blocking first paint with
-progressive refresh and mid-flight input, form submission, EOF/hangup,
-SIGTERM/SIGHUP restoration (termios, image delete, exit 128+sig), and
-refusing a non-terminal interactive invocation.
+progressive refresh and mid-flight input, mouse upgrade/plumbing in pixel,
+refused, and timeout modes (mapping precision lives in `browsetest-mouse`,
+which reads live bboxes), form submission, EOF/hangup,
+SIGTERM/SIGHUP restoration (termios, image delete, mouse off, exit 128+sig),
+and refusing a non-terminal interactive invocation.
 An empty focused field is deliberately painted before completing its first
 input rune: this catches the native empty-caret shaping crash.
 
