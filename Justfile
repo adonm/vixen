@@ -1,12 +1,13 @@
-# Vixen justfile. Run from the repo root: asset paths are root-relative.
+# Vixen recipes. Run from the repo root; fixture paths are root-relative.
 # Toolchain: mise (odin, just). Provision pinned natives/fonts once:
-#     mise trust && mise install && just setup
+#     mise trust && mise bootstrap --yes
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
 
 BIN     := "vixen"
 TP      := justfile_directory() / "thirdparty"
 SDL_LIB := TP / "sdl3/lib"
+NATIVE  := justfile_directory() / ".tmp/native"
 
 ODIN_VERSION    := "dev-2026-03"
 QUICKJS_VERSION := "2024-01-13"
@@ -22,7 +23,7 @@ default:
 setup: setup-dirs setup-native setup-fonts
 
 setup-dirs:
-    mkdir -p thirdparty fonts .tmp
+    mkdir -p thirdparty "{{ NATIVE }}"
 
 setup-native: setup-quickjs setup-lexbor setup-sqlite setup-wamr setup-stb setup-kb setup-sdl
 
@@ -44,14 +45,14 @@ setup-lexbor:
     (cd "lexbor-{{ LEXBOR_VERSION }}" && cmake -B build -DCMAKE_BUILD_TYPE=Release -DLEXBOR_BUILD_SHARED=OFF -DLEXBOR_BUILD_STATIC=ON > /dev/null && cmake --build build -j"$(nproc)")
     rm -f "{{ TP }}/lexbor.tar.gz"
 
-setup-sqlite:
+setup-sqlite: setup-dirs
     #!/usr/bin/env bash
     set -euo pipefail
-    test -f spike/sqlite3.o && exit 0
+    test -f "{{ NATIVE }}/sqlite3.o" && exit 0
     curl -fsSL -o "{{ TP }}/sqlite.zip" "https://www.sqlite.org/2026/sqlite-amalgamation-{{ SQLITE_VERSION }}.zip"
     rm -rf "{{ TP }}/sqlite-amalgamation-{{ SQLITE_VERSION }}"
     unzip -o -q "{{ TP }}/sqlite.zip" -d "{{ TP }}"
-    gcc -O2 -c "{{ TP }}/sqlite-amalgamation-{{ SQLITE_VERSION }}/sqlite3.c" -o spike/sqlite3.o -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_SYNCHRONOUS=1
+    gcc -O2 -c "{{ TP }}/sqlite-amalgamation-{{ SQLITE_VERSION }}/sqlite3.c" -o "{{ NATIVE }}/sqlite3.o" -DSQLITE_THREADSAFE=1 -DSQLITE_DEFAULT_SYNCHRONOUS=1
     rm -f "{{ TP }}/sqlite.zip"
 
 setup-wamr:
@@ -64,18 +65,18 @@ setup-wamr:
     (cd "{{ TP }}/wasm-micro-runtime-WAMR-{{ WAMR_VERSION }}" && cmake -B build -S product-mini/platforms/linux -DWAMR_BUILD_INTERP=1 -DWAMR_BUILD_AOT=0 -DWAMR_BUILD_JIT=0 -DWAMR_BUILD_FAST_JIT=0 -DWAMR_BUILD_LIBC_BUILTIN=1 -DWAMR_BUILD_LIBC_WASI=1 -DCMAKE_BUILD_TYPE=MinSizeRel > /dev/null && cmake --build build -j"$(nproc)")
     rm -f "{{ TP }}/wamr.tar.gz"
 
-setup-stb:
+setup-stb: setup-dirs
     #!/usr/bin/env bash
     set -euo pipefail
     # Resolve the real SDK (mise shims must not be used as a base path).
     ODIN_BIN="$(mise which odin 2>/dev/null || command -v odin)"
     STB="$(dirname "$ODIN_BIN")/vendor/stb/src"
-    gcc -O2 -c spike/shim.c -o spike/shim.o -I. -I"$STB"
-    gcc -O2 -c "$STB/stb_truetype.c" -o spike/stb_truetype.o -I"$STB"
-    gcc -O2 -c "$STB/stb_image_write.c" -o spike/stb_image_write.o -I"$STB"
-    gcc -O2 -c "$STB/stb_image.c" -o spike/stb_image.o -I"$STB"
-    gcc -O2 -c "$STB/stb_image_resize.c" -o spike/stb_image_resize.o -I"$STB"
-    ar rcs spike/stb_native.a spike/stb_truetype.o spike/stb_image_write.o spike/stb_image.o spike/stb_image_resize.o
+    gcc -O2 -c native/shim.c -o "{{ NATIVE }}/shim.o" -I. -I"$STB"
+    gcc -O2 -c "$STB/stb_truetype.c" -o "{{ NATIVE }}/stb_truetype.o" -I"$STB"
+    gcc -O2 -c "$STB/stb_image_write.c" -o "{{ NATIVE }}/stb_image_write.o" -I"$STB"
+    gcc -O2 -c "$STB/stb_image.c" -o "{{ NATIVE }}/stb_image.o" -I"$STB"
+    gcc -O2 -c "$STB/stb_image_resize.c" -o "{{ NATIVE }}/stb_image_resize.o" -I"$STB"
+    ar rcs "{{ NATIVE }}/stb_native.a" "{{ NATIVE }}/stb_truetype.o" "{{ NATIVE }}/stb_image_write.o" "{{ NATIVE }}/stb_image.o" "{{ NATIVE }}/stb_image_resize.o"
 
 setup-kb:
     #!/usr/bin/env bash
@@ -125,13 +126,15 @@ setup-fonts:
 build:
     command -v odin > /dev/null || { echo "activate mise (eval \"$(mise activate bash)\") or run: mise exec -- just build" >&2; exit 1; }
     test -f {{ SDL_LIB }}/libSDL3.a || { echo "run 'just setup' first" >&2; exit 1; }
-    odin build spike -out:{{ BIN }} -o:speed -extra-linker-flags:"`./scripts/sdl-flags.sh`"
+    test -f "{{ NATIVE }}/shim.o" && test -f "{{ NATIVE }}/sqlite3.o" && test -f "{{ NATIVE }}/stb_native.a" || { echo "run 'mise bootstrap --yes' to provision native objects" >&2; exit 1; }
+    odin build src -out:{{ BIN }} -o:speed -extra-linker-flags:"`./scripts/sdl-flags.sh`"
 
 test: build
     mkdir -p .tmp
     ./{{ BIN }} shapetest
     ./{{ BIN }} domtest
-    ./{{ BIN }} tuitest
+    ./{{ BIN }} termtest
+    ./{{ BIN }} browsetest
     ./{{ BIN }} nettest
     ./{{ BIN }} wasmtest corpus/wtest.wasm
     ./{{ BIN }} parse corpus/example.html corpus/github.html
@@ -139,16 +142,26 @@ test: build
     ./{{ BIN }} render --out .tmp/example.png corpus/example.html
     # One-shot Kitty encoder smoke only, not a terminal geometry/input test.
     ./{{ BIN }} tui corpus/app-shell.html > /dev/null
+    python3 tests/tui_protocol.py ./{{ BIN }}
+    python3 tests/profiles.py ./{{ BIN }}
     # NOTE: `show` (SDL window) stays manual-only until a GUI suite exists.
     # GUI work is gated behind green TUI+headless suites (ARCHITECTURE.md).
 
-# Focused session/network lifetime checks. The Odin executable is
+# Focused terminal tests: pure decoder plus independent PTY/protocol model.
+test-tui: build
+    ./{{ BIN }} termtest
+    python3 tests/tui_protocol.py ./{{ BIN }}
+
+# Focused session/network/terminal lifetime checks. The Odin executable is
 # instrumented; separately compiled native dependencies are not rebuilt here.
 test-sanitize:
     mkdir -p .tmp
-    odin build spike -out:.tmp/vixen-asan -o:none -debug -sanitize:address -extra-linker-flags:"`./scripts/sdl-flags.sh`"
-    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 ./.tmp/vixen-asan tuitest
+    odin build src -out:.tmp/vixen-asan -o:none -debug -sanitize:address -extra-linker-flags:"`./scripts/sdl-flags.sh`"
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 ./.tmp/vixen-asan termtest
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 ./.tmp/vixen-asan browsetest
     ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 ./.tmp/vixen-asan nettest
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 python3 tests/tui_protocol.py ./.tmp/vixen-asan
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 python3 tests/profiles.py ./.tmp/vixen-asan
 
 clean:
-    rm -rf {{ BIN }} spike/*.o spike/*.a .tmp
+    rm -rf {{ BIN }} .tmp

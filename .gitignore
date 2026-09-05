@@ -1,21 +1,14 @@
 # Provisioned, never committed.
 thirdparty/
-fonts/
 lexbor-2.5.0/
 quickjs-2024-01-13/
 
 # Build outputs.
 /vixen
-spike/*.o
-spike/*.a
-spike/*_asan
-spike/show.png
-spike/out.png
 .tmp/
 *.tmp.png
-
-# Local test state.
-.tmp/
+/vixen.png
+__pycache__/
 
 # Editors and OS.
 *~

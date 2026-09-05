@@ -1,6 +1,7 @@
 # Vixen architecture
 
-Status: experimental Odin alpha. The active package is still named `spike`.
+Status: reading-focused browser in active development (alpha). The active
+Odin package is `vixen` under `src/`; this is the product, not a throwaway spike.
 The Flutter/Rust implementation under `flutter/` is archived, not a runtime
 dependency. Milestone status and acceptance criteria live in
 [`ROADMAP.md`](ROADMAP.md).
@@ -45,7 +46,7 @@ page scripts, pump JS jobs, or instantiate page WASM.
 | Session storage | RAM | Helper implementation, not a complete live-page API |
 | JavaScript | QuickJS 2024-01-13, static | Standalone evaluation and DOM/event tests only |
 | WebAssembly | WAMR 2.4.4 interpreter, static | Native round trip; no page integration or execution budget |
-| TUI | Linux termios + Kitty protocol | Ghostty primary; no text fallback; input/geometry handling still incomplete |
+| TUI | Linux termios + Kitty protocol | Ghostty primary; incremental decoder, bounded viewport/chrome, explicit image replacement; real-terminal validation pending |
 | Desktop | SDL3 3.2.10, static | Static demonstration, not an interactive browser |
 
 Mise owns tool/system provisioning through `mise bootstrap`; Just owns
@@ -89,6 +90,22 @@ M1 initially repairs ownership in the existing `Page` representation rather
 than requiring a wholesale package rewrite. Stable document/layout
 separation can then be introduced behind passing lifecycle tests.
 
+### Source organization
+
+- `src/browser.odin`: session, navigation, retained page, and relayout ownership.
+- `src/render.odin`, `forms.odin`, `images.odin`: document geometry and painting.
+- `src/tui.odin`, `tui_chrome.odin`: interaction state, overlays, and bounded chrome.
+- `src/tui_runtime.odin`: event pump, terminal geometry, and invalidation.
+- `src/terminal.odin`, `terminal_input.odin`, `kitty.odin`: terminal I/O,
+  pure incremental decoding, and image transport.
+- `src/test_*.odin`: in-package helper tests. `tests/` holds independent
+  end-to-end harnesses; `corpus/` holds fixtures.
+- `native/`: C adapters. Compiled objects/archives go to `.tmp/native/`.
+
+Keep a single Odin package while these ownership interfaces settle. Splitting
+every component into packages now would expose unstable internals just to
+share them. Standalone DOM/JS/WASM experiments are not part of live navigation.
+
 ### Scheduling and presentation
 
 Use bounded, cancellable libcurl resource work rather than blocking the UI
@@ -97,17 +114,29 @@ images. Visible resources get priority, and image completion preserves the
 reading anchor. Resource services and profile mutation need explicit owner
 threads if workers are introduced.
 
-Track layout, page-paint, chrome, and geometry invalidation separately.
-Coalesce input/resize events; unchanged state must not trigger another
-layout/raster/PNG upload. The Kitty backend owns its image IDs and placement
-cleanup. Terminal rows/cells and document pixels are distinct coordinate
-systems, with validated conversion and no fictional minimum window size.
+The current event loop coalesces buffered input, marks page/chrome changes
+separately, and checks geometry on a 100 ms idle poll. Unchanged state does
+not cause a raster/PNG upload. TIOCGWINSZ supplies actual rows/columns and,
+where available, pixels. Bounded CSI replies can supply cell pixels; a short
+initial deadline falls back to 8×16 metrics if no reply arrives. Kitty cell
+placement bounds still constrain the image. Viewports larger than 4096 pixels
+on either axis are rejected rather than allocated; tiny windows show bounded
+chrome without an image. These are not total pipeline memory bounds.
+
+The Kitty backend reuses an owned image/placement ID, suppresses implicit
+cursor movement with `C=1`, and deletes the image on exit. Geometry changes
+reflow without resetting field builders/focus. Incremental document edits,
+reading anchors, responsive network work, and real-terminal presentation
+remain incomplete. Temp-allocator scratch is released between event ticks.
 
 Interactive TUI assumes Kitty graphics capability, with Ghostty primary.
-Environment-name whitelisting is a current implementation limitation, not
-the intended contract. Headless output is an explicit separate mode, never
-an automatic TUI fallback. In fullscreen mode, diagnostics must go to a
-log or UI channel: stderr often points to the same terminal as stdout.
+No environment-name whitelist is used. Headless output is an explicit
+separate mode, never an automatic TUI fallback. During fullscreen operation,
+Odin diagnostics are redirected to the profile's private `tui.log`; native
+fd 2 is left intact for runtime/sanitizer failures. Current chrome uses
+bounded ASCII escapes for Unicode/control characters, never raw page escape
+bytes or guessed grapheme widths. Document pixels and input remain Unicode.
+Catchable OS-signal restoration still needs a dedicated lifecycle mechanism.
 
 ### Reuse rather than mandatory DIY
 
@@ -160,17 +189,20 @@ historical observations, not a current performance baseline or evidence that
 this browser is smaller/faster at equivalent work. Establish a reproducible
 baseline in M0 before using benchmark claims in releases.
 
-`tuitest` currently exercises helpers and session/layout operations headlessly.
-It does not model terminal cursor movement, image placement, or fragmented
-terminal input. Committed PTY/protocol tests and real Ghostty/Kitty checks are
-required. Desktop implementation is gated behind credible headless and TUI
-suites; desktop beta additionally requires real window/input tests.
+`browsetest` (legacy alias `tuitest`) exercises helpers/session/layout headlessly.
+`termtest` exercises pure decoding and geometry. `tests/tui_protocol.py`
+independently models output cursor bounds, Kitty placement/chunk dimensions,
+image lifetime, raw-mode restoration, and idle behavior while driving a real
+PTY. It covers fragmented input, paste, form submission through resize, and
+hangup. It is not an actual graphics terminal and does not certify Ghostty
+presentation. Desktop implementation remains gated behind headless/TUI beta
+criteria; desktop beta additionally requires real window/input tests.
 
 ## Gotchas found (for the record)
 
 - Upstream QuickJS uses **16-byte `JSValue` on 64-bit** (NaN boxing is
   32-bit-only). `JS_FreeValue`/`JS_IsException`/`JS_ToCString` are
-  `static inline` — reachable only through `spike/shim.c`.
+  `static inline` — reachable only through `native/shim.c`.
 - kb resolves font fallback **last-pushed-first**: push the widest-coverage
   fallback first, preferred fonts last (`FONT_PATHS` order matters).
 - TTC table offsets are absolute, not member-relative (`font_upm_at`).
@@ -206,8 +238,8 @@ suites; desktop beta additionally requires real window/input tests.
 - Reader-style greedy word wrapping, not author-CSS layout; long words can
   overflow. Tables are flattened, and whitespace/preformatted text is limited.
 - Word-by-word shaping does not establish paragraph-level BiDi correctness.
-  Current terminal truncation is rune-based with partial width tables, not
-  complete grapheme/emoji handling.
+  Rune-width helpers use SDK Unicode data, not full terminal-specific
+  grapheme/emoji handling. Chrome avoids that ambiguity with ASCII escapes.
 - `head`/`script`/`style` and several other subtrees are skipped. Landmark
   filtering can omit useful content; this is a readability heuristic, not
   a guarantee that those elements contain no article content.
@@ -219,8 +251,9 @@ suites; desktop beta additionally requires real window/input tests.
 - No live page-script execution, JS job pump, timers, fetch/XHR bridge,
   JS↔WASM integration, media, or extension platform.
 - Runtime system fonts; webfonts/variable fonts are not established support.
-- Profile defaults differ by command; see README. Browsing history is not
-  yet persisted despite the database schema.
+- Profile selection is shared across commands; see README for precedence
+  and explicit access to legacy profiles. Browsing history is not yet
+  persisted despite the database schema.
 - Terminal input, geometry, focus, repaint, and memory defects are bugs to
   fix, not accepted compatibility omissions. Milestones track the remaining
   work without treating a helper-suite pass as frontend certification.

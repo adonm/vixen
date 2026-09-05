@@ -33,7 +33,7 @@ parent-repository/submodule maintenance.
   Kitty output; label it as encoder smoke, not a terminal test.
 - [ ] Reject invalid/missing CLI arguments
   and propagate load/evaluation/export failures as nonzero exit statuses.
-- [ ] Separate core/headless tests from terminal protocol tests; name what
+- [x] Separate core/headless tests from terminal protocol tests; name what
   each test actually proves rather than counting PASS lines.
 - [x] Isolate helper-test profiles and server port files in freshly created
   directories. Reap owned server children on startup failure as well as normal
@@ -54,16 +54,17 @@ explicit, not silently reported as frontend success.
   history; performs no network requests; frees old state exactly once.
 - [ ] Edit controls visibly, not only in submission data. Keep focused input
   and selection coherent across layout changes.
-- [ ] Respect actual terminal rows/columns and cell/pixel metrics. Gracefully
+- [x] Respect actual terminal rows/columns and cell/pixel metrics. Gracefully
   handle tiny windows rather than inventing larger minimum dimensions.
-- [ ] Parse fragmented/coalesced terminal replies and UTF-8 input without
+- [x] Parse fragmented/coalesced terminal replies and UTF-8 input without
   dropping typeahead. Cover reverse tab, escapes, malformed input, and EOF.
-- [ ] Bound chrome rows, use explicit positioning, and prevent implicit
+- [x] Bound chrome rows, use explicit positioning, and prevent implicit
   newline/wrap scrolling. Keep terminal diagnostics out of fullscreen output.
-- [ ] Own Kitty image IDs/placements, replacement and cleanup. Handle short
+- [x] Own Kitty image IDs/placements, replacement and cleanup. Handle short
   writes/errors without silently corrupting protocol output.
-- [ ] React to resize while idle and restore terminal modes/cursor/alternate
-  screen on normal exit, handled signals, and recoverable failures.
+- [x] React to resize while idle; restore terminal modes/cursor/alternate
+  screen on normal keyboard exit and recoverable output failures.
+- [ ] Add catchable OS-signal shutdown/restoration and fault-injection tests.
 
 **Exit:** committed navigation–resize–edit–submit regressions and PTY tests
 pass repeatedly. Sanitizer/lifetime checks find no attributable memory
@@ -193,7 +194,8 @@ measurements and enforce them before declaring a beta gate passed.
 M0 and M1 are **in progress**, not complete. The initial lifecycle slice adds
 repeated-resize/source/value/history checks, image pixel-allocation reuse and
 server-request counts, reload/back/forward after reflow, borrowed-URL
-navigation, and idempotent page destruction to `tuitest`. The regression
+  navigation, and idempotent page destruction to `browsetest` (formerly
+  `tuitest`). The regression
 failed on the previous implementation at its second image-page resize.
 
 `corpus/relayout.html` provides actual long text: narrow/wide/narrow layout
@@ -204,5 +206,20 @@ Verification recipes: `mise exec -- just test` and
 `mise exec -- just test-sanitize`. Concurrent release/ASan helper runs were
 also exercised using independent profiles/port files. These do not establish
 frontend geometry correctness or fully instrument separately built C libraries.
-Next: CLI failure semantics and committed terminal parser/geometry regressions,
-followed by visible field editing/focus preservation and repaint scheduling.
+The terminal increment adds `termtest` plus `tests/tui_protocol.py` to the
+normal and sanitizer gates. This is an independent output model over real
+PTY descriptors, not a graphical terminal. It checks row/cursor bounds,
+Kitty chunks and PNG dimensions, replacement/cleanup, tiny/oversized windows,
+idle resize and no-op input, fragmented metrics/typeahead, slow UTF-8 input,
+reverse tab, form focus/value preservation, submission, and hangup. Chrome
+changes do not upload page pixels. The previous binary fails the new protocol
+contract. Real Ghostty/Kitty presentation remains unverified here.
+Painting an empty focused field exposed a native-shaper crash; the shared
+shaping entrypoint now returns zero width for an empty caret prefix, with
+both helper and delayed-input PTY regression coverage.
+
+The active package now lives in `src/` as `vixen`; C adapters are in `native/`,
+objects in `.tmp/native/`, and frontend harnesses in `tests/`. Profile defaults
+are unified with explicit access to old data, covered by `tests/profiles.py`.
+Next: CLI failure semantics, visible field painting and reading anchors,
+catchable signal restoration, and real-terminal checks. M0/M1 are still open.

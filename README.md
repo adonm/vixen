@@ -1,9 +1,10 @@
 # Vixen
 
-An experimental browser written in Odin, aiming for small resource usage
-and fast startup to the first usable page. **The rewrite is an alpha, not a
+A reading-focused browser written in Odin, aiming for small resource usage
+and fast startup to the first usable page. **Vixen is in alpha, not yet a
 general-purpose or hardened browser.** Wikipedia and documentation browsing
-are the first usability targets.
+are the first usability targets. This is the active product implementation,
+not a disposable spike.
 
 The previous Flutter/Rust implementation is archived under [`flutter/`](flutter/)
 and on branch `archive/flutter-final`. Active development stays in this
@@ -60,11 +61,10 @@ using it as an output directory if the test recipe has not done so.
 | `fetch [--profile DIR] <url>` | Fetch through cookies/cache and print response statistics, not the response body |
 | `parse`, `js`, `rss` | Developer probes, not headless browser automation APIs |
 
-Interactive layout uses terminal dimensions rather than `--width`. Current
-terminal detection checks `TERM` for `ghostty`/`kitty` or `KITTY_WINDOW_ID`;
-this heuristic can reject capable terminals and will be replaced by the
-capability assumption described in the roadmap. `--kitty=off` is no longer
-supported.
+Interactive layout uses terminal dimensions rather than `--width`. A
+Kitty-graphics-capable terminal is assumed; there is no terminal-name
+whitelist or text fallback. Ghostty is the primary target. Multiplexer
+graphics passthrough is not implemented. `--kitty=off` is no longer supported.
 
 ### Interactive controls
 
@@ -72,27 +72,36 @@ supported.
 - Type a visible link number, then Enter: follow the link.
 - `u`: edit a URL; Enter opens it, Escape cancels.
 - `b`/`f`: back/forward; `r`: reload through the cache.
-- Tab: focus a field; type to edit; Enter submits; Escape leaves the field.
-- `q`: quit outside an editor; Ctrl-C/Ctrl-D also quit outside the URL editor.
+- Tab/Shift-Tab: move field focus; type to edit; Enter submits; Escape leaves the field.
+- `q`: quit outside an editor; Ctrl-C/Ctrl-D also quit from either editor.
 
-These are prototype controls. Unicode input, reverse tab, visible field
-editing, resize/focus preservation, geometry, and redraw behavior still need
-end-to-end terminal coverage. See [the roadmap](ROADMAP.md), not the helper
-test count, for usability status.
+These are alpha controls. The PTY suite covers fragmented Unicode, reverse
+tab, focus/value preservation across resize, geometry, and idle redraws.
+Visible field-value painting, caret placement, reading-anchor preservation,
+and real-terminal presentation still need work. Chrome displays non-ASCII
+and control characters as `\u{...}` escapes for predictable row bounds;
+document rendering and submitted input retain their original Unicode.
+Fullscreen diagnostics go to `tui.log` inside the selected profile.
 
 ### Profiles
 
-Prefer an explicit existing-parent directory while defaults are being
-unified:
+All browsing and fetch commands use the same precedence:
+
+1. `--profile DIR`
+2. `$VIXEN_PROFILE`
+3. `$SPIKE_PROFILE` (legacy explicit override)
+4. `$XDG_CONFIG_HOME/vixen`, or `$HOME/.config/vixen` when unset
+
+Missing profile directories are created. For example:
 
 ```sh
 ./vixen browse --profile "$HOME/.vixen-test" 'https://en.wikipedia.org/wiki/Odin'
 ```
 
-Currently `browse` (including `--dump`) defaults to
-`/tmp/opencode/vixen-profile`, while `fetch` uses `$SPIKE_PROFILE` or
-`~/.config/spikebrowser`. These inconsistent development defaults are not
-the intended release interface. Do not use this alpha for sensitive accounts.
+Existing profiles are never moved or deleted automatically. To reuse an
+older default profile, pass `--profile /tmp/opencode/vixen-profile` or
+`--profile "$HOME/.config/spikebrowser"` explicitly. Do not use this alpha
+for sensitive accounts.
 
 ## Feature status
 
@@ -115,6 +124,7 @@ than rendered faithfully.
 
 ```sh
 mise exec -- just test
+mise exec -- just test-tui
 mise exec -- just test-sanitize
 ```
 
@@ -122,24 +132,33 @@ mise exec -- just test-sanitize
 |---|---|
 | `vixen shapetest` | Selected shaping and font-fallback cases |
 | `vixen domtest` | Standalone DOM queries, mutations, and events |
-| `vixen tuitest` | **Headless helper tests** for layout, session, forms, images, and selected TUI handlers—not a terminal emulator test |
+| `vixen browsetest` | **Headless helper tests** for layout, session, forms, images, and selected TUI handlers; `tuitest` remains a compatibility alias |
+| `vixen termtest` | Pure incremental input, metrics, chrome bounds, and invalidation tests |
+| `just test-tui` | Decoder tests and independent PTY/Kitty output-model tests in `tests/tui_protocol.py` |
+| `tests/profiles.py` | Profile precedence, old-data preservation, and headless commands run outside the checkout |
 | `vixen nettest` | URL, cookie, cache, redirect, and storage cases against local fixtures |
 | `vixen wasmtest corpus/wtest.wasm` | Native↔WASM calls |
 | Parse/JS/render/Kitty smoke commands | Invocation/output smoke, not frontend usability certification |
-| `just test-sanitize` | ASan/leak checks on the Odin executable's session/network tests; separately built C dependencies are not instrumented |
+| `just test-sanitize` | ASan/leak checks on session/network/terminal helpers and frontend harnesses; separately built C dependencies are not instrumented |
 
-CI uses `jdx/mise-action`, `mise bootstrap`, and Just recipes. A passing run
-does not establish terminal geometry, desktop usability, web compatibility,
-or absence of memory/resource bugs. Stronger gates are planned in
+CI uses `jdx/mise-action`, `mise bootstrap`, and Just recipes. `just test`
+includes the PTY and profile harnesses. The terminal model checks protocol
+geometry, not actual Ghostty/Kitty presentation. A passing run does not
+establish desktop usability, web compatibility, or absence of all
+memory/resource bugs. Stronger gates are planned in
 [`ROADMAP.md`](ROADMAP.md).
 
 ## Repository map
 
 | Path | Role |
 |---|---|
-| `spike/` | Active Odin implementation; historical package name |
+| `src/` | Active `vixen` Odin package: browser, document rendering, platform frontends, and bindings |
+| `src/test_*.odin` | In-package helper tests, exercised by developer commands |
+| `native/` | C adapters; compiled objects live under `.tmp/native/`, not in source directories |
+| `tests/` | End-to-end Python harnesses for terminal protocol and CLI profiles |
 | `corpus/` | Local fixtures and deterministic HTTP test server |
 | `thirdparty/` | Provisioned native dependencies, not committed |
+| `.tmp/` | Ignored build products and isolated test artifacts |
 | `schema.sql` | Profile schema embedded at build time |
 | `flutter/` | Archived Flutter/Rust implementation |
 
