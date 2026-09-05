@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Fragment Test</title></head>
+<body>
+<h1>Fragment Test</h1>
+<p>Jump to the <a href="#sec2">second section</a>, the <a href="#sec3">third</a>,
+or a <a href="#missing">missing anchor</a>. Back to the <a href="#top">top</a>.</p>
+<h2 id="sec1">First section</h2>
+<p>Opening prose with enough words to push later sections below the fold on a
+small viewport. Repeating filler ensures scrolling is required to reach the
+targets. Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do
+eiusmod tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim
+veniam, quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea
+commodo consequat.</p>
+<p>More filler to guarantee scroll distance between anchors. Duis aute irure
+dolor in reprehenderit in voluptate velit esse cillum dolore eu fugiat nulla
+pariatur. Excepteur sint occaecat cupidatat non proident, sunt in culpa qui
+officia deserunt mollit anim id est laborum.</p>
+<h2 id="sec2">Second section</h2>
+<p>This is the second target. A <a href="#sec1">backlink to sec1</a> and a
+<a href="#sec3">forward link</a> exercise same-document history. The section
+needs body text so its position is measurably below the first.</p>
+<p>Additional paragraph under sec2. Sed ut perspiciatis unde omnis iste natus
+error sit voluptatem accusantium doloremque laudantium, totam rem aperiam.</p>
+<h2 id="sec3">Third section</h2>
+<p>Final target with an encoded check: <span id="café">encoded</span>
+is matched via <a href="#caf%C3%A9">percent link</a>. Duplicate ids resolve
+to the first: <span id="dup">first</span> wins over <span id="dup">second</span>.
+Legacy <a name="legacy">name anchors</a> also work via <a href="#legacy">link</a>.</p>
+<p>Closing filler so the last section is not at the very bottom. Nemo enim
+ipsam voluptatem quia voluptas sit aspernatur aut odit aut fugit.</p>
+</body>
+</html>

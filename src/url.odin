@@ -139,6 +139,18 @@ url_serialize :: proc(u: ^Parsed_Url) -> string {
 	return strings.clone(strings.to_string(b))
 }
 
+// Serialize with fragment (history/page identity). Network fetch strips
+// fragments (curl never sends them); cache keys ignore them.
+url_serialize_full :: proc(u: ^Parsed_Url) -> string {
+	s := url_serialize(u)
+	if len(u.fragment) == 0 {
+		return s
+	}
+	full := strings.concatenate([]string{s, "#", u.fragment})
+	delete(s)
+	return full
+}
+
 // Cache/key identity: scheme://host[:port]/path?query (no userinfo/fragment).
 url_cache_key :: proc(u: ^Parsed_Url) -> string {
 	b: strings.Builder
@@ -155,7 +167,8 @@ url_cache_key :: proc(u: ^Parsed_Url) -> string {
 	return strings.clone(strings.to_string(b))
 }
 
-// RFC 3986 §5.2 reference resolution. Returns an owned absolute URL string.
+// RFC 3986 §5.2 reference resolution. Returns an owned absolute URL string
+// with fragment preserved (history identity); fetch/cache strip it.
 url_resolve :: proc(base, ref: string) -> (string, bool) {
 	// Absolute URI: scheme prefix (strict) or network-path reference.
 	if is_scheme_prefix(ref) {
@@ -173,7 +186,7 @@ url_resolve :: proc(base, ref: string) -> (string, bool) {
 			return "", false
 		}
 		defer delete_parsed_url(&nb)
-		return url_serialize(&nb), true
+		return url_serialize_full(&nb), true
 	}
 	nb, ok := url_parse(base)
 	if !ok {
@@ -216,7 +229,7 @@ url_resolve :: proc(base, ref: string) -> (string, bool) {
 		frag,
 	}
 	defer delete_parsed_url(&res)
-	return url_serialize(&res), true
+	return url_serialize_full(&res), true
 }
 
 merge_paths :: proc(base_path, ref_path: string) -> string {

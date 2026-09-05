@@ -96,8 +96,206 @@ tuitest_main :: proc() -> bool {
 	if !tuitest_scroll() {
 		return false
 	}
+	if !tuitest_wrapping() {
+		return false
+	}
+	if !tuitest_fragments() {
+		return false
+	}
 	// Server-backed browse section: navigate, back, forward, dump content.
 	return tuitest_browse()
+
+// Fragment targets and same-document navigation: no refetch, URL updates,
+// scroll jumps to the id (percent-decoded, first duplicate wins).
+tuitest_fragments :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	port, srv, ok := server_start()
+	if !ok {
+		check(&fails, "frag/server", false)
+		return false
+	}
+	defer {
+		_ = os.process_kill(srv)
+		_, _ = os.process_wait(srv)
+	}
+	defer delete(port)
+	base := fmt.aprintf("http://127.0.0.1:%s", port)
+	defer delete(base)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
+	sess, sok := browse_open(prof, 900)
+	if !sok {
+		check(&fails, "frag/open", false)
+		return false
+	}
+	defer browse_close(&sess)
+	frag_url := fmt.aprintf("%s/fragments", base)
+	defer delete(frag_url)
+	if !browse_navigate(&sess, frag_url, true) {
+		check(&fails, "frag/navigate", false)
+		return false
+	}
+	find_y := proc(sess: ^Browse_Session, id: string) -> (int, bool) {
+		for &t in sess.page.targets {
+			if t.id == id {
+				return t.y, true
+			}
+		}
+		return -1, false
+	}
+	y1, ok1 := find_y(&sess, "sec1")
+	y2, ok2 := find_y(&sess, "sec2")
+	y3, ok3 := find_y(&sess, "sec3")
+	check(&fails, "frag/targets", ok1 && ok2 && ok3 && y1 < y2 && y2 < y3, fmt.tprintf("%d<%d<%d", y1, y2, y3))
+	_, okcafe := find_y(&sess, "café")
+	ndup := 0
+	for &t in sess.page.targets {
+		if t.id == "dup" {
+			ndup += 1
+		}
+	}
+	_, okleg := find_y(&sess, "legacy")
+	check(&fails, "frag/encoded-dup-name", okcafe && ndup == 1 && okleg, "")
+	check(&fails, "frag/links", len(sess.page.links) == 8, fmt.tprintf("%d", len(sess.page.links)))
+	all_frag := true
+	for &l in sess.page.links {
+		if !strings.contains(l.url, "/fragments#") {
+			all_frag = false
+		}
+	}
+	check(&fails, "frag/link-urls", all_frag, "")
+	// Same-document: no refetch, URL updates, layout untouched.
+	hits := tuitest_request_count(&sess, base, "/fragments")
+	sec2_url := fmt.aprintf("%s/fragments#sec2", base)
+	defer delete(sec2_url)
+	lines_before := len(sess.page.lines)
+	if browse_navigate(&sess, sec2_url, true) {
+		check(&fails, "frag/no-refetch", !sess.page_rebuilt && tuitest_request_count(&sess, base, "/fragments") == hits, "")
+		check(&fails, "frag/url", sess.page.url == sec2_url, sess.page.url)
+		check(&fails, "frag/layout-kept", len(sess.page.lines) == lines_before, "")
+	} else {
+		check(&fails, "frag/same-doc", false, "")
+	}
+	// Missing anchors and top resolve without layout.
+	_, found_missing := fragment_target_y(&sess.page, "missing")
+	ytop, found_top := fragment_target_y(&sess.page, "top")
+	yempty, found_empty := fragment_target_y(&sess.page, "")
+	check(&fails, "frag/missing-top", !found_missing && found_top && ytop == 0 && found_empty && yempty == 0, "")
+	// TUI follows a fragment hint, scrolls, and restores through history.
+	tt: Tui
+	tt.sess = &sess
+	tt.cols, tt.rows = 80, 10
+	tt.cell_w, tt.cell_h = 8, 16
+	tt.focus = -1
+	tt.status = strings.clone("")
+	defer delete(tt.status)
+	defer {
+		for &fe in tt.field_edits {
+			edit.destroy(&fe.state)
+			strings.builder_destroy(&fe.build)
+		}
+		delete(tt.field_edits)
+	}
+	// Back to the bare document, then follow #sec3 by hint digits.
+	bare := fmt.aprintf("%s/fragments", base)
+	defer delete(bare)
+	tt.sess.cur_anchor = 0
+	browse_navigate(&sess, bare, false)
+	tt.scroll_y = 0
+	tui_sync_fields(&tt)
+	tui_visible_links(&tt)
+	hint_idx := -1
+	for v, i in tt.vis {
+		if strings.has_suffix(sess.page.links[v].url, "#sec3") {
+			hint_idx = i + 1
+		}
+	}
+	check(&fails, "frag/hint-present", hint_idx > 0, "")
+	if hint_idx > 0 {
+		for d in fmt.tprintf("%d", hint_idx) {
+			append(&tt.hint, u8(d))
+		}
+		tui_follow_hint(&tt)
+		check(&fails, "frag/hint-url", strings.has_suffix(sess.page.url, "#sec3"), sess.page.url)
+		check(&fails, "frag/hint-scroll", tt.scroll_y > y2/2, fmt.tprintf("y=%d", tt.scroll_y))
+		if tui_go_back(&tt) {
+			check(&fails, "frag/back", sess.page.url == bare && tt.scroll_y == 0, fmt.tprintf("%s y=%d", sess.page.url, tt.scroll_y))
+			if tui_go_forward(&tt) {
+				check(&fails, "frag/forward", strings.has_suffix(sess.page.url, "#sec3") && tt.scroll_y > y2/2, "")
+			} else {
+				check(&fails, "frag/forward", false, "")
+			}
+		} else {
+			check(&fails, "frag/back", false, "")
+		}
+	}
+	fmt.printfln("browsetest-fragments: %d failures", fails)
+	return fails == 0
+}
+
+// Overlong tokens (URLs, CJK without spaces) break mid-word: no overflow,
+// all text preserved, links still resolve.
+tuitest_wrapping :: proc() -> bool {
+	fails := 0
+	check :: proc(fails: ^int, name: string, cond: bool, detail: string = "") {
+		if !cond {
+			fails^ += 1
+		}
+		fmt.printfln("%s %-22s %s", "PASS" if cond else "FAIL", name, detail)
+	}
+	bank, bok := font_bank_load(20)
+	if !bok {
+		check(&fails, "wrap/bank", false)
+		return false
+	}
+	defer font_bank_free(&bank)
+	long_url := strings.concatenate([]string{"https://example.com/", strings.repeat("a", 300, context.temp_allocator), "/end"})
+	defer delete(long_url)
+	cjk := strings.repeat("日本語", 100, context.temp_allocator) // 300 CJK chars, no spaces
+	html := fmt.aprintf("<html><head><title>Wrap</title></head><body><p><a href=\"/target\">%s</a></p><p>%s</p><p>after</p></body></html>", long_url, cjk)
+	defer delete(html)
+	rc, rok := layout_bytes(transmute([]u8)html, 300, &bank, "http://127.0.0.1:9/wrap")
+	if !rok {
+		check(&fails, "wrap/layout", false)
+		return false
+	}
+	defer render_ctx_free(&rc)
+	check(&fails, "wrap/multi-line", len(rc.lines) > 3, fmt.tprintf("%d lines", len(rc.lines)))
+	overflow := false
+	for &ln in rc.lines {
+		for &p in ln.glyphs {
+			if p.x + p.adv > 302 {
+				overflow = true
+			}
+		}
+	}
+	check(&fails, "wrap/no-overflow", !overflow, "")
+	// All text preserved (chunks rejoin without added spaces for the long tokens).
+	joined: strings.Builder
+	for ln in rc.lines {
+		strings.write_string(&joined, ln.text)
+	}
+	flat := strings.to_string(joined)
+	defer delete(joined.buf)
+	check(&fails, "wrap/url-preserved", strings.contains(flat, long_url), "")
+	check(&fails, "wrap/cjk-preserved", strings.contains(flat, cjk), "")
+	check(&fails, "wrap/after", strings.contains(flat, "after"), "")
+	check(&fails, "wrap/link", len(rc.links) == 1 && rc.links[0].url == "http://127.0.0.1:9/target", "")
+	fmt.printfln("browsetest-wrap: %d failures", fails)
+	return fails == 0
+}
 }
 
 // Reading-position anchors survive reflow, history, and reload.
@@ -890,6 +1088,30 @@ tuitest_browse :: proc() -> bool {
 	check(&fails, "browse/navigate", browse_navigate(&sess, art, true) &&
 		sess.page.title == "Test Article", sess.page.title)
 	check(&fails, "browse/links-live", len(sess.page.links) == 1, "")
+	// Redirects: page identity and link base use the final URL, not the
+	// requested one. Repeated visits must agree (redirect bodies are never
+	// cached under the original key).
+	redir := fmt.aprintf("%s/redir-article", base)
+	defer delete(redir)
+	for visit in 0 ..< 2 {
+		if browse_navigate(&sess, redir, true) {
+			want := fmt.aprintf("%s/article", base)
+			defer delete(want)
+			check(&fails, "browse/redir-url", sess.page.url == want, sess.page.url)
+			check(&fails, "browse/redir-title", sess.page.title == "Test Article", sess.page.title)
+		} else {
+			check(&fails, "browse/redir", false, "")
+		}
+	}
+	redir_frag := fmt.aprintf("%s/redir-article#sec", base)
+	defer delete(redir_frag)
+	if browse_navigate(&sess, redir_frag, true) {
+		want := fmt.aprintf("%s/article#sec", base)
+		defer delete(want)
+		check(&fails, "browse/redir-frag", sess.page.url == want, sess.page.url)
+	} else {
+		check(&fails, "browse/redir-frag", false, "")
+	}
 	// Follow the content link (server has no such route -> error page, still coherent).
 	if len(sess.page.links) == 1 {
 		u := strings.clone(sess.page.links[0].url)

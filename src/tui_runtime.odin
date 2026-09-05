@@ -135,6 +135,9 @@ tui_loop :: proc(sess: ^Browse_Session, start_url: string) -> bool {
 	tui_frame_geom(&t)
 	if tui_drawable(&t) { sess.width = t.cols * t.cell_w }
 	if !browse_navigate(sess, start_url, true) { tui_status(&t, "initial navigation failed") }
+	if strings.index_byte(sess.page.url, '#') >= 0 {
+		tui_scroll_to_fragment(&t)
+	}
 	tui_sync_fields(&t)
 	wait_ms := 0 // drain replies/typeahead before the first frame
 	for {

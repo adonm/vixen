@@ -129,10 +129,19 @@ tui_follow_hint :: proc(t: ^Tui) {
 	}
 	url := t.sess.page.links[t.vis[n-1]].url
 	tui_save_anchor(t)
-	t.scroll_y = 0
 	if !browse_navigate(t.sess, url, true) {
 		tui_status(t, "navigation failed")
 		return
+	}
+	if !t.sess.page_rebuilt {
+		tui_scroll_to_fragment(t)
+		t.page_dirty, t.chrome_dirty = true, true
+		return
+	}
+	if strings.index_byte(t.sess.page.url, '#') >= 0 {
+		tui_scroll_to_fragment(t)
+	} else {
+		t.scroll_y = 0
 	}
 	tui_sync_fields(t)
 }
@@ -143,7 +152,11 @@ tui_go_back :: proc(t: ^Tui) -> bool {
 		return false
 	}
 	tui_restore_anchor(t)
-	tui_sync_fields(t)
+	if t.sess.page_rebuilt {
+		tui_sync_fields(t)
+	} else {
+		t.page_dirty, t.chrome_dirty = true, true
+	}
 	return true
 }
 
@@ -153,7 +166,11 @@ tui_go_forward :: proc(t: ^Tui) -> bool {
 		return false
 	}
 	tui_restore_anchor(t)
-	tui_sync_fields(t)
+	if t.sess.page_rebuilt {
+		tui_sync_fields(t)
+	} else {
+		t.page_dirty, t.chrome_dirty = true, true
+	}
 	return true
 }
 
@@ -251,11 +268,20 @@ tui_navigate_bar :: proc(t: ^Tui, text: string) {
 		url = strings.concatenate([]string{"https://", url}, context.temp_allocator)
 	}
 	tui_save_anchor(t)
-	t.scroll_y = 0
 	clear(&t.hint)
 	if !browse_navigate(t.sess, url, true) {
 		tui_status(t, "navigation failed")
 		return
+	}
+	if !t.sess.page_rebuilt {
+		tui_scroll_to_fragment(t)
+		t.page_dirty, t.chrome_dirty = true, true
+		return
+	}
+	if strings.index_byte(t.sess.page.url, '#') >= 0 {
+		tui_scroll_to_fragment(t)
+	} else {
+		t.scroll_y = 0
 	}
 	tui_sync_fields(t)
 }

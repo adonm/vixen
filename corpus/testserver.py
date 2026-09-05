@@ -90,6 +90,13 @@ class H(BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.send_header("Connection", "close")
             self.end_headers()
+        elif p in ("/redir-article", "/redir-form"):
+            target = "/article" if p == "/redir-article" else "/form"
+            self.send_response(302)
+            self.send_header("Location", target)
+            self.send_header("Content-Length", "0")
+            self.send_header("Connection", "close")
+            self.end_headers()
         elif p == "/echo":
             ck = self.headers.get("Cookie", "-")
             foo = self.headers.get("X-Foo", "-")
@@ -102,7 +109,7 @@ class H(BaseHTTPRequestHandler):
             with LOCK:
                 snap = dict(COUNTS)
             self._send(200, [("Content-Type", "application/json")], json.dumps(snap))
-        elif p in ("/article", "/relayout"):
+        elif p in ("/article", "/relayout", "/fragments"):
             with open(f"corpus{p}.html", "rb") as f:
                 html = f.read()
             self._send(200, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "max-age=60")], html)

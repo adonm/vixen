@@ -9,6 +9,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:time"
+import "core:unicode/utf8"
 
 import "base:runtime"
 
@@ -53,6 +54,17 @@ Link :: struct {
 	x1, y1:    f32,
 }
 
+// Fragment target: element id + document y (top of the line being laid out
+// when the element opens). Recorded for visible elements only.
+Anchor_Target :: struct {
+	id: string, // owned, as authored (case-sensitive)
+	y:  int,    // doc pixels from the top
+}
+
+delete_anchor_target :: proc(t: ^Anchor_Target) {
+	delete(t.id)
+}
+
 // Open anchor while walking: resolved URL + starting glyph sequence.
 Anchor_Open :: struct {
 	url:      string, // owned
@@ -92,6 +104,7 @@ Render_Ctx :: struct {
 	label_depth: int, // >0 while inside button/textarea (suppress prose layout)
 	images:    [dynamic]Image, // decoded page images (owned pixels)
 	placements: [dynamic]Image_Placement, // image blocks in paint order
+	targets:   [dynamic]Anchor_Target, // fragment ids in tree order (owned)
 }
 
 delete_render_ctx :: proc(rc: ^Render_Ctx) {
@@ -268,6 +281,10 @@ render_ctx_free :: proc(rc: ^Render_Ctx) {
 	}
 	delete(rc.images)
 	delete(rc.placements)
+	for &t in rc.targets {
+		delete_anchor_target(&t)
+	}
+	delete(rc.targets)
 	for &f in rc.fields {
 		delete_field(&f)
 	}
@@ -415,6 +432,9 @@ tag_name_of :: proc(node: ^Dom_Node) -> string {
 }
 
 // Place one word with greedy wrap; x0 tracks the indent origin.
+// Overlong words (wider than the measure, e.g. URLs or CJK paragraphs
+// without spaces) break mid-word so no line overflows. Chunks are shaped
+// separately, so ligatures/kerning don't cross breaks (documented).
 layout_place_word :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f32, word: string) {
 	if len(line.glyphs) == 0 {
 		line.x0 = rc.indent
@@ -426,7 +446,44 @@ layout_place_word :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f3
 		flush_line(rc, line, size_px, y, false)
 		line.x0 = rc.indent
 		avail = rc.max_width - line.x0
-		_ = avail
+	}
+	if line.width == 0 && w > avail && avail > 0 {
+		// Overlong on an empty line: split into fitting chunks. Each
+		// intermediate chunk gets its own line; the last stays open.
+		for wd in probe.words {
+			delete(wd)
+		}
+		delete(probe.glyphs)
+		delete(probe.words)
+		chunks := layout_break_word(rc, word, size_px, avail)
+		defer {
+			for c in chunks {
+				delete(c)
+			}
+			delete(chunks)
+		}
+		for chunk, ci in chunks {
+			cprobe: Cur_Line
+			cw := shape_word(rc, chunk, size_px, &cprobe)
+			for p in cprobe.glyphs {
+				q := p
+				q.x += line.width + line.x0
+				append(&line.glyphs, q)
+			}
+			line.width += cw
+			for wd in cprobe.words {
+				append(&line.words, wd)
+			}
+			delete(cprobe.glyphs)
+			delete(cprobe.words)
+			if ci < len(chunks)-1 {
+				flush_line(rc, line, size_px, y, false)
+				line.x0 = rc.indent
+			} else {
+				line.width += rc.bank.fonts[0].scale * 280
+			}
+		}
+		return
 	}
 	for p in probe.glyphs {
 		q := p
@@ -443,6 +500,68 @@ layout_place_word :: proc(rc: ^Render_Ctx, line: ^Cur_Line, y: ^f32, size_px: f3
 	line.width += rc.bank.fonts[0].scale * 280
 }
 
+// Split an overlong word into chunks that each fit avail (by shaping).
+// Owns the returned strings. Single runes wider than avail are returned
+// as-is (unavoidable overflow, clipped at raster).
+layout_break_word :: proc(rc: ^Render_Ctx, word: string, size_px, avail: f32) -> [dynamic]string {
+	out: [dynamic]string
+	// Rune boundaries for slicing.
+	bounds: [dynamic]int
+	defer delete(bounds)
+	append(&bounds, 0)
+	i := 0
+	for i < len(word) {
+		_, n := utf8.decode_rune(word[i:])
+		i += max(n, 1)
+		append(&bounds, i)
+	}
+	total_runes := len(bounds)-1
+	if total_runes <= 1 {
+		append(&out, strings.clone(word))
+		return out
+	}
+	// Estimate runes per chunk from the full-word width.
+	probe: Cur_Line
+	w := shape_word(rc, word, size_px, &probe)
+	for wd in probe.words {
+		delete(wd)
+	}
+	delete(probe.glyphs)
+	delete(probe.words)
+	per := total_runes
+	if w > 0 {
+		per = max(1, int(f32(total_runes) * avail / w * 0.9))
+	}
+	start := 0
+	for start < total_runes {
+		end := min(start+per, total_runes)
+		// Grow while the chunk fits (at most a few shapes per chunk).
+		for {
+			chunk := word[bounds[start]:bounds[end]]
+			cw := tui_text_width(rc.bank, chunk, size_px)
+			if cw <= avail || end-start <= 1 {
+				break
+			}
+			// Too wide: halve the chunk.
+			end = start + max((end-start)/2, 1)
+		}
+		// Try to extend one rune at a time while fitting (bounded).
+		for end < total_runes {
+			chunk := word[bounds[start]:bounds[end+1]]
+			if tui_text_width(rc.bank, chunk, size_px) > avail {
+				break
+			}
+			end += 1
+			if end-start >= per*2 {
+				break
+			}
+		}
+		append(&out, strings.clone(word[bounds[start]:bounds[end]]))
+		start = end
+	}
+	return out
+}
+
 // Anchor enter: always push (possibly empty); exit pops unconditionally.
 // Symmetry keeps the stack balanced regardless of href validity.
 anchor_enter :: proc(rc: ^Render_Ctx, node: ^Dom_Node) {
@@ -450,7 +569,7 @@ anchor_enter :: proc(rc: ^Render_Ctx, node: ^Dom_Node) {
 	if len(rc.page_url) > 0 {
 		if href, ok := dom_attr_val(node, "href"); ok {
 			defer delete(href)
-			if len(href) > 0 && !strings.has_prefix(href, "#") && !strings.has_prefix(href, "javascript:") {
+			if len(href) > 0 && !strings.has_prefix(href, "javascript:") {
 				if abs, rok := url_resolve(rc.page_url, href); rok {
 					url = abs
 				}
@@ -810,6 +929,32 @@ finalize_links :: proc(rc: ^Render_Ctx) {
 	}
 }
 
+// Record fragment targets (id on any visible element, name on <a>).
+// First id wins; duplicates are ignored. y is the current layout top.
+layout_record_target :: proc(rc: ^Render_Ctx, node: ^Dom_Node, tag: string, y: f32) {
+	record :: proc(rc: ^Render_Ctx, id: string, y: f32) {
+		if len(id) == 0 {
+			return
+		}
+		for &t in rc.targets {
+			if t.id == id {
+				return
+			}
+		}
+		append(&rc.targets, Anchor_Target{strings.clone(id), int(y)})
+	}
+	if id, ok := dom_attr_val(node, "id"); ok {
+		defer delete(id)
+		record(rc, id, y)
+	}
+	if tag == "a" {
+		if nm, ok := dom_attr_val(node, "name"); ok {
+			defer delete(nm)
+			record(rc, nm, y)
+		}
+	}
+}
+
 // Block flow layout over the lexbor DOM. Words are shaped individually:
 // spaces never join across in any script, so this is shaping-safe.
 layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
@@ -888,6 +1033,7 @@ layout_html :: proc(rc: ^Render_Ctx, doc: ^Html_Document) {
 							y += 6
 						}
 					}
+					layout_record_target(rc, node, tag, y)
 				}
 			} else if t == NODE_TYPE_TEXT {
 				tlen: uint

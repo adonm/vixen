@@ -207,7 +207,12 @@ fetch_url :: proc(fc: ^Fetch_Ctx, j: ^Jar, st: ^Store, method, url: string, extr
 			append(&hop_extra, strings.concatenate([]string{"Cookie: ", ck}, context.temp_allocator))
 			delete(ck)
 		}
-		r, rok := fetch_once(fc, cur_method, cur, hop_extra[:], body)
+		// Fragments are never sent (curl strips them too, but be explicit).
+		network_url := cur
+		if i := strings.index_byte(cur, '#'); i >= 0 {
+			network_url = cur[:i]
+		}
+		r, rok := fetch_once(fc, cur_method, network_url, hop_extra[:], body)
 		// Store cookies from this response before anything else.
 		sc_list := headers_get_all(&r, "set-cookie")
 		defer delete(sc_list)
@@ -234,6 +239,14 @@ fetch_url :: proc(fc: ^Fetch_Ctx, j: ^Jar, st: ^Store, method, url: string, extr
 			if !nok {
 				delete_response(&r)
 				return {}, false
+			}
+			// Preserve the previous fragment when Location has none (fetch).
+			if strings.index_byte(loc, '#') < 0 {
+				if i := strings.index_byte(cur, '#'); i >= 0 {
+					with_frag := strings.concatenate([]string{next, cur[i:]})
+					delete(next)
+					next = with_frag
+				}
 			}
 			// Method rewrite per fetch semantics.
 			if r.status == 303 && cur_method != "HEAD" {

@@ -16,6 +16,7 @@ Page :: struct {
 	fields: [dynamic]Field, // form controls in tree order (owned)
 	images: [dynamic]Image, // decoded page images (owned pixels)
 	placements: [dynamic]Image_Placement, // image blocks (plain structs)
+	targets: [dynamic]Anchor_Target, // fragment ids in tree order (owned)
 	text:  [dynamic]string, // owned laid-out line texts (headless dump, tests)
 	width: int,   // layout width, px
 	height: int,  // total content height, px
@@ -39,6 +40,9 @@ Browse_Session :: struct {
 	// navigation that pushes history; updated to the restored anchor after
 	// back/forward). Direct session callers leave it 0 (top).
 	cur_anchor: int,
+	// False when the last navigate was a same-document fragment (no fetch,
+	// layout, or field rebuild; frontend skips tui_sync_fields).
+	page_rebuilt: bool,
 }
 
 browse_open :: proc(profile: string, width: int) -> (Browse_Session, bool) {
@@ -124,6 +128,10 @@ page_free :: proc(page: ^Page) {
 	}
 	delete(page.images)
 	delete(page.placements)
+	for &t in page.targets {
+		delete_anchor_target(&t)
+	}
+	delete(page.targets)
 	for t in page.text {
 		delete(t)
 	}
@@ -139,6 +147,30 @@ browse_navigate :: proc(sess: ^Browse_Session, url: string, push_hist: bool) -> 
 // General navigation with method + body (form POST). GET callers use
 // browse_navigate; POST responses are never cached (no cache key).
 browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body: []u8, push_hist: bool) -> bool {
+	// Same-document fragment (GET, different #): no fetch/layout/field
+	// rebuild. History still pushes; the frontend scrolls to the target.
+	if method == "GET" && sess.has && urls_same_document(sess.page.url, url) {
+		cur_frag := ""
+		if i := strings.index_byte(sess.page.url, '#'); i >= 0 {
+			cur_frag = sess.page.url[i+1:]
+		}
+		new_frag := ""
+		if i := strings.index_byte(url, '#'); i >= 0 {
+			new_frag = url[i+1:]
+		}
+		if cur_frag != new_frag {
+			if push_hist {
+				history_push(&sess.back, sess.page.url, sess.cur_anchor)
+				history_clear(&sess.fwd)
+			}
+			new_url := strings.clone(url)
+			delete(sess.page.url)
+			sess.page.url = new_url
+			sess.page_rebuilt = false
+			fmt.eprintfln("browse %-40s fragment #%s (same-document)", sess.page.url, new_frag)
+			return true
+		}
+	}
 	pc := phase_start(url)
 	now := tnow()
 	extra: []string
@@ -151,25 +183,29 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 	}
 	defer delete_response(&r)
 	phase_end(&pc, "fetch")
+	// Final URL after redirects (with requested fragment preserved) is the
+	// page identity and the base for relative links/resources. Requested URL
+	// is only for history push of the page being left (handled below).
+	final_url := r.final_url if len(r.final_url) > 0 else url
 	ct, _ := headers_get_first(&r, "content-type")
 	is_html := strings.contains(ct, "html") || len(ct) == 0
 	if r.status >= 400 || !is_html {
 		msg := fmt.aprintf("%d %s", r.status, ct)
 		defer delete(msg)
-		return browse_error_page(sess, url, msg)
+		return browse_error_page(sess, final_url, msg)
 	}
 	_ = info
 	doc, dok := parse_document(r.body)
 	if !dok {
-		return browse_error_page(sess, url, "parse failed")
+		return browse_error_page(sess, final_url, "parse failed")
 	}
 	defer lxb_html_document_destroy(doc)
 	// Eager image pre-pass: layout reserves display sizes. Existing image
 	// caps do not yet bound all network buffering/natural-size decoding.
-	refs := collect_image_urls(doc, url, MAX_PAGE_IMAGES)
+	refs := collect_image_urls(doc, final_url, MAX_PAGE_IMAGES)
 	imgs := page_load_images(sess, refs[:])
 	delete_image_refs(refs)
-	rc := render_ctx_new(&sess.bank, 20, f32(sess.width), url)
+	rc := render_ctx_new(&sess.bank, 20, f32(sess.width), final_url)
 	// Move decoded pixels into the layout context BEFORE layout runs.
 	for &im in imgs {
 		append(&rc.images, im)
@@ -179,7 +215,7 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 	finalize_links(&rc)
 	rok := true
 	if !rok {
-		return browse_error_page(sess, url, "layout failed")
+		return browse_error_page(sess, final_url, "layout failed")
 	}
 	defer render_ctx_free(&rc)
 	phase_end(&pc, "parse+layout")
@@ -188,12 +224,13 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 		history_clear(&sess.fwd)
 	}
 	// Build before dropping: url may alias a link in the current page.
-	page := page_from_layout(&rc, url, rc.title, sess.width)
+	page := page_from_layout(&rc, final_url, rc.title, sess.width)
 	page.src = make([]u8, len(r.body))
 	copy(page.src, r.body)
 	browse_drop_page(sess)
 	sess.page = page
 	sess.has = true
+	sess.page_rebuilt = true
 	if push_hist {
 		sess.cur_anchor = 0 // fresh page starts at the top
 	}
@@ -237,6 +274,9 @@ page_from_layout :: proc(rc: ^Render_Ctx, url, title: string, width: int) -> Pag
 	}
 	for &ln in rc.lines {
 		append(&page.text, strings.clone(ln.text))
+	}
+	for &t in rc.targets {
+		append(&page.targets, Anchor_Target{strings.clone(t.id), t.y})
 	}
 	page.images = rc.images
 	rc.images = nil
@@ -304,6 +344,7 @@ browse_error_page :: proc(sess: ^Browse_Session, url, msg: string) -> bool {
 	sess.page = page
 	sess.has = true
 	sess.cur_anchor = 0
+	sess.page_rebuilt = true
 	return true
 }
 

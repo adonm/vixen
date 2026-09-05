@@ -49,12 +49,21 @@ test_url :: proc(env: ^Test_Env) {
 		{"g/./h", "http://a/b/c/g/h"},
 		{"../h", "http://a/b/h"},
 		{"../../h", "http://a/h"},
+		{"#frag", "http://a/b/c/d;p?q#frag"},
+		{"g#frag", "http://a/b/c/g#frag"},
+		{"/g#frag", "http://a/g#frag"},
 	}
 	for c in cases {
 		r, rok := url_resolve("http://a/b/c/d;p?q", c[0])
 		tcheck(env, "url/resolve", rok && r == c[1], fmt.tprintf("%s -> %s", c[0], r))
 		delete(r)
 	}
+	r, rok := url_resolve("http://a/b/c#old", "g")
+	tcheck(env, "url/frag-base", rok && r == "http://a/b/g", r)
+	delete(r)
+	r, rok = url_resolve("http://a/b/c#old", "#new")
+	tcheck(env, "url/frag-ref", rok && r == "http://a/b/c#new", r)
+	delete(r)
 	u, uok := url_parse("HTTP://Example.COM:80/a/./b/../c?x=1#frag")
 	tcheck(env, "url/parse", uok, "")
 	if uok {

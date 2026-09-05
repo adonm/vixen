@@ -491,7 +491,9 @@ cached_fetch :: proc(
 					delete_response(&nr)
 					return resp, info, true
 				}
-				maybe_store(c, key, &nr, extra, body, now)
+				if nr.hops == 0 {
+					maybe_store(c, key, &nr, extra, body, now)
+				}
 				info.hops = nr.hops
 				return nr, info, true
 			}
@@ -502,7 +504,13 @@ cached_fetch :: proc(
 	if !nok {
 		return resp, info, false
 	}
-	maybe_store(c, key, &nr, extra, body, now)
+	// Redirected bodies are not cached under the original key: the final URL
+	// (correct link/image base) differs, and we don't store it. Direct
+	// responses hit; redirects revalidate cheaply (small 301s, final 200s
+	// served from their own keys when requested directly).
+	if nr.hops == 0 {
+		maybe_store(c, key, &nr, extra, body, now)
+	}
 	info.hops = nr.hops
 	return nr, info, true
 }
