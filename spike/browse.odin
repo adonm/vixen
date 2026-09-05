@@ -1,7 +1,7 @@
 package spike
 
 // Browsing session: profile-backed net layers, persistent font bank,
-// one live page (frame + links + title), back/forward URL stacks.
+// one live page (source + layout + resources), back/forward URL stacks.
 // Single-page CLI modes keep using render_page directly.
 
 import "core:fmt"
@@ -16,7 +16,7 @@ Page :: struct {
 	fields: [dynamic]Field, // form controls in tree order (owned)
 	images: [dynamic]Image, // decoded page images (owned pixels)
 	placements: [dynamic]Image_Placement, // image blocks (plain structs)
-	text:  [dynamic]string, // owned laid-out line texts (text driver, tests)
+	text:  [dynamic]string, // owned laid-out line texts (headless dump, tests)
 	width: int,   // layout width, px
 	height: int,  // total content height, px
 }
@@ -95,44 +95,39 @@ browse_close :: proc(sess: ^Browse_Session) {
 }
 
 browse_drop_page :: proc(sess: ^Browse_Session) {
-	if !sess.has {
-		return
-	}
-	delete(sess.page.url)
-	delete(sess.page.title)
-	delete(sess.page.src)
-	sess.page.src = nil
-	for &ln in sess.page.lines {
+	page_free(&sess.page)
+	sess.has = false
+}
+
+// Lifetime follows the owned Page, not a separate visibility flag. Clear
+// the entire value so a second drop or a new page can't reuse freed headers.
+page_free :: proc(page: ^Page) {
+	delete(page.url)
+	delete(page.title)
+	delete(page.src)
+	for &ln in page.lines {
 		delete(ln.glyphs)
 		delete(ln.text)
 	}
-	// NOTE: Odin delete() leaves headers dangling; nil everything the next
-	// page reuses, or appends write into freed backing (use-after-free).
-	delete(sess.page.lines)
-	sess.page.lines = nil
-	for &l in sess.page.links {
+	delete(page.lines)
+	for &l in page.links {
 		delete(l.url)
 	}
-	delete(sess.page.links)
-	sess.page.links = nil
-	for &f in sess.page.fields {
+	delete(page.links)
+	for &f in page.fields {
 		delete_field(&f)
 	}
-	delete(sess.page.fields)
-	sess.page.fields = nil
-	for &im in sess.page.images {
+	delete(page.fields)
+	for &im in page.images {
 		delete_image(&im)
 	}
-	delete(sess.page.images)
-	sess.page.images = nil
-	delete(sess.page.placements)
-	sess.page.placements = nil
-	for t in sess.page.text {
+	delete(page.images)
+	delete(page.placements)
+	for t in page.text {
 		delete(t)
 	}
-	delete(sess.page.text)
-	sess.page.text = nil
-	sess.has = false
+	delete(page.text)
+	page^ = {}
 }
 
 // Fetch + render a URL into the live page. push_hist records back-stack.
@@ -159,7 +154,7 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 	is_html := strings.contains(ct, "html") || len(ct) == 0
 	if r.status >= 400 || !is_html {
 		msg := fmt.aprintf("%d %s", r.status, ct)
-	defer delete(msg)
+		defer delete(msg)
 		return browse_error_page(sess, url, msg)
 	}
 	_ = info
@@ -168,8 +163,8 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 		return browse_error_page(sess, url, "parse failed")
 	}
 	defer lxb_html_document_destroy(doc)
-	// Image pre-pass between parse and layout: bounded fetch+decode so
-	// layout reserves true display sizes. Failures shrink the set.
+	// Eager image pre-pass: layout reserves display sizes. Existing image
+	// caps do not yet bound all network buffering/natural-size decoding.
 	refs := collect_image_urls(doc, url, MAX_PAGE_IMAGES)
 	imgs := page_load_images(sess, refs[:])
 	delete_image_refs(refs)
@@ -194,40 +189,41 @@ browse_navigate_request :: proc(sess: ^Browse_Session, method, url: string, body
 		}
 		clear(&sess.fwd)
 	}
+	// Build before dropping: url may alias a link in the current page.
+	page := page_from_layout(&rc, url, rc.title, sess.width)
+	page.src = make([]u8, len(r.body))
+	copy(page.src, r.body)
 	browse_drop_page(sess)
-	sess.page.src = make([]u8, len(r.body))
-	copy(sess.page.src, r.body)
-	page_install(sess, &rc, url, rc.title, sess.width)
+	sess.page = page
 	sess.has = true
-	fmt.eprintfln("browse %-40s %dx%d lines=%d links=%d fields=%d images=%d title=%q", url, sess.width, sess.page.height, len(rc.lines), len(sess.page.links), len(rc.fields), len(sess.page.images), sess.page.title)
+	fmt.eprintfln("browse %-40s %dx%d lines=%d links=%d fields=%d images=%d title=%q", sess.page.url, sess.width, sess.page.height, len(rc.lines), len(sess.page.links), len(rc.fields), len(sess.page.images), sess.page.title)
 	return true
 }
 
-// Install a finished layout as the live page: sets url/title/width,
-// deep-copies lines/links/fields/text, moves images+placements. Shared by
-// navigate and relayout so ownership crosses in exactly one place.
-// url/title are plain values, never page aliases (drop frees those first).
-page_install :: proc(sess: ^Browse_Session, rc: ^Render_Ctx, url, title: string, width: int) {
-	sess.page.url = strings.clone(url)
-	sess.page.title = strings.clone(title)
-	sess.page.width = width
+// Construct an independently owned page without modifying the live session.
+// Copies layout values and moves owned images; callers supply source bytes.
+page_from_layout :: proc(rc: ^Render_Ctx, url, title: string, width: int) -> Page {
+	page: Page
+	page.url = strings.clone(url)
+	page.title = strings.clone(title)
+	page.width = width
 	// Deep-copy laid-out lines (glyphs are plain structs; texts cloned).
 	// The framebuffer is rasterized per viewport on demand — never whole.
 	for &ln in rc.lines {
 		g := make([dynamic]Placed, len(ln.glyphs))
 		copy(g[:], ln.glyphs[:])
-		append(&sess.page.lines, Line{g, strings.clone(ln.text), ln.baseline, ln.height})
+		append(&page.lines, Line{g, strings.clone(ln.text), ln.baseline, ln.height})
 	}
-	sess.page.height = 120
+	page.height = 120
 	if len(rc.lines) > 0 {
 		last := rc.lines[len(rc.lines) - 1]
-		sess.page.height = int(last.baseline + rc.body_px * 0.6 + rc.margin)
+		page.height = int(last.baseline + rc.body_px * 0.6 + rc.margin)
 	}
 	for &l in rc.links {
-		append(&sess.page.links, Link{strings.clone(l.url), l.x0, l.y0, l.x1, l.y1})
+		append(&page.links, Link{strings.clone(l.url), l.x0, l.y0, l.x1, l.y1})
 	}
 	for &f in rc.fields {
-		append(&sess.page.fields, Field{
+		append(&page.fields, Field{
 			f.kind,
 			strings.clone(f.name),
 			strings.clone(f.value),
@@ -239,15 +235,12 @@ page_install :: proc(sess: ^Browse_Session, rc: ^Render_Ctx, url, title: string,
 		})
 	}
 	for &ln in rc.lines {
-		append(&sess.page.text, strings.clone(ln.text))
+		append(&page.text, strings.clone(ln.text))
 	}
-	// Move decoded pixels into the page: struct copy shares backing, so
-	// clear the source (keeps its backing for the deferred free to drop).
-	for &im in rc.images {
-		append(&sess.page.images, im)
-	}
-	clear(&rc.images)
-	append(&sess.page.placements, ..rc.placements[:])
+	page.images = rc.images
+	rc.images = nil
+	append(&page.placements, ..rc.placements[:])
+	return page
 }
 
 // Re-layout the live page at a new measure width (terminal resize)
@@ -255,43 +248,41 @@ page_install :: proc(sess: ^Browse_Session, rc: ^Render_Ctx, url, title: string,
 // their existing display sizes, typed field values survive by index.
 // No history push; the caller re-clamps scroll and resyncs fields.
 browse_relayout :: proc(sess: ^Browse_Session, width: int) -> bool {
-	if !sess.has || width == sess.width || len(sess.page.src) == 0 {
+	if !sess.has || width <= 0 || width == sess.width || len(sess.page.src) == 0 {
 		return false
-	}
-	saved: [dynamic]string
-	defer {
-		for s in saved {
-			delete(s)
-		}
-		delete(saved)
-	}
-	for &f in sess.page.fields {
-		append(&saved, strings.clone(f.value))
 	}
 	doc, dok := parse_document(sess.page.src)
 	if !dok {
 		return false
 	}
 	defer lxb_html_document_destroy(doc)
-	sess.width = width
-	self_url := strings.clone(sess.page.url)
-	defer delete(self_url)
-	rc := render_ctx_new(&sess.bank, 20, f32(width), self_url)
-	for &im in sess.page.images {
-		append(&rc.images, im)
+	rc := render_ctx_new(&sess.bank, 20, f32(width), sess.page.url)
+	// Layout only reads these images. Do not transfer/free live resources
+	// until the replacement is complete, including on an early return.
+	rc.images = sess.page.images
+	defer {
+		rc.images = nil
+		render_ctx_free(&rc)
 	}
-	clear(&sess.page.images)
 	layout_html(&rc, doc)
 	finalize_links(&rc)
-	defer render_ctx_free(&rc)
-	browse_drop_page(sess)
-	page_install(sess, &rc, self_url, rc.title, width)
-	for &f, i in sess.page.fields {
-		if i < len(saved) {
+	rc.images = nil // end borrow before constructing the owned replacement
+	page := page_from_layout(&rc, sess.page.url, sess.page.title, width)
+	for &f, i in page.fields {
+		if i < len(sess.page.fields) {
 			delete(f.value)
-			f.value = strings.clone(saved[i])
+			f.value = strings.clone(sess.page.fields[i].value)
 		}
 	}
+	// Commit together. Transfer source and images, then free only obsolete
+	// layout/state. The replacement remains live and can be resized again.
+	old := sess.page
+	page.src, old.src = old.src, nil
+	page.images, old.images = old.images, nil
+	sess.page = page
+	sess.width = width
+	sess.has = true
+	page_free(&old)
 	return true
 }
 
@@ -300,12 +291,15 @@ browse_error_page :: proc(sess: ^Browse_Session, url, msg: string) -> bool {
 	if sess.has {
 		append(&sess.back, strings.clone(sess.page.url))
 	}
+	// Error URLs can also alias current-page links.
+	page: Page
+	page.url = strings.clone(url)
+	page.title = strings.clone(msg)
+	append(&page.text, strings.clone(msg))
+	page.width = sess.width
+	page.height = 120
 	browse_drop_page(sess)
-	sess.page.url = strings.clone(url)
-	sess.page.title = strings.clone(msg)
-	append(&sess.page.text, strings.clone(msg))
-	sess.page.width = sess.width
-	sess.page.height = 120
+	sess.page = page
 	sess.has = true
 	return true
 }

@@ -141,8 +141,14 @@ tuitest_images :: proc() -> bool {
 	defer delete(port)
 	base := fmt.aprintf("http://127.0.0.1:%s", port)
 	defer delete(base)
-	prof := "/tmp/opencode/tuitest-images-profile"
-	os.remove_all(prof)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
 	sess, sok := browse_open(prof, 900)
 	if !sok {
 		check(&fails, "images/open", false)
@@ -182,16 +188,30 @@ tuitest_images :: proc() -> bool {
 	}
 	check(&fails, "images/text-dims", found_dims, "")
 	check(&fails, "images/text-missing", found_missing, "")
-	// Relayout keeps decoded images and placements (no refetch).
+	// Repeated relayout keeps the original image pixel allocations. A
+	// single resize previously passed while silently clearing sess.has/src.
 	nimg, nplc := len(sess.page.images), len(sess.page.placements)
-	if browse_relayout(&sess, 450) {
-		check(&fails, "images/relayout-imgs", len(sess.page.images) == nimg,
-			fmt.tprintf("%d", len(sess.page.images)))
-		check(&fails, "images/relayout-plc", len(sess.page.placements) == nplc,
-			fmt.tprintf("%d", len(sess.page.placements)))
-	} else {
-		check(&fails, "images/relayout", false, "")
+	pixels := make([]rawptr, nimg)
+	defer delete(pixels)
+	for im, i in sess.page.images {
+		pixels[i] = raw_data(im.px)
 	}
+	image_hits := tuitest_request_count(&sess, base, "/img.png")
+	missing_hits := tuitest_request_count(&sess, base, "/missing.png")
+	for width in ([]int{450, 900, 300, 700, 450, 900}) {
+		if !browse_relayout(&sess, width) {
+			check(&fails, "images/relayout", false, fmt.tprintf("width=%d", width))
+			break
+		}
+		check(&fails, "images/relayout-imgs", len(sess.page.images) == nimg, "")
+		check(&fails, "images/relayout-plc", len(sess.page.placements) == nplc, "")
+		for im, i in sess.page.images {
+			check(&fails, "images/relayout-pixels", i < len(pixels) && raw_data(im.px) == pixels[i], "")
+		}
+	}
+	check(&fails, "images/no-refetch", image_hits > 0 &&
+		tuitest_request_count(&sess, base, "/img.png") == image_hits &&
+		tuitest_request_count(&sess, base, "/missing.png") == missing_hits, "")
 	// End-to-end raster: slice the viewport and require non-background
 	// pixels inside the first image placement.
 	bank, bok := font_bank_load(20)
@@ -238,8 +258,14 @@ tuitest_submit :: proc() -> bool {
 	defer delete(port)
 	base := fmt.aprintf("http://127.0.0.1:%s", port)
 	defer delete(base)
-	prof := "/tmp/opencode/tuitest-submit-profile"
-	os.remove_all(prof)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
 	sess, sok := browse_open(prof, 900)
 	if !sok {
 		check(&fails, "submit/open", false)
@@ -529,8 +555,14 @@ tuitest_browse :: proc() -> bool {
 	defer delete(port)
 	base := fmt.aprintf("http://127.0.0.1:%s", port)
 	defer delete(base)
-	prof := "/tmp/opencode/tuitest-profile"
-	os.remove_all(prof)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
 	sess, sok := browse_open(prof, 900)
 	if !sok {
 		check(&fails, "browse/open", false)
@@ -546,7 +578,8 @@ tuitest_browse :: proc() -> bool {
 	if len(sess.page.links) == 1 {
 		u := strings.clone(sess.page.links[0].url)
 		defer delete(u)
-		check(&fails, "browse/follow", browse_navigate(&sess, u, true), "")
+		check(&fails, "browse/follow", browse_navigate(&sess, sess.page.links[0].url, true) &&
+			sess.page.url == u, "")
 		check(&fails, "browse/back", browse_back(&sess) && sess.page.title == "Test Article", sess.page.title)
 		check(&fails, "browse/forward", browse_forward(&sess), "")
 	}
@@ -569,9 +602,19 @@ tuitest_browse :: proc() -> bool {
 			f.value = strings.clone("typed")
 		}
 		narrow_links := len(sess.page.links)
+		source := strings.clone(string(sess.page.src))
+		defer delete(source)
+		back := strings.join(sess.back[:], "\n")
+		defer delete(back)
+		fwd := strings.join(sess.fwd[:], "\n")
+		defer delete(fwd)
+		hits := tuitest_request_count(&sess, base, "/form")
 		check(&fails, "relayout/noop", !browse_relayout(&sess, sess.width), "")
 		check(&fails, "relayout/narrow", browse_relayout(&sess, 450) && sess.width == 450, "")
 		check(&fails, "relayout/title", sess.page.title == "Form Test", sess.page.title)
+		check(&fails, "relayout/live", sess.has, "")
+		check(&fails, "relayout/source", string(sess.page.src) == source, "")
+		check(&fails, "relayout/url", sess.page.url == form_url, "")
 		kept := false
 		for &f in sess.page.fields {
 			if f.name == "q" && f.value == "typed" {
@@ -581,22 +624,88 @@ tuitest_browse :: proc() -> bool {
 		check(&fails, "relayout/values", kept, "")
 		check(&fails, "relayout/links", len(sess.page.links) == narrow_links,
 			fmt.tprintf("%d", len(sess.page.links)))
+		for width in ([]int{900, 300, 700, 450}) {
+			if !browse_relayout(&sess, width) {
+				check(&fails, "relayout/repeated", false, fmt.tprintf("width=%d", width))
+				break
+			}
+			check(&fails, "relayout/repeated-state", sess.has &&
+				sess.width == width && sess.page.width == width &&
+				string(sess.page.src) == source && sess.page.url == form_url &&
+				sess.page.title == "Form Test", "")
+			check(&fails, "relayout/repeated-value", qi >= 0 &&
+				qi < len(sess.page.fields) && sess.page.fields[qi].value == "typed", "")
+		}
+		check(&fails, "relayout/no-refetch", hits > 0 && tuitest_request_count(&sess, base, "/form") == hits, "")
+		back_after := strings.join(sess.back[:], "\n")
+		defer delete(back_after)
+		fwd_after := strings.join(sess.fwd[:], "\n")
+		defer delete(fwd_after)
+		check(&fails, "relayout/history", back_after == back && fwd_after == fwd, "")
+		before_width := sess.width
+		check(&fails, "relayout/invalid-width", !browse_relayout(&sess, 0) &&
+			!browse_relayout(&sess, -10) && sess.width == before_width, "")
+		check(&fails, "relayout/submit", browse_submit(&sess, qi) &&
+			strings.contains(sess.page.url, "q=typed"), "")
+		check(&fails, "relayout/back-to-form", browse_back(&sess) &&
+			sess.page.url == form_url && sess.has, "")
+		// Navigation after reflow must drop, not append to, the previous page.
+		check(&fails, "relayout/reload", browse_reload(&sess) && sess.has &&
+			sess.page.url == form_url && len(sess.page.fields) == 8, "")
 	}
-	// Long prose re-wraps measurably between 450 and 900px.
-	art2 := fmt.aprintf("%s/article", base)
+	// A dedicated long fixture proves actual wrapping, not leftover lines
+	// from the previous document being appended during navigation.
+	art2 := fmt.aprintf("%s/relayout", base)
 	defer delete(art2)
 	if !browse_navigate(&sess, art2, true) {
 		check(&fails, "relayout/article", false, "")
 	} else {
 		before := len(sess.page.lines)
+		check(&fails, "relayout/fresh-page", len(sess.page.fields) == 0 && len(sess.page.links) == 2, "")
 		if browse_relayout(&sess, 900) {
-			check(&fails, "relayout/rewrap", len(sess.page.lines) != before,
+			check(&fails, "relayout/rewrap", len(sess.page.lines) < before,
 				fmt.tprintf("%d -> %d", before, len(sess.page.lines)))
-			check(&fails, "relayout/article-title", sess.page.title == "Test Article", sess.page.title)
+			check(&fails, "relayout/article-title", sess.page.title == "Reflow Test", sess.page.title)
+			check(&fails, "relayout/roundtrip", browse_relayout(&sess, 450) &&
+				len(sess.page.lines) == before && len(sess.page.links) == 2, "")
+			// Successful navigation also accepts a URL borrowed from the old page.
+			check(&fails, "relayout/alias-navigate", browse_navigate(&sess, sess.page.url, false) &&
+				sess.page.url == art2 && len(sess.page.lines) == before, "")
+			check(&fails, "relayout/back", browse_back(&sess) && sess.page.url == form_url, "")
+			check(&fails, "relayout/forward", browse_forward(&sess) && sess.page.url == art2 &&
+				len(sess.page.lines) == before, "")
 		} else {
 			check(&fails, "relayout/article-relayout", false, "")
 		}
 	}
+	browse_drop_page(&sess)
+	browse_drop_page(&sess)
+	check(&fails, "relayout/drop-idempotent", !sess.has && sess.page.url == "" &&
+		len(sess.page.src) == 0 && len(sess.page.lines) == 0 &&
+		len(sess.page.fields) == 0 && len(sess.page.images) == 0, "")
 	fmt.printfln("tuitest-browse: %d failures", fails)
 	return fails == 0
+}
+
+// Read server counters directly (not via cache). Used to prove resize
+// doesn't request source/images, including the uncached missing image.
+tuitest_request_count :: proc(sess: ^Browse_Session, base, path: string) -> int {
+	r, ok := fetch_once(&sess.fc, "GET", fmt.tprintf("%s/stats", base), nil, nil)
+	defer delete_response(&r)
+	if !ok || r.status != 200 {
+		return -1
+	}
+	needle := fmt.tprintf("\"%s\": ", path)
+	body := string(r.body)
+	if i := strings.index(body, needle); i >= 0 {
+		n := 0
+		for c in body[i+len(needle):] {
+			if c < '0' || c > '9' {
+				break
+			}
+			n = n * 10 + int(c - '0')
+		}
+		return n
+	}
+	return -1
 }

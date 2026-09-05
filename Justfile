@@ -137,9 +137,18 @@ test: build
     ./{{ BIN }} parse corpus/example.html corpus/github.html
     ./{{ BIN }} js corpus/bench.js
     ./{{ BIN }} render --out .tmp/example.png corpus/example.html
-    ./{{ BIN }} tui --kitty=off corpus/app-shell.html > /dev/null
+    # One-shot Kitty encoder smoke only, not a terminal geometry/input test.
+    ./{{ BIN }} tui corpus/app-shell.html > /dev/null
     # NOTE: `show` (SDL window) stays manual-only until a GUI suite exists.
     # GUI work is gated behind green TUI+headless suites (ARCHITECTURE.md).
+
+# Focused session/network lifetime checks. The Odin executable is
+# instrumented; separately compiled native dependencies are not rebuilt here.
+test-sanitize:
+    mkdir -p .tmp
+    odin build spike -out:.tmp/vixen-asan -o:none -debug -sanitize:address -extra-linker-flags:"`./scripts/sdl-flags.sh`"
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 ./.tmp/vixen-asan tuitest
+    ASAN_OPTIONS=detect_leaks=1:halt_on_error=1 ./.tmp/vixen-asan nettest
 
 clean:
     rm -rf {{ BIN }} spike/*.o spike/*.a .tmp

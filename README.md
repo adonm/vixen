@@ -115,6 +115,7 @@ than rendered faithfully.
 
 ```sh
 mise exec -- just test
+mise exec -- just test-sanitize
 ```
 
 | Gate | Current evidence |
@@ -125,6 +126,7 @@ mise exec -- just test
 | `vixen nettest` | URL, cookie, cache, redirect, and storage cases against local fixtures |
 | `vixen wasmtest corpus/wtest.wasm` | Native↔WASM calls |
 | Parse/JS/render/Kitty smoke commands | Invocation/output smoke, not frontend usability certification |
+| `just test-sanitize` | ASan/leak checks on the Odin executable's session/network tests; separately built C dependencies are not instrumented |
 
 CI uses `jdx/mise-action`, `mise bootstrap`, and Just recipes. A passing run
 does not establish terminal geometry, desktop usability, web compatibility,

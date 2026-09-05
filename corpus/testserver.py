@@ -102,8 +102,8 @@ class H(BaseHTTPRequestHandler):
             with LOCK:
                 snap = dict(COUNTS)
             self._send(200, [("Content-Type", "application/json")], json.dumps(snap))
-        elif p == "/article":
-            with open("corpus/article.html", "rb") as f:
+        elif p in ("/article", "/relayout"):
+            with open(f"corpus{p}.html", "rb") as f:
                 html = f.read()
             self._send(200, [("Content-Type", "text/html; charset=utf-8"), ("Cache-Control", "max-age=60")], html)
         elif p == "/imgpage":

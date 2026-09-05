@@ -319,9 +319,29 @@ test_storage :: proc(env: ^Test_Env) {
 
 // ---------- server lifecycle ----------
 
+// Every test owns a fresh directory. Never delete a shared profile or
+// port file: separate gate processes must be safe to run concurrently.
+test_directory :: proc() -> (string, bool) {
+	os.make_directory(".tmp")
+	dir, err := os.make_directory_temp(".tmp", "vixen-test-*", context.allocator)
+	if err != nil {
+		fmt.eprintfln("test: cannot create temporary directory: %v", err)
+		return "", false
+	}
+	return dir, true
+}
+
 server_start :: proc() -> (port: string, proc_handle: os.Process, ok: bool) {
-	pf := "/tmp/spike-nettest.port"
-	os.remove(pf)
+	dir, dok := test_directory()
+	if !dok {
+		return "", {}, false
+	}
+	defer {
+		os.remove_all(dir)
+		delete(dir)
+	}
+	pf := fmt.aprintf("%s/port", dir)
+	defer delete(pf)
 	cmd := []string{"python3", "corpus/testserver.py", pf}
 	p, err := os.process_start(os.Process_Desc{command = cmd})
 	if err != nil {
@@ -330,14 +350,21 @@ server_start :: proc() -> (port: string, proc_handle: os.Process, ok: bool) {
 	}
 	for _ in 0 ..< 100 {
 		if data, rerr := os.read_entire_file_from_path(pf, context.temp_allocator); rerr == nil {
-			port = strings.clone(strings.trim_space(string(data)))
-			break
+			text := strings.trim_space(string(data))
+			if len(text) > 0 && len(text) <= 5 {
+				n := parse_int_or(text, 0)
+				if n > 0 && n <= 65535 {
+					port = strings.clone(text)
+					break
+				}
+			}
 		}
 		time.sleep(100 * time.Millisecond)
 	}
 	if port == "" {
 		fmt.eprintfln("nettest: server never wrote portfile")
 		_ = os.process_kill(p)
+		_, _ = os.process_wait(p)
 		return "", {}, false
 	}
 	return port, p, true
@@ -356,8 +383,14 @@ nettest_main :: proc() -> bool {
 	defer delete(port)
 	env.base = fmt.aprintf("http://127.0.0.1:%s", port)
 	defer delete(env.base)
-	prof := "/tmp/spike-nettest-profile"
-	os.remove_all(prof)
+	prof, pok := test_directory()
+	if !pok {
+		return false
+	}
+	defer {
+		os.remove_all(prof)
+		delete(prof)
+	}
 	st, sok := store_open(prof)
 	if !sok {
 		return false

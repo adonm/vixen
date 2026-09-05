@@ -27,15 +27,18 @@ parent-repository/submodule maintenance.
 
 ## M0 — Trustworthy baseline
 
-- [ ] Correct README/architecture claims, command examples, feature status,
+- [x] Correct README/architecture claims, command examples, feature status,
   profile behavior, dependency requirements, and benchmark qualifications.
-- [ ] Remove obsolete smoke invocations; reject invalid/missing CLI arguments
+- [x] Replace the obsolete `tui --kitty=off` smoke with explicit one-shot
+  Kitty output; label it as encoder smoke, not a terminal test.
+- [ ] Reject invalid/missing CLI arguments
   and propagate load/evaluation/export failures as nonzero exit statuses.
 - [ ] Separate core/headless tests from terminal protocol tests; name what
   each test actually proves rather than counting PASS lines.
-- [ ] Isolate test profiles, ports, and output directories. Harnesses own,
-  terminate, and reap only their child processes; parallel runs must not
-  delete each other's state.
+- [x] Isolate helper-test profiles and server port files in freshly created
+  directories. Reap owned server children on startup failure as well as normal
+  cleanup; concurrent helper suites must not delete each other's state.
+- [ ] Isolate gate output artifacts and add a committed concurrency regression.
 - [ ] Identify release/debug binaries with commit/build information and
   establish repeatable benchmark inputs and measurement scripts.
 
@@ -46,8 +49,8 @@ explicit, not silently reported as frontend success.
 
 ## M1 — Lifecycle and terminal correctness
 
-- [ ] Build replacement layouts before publishing them. Repeated resize
-  preserves source, URL/title, live state, images, form values, focus, and
+- [x] Build replacement layouts before publishing them. Repeated resize
+  preserves source, URL/title, live state, images, form submission values, and
   history; performs no network requests; frees old state exactly once.
 - [ ] Edit controls visibly, not only in submission data. Keep focused input
   and selection coherent across layout changes.
@@ -184,3 +187,22 @@ RSS, frame bytes, commit, toolchain/build flags, font versions, fixture hash,
 viewport, and cache state. Test slow optional images to establish that first
 paint does not depend on them. Set numerical resource budgets from M0
 measurements and enforce them before declaring a beta gate passed.
+
+## Initial progress — 2026-09-05
+
+M0 and M1 are **in progress**, not complete. The initial lifecycle slice adds
+repeated-resize/source/value/history checks, image pixel-allocation reuse and
+server-request counts, reload/back/forward after reflow, borrowed-URL
+navigation, and idempotent page destruction to `tuitest`. The regression
+failed on the previous implementation at its second image-page resize.
+
+`corpus/relayout.html` provides actual long text: narrow/wide/narrow layout
+must change and restore line counts. The old short-fixture test could mistake
+stale lines appended from the previous page for evidence of wrapping.
+
+Verification recipes: `mise exec -- just test` and
+`mise exec -- just test-sanitize`. Concurrent release/ASan helper runs were
+also exercised using independent profiles/port files. These do not establish
+frontend geometry correctness or fully instrument separately built C libraries.
+Next: CLI failure semantics and committed terminal parser/geometry regressions,
+followed by visible field editing/focus preservation and repaint scheduling.

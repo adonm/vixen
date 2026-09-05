@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="en">
+<head><title>Reflow Test</title></head>
+<body>
+<h1>Reflow Test</h1>
+<p>This deliberately long paragraph provides a real wrapping test. Changing
+the available width should change its line count while preserving every word
+and the order of the links. A short form or heading can occupy exactly the
+same number of lines at two different widths, so it cannot prove reflow.
+Follow the <a href="/form">search form</a> or return to the
+<a href="/article">test article</a> after resizing the page several times.</p>
+<p>A second paragraph makes repeated layout changes exercise enough text to
+detect stale lines left behind by an earlier document. Narrowing and widening
+the viewport must produce the original geometry again, not a growing list
+of old and new lines. Source bytes and link targets must remain valid until
+the document is replaced, and resizing must not make another HTTP request.</p>
+</body>
+</html>

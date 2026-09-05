@@ -26,7 +26,7 @@ briefly; it has no browsing event loop. The paths share layout/raster code,
 but image loading and presentation differ. Output parity must be tested,
 not assumed from a shared framebuffer.
 
-QuickJS execution, JS↔DOM bindings/events, storage bindings, and WAMR native
+QuickJS execution, JS↔DOM bindings/events, storage helpers, and WAMR native
 calls are separate experiments/tests. The browsing path does not execute
 page scripts, pump JS jobs, or instantiate page WASM.
 
