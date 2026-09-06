@@ -45,7 +45,8 @@ ID. Capability is an interactive-mode contract, not an environment-name test.
 
 This is **not Ghostty or Kitty**. It does not validate actual terminal
 presentation, font rendering, compositor behavior, or multiplexer
-passthrough. Those remain separate manual milestone requirements.
+passthrough. Those are covered by `tests/manual-tui.md` — run one full pass
+per terminal before claiming M4.
 
 ## `cli.py`
 
